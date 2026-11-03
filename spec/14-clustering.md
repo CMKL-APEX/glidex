@@ -621,7 +621,11 @@ pub enum Consistency { Linearizable, Local }
   2. run `f` on a ReDB write transaction, then **abort** it, keeping
      the write set;
   3. propose the write set; wait until it is committed **and applied
-     locally**;
+     locally**, for at most 10 election timeouts: then the write fails
+     (`TimedOut`; it may still be applied later), so a member that lost
+     its leadership while no leader commits doesn't hold the lane for
+     ever. A new leader's first write first waits for its read barrier,
+     for at most 4 election timeouts, else `NotLeader`;
   4. release the lane and return `f`'s result.
 
   On a follower, `write` returns `NotLeader { leader }` (§6.4).

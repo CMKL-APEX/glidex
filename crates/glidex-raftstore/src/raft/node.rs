@@ -279,14 +279,31 @@ struct RaftReplicator<S: Schema> {
     node: Arc<ClusterNode<S>>,
 }
 
+/// How long a write waits for its leader's read barrier, and for its entry
+/// to be committed and applied, in election timeouts. openraft answers a
+/// proposal only once its entry is applied or truncated, and its barrier
+/// waits for the apply without a limit: a member that lost its leadership
+/// while no other leader commits waited for ever, holding the write lane,
+/// and every other write of that member queued behind it (prism1 and
+/// prism2's control planes never finished starting on 2026-11-03).
+const BARRIER_ELECTIONS: u32 = 4;
+const COMMIT_ELECTIONS: u32 = 10;
+
 impl<S: Schema> RaftReplicator<S> {
-    /// `None` when the control plane is shutting down.
-    fn block<F>(&self, f: F) -> Option<F::Output>
+    /// `None` when the control plane is shutting down; `Some(None)` when
+    /// `f` took longer than `limit`.
+    fn block<F>(&self, f: F, limit: Duration) -> Option<Option<F::Output>>
     where
         F: std::future::Future + Send + 'static,
         F::Output: Send + 'static,
     {
-        wait_on(&self.node.runtime, f)
+        wait_on(&self.node.runtime, async move {
+            tokio::time::timeout(limit, f).await.ok()
+        })
+    }
+
+    fn elections(&self, n: u32) -> Duration {
+        Duration::from_millis(self.node.raft.config().election_timeout_max) * n
     }
 }
 
@@ -302,10 +319,15 @@ impl<S: Schema> Replicator<S> for RaftReplicator<S> {
         }
         // A new leader first applies everything committed before it, so the
         // closure of the first write reads the state its write set lands on.
+        // Not confirmed in time: as good as not the leader; the caller retries.
         let raft = n.raft.clone();
-        self.block(async move { raft.ensure_linearizable().await })
-            .and_then(|r| r.ok())
-            .ok_or_else(|| n.not_leader())?;
+        self.block(
+            async move { raft.ensure_linearizable().await },
+            self.elections(BARRIER_ELECTIONS),
+        )
+        .flatten()
+        .and_then(|r| r.ok())
+        .ok_or_else(|| n.not_leader())?;
         n.ready_term.store(m.current_term, Ordering::Release);
         Ok(())
     }
@@ -319,10 +341,23 @@ impl<S: Schema> Replicator<S> for RaftReplicator<S> {
     fn propose(&self, _db: &Db<S>, ws: WriteSet<S>) -> Result<u64, StoreError> {
         let n = &self.node;
         let raft = n.raft.clone();
-        let Some(written) = self.block(async move { raft.client_write(ws).await }) else {
-            return Err(StoreError::Io(std::io::Error::other(
-                "the control plane is shutting down",
-            )));
+        let limit = self.elections(COMMIT_ELECTIONS);
+        let written = match self.block(async move { raft.client_write(ws).await }, limit) {
+            Some(Some(w)) => w,
+            Some(None) => {
+                return Err(StoreError::Io(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!(
+                        "the write was not committed within {}s (no leader commits); it may still be applied later",
+                        limit.as_secs()
+                    ),
+                )));
+            }
+            None => {
+                return Err(StoreError::Io(std::io::Error::other(
+                    "the control plane is shutting down",
+                )));
+            }
         };
         match written {
             Ok(r) => Ok(r.log_id.index),

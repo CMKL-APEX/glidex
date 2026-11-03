@@ -249,3 +249,111 @@ async fn a_stopped_member_lets_go_of_its_store() {
     }
     drop(root);
 }
+
+/// A write made from a plain thread (a control plane's startup, on its main
+/// thread) the moment a restarted member is back: it finishes, or is
+/// refused, within `secs`; it never waits for ever.
+fn write_returns_within(c: &TestCluster, id: u64, key: &str, secs: u64) -> Result<(), StoreError> {
+    let db = c.by_id(id).db.clone();
+    let key = key.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = db.write(TestOrigin::Api, |t| -> Result<(), StoreError> {
+            t.open_table(definition::<Test>(TestTable::Data))?
+                .insert(&key, b"v")?;
+            Ok(())
+        });
+        let _ = tx.send(r);
+    });
+    rx.recv_timeout(Duration::from_secs(secs))
+        .unwrap_or_else(|_| panic!("a write on {id} still waits after {secs}s"))
+}
+
+/// A rolling restart, as an upgrade does it: the leader first, then another
+/// member shortly after, each writing at once when it is back. Writes keep
+/// finishing, and the cluster keeps a leader that commits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_at_startup_survive_a_rolling_restart() {
+    let mut c = TestCluster::new(3).await;
+    // Every member writes all the time (liveness, status), as servers do;
+    // a write on a follower is refused at once.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let busy = |c: &TestCluster| {
+        for id in c.ids() {
+            // Weak: a restart reopens the database file.
+            let db = std::sync::Arc::downgrade(&c.by_id(id).db);
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut n = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let Some(db) = db.upgrade() else { return };
+                    let _ = db.write(TestOrigin::Api, |t| -> Result<(), StoreError> {
+                        t.open_table(definition::<Test>(TestTable::Other))?
+                            .insert(&format!("live{id}"), &n.to_le_bytes())?;
+                        Ok(())
+                    });
+                    drop(db);
+                    n += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            });
+        }
+    };
+    busy(&c);
+    for round in 0..5 {
+        let leader = c.leader(&c.ids()).await;
+        c.put(leader, &format!("before{round}"), "v").unwrap();
+        c.restart(leader).await;
+        busy(&c);
+        let _ = tokio::task::block_in_place(|| {
+            write_returns_within(&c, leader, &format!("first{round}"), 30)
+        });
+        let other = c.ids().into_iter().find(|i| *i != leader).unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        c.restart(other).await;
+        busy(&c);
+        let _ = tokio::task::block_in_place(|| {
+            write_returns_within(&c, other, &format!("second{round}"), 30)
+        });
+        let now = c.leader(&c.ids()).await;
+        tokio::task::block_in_place(|| write_returns_within(&c, now, &format!("after{round}"), 30))
+            .unwrap_or_else(|e| panic!("round {round}: the leader {now} refused a write: {e}"));
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A leader cut off from every other member, with nothing healing it: its
+/// write gives up within the bound instead of waiting for a commit that no
+/// leader makes, so the writes queued behind it on the write lane don't
+/// wait for ever either (prism1 and prism2, 2026-11-03).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_that_no_leader_commits_gives_up() {
+    let c = TestCluster::new(3).await;
+    let old = c.leader(&c.ids()).await;
+    c.put(old, "committed", "1").unwrap();
+    c.converge(&c.ids(), old).await;
+    c.mesh.isolate(old, &c.ids());
+    let write = |key: &'static str| {
+        let db = c.by_id(old).db.clone();
+        tokio::task::spawn_blocking(move || {
+            db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+                tx.open_table(definition::<Test>(TestTable::Data))?
+                    .insert(key, b"x".as_slice())?;
+                Ok(())
+            })
+        })
+    };
+    let (first, queued) = (write("first"), write("queued"));
+    // 10 election timeouts of the test's 1.6 s, and a margin.
+    for (name, w) in [("first", first), ("queued", queued)] {
+        let res = tokio::time::timeout(Duration::from_secs(40), w)
+            .await
+            .unwrap_or_else(|_| panic!("the {name} write still waits"))
+            .unwrap();
+        assert!(res.is_err(), "the {name} write can't commit, got {res:?}");
+    }
+    // The majority carries on.
+    let rest: Vec<_> = c.ids().into_iter().filter(|i| *i != old).collect();
+    let new = c.leader(&rest).await;
+    c.put(new, "fresh", "2").unwrap();
+}
