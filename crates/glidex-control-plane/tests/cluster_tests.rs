@@ -6475,7 +6475,6 @@ async fn a_large_write_set_replicates_to_every_server() {
             let db = db.clone();
             let big = big.clone();
             async move {
-                use redb::ReadableTable;
                 let txn = db.begin_read().unwrap();
                 let t = txn.open_table(TableId::Meta.definition()).unwrap();
                 t.get("test-large-write-set")
