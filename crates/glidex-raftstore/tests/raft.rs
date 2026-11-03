@@ -357,3 +357,44 @@ async fn a_write_that_no_leader_commits_gives_up() {
     let new = c.leader(&rest).await;
     c.put(new, "fresh", "2").unwrap();
 }
+
+/// A member restarted more often than its snapshot policy fires still
+/// trims its log to `log_keep_entries` (a restart makes the live database
+/// the snapshot and starts the policy's count again; the log grew without
+/// end on servers restarted every few hours).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_log_is_trimmed_across_restarts() {
+    let mut c = TestCluster::new(3).await;
+    let keep = c.settings.log_keep_entries;
+    for round in 0..6 {
+        let leader = c.leader(&c.ids()).await;
+        for i in 0..60 {
+            c.put(leader, &format!("r{round}-{i}"), "v").unwrap();
+        }
+        c.converge(&c.ids(), leader).await;
+        for id in c.ids() {
+            c.restart(id).await;
+        }
+    }
+    let leader = c.leader(&c.ids()).await;
+    c.put(leader, "last", "v").unwrap();
+    c.converge(&c.ids(), leader).await;
+    for id in c.ids() {
+        let raft = c.by_id(id).node.raft.clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let m = raft.metrics().borrow().clone();
+            let last = m.last_log_index.unwrap_or(0);
+            let purged = m.purged.map(|l| l.index).unwrap_or(0);
+            if last - purged <= keep * 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "n{id} keeps {} entries (purged up to {purged} of {last}), not about {keep}",
+                last - purged
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
