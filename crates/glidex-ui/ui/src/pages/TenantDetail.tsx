@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { Binding, EntityRef, Tenant, TenantBinding, TenantMember } from "../types";
+import type { Binding, PrincipalInput, Tenant, TenantBinding, TenantMember } from "../types";
 import { TENANT_ROLES, entityLabel, formatTimestamp, isOidcKind } from "../types";
 import Modal from "../components/Modal";
 import ConfirmDialog from "../components/ConfirmDialog";
-import AddBindingForm from "../components/AddBindingForm";
+import AddBindingForm, { typedPrincipal } from "../components/AddBindingForm";
 import FederationsCard from "../components/FederationsCard";
 import { Loading } from "../components/Loading";
 import {
@@ -397,10 +397,20 @@ function EditTenantForm({ tenant, onDone, onCancel }: { tenant: Tenant; onDone: 
 
 /** User or team picker for a new member: from the directory when the caller
  * may list it, otherwise the id typed. */
-function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: EntityRef) => Promise<void> }) {
+function AddMemberForm({
+  dir,
+  onAdd,
+  onInvite,
+}: {
+  dir: Directory | null;
+  onAdd: (p: PrincipalInput) => Promise<void>;
+  /** Offered when an address names nobody here yet (D83). */
+  onInvite?: (email: string) => void;
+}) {
   const [kind, setKind] = useState<"User" | "Team">("User");
   const [id, setId] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [missed, setMissed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const options =
@@ -415,11 +425,14 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
     if (!id.trim()) return;
     setBusy(true);
     setError(null);
+    setMissed(null);
+    const p = typedPrincipal(kind, id);
     try {
-      await onAdd({ type: kind, id: id.trim() });
+      await onAdd(p);
       setId("");
     } catch (err) {
       setError(errorMessage(err));
+      if ("email" in p) setMissed(p.email);
     } finally {
       setBusy(false);
     }
@@ -455,7 +468,7 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
         ) : (
           <input
             className={inputClass}
-            placeholder={kind === "User" ? "user id" : "team id or unix:<group>"}
+            placeholder={kind === "User" ? "user id or email" : "team id or unix:<group>"}
             value={id}
             onChange={(e) => setId(e.target.value)}
             required
@@ -467,7 +480,19 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
           Add member
         </button>
       </div>
-      {error && <p className="md:col-span-3 text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="md:col-span-3 text-sm text-red-600">
+          {error}
+          {missed && onInvite && (
+            <>
+              {" "}
+              <button type="button" className="text-sky-700 hover:underline" onClick={() => onInvite(missed)}>
+                Invite {missed} instead
+              </button>
+            </>
+          )}
+        </p>
+      )}
     </form>
   );
 }
@@ -477,10 +502,18 @@ const inviteRoleLabel = (r: string) => (r === "member" ? "member (no tenant role
 
 /** A tenant's invitations (spec/19-tenancy.md §6.1): a link, shown once, that
  *  lets one email address in through one connector. */
-function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
+function InvitationsCard({ tenant, canManage, prefill }: { tenant: Tenant; canManage: boolean; prefill?: string }) {
   const [list, setList] = useState<api.Invitation[] | null>(null);
   const [connectors, setConnectors] = useState<{ id: string; label: string }[]>([]);
   const [email, setEmail] = useState("");
+  // An address the member form found nobody for: invite it.
+  useEffect(() => {
+    if (!prefill) return;
+    setEmail(prefill);
+    const input = document.getElementById("invite-email");
+    input?.scrollIntoView({ behavior: "smooth", block: "center" });
+    input?.focus();
+  }, [prefill]);
   const [role, setRole] = useState<string>("member");
   const [connector, setConnector] = useState("");
   const [link, setLink] = useState<string | null>(null);
@@ -670,6 +703,7 @@ export default function TenantDetail() {
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [inviting, setInviting] = useState<string | undefined>(undefined);
   const [confirm, setConfirm] = useState<"suspend" | "resume" | "delete" | null>(null);
   const label = useTenantLabel();
 
@@ -854,12 +888,15 @@ export default function TenantDetail() {
                 await api.addTenantMember(tenant.id, p);
                 refreshMembers();
               }}
+              onInvite={can("manageTenantInvitations") ? setInviting : undefined}
             />
           )}
         </Card>
       )}
 
-      {can("readTenantInvitations") && <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} />}
+      {can("readTenantInvitations") && (
+        <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} prefill={inviting} />
+      )}
 
       {can("readTenantDevicePools") && <DevicePoolsCard tenant={tenant} canManage={can("manageTenantDevicePools")} />}
       {can("readTenantClusters") && <ClustersCard tenant={tenant} canManage={can("manageTenantClusters")} />}
@@ -885,6 +922,7 @@ export default function TenantDetail() {
           )}
           {can("manageTenantBindings") && (
             <AddBindingForm
+              emails
               roles={TENANT_ROLES}
               dir={dir}
               onAdd={async (role, principal) => {

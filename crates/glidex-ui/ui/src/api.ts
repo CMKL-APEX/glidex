@@ -87,6 +87,7 @@ import type {
   HostTopology,
   Datastore,
   DatastoreInput,
+  PrincipalInput,
 } from "./types";
 
 import { fromJson, toJson, type DescMethodUnary, type JsonValue, type MessageJsonType } from "@bufbuild/protobuf";
@@ -1086,7 +1087,7 @@ export const deleteProject = (id: string) => rpc(ProjectService.method.deletePro
 
 export const listBindings = (project: string) =>
   rpc(ProjectService.method.listProjectBindings, { id: project }).then((r) => (r.bindings ?? []) as Binding[]);
-export const addBinding = (project: string, role: string, principal: EntityRef) =>
+export const addBinding = (project: string, role: string, principal: PrincipalInput) =>
   rpc(ProjectService.method.addProjectBinding, { id: project, role, principal }).then((r) => r.binding as Binding);
 export const removeBinding = (project: string, link: string) =>
   rpc(ProjectService.method.removeProjectBinding, { id: project, link }).then(none);
@@ -1478,7 +1479,7 @@ export const setTenantDevicePools = (id: string, pools: TenantDevicePool[]) =>
 
 export const listTenantMembers = (id: string) =>
   rpc(TenantService.method.listMembers, { id }).then((r) => (r.members ?? []) as TenantMember[]);
-export const addTenantMember = (id: string, principal: EntityRef) => rpc(TenantService.method.addMember, { id, principal });
+export const addTenantMember = (id: string, principal: PrincipalInput) => rpc(TenantService.method.addMember, { id, principal });
 /** `principal` is a User or Team; the request names it `user:<id>` / `team:<id>`. */
 export const removeTenantMember = (id: string, principal: EntityRef) =>
   rpc(TenantService.method.removeMember, {
@@ -1488,7 +1489,7 @@ export const removeTenantMember = (id: string, principal: EntityRef) =>
 
 export const listTenantBindings = (id: string) =>
   rpc(TenantService.method.listBindings, { id }).then((r) => (r.bindings ?? []) as TenantBinding[]);
-export const addTenantBinding = (id: string, role: string, principal: EntityRef) =>
+export const addTenantBinding = (id: string, role: string, principal: PrincipalInput) =>
   rpc(TenantService.method.addBinding, { id, role, principal });
 export const removeTenantBinding = (id: string, link: string) => rpc(TenantService.method.removeBinding, { id, link }).then(none);
 

@@ -240,6 +240,7 @@ pub async fn register_finish(
             subject: p.id.clone(),
             user_id: user.id.clone(),
             email: None,
+            email_verified: false,
             created_at: p.created_at,
         })
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
@@ -524,6 +525,7 @@ pub async fn invite_finish(
             subject: p.id.clone(),
             user_id: user_id.clone(),
             email: None,
+            email_verified: false,
             created_at: p.created_at,
         })
         .map_err(|e| internal(e.to_string()))?;

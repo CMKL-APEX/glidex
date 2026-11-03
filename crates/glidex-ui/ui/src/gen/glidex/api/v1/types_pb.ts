@@ -12,7 +12,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/api/v1/types.proto.
  */
 export const file_glidex_api_v1_types: GenFile = /*@__PURE__*/
-  fileDesc("ChlnbGlkZXgvYXBpL3YxL3R5cGVzLnByb3RvEg1nbGlkZXguYXBpLnYxIjEKCUVudGl0eVJlZhIMCgR0eXBlGAEgASgJEg8KAmlkGAIgASgJSACIAQFCBQoDX2lkYgZwcm90bzM");
+  fileDesc("ChlnbGlkZXgvYXBpL3YxL3R5cGVzLnByb3RvEg1nbGlkZXguYXBpLnYxIk8KCUVudGl0eVJlZhIMCgR0eXBlGAEgASgJEg8KAmlkGAIgASgJSACIAQESEgoFZW1haWwYAyABKAlIAYgBAUIFCgNfaWRCCAoGX2VtYWlsYgZwcm90bzM");
 
 /**
  * A Cedar entity, as REST's `{"type": "Team", "id": "…"}`.
@@ -31,6 +31,15 @@ export type EntityRef = Message<"glidex.api.v1.EntityRef"> & {
    * @generated from field: optional string id = 2;
    */
   id?: string | undefined;
+
+  /**
+   * A `User` named by email instead of `id`, where members and roles are
+   * added (spec/19-tenancy.md D83): an address its identity provider
+   * verified, in the caller's directory.
+   *
+   * @generated from field: optional string email = 3;
+   */
+  email?: string | undefined;
 };
 
 /**
@@ -50,6 +59,15 @@ export type EntityRefJson = {
    * @generated from field: optional string id = 2;
    */
   id?: string;
+
+  /**
+   * A `User` named by email instead of `id`, where members and roles are
+   * added (spec/19-tenancy.md D83): an address its identity provider
+   * verified, in the caller's directory.
+   *
+   * @generated from field: optional string email = 3;
+   */
+  email?: string;
 };
 
 /**

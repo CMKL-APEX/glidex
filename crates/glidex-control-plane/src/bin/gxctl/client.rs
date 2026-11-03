@@ -173,7 +173,9 @@ pub fn token_from_env() -> Option<Zeroizing<String>> {
 
 /// `user:<id>`, `team:<id>`, `token:<id>` → the API's entity JSON
 /// (`{"type": "User", "id": …}`). Team ids may contain colons
-/// (`team:unix:glidex-admin`).
+/// (`team:unix:glidex-admin`). `user:<email>` names a user by address
+/// (`{"type": "User", "email": …}`, spec/19-tenancy.md D83): user ids never
+/// hold `@`.
 pub fn parse_principal(s: &str) -> Result<serde_json::Value, String> {
     let (kind, id) = s.split_once(':').ok_or_else(|| {
         format!(
@@ -194,6 +196,9 @@ pub fn parse_principal(s: &str) -> Result<serde_json::Value, String> {
     };
     if id.is_empty() {
         return Err(format!("'{}': the id is missing", s));
+    }
+    if ty == "User" && id.contains('@') {
+        return Ok(serde_json::json!({ "type": ty, "email": id }));
     }
     Ok(serde_json::json!({ "type": ty, "id": id }))
 }
@@ -1225,6 +1230,10 @@ mod tests {
         );
         assert!(parse_principal("abc").is_err());
         assert!(parse_principal("user:").is_err());
+        assert_eq!(
+            parse_principal("user:Ada@example.org").unwrap(),
+            serde_json::json!({ "type": "User", "email": "Ada@example.org" })
+        );
         assert!(parse_principal("project:p").is_err());
         assert_eq!(format_entity("Team", Some("x")), "team:x");
         assert_eq!(format_entity("Host", None), "host");

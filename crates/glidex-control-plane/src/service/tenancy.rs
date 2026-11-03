@@ -303,6 +303,20 @@ fn tenant_pb(call: &Call, t: &tenants::Tenant) -> ServiceResult<pb::Tenant> {
 /// `e` exists in `directory`: nobody is a member or holds a role in
 /// another directory's tenant (D3, D58); another directory's principals
 /// answer as missing.
+/// The principal a member or role is given to, one of `directory`: by id,
+/// or a user by email (D83). The caller is already allowed to add.
+fn member_principal(call: &Call, r: Option<&EntityRef>, directory: &str) -> ServiceResult<Ent> {
+    let r = r.ok_or_else(|| {
+        ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
+    })?;
+    if let Some(email) = super::common::email_of(r) {
+        return super::common::user_by_email(call, directory, email);
+    }
+    let principal = entity_from(r)?;
+    principal_exists(call, &principal, directory)?;
+    Ok(principal)
+}
+
 fn principal_exists(call: &Call, e: &Ent, directory: &str) -> ServiceResult<()> {
     let ok = call
         .auth()
@@ -800,10 +814,7 @@ pub fn list_members(
 pub fn add_member(call: &Call, req: pb::AddMemberRequest) -> ServiceResult<pb::AddMemberResponse> {
     let t = visible(call, &req.id)?;
     call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
-    let principal = entity_from(req.principal.as_option().ok_or_else(|| {
-        ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
-    })?)?;
-    principal_exists(call, &principal, &t.directory_id)?;
+    let principal = member_principal(call, req.principal.as_option(), &t.directory_id)?;
     call.detail("principal", serde_json::json!(principal));
     let by = call.p.user_id().unwrap_or("-").to_string();
     let m = call
@@ -902,10 +913,7 @@ pub fn add_binding(
             format!("tenant roles are {}", TENANT_ROLES.join(", ")),
         ));
     }
-    let principal = entity_from(req.principal.as_option().ok_or_else(|| {
-        ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
-    })?)?;
-    principal_exists(call, &principal, &t.directory_id)?;
+    let principal = member_principal(call, req.principal.as_option(), &t.directory_id)?;
     call.detail("role", serde_json::json!(req.role));
     call.detail("principal", serde_json::json!(principal));
     let by = call.p.user_id().unwrap_or("-").to_string();

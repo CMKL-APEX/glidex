@@ -838,7 +838,7 @@ fn print_help() {
     println!("  {} - Set your default project", "project use <p>".cyan());
     println!(
         "  {} - Project role bindings",
-        "binding list <p> | add <p> <role> user:<id> | remove <p> <id>".cyan()
+        "binding list <p> | add <p> <role> user:<id|email> | remove <p> <id>".cyan()
     );
     println!(
         "  {} - Host role bindings",

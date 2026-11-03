@@ -998,6 +998,8 @@ export type SingletonEntityType = "Cluster" | "Host";
 /** `Cluster` is the root of everything cluster-wide (projects, identity,
  * policy); `Host` is the node serving the request and `Node` another node. */
 export type EntityRef = { type: SingletonEntityType } | { type: Exclude<EntityType, SingletonEntityType>; id: string };
+/** Who a member or role is given to: an entity, or a user named by email (spec/19-tenancy.md D83). */
+export type PrincipalInput = EntityRef | { type: "User"; email: string };
 
 export function isSingleton(t: EntityType): t is SingletonEntityType {
   return t === "Cluster" || t === "Host";

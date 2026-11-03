@@ -1645,6 +1645,15 @@ impl AuthService {
         if user.disabled {
             return Err(AuthError::NotAllowed("this account is disabled".into()));
         }
+        // D83: the address members may be added by, if the IdP verified it.
+        if let Err(e) = self.store.record_identity_email(
+            &provider,
+            &id.subject,
+            id.email.as_deref(),
+            id.email_verified,
+        ) {
+            tracing::warn!(user = %user.id, "could not record the sign-in's address: {}", e);
+        }
         if let Some(t) = invite {
             let inv = self
                 .invitations
@@ -1749,6 +1758,7 @@ impl AuthService {
             subject: id.subject.clone(),
             user_id: user_id.into(),
             email: id.email.clone(),
+            email_verified: id.email_verified && id.email.is_some(),
             created_at: store::now(),
         })?;
         let teams: Vec<String> = id
