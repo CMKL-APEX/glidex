@@ -2,7 +2,9 @@
 
 use crate::auth::{self, Peer};
 use crate::proto::*;
-use crate::store::{self, BRIDGES, DEVICES, META, NAT, Store, UPLINKS, VM_PORTS};
+use crate::store::{
+    self, ARP_SAVED, BRIDGES, DEVICES, META, NAT, SOURCE_TABLES, Store, UPLINKS, VM_PORTS,
+};
 use crate::supervisor::Supervisor;
 use glidex_ovs::bridge::{self, BridgeSpec};
 use glidex_ovs::host::{self, ProbeOptions};
@@ -12,6 +14,7 @@ use glidex_ovs::names;
 use glidex_ovs::nat::{self, NatSpec, NatState};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::nic;
+use glidex_ovs::srcroute;
 use glidex_ovs::uplink::{self, UplinkKind};
 use glidex_ovs::vm_port::{self, VmPortSpec};
 use glidex_ovs::{Exec, OvsError};
@@ -41,6 +44,8 @@ pub struct Config {
     pub policy: auth::Policy,
     /// Router SNAT zones to meter; the same range as `ovn.snat_ct_zones`.
     pub ct_zones: (u16, u16),
+    /// Source routes for ports that share a subnet (spec §8.6).
+    pub source_routes: srcroute::Config,
 }
 
 impl Default for Config {
@@ -57,6 +62,7 @@ impl Default for Config {
             admin_group: "glidex-admin".into(),
             policy: auth::default_policy("glidex", "glidex-admin"),
             ct_zones: (60000, 64999),
+            source_routes: srcroute::Config::default(),
         }
     }
 }
@@ -166,6 +172,7 @@ impl Netd {
             Op::ListVmPorts => to_value(self.vm_ports()?),
             Op::ListUplinks => to_value(self.list_uplinks()?),
             Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
+            Op::ListSourceRoutes => to_value(self.list_source_routes()?),
             Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(
                 self.ex(),
                 &self.nats()?,
@@ -1197,6 +1204,14 @@ impl Netd {
         if let Err(e) = ex.create_dir(&self.config.run_dir.join("vhost"), 0o2770) {
             report.errors.push(format!("vhost dir: {}", e));
         }
+        // Not OVS's: before the check below that stops at a stopped OVS.
+        let pass = self.source_routes_locked();
+        report
+            .repaired
+            .extend(pass.applied.iter().map(|c| format!("source route: {c}")));
+        report
+            .errors
+            .extend(pass.errors.iter().map(|e| format!("source routes: {e}")));
         let caps = host::probe(ex, &self.config.probe);
         if !caps.ovs_running {
             if !self
@@ -1290,6 +1305,102 @@ impl Netd {
             }
         }
         report
+    }
+}
+
+/// What one source-route pass did (spec §8.6.4).
+#[derive(Debug, Default)]
+pub struct SourcePass {
+    /// The commands that ran.
+    pub applied: Vec<String>,
+    /// Failed commands, and what netd couldn't do (a full table range).
+    pub errors: Vec<String>,
+}
+
+impl Netd {
+    fn source_state(&self) -> Result<srcroute::State, OvsError> {
+        Ok(srcroute::State {
+            tables: self.store.list(SOURCE_TABLES)?.into_iter().collect(),
+            arp_saved: self.store.list(ARP_SAVED)?.into_iter().collect(),
+        })
+    }
+
+    fn save_source_state(
+        &self,
+        old: &srcroute::State,
+        new: &srcroute::State,
+    ) -> Result<(), OvsError> {
+        for (ifname, t) in &new.tables {
+            if old.tables.get(ifname) != Some(t) {
+                self.store.put(SOURCE_TABLES, ifname, t)?;
+            }
+        }
+        for ifname in old.tables.keys().filter(|i| !new.tables.contains_key(*i)) {
+            self.store.delete(SOURCE_TABLES, ifname)?;
+        }
+        for (ifname, a) in &new.arp_saved {
+            if old.arp_saved.get(ifname) != Some(a) {
+                self.store.put(ARP_SAVED, ifname, a)?;
+            }
+        }
+        for ifname in old
+            .arp_saved
+            .keys()
+            .filter(|i| !new.arp_saved.contains_key(*i))
+        {
+            self.store.delete(ARP_SAVED, ifname)?;
+        }
+        Ok(())
+    }
+
+    /// The source routes as they are, changing nothing (spec §8.6.5).
+    pub fn list_source_routes(&self) -> Result<srcroute::Report, OvsError> {
+        let obs = srcroute::observe(self.ex())?;
+        Ok(srcroute::plan(&self.config.source_routes, &obs, &self.source_state()?).report)
+    }
+
+    /// At start: a bad `source_routes`, or a rule priority one of the host's
+    /// own rules has, stops netd (spec §8.6.2). Without managed subnets the
+    /// priority is never used, so it isn't checked.
+    pub fn check_source_routes(&self) -> Result<(), OvsError> {
+        let cfg = &self.config.source_routes;
+        cfg.validate()?;
+        if cfg.subnets.is_empty() {
+            return Ok(());
+        }
+        srcroute::check_priority(cfg, &srcroute::observe(self.ex())?)
+    }
+
+    /// One pass: add what is missing, remove netd's own that are stale, and
+    /// keep the tables and saved ARP settings (spec §8.6.4).
+    pub fn source_routes_pass(&self) -> SourcePass {
+        let _guard = self.mutate.lock().unwrap();
+        self.source_routes_locked()
+    }
+
+    fn source_routes_locked(&self) -> SourcePass {
+        let mut pass = SourcePass::default();
+        let (obs, old) =
+            match srcroute::observe(self.ex()).and_then(|o| Ok((o, self.source_state()?))) {
+                Ok(v) => v,
+                Err(e) => {
+                    pass.errors.push(e.to_string());
+                    return pass;
+                }
+            };
+        let plan = srcroute::plan(&self.config.source_routes, &obs, &old);
+        pass.errors = srcroute::apply(self.ex(), &plan.actions);
+        pass.applied = plan
+            .actions
+            .iter()
+            .map(|a| a.cmd().display())
+            .filter(|c| !pass.errors.iter().any(|e| e.starts_with(c.as_str())))
+            .collect();
+        pass.errors.extend(plan.report.notes);
+        if let Err(e) = self.save_source_state(&old, &plan.state) {
+            pass.errors.push(e.to_string());
+        }
+        pass
     }
 }
 

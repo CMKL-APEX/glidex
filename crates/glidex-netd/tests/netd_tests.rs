@@ -1958,3 +1958,148 @@ fn nat_ports_get_a_metadata_index_and_rule() {
     let nft = calls.iter().rfind(|c| c.starts_with("nft -f -")).unwrap();
     assert!(!nft.contains("metadata_peer"), "{nft}");
 }
+
+// --- Source routes (spec/09-networking.md §8.6) ---
+
+/// A host with two IPoIB ports in 10.40.1.0/24, before any pass.
+fn shared_subnet_host() -> Arc<RecordingExec> {
+    let exec = exec();
+    exec.on(
+        "ip -j addr show",
+        Output::ok(
+            r#"[{"ifname":"ib0","addr_info":[{"local":"10.40.1.5","prefixlen":24,"scope":"global"}]},
+                {"ifname":"ib1","addr_info":[{"local":"10.40.1.6","prefixlen":24,"scope":"global"}]}]"#,
+        ),
+    );
+    exec.on(
+        "ip -4 -j rule show",
+        Output::ok(r#"[{"priority":0,"src":"all","table":"local"},{"priority":32766,"src":"all","table":"main"}]"#),
+    );
+    exec.on("ip -6 -j rule show", Output::ok("[]"));
+    exec.on("ip -4 -j route show table all", Output::ok("[]"));
+    exec.on("ip -6 -j route show table all", Output::ok("[]"));
+    for port in ["ib0", "ib1"] {
+        exec.file(&format!("/proc/sys/net/ipv4/conf/{port}/rp_filter"), "1\n");
+        exec.file(&format!("/proc/sys/net/ipv4/conf/{port}/arp_ignore"), "0\n");
+        exec.file(
+            &format!("/proc/sys/net/ipv4/conf/{port}/arp_announce"),
+            "0\n",
+        );
+    }
+    exec
+}
+
+fn netd_managing(exec: Arc<RecordingExec>, dir: &TempDir, subnets: &[&str]) -> Netd {
+    let config = Config {
+        run_dir: dir.path().join("run"),
+        state_path: dir.path().join("netd.db"),
+        policy: test_policy(&["*"]),
+        source_routes: glidex_ovs::srcroute::Config {
+            subnets: subnets.iter().map(|s| s.parse().unwrap()).collect(),
+            ..Default::default()
+        },
+        ..Config::default()
+    };
+    Netd::new(exec, Arc::new(FakeSupervisor::default()), config).unwrap()
+}
+
+#[test]
+fn a_pass_adds_source_routes_and_keeps_the_tables() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    let netd = netd_managing(exec.clone(), &dir, &["10.40.0.0/16"]);
+    let pass = netd.source_routes_pass();
+    assert_eq!(pass.errors, Vec::<String>::new());
+    assert_eq!(
+        pass.applied,
+        vec![
+            "ip -4 route replace 10.40.1.0/24 dev ib0 src 10.40.1.5 table 4200 proto 77",
+            "ip -4 route replace 10.40.1.0/24 dev ib1 src 10.40.1.6 table 4201 proto 77",
+            "ip -4 rule add from 10.40.1.5 lookup 4200 priority 1000 protocol 77",
+            "ip -4 rule add from 10.40.1.6 lookup 4201 priority 1000 protocol 77",
+            "sysctl -w net/ipv4/conf/ib0/arp_ignore=1",
+            "sysctl -w net/ipv4/conf/ib0/arp_announce=2",
+            "sysctl -w net/ipv4/conf/ib1/arp_ignore=1",
+            "sysctl -w net/ipv4/conf/ib1/arp_announce=2",
+        ]
+    );
+    for c in &pass.applied {
+        assert!(exec.calls().contains(c), "{c} didn't run");
+    }
+    drop(netd);
+
+    // The numbers survive a restart: a new netd on the same database
+    // reports the same tables.
+    let netd = netd_managing(exec.clone(), &dir, &["10.40.0.0/16"]);
+    let report: glidex_ovs::srcroute::Report =
+        serde_json::from_value(netd.handle(Op::ListSourceRoutes, &peer()).unwrap()).unwrap();
+    let ports = &report.subnets[0].ports;
+    assert_eq!(
+        ports
+            .iter()
+            .map(|p| (p.ifname.as_str(), p.table))
+            .collect::<Vec<_>>(),
+        vec![("ib0", Some(4200)), ("ib1", Some(4201))]
+    );
+    // Listing changes nothing: the host still has no rules, so `missing`.
+    assert!(
+        ports
+            .iter()
+            .all(|p| { p.addresses[0].state == glidex_ovs::srcroute::AddrState::Missing })
+    );
+}
+
+#[test]
+fn without_managed_subnets_netd_only_reports() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    let netd = netd_managing(exec.clone(), &dir, &[]);
+    let pass = netd.source_routes_pass();
+    assert!(
+        pass.applied.is_empty() && pass.errors.is_empty(),
+        "{pass:?}"
+    );
+    assert!(
+        !exec
+            .calls()
+            .iter()
+            .any(|c| c.contains("rule add") || c.starts_with("sysctl")),
+        "{:?}",
+        exec.calls()
+    );
+    let report = netd.list_source_routes().unwrap();
+    assert!(!report.subnets[0].managed);
+}
+
+#[test]
+fn startup_runs_a_pass_even_without_ovs() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    // `ovs-vsctl --version` failing: OVS isn't there.
+    exec.set("ovs-vsctl --version", Output::failed(127, "not found"));
+    let netd = netd_managing(exec, &dir, &["10.40.0.0/16"]);
+    let report = netd.reconcile_startup();
+    assert!(
+        report.repaired.contains(
+            &"source route: ip -4 rule add from 10.40.1.5 lookup 4200 priority 1000 protocol 77"
+                .to_string()
+        ),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_priority_the_host_uses_stops_netd() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    exec.set(
+        "ip -4 -j rule show",
+        Output::ok(r#"[{"priority":1000,"src":"all","table":"52"}]"#),
+    );
+    let netd = netd_managing(exec.clone(), &dir, &["10.40.0.0/16"]);
+    let err = netd.check_source_routes().unwrap_err();
+    assert!(err.to_string().contains("rule_priority 1000"), "{err}");
+    // Without managed subnets the priority is never used.
+    let dir = TempDir::new().unwrap();
+    assert!(netd_managing(exec, &dir, &[]).check_source_routes().is_ok());
+}

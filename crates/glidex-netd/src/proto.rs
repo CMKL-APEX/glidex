@@ -68,6 +68,9 @@ pub enum Op {
     /// Cumulative external-traffic counters of router SNAT zones, from
     /// conntrack accounting (spec/14-clustering.md §13.3). Read-only; full socket only.
     CtExternalCounters,
+    /// Subnets two or more ports share, with their source routes and ARP
+    /// settings (spec §8.6.5). Read-only; full socket only.
+    ListSourceRoutes,
     InstallOvs(InstallRequest),
     InitDpdk(glidex_ovs::install::DpdkSettings),
     EnsureUplink(EnsureUplinkArgs),
@@ -193,6 +196,7 @@ impl Op {
                 | Op::PortStats
                 | Op::NatCounters
                 | Op::CtExternalCounters
+                | Op::ListSourceRoutes
                 | Op::OvnStatus
                 | Op::ListPreparedDevices
                 | Op::DeviceHolders { .. }
@@ -210,6 +214,7 @@ impl Op {
             Op::PortStats => "port_stats",
             Op::NatCounters => "nat_counters",
             Op::CtExternalCounters => "ct_external_counters",
+            Op::ListSourceRoutes => "list_source_routes",
             Op::EnsureUplink(_) => "ensure_uplink",
             Op::CommitUplink { .. } => "commit_uplink",
             Op::ReapplyUplink { .. } => "ensure_uplink_reapply",
