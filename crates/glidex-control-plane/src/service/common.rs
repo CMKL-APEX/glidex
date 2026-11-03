@@ -108,6 +108,43 @@ pub fn entity_of(
     })
 }
 
+/// The user `email` names in `directory` (spec/19-tenancy.md D83), for a
+/// caller already allowed to add members or roles. No match answers as
+/// an unknown id does, so the address is no way to look people up.
+pub fn user_by_email(
+    call: &super::Call,
+    directory: &str,
+    email: &str,
+) -> super::ServiceResult<crate::authz::Ent> {
+    use axum::http::StatusCode;
+    let users = call
+        .auth()
+        .store
+        .users_by_email(directory, email)
+        .map_err(|e| crate::api::auth_error(e.into()))?;
+    match users.as_slice() {
+        [u] => Ok(crate::authz::Ent::User(u.id.clone())),
+        [] => Err(super::ServiceError::new(
+            StatusCode::BAD_REQUEST,
+            "invalid",
+            "no user with that address in this directory",
+        )),
+        _ => Err(super::ServiceError::new(
+            StatusCode::CONFLICT,
+            "ambiguous",
+            "several users have that address: give the user's id",
+        )),
+    }
+}
+
+/// A `User` given by email rather than id: its address.
+pub fn email_of(r: &glidex_api::proto::glidex::api::v1::EntityRef) -> Option<&str> {
+    match (&r.r#type[..], &r.id, &r.email) {
+        ("User", None, Some(e)) if !e.trim().is_empty() => Some(e.as_str()),
+        _ => None,
+    }
+}
+
 /// A principal from `{type, id}`: a user, team or token.
 pub fn principal_of(
     r: &glidex_api::proto::glidex::api::v1::EntityRef,

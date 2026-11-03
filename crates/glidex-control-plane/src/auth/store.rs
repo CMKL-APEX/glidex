@@ -196,6 +196,10 @@ pub struct Identity {
     pub user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// Whether the identity provider verified `email` at the last sign-in
+    /// (spec/19-tenancy.md D83); `false` for identities from before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub email_verified: bool,
     pub created_at: u64,
 }
 
@@ -547,6 +551,56 @@ impl IdentityStore {
             .collect())
     }
 
+    /// Record a sign-in's address on its identity, and whether the IdP
+    /// verified it (D83): a write only when either changed, and only where
+    /// writes are made (IdP sign-ins run on the leader); elsewhere the next
+    /// sign-in there records it.
+    pub fn record_identity_email(
+        &self,
+        provider: &str,
+        subject: &str,
+        email: Option<&str>,
+        verified: bool,
+    ) -> Result<(), StoreError> {
+        let Some(mut i) = self.identity(provider, subject)? else {
+            return Ok(());
+        };
+        let email = email.map(str::to_lowercase);
+        let verified = verified && email.is_some();
+        if i.email == email && i.email_verified == verified || !self.db.can_write() {
+            return Ok(());
+        }
+        i.email = email;
+        i.email_verified = verified;
+        self.put_identity(&i)
+    }
+
+    /// The enabled users of `directory` that `email` names (D83): by an
+    /// address an IdP verified at their sign-in, a provisioned user's
+    /// address, or a pre-added user's. Ignores case.
+    pub fn users_by_email(&self, directory: &str, email: &str) -> Result<Vec<User>, StoreError> {
+        let email = email.trim();
+        let same = |e: &str| e.eq_ignore_ascii_case(email);
+        let mut ids: Vec<String> = list::<Identity>(&self.db, IDENTITIES)?
+            .into_iter()
+            .map(|(_, i)| i)
+            .filter(|i| i.email_verified && i.email.as_deref().is_some_and(same))
+            .map(|i| i.user_id)
+            .collect();
+        let mut out = Vec::new();
+        for u in self.users()? {
+            let own = (u.managed.is_some() && u.email.as_deref().is_some_and(same))
+                || u.pending_login.as_ref().is_some_and(|p| same(&p.email));
+            if own || ids.contains(&u.id) {
+                ids.retain(|i| *i != u.id);
+                if u.directory_id == directory && !u.disabled {
+                    out.push(u);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn put_identity(&self, i: &Identity) -> Result<(), StoreError> {
         put(
             &self.db,
@@ -836,6 +890,7 @@ impl IdentityStore {
                     subject: subject.to_string(),
                     user_id: u.id.clone(),
                     email: verified_email.map(String::from),
+                    email_verified: verified_email.is_some(),
                     created_at: now(),
                 },
             )?;
@@ -882,6 +937,7 @@ impl IdentityStore {
                     subject: subject.to_string(),
                     user_id: u.id.clone(),
                     email: Some(verified_email.to_string()),
+                    email_verified: true,
                     created_at: now(),
                 },
             )?;
@@ -1072,6 +1128,7 @@ impl IdentityStore {
             subject: subject.to_string(),
             user_id: user.id.clone(),
             email,
+            email_verified: false,
             created_at: now(),
         })?;
         Ok(Some(user))
@@ -1879,6 +1936,7 @@ mod tests {
             subject: "dave@n2".into(),
             user_id: alice.id.clone(),
             email: None,
+            email_verified: false,
             created_at: 1,
         };
         s.put_identity(&other).unwrap();

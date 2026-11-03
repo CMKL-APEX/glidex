@@ -8,4 +8,8 @@ message EntityRef {
   string type = 1;
   // Absent for singletons (`Cluster`, `Host`).
   optional string id = 2;
+  // A `User` named by email instead of `id`, where members and roles are
+  // added (spec/19-tenancy.md D83): an address its identity provider
+  // verified, in the caller's directory.
+  optional string email = 3;
 }

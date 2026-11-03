@@ -1446,6 +1446,163 @@ async fn users_create_tenants_of_their_own_within_the_directorys_limits() {
     assert_eq!(s, StatusCode::FORBIDDEN, "the site forbid wins");
 }
 
+/// D83: members and roles given by email: an address an IdP verified,
+/// a provisioned or pre-added user's; never an unverified address, another
+/// directory's user or a disabled one; two users with it are ambiguous; a
+/// caller who may not add learns nothing.
+#[tokio::test]
+async fn members_and_roles_by_verified_email() {
+    use glidex_control_plane::auth::store::{Identity, Managed, PendingLogin};
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let store = &h.app.auth.store;
+    let signed_in = |name: &str, email: &str, verified: bool| {
+        let id = h.user(name);
+        store
+            .put_identity(&Identity {
+                provider: "oidc:https://idp.example.org".into(),
+                subject: name.into(),
+                user_id: id.clone(),
+                email: Some(email.into()),
+                email_verified: verified,
+                created_at: 0,
+            })
+            .unwrap();
+        id
+    };
+    let carol = signed_in("carol", "carol@example.org", true);
+    signed_in("dave", "dave@example.org", false);
+    let erin = signed_in("erin", "erin@example.org", true);
+    let mut u = store.user(&erin).unwrap().unwrap();
+    u.directory_id = "other".into();
+    store.put_user(&u).unwrap();
+    let frank = signed_in("frank", "frank@example.org", true);
+    let mut u = store.user(&frank).unwrap().unwrap();
+    u.disabled = true;
+    store.put_user(&u).unwrap();
+    signed_in("gil1", "gil@example.org", true);
+    signed_in("gil2", "gil@example.org", true);
+    let pat = h.user("pat");
+    let mut u = store.user(&pat).unwrap().unwrap();
+    u.pending_login = Some(PendingLogin {
+        connector: "google".into(),
+        email: "pat@example.org".into(),
+    });
+    store.put_user(&u).unwrap();
+    let sam = h.user("sam");
+    let mut u = store.user(&sam).unwrap().unwrap();
+    u.managed = Some(Managed {
+        connector: "scim".into(),
+        external_id: None,
+        user_name: None,
+        given_name: None,
+        family_name: None,
+        ssh_keys: Vec::new(),
+    });
+    u.email = Some("sam@example.org".into());
+    store.put_user(&u).unwrap();
+
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({ "slug": "lab", "display_name": "Lab" })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let lab = v["tenant"]["id"].as_str().unwrap().to_string();
+    let add = |email: &str| json!({ "principal": { "type": "User", "email": email } });
+    let members = format!("/tenants/{lab}/members");
+
+    // A caller who may not add is refused before the address is looked at.
+    let bob = h.session(&h.user("bob"));
+    let (s, v) = h
+        .rest("POST", &members, Some(add("carol@example.org")), &bob)
+        .await;
+    assert!(
+        s == StatusCode::NOT_FOUND || s == StatusCode::FORBIDDEN,
+        "{s} {v}"
+    );
+
+    // A verified address, in any case: that user.
+    let (s, v) = h
+        .rest("POST", &members, Some(add("Carol@Example.ORG")), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["member"]["principal"]["id"], carol.as_str(), "{v}");
+    // Pre-added and provisioned users' addresses.
+    for (email, id) in [("pat@example.org", &pat), ("sam@example.org", &sam)] {
+        let (s, v) = h.rest("POST", &members, Some(add(email)), &at).await;
+        assert_eq!(s, StatusCode::CREATED, "{email}: {v}");
+        assert_eq!(v["member"]["principal"]["id"], id.as_str());
+    }
+    // Unverified, another directory's, disabled, nobody's: as an unknown id.
+    for email in [
+        "dave@example.org",
+        "erin@example.org",
+        "frank@example.org",
+        "nobody@example.org",
+    ] {
+        let (s, v) = h.rest("POST", &members, Some(add(email)), &at).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{email}: {v}");
+        assert_eq!(v["error"], "invalid", "{email}: {v}");
+    }
+    let (s, v) = h
+        .rest("POST", &members, Some(add("gil@example.org")), &at)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"], "ambiguous");
+
+    // A tenant role and a project role by email.
+    let (s, v) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{lab}/bindings"),
+            Some(json!({ "role": "role.tenant-auditor", "principal": { "type": "User", "email": "carol@example.org" } })),
+            &at,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let (s, v) = h
+        .rest("POST", "/projects", Some(json!({ "name": "web" })), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let web = v["project"]["id"].as_str().unwrap().to_string();
+    let (s, v) = h
+        .rest(
+            "POST",
+            &format!("/projects/{web}/bindings"),
+            Some(json!({ "role": "role.viewer", "principal": { "type": "User", "email": "carol@example.org" } })),
+            &at,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    assert!(v.to_string().contains(carol.as_str()), "{v}");
+
+    // A sign-in records whether the address was verified, in lower case.
+    store
+        .record_identity_email(
+            "oidc:https://idp.example.org",
+            "dave",
+            Some("Dave@Example.org"),
+            true,
+        )
+        .unwrap();
+    let i = store
+        .identity("oidc:https://idp.example.org", "dave")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (i.email.as_deref(), i.email_verified),
+        (Some("dave@example.org"), true)
+    );
+    let (s, v) = h
+        .rest("POST", &members, Some(add("dave@example.org")), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+}
+
 /// D82: a tenant at a user's first sign-in, when the directory makes one:
 /// off by default, once per user, not for a member of a tenant (the
 /// connector's default tenant aside), a taken slug, the limits.

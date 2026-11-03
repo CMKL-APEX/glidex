@@ -87,20 +87,25 @@ manage members.
 **Web UI:** the project's page, **Members** card. The table lists each
 binding; **Remove** deletes one. To add one, choose a **Role**, a
 **Principal type** (User or Team) and the user or team, then **Add role**.
-If you can't list users, type the user's id (they can find it with
-`gxctl whoami`).
+If you can't list users, type the user's email address, or their id
+(they can find it with `gxctl whoami`). An address finds a user of your
+directory whose identity provider verified it when they signed in, or
+whom an administrator added by that address; a user who hasn't signed in
+that way yet can't be found by it. On a tenant's page, an address that
+finds nobody offers to send them an invitation instead.
 
 **gxctl:**
 
 ```bash
 gxctl binding list lab
 gxctl binding add lab editor user:<user-id>
+gxctl binding add lab viewer user:ada@example.org
 gxctl binding add lab viewer team:<team-id>
 gxctl binding remove lab <binding-id>
 ```
 
 Roles can be written short (`editor`) or in full (`role.editor`). A
-principal is `user:<id>`, `team:<id>` or `token:<id>`. `binding list`
+principal is `user:<id>` (or `user:<email>`), `team:<id>` or `token:<id>`. `binding list`
 shows each binding's id.
 
 Over the API: `GET`/`POST /projects/{id}/bindings` and

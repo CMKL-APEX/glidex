@@ -645,7 +645,7 @@ fn print_added(l: Option<&Binding>) {
 }
 
 pub async fn binding(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: binding list <project> | add <project> <role> user:<id>|team:<id>|token:<id> | remove <project> <binding-id>";
+    let u = "Usage: binding list <project> | add <project> <role> user:<id|email>|team:<id>|token:<id> | remove <project> <binding-id>";
     match (args.first().copied().unwrap_or("list"), args.get(1)) {
         ("list" | "ls", Some(p)) => {
             let svc = svc!(client, ProjectServiceClient);

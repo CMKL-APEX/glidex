@@ -441,6 +441,7 @@ export default function ProjectDetail() {
           )}
           {can("manageBindings") && (
             <AddBindingForm
+              emails
               roles={PROJECT_ROLES}
               dir={dir}
               onAdd={async (role, principal) => {

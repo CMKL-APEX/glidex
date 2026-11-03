@@ -528,12 +528,19 @@ pub fn add_project_binding(
     if !authz::PROJECT_ROLES.contains(&req.role.as_str()) {
         return Err(bad("only project roles can be given in a project"));
     }
-    let principal = principal_of(
-        req.principal
-            .as_option()
-            .ok_or_else(|| bad("principal is required"))?,
-    )?;
-    check_principal_exists(call, &principal)?;
+    let r = req
+        .principal
+        .as_option()
+        .ok_or_else(|| bad("principal is required"))?;
+    // D83: a user by email, once the caller may give roles here.
+    let principal = match super::common::email_of(r) {
+        Some(email) => super::common::user_by_email(call, call.p.directory_id(), email)?,
+        None => {
+            let e = principal_of(r)?;
+            check_principal_exists(call, &e)?;
+            e
+        }
+    };
     call.detail("role", serde_json::json!(req.role));
     call.detail("principal", serde_json::json!(principal));
     let l = call
@@ -819,6 +826,7 @@ pub fn create_user(
             subject: i.subject,
             user_id: u.id.clone(),
             email: None,
+            email_verified: false,
             created_at: u.created_at,
         })
         .map_err(store_err)?;
@@ -1027,6 +1035,7 @@ pub fn link_identity(
         subject: req.subject,
         user_id: req.id,
         email: None,
+        email_verified: false,
         created_at: crate::auth::store::now(),
     };
     s.put_identity(&i).map_err(store_err)?;
@@ -1290,6 +1299,7 @@ pub fn delete_passkey(
         subject: p.id.clone(),
         user_id: req.id.clone(),
         email: None,
+        email_verified: false,
         created_at: 0,
     };
     keeps_a_way_in(&all, &me, disabled)?;

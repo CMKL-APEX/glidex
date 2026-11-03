@@ -242,7 +242,9 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `audit [--project P \| --directory D] [--since <unix-ms>] [--limit N] [--user U]` | The audit log; `--directory`: a hosted directory's own log |
 
 Roles are written `owner` or `role.owner`; principals are `user:<id>`,
-`team:<id>` or `token:<id>`. See [Projects](../user-guide/projects.md)
+`team:<id>` or `token:<id>`. Where a member or a project or tenant role
+is added, `user:<email>` names a user by an address their identity
+provider verified. See [Projects](../user-guide/projects.md)
 and [Access control](../operator-guide/access-control.md).
 
 ## Tenants and login connectors

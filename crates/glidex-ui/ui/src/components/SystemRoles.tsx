@@ -116,6 +116,8 @@ export default function SystemRoles({ dir, node }: { dir: Directory | null; node
             roles={scope ? PER_HOST_ROLES : HOST_ROLES}
             dir={dir}
             onAdd={async (role, principal) => {
+              // System roles take ids only (the form isn't given `emails`).
+              if ("email" in principal) throw new Error("give the user's id");
               await api.addSystemBinding(role, principal, scope || undefined);
               refresh();
             }}

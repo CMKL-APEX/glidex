@@ -186,7 +186,7 @@ fn device_pool_line(p: &TenantDevicePool) -> String {
 
 pub async fn tenant(client: &ApiClient, args: &[&str]) {
     let u = "Usage: tenant list | show <t> | create <slug> [--name TEXT] [--operator] | rename <t> <name> \
-             | suspend <t> | resume <t> | approve <t> | delete <t> | members <t> | add-member <t> user:<id>|team:<id> \
+             | suspend <t> | resume <t> | approve <t> | delete <t> | members <t> | add-member <t> user:<id|email>|team:<id> \
              | remove-member <t> user:<id>|team:<id> | bindings <t> | bind <t> <tenant-admin|tenant-auditor> <principal> \
              | unbind <t> <link> | device-pools <t> \
              | device-pool set <t> <name> --from <cluster pool> --max N [--projects p1,p2] \
@@ -656,6 +656,7 @@ pub(crate) fn principal_ref(s: &str) -> Result<EntityRef, String> {
     Ok(EntityRef {
         r#type: v["type"].as_str().unwrap_or_default().into(),
         id: v["id"].as_str().map(String::from),
+        email: v["email"].as_str().map(String::from),
         ..Default::default()
     })
 }

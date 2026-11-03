@@ -492,7 +492,7 @@ UI's Host pages send it.
 | `PATCH` | `/projects/{id}` | Change description or quotas |
 | `DELETE` | `/projects/{id}` | Delete a project |
 | `GET` | `/projects/{id}/bindings` | A project's role bindings |
-| `POST` | `/projects/{id}/bindings` | Grant a role on the project to a user, team or token |
+| `POST` | `/projects/{id}/bindings` | Grant a role on the project to a user, team or token; a user may be given as `{"type": "User", "email": …}` (a verified address in your directory; none: `400 invalid`, several: `409 ambiguous`) |
 | `DELETE` | `/projects/{id}/bindings/{link}` | Remove a binding |
 | `GET` | `/system/bindings` | Host role bindings: the cluster's and every host's (`node`: one node's host only) |
 | `POST` | `/system/bindings` | Grant a host role, cluster-wide or, with `node` (id or name), on one node's host (`role.auditor`, `role.net-admin`, `grant.host-paths`) |
@@ -558,10 +558,10 @@ UI's Host pages send it.
 | `POST` | `/d/{directory}/device/inspect` | What a device code is for (`{user_code}`), for the web UI's `/device` page |
 | `POST` | `/d/{directory}/device/answer` | Approve or refuse a device code (`{user_code, approve}`) |
 | `GET` | `/tenants/{id}/members` | List explicit members |
-| `POST` | `/tenants/{id}/members` | Add a member |
+| `POST` | `/tenants/{id}/members` | Add a member; a user by id or by `email`, as for project bindings |
 | `DELETE` | `/tenants/{id}/members/{principal}` | Remove a member (`user:<id>` or `team:<id>`) |
 | `GET` | `/tenants/{id}/bindings` | Tenant role bindings |
-| `POST` | `/tenants/{id}/bindings` | Grant a tenant role |
+| `POST` | `/tenants/{id}/bindings` | Grant a tenant role; a user by id or by `email` |
 | `DELETE` | `/tenants/{id}/bindings/{link}` | Remove a tenant role binding |
 | `GET` | `/tenants/{id}/device-pools` | The tenant's pools on this cluster, with what they hold |
 | `PUT` | `/tenants/{id}/device-pools` | Replace the tenant's pools: `{pools: [{name, from, max, projects}]}` |
