@@ -98,6 +98,7 @@ Non-goals for this revision (each in §18):
 | D26 | **Three tiers of data; Raft carries only the cluster's.** The replicated store holds desired state, decisions and *closed* results. What one host observes or is still accumulating stays in that host's own database. Append-only history read by time range (usage, audit) moves to a history tier outside the Raft snapshot before the cluster grows past about 100 VMs (§6.7). All three stay embedded ReDB: no database server. | Measured on the test cluster (§6.7), about 90% of Raft writes were one host's metering slots and VM bookkeeping, which no other server needs at that detail, while the history tables are what make the snapshot large at scale (§4.1). An external database (PostgreSQL, a time-series store) would add a service to install, secure and make highly available without changing what is replicated; it fits as an optional export target. |
 | D27 | **VM bookkeeping at most every 10 minutes.** A VM record is written when its phase, power, instance, placement or an error changes; a change only to `status.conditions` or `last_reconciled_at` waits until 10 minutes after the record's last write. | About a third of VM writes were bookkeeping alone (§6.7). Kept in the record rather than moved to the host, so the record still shows when it was last checked; 144 writes per idle VM a day is small. |
 | D28 | **A slot row reaches the store only when it changed**, checked on both sides: a node ships a closed hour's slot row once and again only after a late sample changes it, and the leader's merge skips a row equal to the one it holds. | Nodes re-sent three hours of slot rows every minute and the leader rewrote them all (§6.7). The node side saves the traffic; the leader side keeps a resend after a lost acknowledgement from becoming a write. |
+| D29 | **A write that changes nothing makes no Raft entry.** The store records no `put` whose value equals the stored one, as it already records no `delete` of an absent key; a write left with no operations commits nothing. A node with no new ledger rows, whose closed hour and start time are unchanged, doesn't ship; and the leader's `ledger_inbox` cursor for a node holds only what it reads (its closed hour and start time), so it changes only when they do. | The ledger merge rewrote each node's cursor (with the time of the merge, which nothing reads) and the completeness rows every minute: about 4,300 entries a day for three nodes, nearly half of §6.7's 9,000, outside D28. Checking at the store catches every write of an unchanged value, the merge's slot rows (D28's leader side) included, in one place; a follower already holds the same bytes, and a watch has nothing to report. |
 
 ## 4. Topology
 
@@ -776,6 +777,12 @@ Two departures from this spec explain most of it, and C9 fixes them:
 3. *The history tier's spec* is written after C9, once §6.7's
    measurement has been repeated, and before the cluster grows past
    about 100 VMs.
+4. *Writes that change nothing* (D29, 2026-11-04): found reading the
+   code after the measurement. Every ship, every minute, rewrote the
+   node's `ledger_inbox` cursor (with the time of the merge) and the
+   completeness rows in `meter_meta`, whether or not anything was new:
+   one Raft entry per node a minute. The store now drops a `put` of an
+   unchanged value, and a node with nothing new doesn't ship.
 
 ## 7. Nodes
 
@@ -1507,6 +1514,10 @@ every 30 s with nothing but cursors in it. Instead:
   sample changed it, and the leader's merge skips a row equal to the one
   it holds. Hourly rows are already shipped once and deleted when
   acknowledged.
+- **Nothing new, nothing shipped** (C9, D29): a node ships only when it
+  has rows to send or its closed hour or start time moved; the leader's
+  cursor for a node holds just those two, and the store makes no entry
+  for a merge that changes nothing.
 
 ### 13.2 Meters on OVN networks
 
@@ -1719,7 +1730,7 @@ passing in CI. C0 and C1 change nothing for standalone users.
 | **C5** OVN foundation | `ovn-central`/`ovn-host` 26.03 install, OVN PKI, `ensure_ovn_chassis`, `glidex-ovn` crate with `ovn-nbctl` in daemon mode, cluster IPAM, isolated and NAT networks on `gx-edge` with an HA gateway, port security, DHCP and MTU, cluster `default` network | §15 OVN e2e tests 1–4. |
 | **C6** Provider networks, VPC routers and metering on OVN | localnet with VLAN tags, physnet mapping onto netd bridges, scheduler physnet filter; VPC routers, external pool, `routers`/`external_ips` quotas (§11.2a); `snat-ct-zone`, `ct_external_counters`, network totals (§13.2–13.3), with the host checks of §13.3 done first | e2e test 5; §15 VPC router and external metering tests. |
 | **C7** Operations and membership | node phases (§5.3), drain, remove, forget, purge, rejoin with D18; CA on every server and rotation (§12.5); rolling upgrades with feature-level gating, certificate renewal, `cluster status` port checks, Cluster page in the UI, runbook (recovery of both Raft groups) | §15 upgrade, membership and CA rotation tests; §15 scale run with figures recorded in §4.1; certificate renewal under load; documented recovery exercised on the test cluster. |
-| **C9** Store diet (D26–D28) | slot rows shipped and merged only when they changed (§13.1, D28); VM bookkeeping (`conditions`, `last_reconciled_at`) written with a change that is acted on or at most every 10 minutes (D27), and what changes in the other VM writes found; the measurement of §6.7 as a repeatable check | §6.7's measurement repeated on the test cluster: `rate_5m` writes per hour within 2× of one per subject and closed hour, no `rate_5m` write equal to the row before it; an idle VM's record written at most every 10 minutes (the C0 test extended to conditions); Raft write volume at least 80% lower than §6.7's. |
+| **C9** Store diet (D26–D29) | slot rows shipped and merged only when they changed (§13.1, D28); no Raft entry for a write that changes nothing, and no ship with nothing new (D29); VM bookkeeping (`conditions`, `last_reconciled_at`) written with a change that is acted on or at most every 10 minutes (D27), and what changes in the other VM writes found; the measurement of §6.7 as a repeatable check | §6.7's measurement repeated on the test cluster: `rate_5m` writes per hour within 2× of one per subject and closed hour, no write in any table equal to the row before it, and no ledger write from a node with nothing new; an idle VM's record written at most every 10 minutes (the C0 test extended to conditions); Raft write volume at least 80% lower than §6.7's. |
 | **C8** Detach and import | departure bundle, two-phase detach with receipt, offline detach and `forget --departed`, import plans with checks and mappings, approval, staged commit, `move_vm_port`, `leave_ovn`, `cluster dissolve` | §15 detach, import and round-trip tests, all with running VMs. |
 
 C9 needs C3 and comes before the history tier (§18).
