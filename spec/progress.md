@@ -20,7 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Clustering | [14-clustering.md](14-clustering.md) §6.7, C9 | `spec/store-tiers` | Store diet: cluster, host and history tiers (D26); VM bookkeeping at most every 10 minutes (D27); slot rows shipped and merged only when changed (D28) |
-| Networking | [09-networking.md](09-networking.md) §8.6, M9 | `spec/networking-source-routes` | netd adds a table and a `from` rule per address on ports that share a subnet (issue #256, hyperstor's D216); decisions 11–17 |
+| Networking | [09-networking.md](09-networking.md) §8.6, M9 | `feat/networking-srcroute-lib` → netd → control plane and UI | netd adds a table and a `from` rule per address on ports that share a subnet (issue #256, hyperstor's D216); decisions 11–17 |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas
