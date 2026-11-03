@@ -73,6 +73,8 @@ impl<S: Schema> ClusterNode<S> {
             snapshot_policy: SnapshotPolicy::LogsSinceLast(settings.log_keep_entries.max(100)),
             max_in_snapshot_log_to_keep: settings.log_keep_entries,
             purge_batch_size: (settings.log_keep_entries / 10).max(1),
+            // So that an append stays within what members take.
+            max_payload_entries: crate::store::MAX_APPEND_ENTRIES,
             ..Default::default()
         };
         let cfg = Arc::new(

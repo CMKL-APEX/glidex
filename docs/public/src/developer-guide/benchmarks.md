@@ -150,7 +150,7 @@ synthetic 2,000 VMs on 50 simulated nodes) is listed as not done in
 | Burst | 500 VM creates take 20–40 s of write lane | | same lane |
 | Snapshot install on a new server | 24 GB: about 3 min at 1 GbE, about 30 s at 10 GbE | | network, then disk |
 
-Raft defaults (configuration): heartbeat 250 ms, election timeout 1–2 s,
+Raft defaults (configuration): heartbeat 1 s, election timeout 3–6 s,
 node heartbeat every 5 s.
 
 Measured in tests rather than at scale:

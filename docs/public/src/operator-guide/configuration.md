@@ -149,8 +149,8 @@ See [Clusters](clusters.md).
 | `cluster.advertise` | `"addr:port"` | `listen`, with this host's first non-loopback address | Where other nodes reach this one. |
 | `cluster.node_grace_secs` | integer, 5–3600 | `40` | How long a node may be silent before it counts as unreachable. Every node, servers included, reports to the leader every 5 seconds: keep this well above that. |
 | `cluster.shared_local_accounts` | bool | `false` | Treat a local account name as the same person on every node (only if your hosts share one account database). |
-| `cluster.raft.heartbeat_ms` | integer, 50–5000 | `250` | Raft heartbeat. |
-| `cluster.raft.election_ms` | `[min, max]` | `[1000, 2000]` | Raft election timeout; `min` at least 3 heartbeats, `max` above `min`. |
+| `cluster.raft.heartbeat_ms` | integer, 50–5000 | `1000` | Raft heartbeat. Each Raft append between servers must arrive within it (up to 5 MiB), so keep it above the slowest link's transfer time. |
+| `cluster.raft.election_ms` | `[min, max]` | `[3000, 6000]` | Raft election timeout; `min` at least 3 heartbeats, `max` above `min`. |
 | `cluster.raft.log_keep_entries` | integer, ≥ 100 | `10000` | Raft log entries kept once every server has applied them. |
 | `cluster.scheduler.cpu_overcommit` | number, ≥ 1.0 | `4.0` | vCPUs placed per host CPU. |
 | `cluster.scheduler.memory_overcommit` | number, ≥ 1.0 | `1.0` | Guest memory placed per MiB of host memory. |

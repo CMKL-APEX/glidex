@@ -385,7 +385,9 @@ crash therefore never applies an entry twice and never skips one. After
 the commit, the revision becomes the Raft index and subscribers are told.
 
 Constraints:
-- A write set larger than the schema's limit (4 MiB of JSON) is refused.
+- A write set larger than the schema's limit (1 MiB of JSON) is refused,
+  and an append carries at most 4 entries: openraft gives an append one
+  heartbeat to arrive.
 - Table ids are append-only, because they are stored in the log.
 - The lane is held across the Raft round trip, which needs the runtime's
   I/O. `Db::begin` tries the lane first and, when it is held, waits in

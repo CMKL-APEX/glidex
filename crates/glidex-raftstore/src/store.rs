@@ -283,7 +283,17 @@ impl<S: Schema> SnapshotView<S> {
 
 /// Largest write set a replicated store accepts, unless its schema says
 /// otherwise ([`Schema::MAX_WRITE_SET_BYTES`]).
-pub const MAX_WRITE_SET_BYTES: usize = 4 * 1024 * 1024;
+/// Small enough that an append of [`MAX_APPEND_ENTRIES`] of them reaches a
+/// member within a heartbeat: openraft 0.9 gives each append that long,
+/// and one that never fits is retried for ever (spec/14-clustering.md D24).
+pub const MAX_WRITE_SET_BYTES: usize = 1024 * 1024;
+/// Most entries the leader sends a member in one append.
+pub const MAX_APPEND_ENTRIES: u64 = 4;
+/// The largest append a member may receive: [`MAX_APPEND_ENTRIES`] write
+/// sets at their limit, and room for the entries around them. A smaller
+/// limit on the receiving side refuses such an append on every retry, and
+/// the log stops there (spec/14-clustering.md §6.2).
+pub const MAX_APPEND_BYTES: usize = MAX_WRITE_SET_BYTES * (MAX_APPEND_ENTRIES as usize + 1);
 
 /// A write transaction that records what it writes. Dropping it without
 /// [`Tx::commit`] aborts it. It holds the write lane until then: one write

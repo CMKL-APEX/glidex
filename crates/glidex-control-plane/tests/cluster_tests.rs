@@ -6443,3 +6443,46 @@ async fn an_agents_metadata_tokens_come_from_the_leader() {
     );
     assert!(String::from_utf8_lossy(&r.body).contains("not_placed_here"));
 }
+
+/// A write set near the store's entry limit (`MAX_WRITE_SET_BYTES`)
+/// replicates to every server: the Raft endpoints take what the leader
+/// may send, so no entry is refused on every retry (which stalls the log).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_large_write_set_replicates_to_every_server() {
+    use glidex_control_plane::store::{Origin, StoreError, TableId};
+    let _g = serial().await;
+    let cps = form(3).await;
+    let l = leader_index(&cps, &[0, 1, 2]).await;
+    // Base64 in an entry: about 0.95 MB on the wire, near the store's
+    // 1 MiB limit; four of them in one append are over axum's default body
+    // limit (2 MB).
+    let big = vec![b'a'; 700_000];
+    let db = cluster(&cps[l]).db.clone();
+    let value = big.clone();
+    tokio::task::spawn_blocking(move || {
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::Meta.definition())?
+                .insert("test-large-write-set", &value)?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap()
+    .expect("the leader commits it");
+    for (i, cp) in cps.iter().enumerate() {
+        let db = cluster(cp).db.clone();
+        wait_for(&format!("cp{} to apply it", i + 1), || {
+            let db = db.clone();
+            let big = big.clone();
+            async move {
+                use redb::ReadableTable;
+                let txn = db.begin_read().unwrap();
+                let t = txn.open_table(TableId::Meta.definition()).unwrap();
+                t.get("test-large-write-set")
+                    .unwrap()
+                    .is_some_and(|v| v.value() == big.as_slice())
+            }
+        })
+        .await;
+    }
+}
