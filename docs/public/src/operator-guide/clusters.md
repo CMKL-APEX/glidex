@@ -34,6 +34,34 @@ Nodes talk to each other on TCP 8842 (the node API), with mutual TLS
 under the cluster's own certificate authority. The installer doesn't
 open firewall ports; see [the port list](host-networking.md#ports-between-nodes).
 
+### How changes are replicated
+
+The leader writes every change as one Raft entry; the other servers
+forward their writes to it. Followers apply an entry once a majority of
+voters has it.
+
+- **A change is at most 1 MiB.** One write to the database, as JSON,
+  is refused above that, with
+  `write set of N bytes exceeds the store's entry limit`, and nothing
+  is written.
+- **Appends fit in a heartbeat.** The leader sends a follower at most 4
+  entries at a time, and each send must arrive within one heartbeat
+  (`cluster.raft.heartbeat_ms`, 1 second by default). The election
+  timeout is 3–6 seconds (`cluster.raft.election_ms`), so a failover
+  takes a few seconds. Over a slow link between servers, raise both
+  together (see [Configuration](configuration.md#cluster)).
+- **A write doesn't wait for ever.** If no leader commits it, a server
+  gives up on a write after 10 election timeouts (60 seconds with the
+  defaults): the request fails with `the write was not committed within
+  …s (no leader commits); it may still be applied later`. Check whether
+  it took effect before you retry. A server that can't confirm it is
+  still the leader gives up after 4 election timeouts and answers as a
+  server that isn't the leader. Other writes on that server are not held
+  up meanwhile.
+
+If a cluster stops taking changes, see [A cluster stops
+committing](troubleshooting.md#a-cluster-stops-committing).
+
 ## Before you start
 
 Install Glidex on every host as in [Installation](installation.md). OVN

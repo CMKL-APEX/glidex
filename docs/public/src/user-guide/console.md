@@ -32,7 +32,7 @@ applies at the next start.
 
 On the VM's page, click **Open Console**. The console opens in the page
 and connects at once; the **Status** at the top says **connecting**,
-**connected**, **closed** or **error**. Type into it as into a
+**connected**, **reconnecting**, **closed** or **error**. Type into it as into a
 terminal: input goes straight to the guest's console device.
 
 When you connect, the console first replays what the VM printed so far
@@ -41,11 +41,14 @@ questions the guest asked its terminal earlier (such as where the
 cursor is), so opening the console doesn't type stale answers like
 `^[[38;1R` at the guest's prompt.
 
-If the connection drops (a network blip, or a proxy cutting it), the
-page reconnects by itself: the status shows *reconnecting*, and the log
-is replayed. If the console closes (the VM stopped, or the control
-plane restarted), or reconnecting fails five times, click **Reconnect**. **Back to VM** leaves the console;
-closing the page detaches without affecting the VM.
+The server pings the connection every 30 seconds, so a proxy in front
+of the web UI doesn't close it while the guest is quiet. If the
+connection drops anyway (a network blip, or a proxy cutting it), the
+page reconnects by itself: the status shows **reconnecting**, and the
+log is replayed. If the console closes (the VM stopped, or the control
+plane restarted), or reconnecting fails five times in a row, click
+**Reconnect**. **Back to VM** leaves the console; closing the page
+detaches without affecting the VM.
 
 In a cluster, the console opens from any server's web UI, whichever
 node the VM runs on, also behind a load balancer. If the cluster's

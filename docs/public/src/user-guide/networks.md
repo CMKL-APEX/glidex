@@ -177,9 +177,13 @@ in the web UI, the `Networks` prompt in `gxctl create`, or `networks` in
 the API. One NIC per network, in order, at most 8. A network named
 `default`, if the project can use one, is preselected.
 
-To change a VM's networks later, `PATCH` its `networks` (the whole list);
-it applies at the VM's next start. See
-[Virtual machines](vms.md#change-a-vm).
+To add or remove one NIC later: under **Network** on the VM's page,
+pick a network and **Attach**, or **Detach** a NIC; or
+`gxctl attach-network <vm> <network>` and
+`gxctl detach-network <vm> <network>`. A new NIC goes after the others,
+and the NICs you keep keep their MACs. On a running VM the change
+applies at the next start. `PATCH` with `networks` replaces the whole
+list. See [Virtual machines](vms.md#networks).
 
 ## Addresses
 

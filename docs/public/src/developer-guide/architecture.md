@@ -245,7 +245,12 @@ was the one driving I/O, the lane's holder never hears back and every
 later request queues behind it. Those waits go through
 [`glidex_raftstore::wait`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-raftstore/src/wait.rs):
 a free lock is taken at once, a held one is waited for in
-`block_in_place`.
+`block_in_place`. The holder's own wait on Raft is bounded too: a write
+not committed within 10 election timeouts fails (and may still be
+applied later), so a member that lost its leadership can't hold the lane
+for ever. A write set is at most 1 MiB, so that every append reaches the
+members within one heartbeat (see
+[Algorithms](algorithms.md#replicated-store-and-raft)).
 
 `VmManager`
 ([`state.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/state.rs))
@@ -396,7 +401,7 @@ standalone host is both roles with a local store and one implicit node,
 
 | Topic | How | Code |
 |---|---|---|
-| Node API | `:8842`: Raft (`/raft/*`), join and rejoin, read index, list and watch, heartbeats, status writes, ledger shipping, image file copies, console/stats relays, console tickets, metadata questions, host-only relays; anything else is a forwarded API request | [`cluster/server.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/server.rs), [`cluster/net.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/net.rs) |
+| Node API | `:8842`: Raft (`/raft/*`, bodies read only after the peer's server certificate is checked, and only up to what a member can be sent), join and rejoin, read index, list and watch, heartbeats, status writes, ledger shipping, image file copies, console/stats relays, console tickets, metadata questions, host-only relays; anything else is a forwarded API request | [`cluster/server.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/server.rs), [`cluster/net.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/net.rs) |
 | PKI | One cluster CA whose key every server holds; node certificates name the node and its advertise address. The CA can be rotated, and is when a server leaves | [`cluster/pki.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/pki.rs), [`cluster/rotation.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/rotation.rs) |
 | Joining | `gxctl cluster init` makes a one-voter cluster; hosts join with a single-use join token (only its hash is stored) and get a certificate | [`cluster/manage.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/manage.rs), [`cluster/tokens.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/tokens.rs) |
 | Node lifecycle | Phases `Active`, `Draining`, `Departing`, `Departed`, `Removed`, `Forgotten`. Remove an empty node, forget a lost one, rejoin as the same node, detach with its VMs, import a standalone host's VMs | [`cluster/membership.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/membership.rs), [`cluster/departure.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/departure.rs), [`cluster/import.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/cluster/import.rs) |
@@ -451,7 +456,11 @@ Operating it: [Clusters](../operator-guide/clusters.md).
 
 Flow: the control plane's network records
 ([`network.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/network.rs))
-are the source of truth. The VM controller asks netd to attach each NIC
+are the source of truth. A node network belongs to one node, whose netd
+makes its bridge and NAT. In a cluster a create names that node
+(`node`); when it isn't the leader, the leader only records the network
+as `pending` and that node's network controller makes the bridge and
+NAT. The VM controller asks netd to attach each NIC
 (`attach_vm_port`: a tap or vhost-user port on the right bridge) before
 the launch and records it in `status.nics` first. netd reconciles the
 host from its own state database on start; the control plane re-sends
@@ -587,7 +596,10 @@ VM. A node reports whether `pylond` runs. Design:
   hugepages, and the NUMA node of each device, as a small summary in
   the node's replicated status
   ([`topology.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/topology.rs));
-  the full PCIe tree on request. The scheduler uses it for NUMA and
+  the full PCIe tree on request. The PCIe tree is read from sysfs by the
+  [`glidex-topology`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-topology)
+  crate, which hyperstor shares (it also reads network ports, which
+  hyperstor uses). The scheduler uses it for NUMA and
   dedicated-CPU policies.
 - **Pools**: `pci.pools` in the configuration groups devices (GPUs,
   NICs) that VMs ask for by count; tenants get shares of them
@@ -622,6 +634,19 @@ Tenancy sits on top: **directories** hold users, teams and connectors;
 allocate there; a cluster can trust another organization's directory
 (`trust.rs`, `directory/peer.rs`). Authorization is Cedar over
 principals, tenants, projects, hosts and resources.
+
+A directory's **settings** (`Directory.settings`,
+`service/directory_settings.rs`) can let its users create **self-service
+tenants** (`createOwnTenant`): who may, how many per user and in all,
+whether an administrator approves each (the tenant is `pending` until
+then), a slug prefix, and whether a user gets one at first sign-in. The
+settings also hold the word the web UI uses for a tenant (*Lab*,
+*Team*). A cluster's operator can admit such tenants automatically with
+a default cap (`AutoAdmission`, by directory); an admission made so
+follows later changes to that cap until it is set by hand. A
+`pci.allow` grant with `"tenants": ["*"]` is an **open pool**, granted to
+every tenant admitted on the cluster. Code: `tenants.rs`,
+`service/tenancy.rs`.
 
 Design: [11-security.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/11-security.md),
 [19-tenancy.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/19-tenancy.md),

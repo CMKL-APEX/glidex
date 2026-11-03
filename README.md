@@ -9,8 +9,9 @@ It is for people who run their own servers (a lab, a team, a small
 cloud) and want a simple way to hand out VMs: a web UI for everyday
 work, the `gxctl` command-line tool for the terminal, and REST and RPC
 APIs for scripts. Under the hood it uses KVM, with
-[Cloud Hypervisor](https://www.cloudhypervisor.org/) (the default) or
-[QEMU](https://www.qemu.org/). It is written in Rust.
+[Cloud Hypervisor](https://www.cloudhypervisor.org/) (the default),
+[QEMU](https://www.qemu.org/), or Pylon, a Cloud Hypervisor fork for
+elastic VMs. It is written in Rust.
 
 The full documentation is at
 <https://cmkl-apex.github.io/glidex/docs/>; its source is in
@@ -20,33 +21,37 @@ The full documentation is at
 
 **VMs**
 
-- Cloud Hypervisor or QEMU, with the same features on both, including pause, resume and graceful shutdown ([Virtual machines](docs/public/src/user-guide/vms.md)).
+- Cloud Hypervisor, QEMU or Pylon, with the same features on each, including pause, resume and graceful shutdown ([Virtual machines](docs/public/src/user-guide/vms.md)).
+- Elastic CPU: a range of vCPUs and a CPU weight; Pylon parks idle vCPUs, and on the others you change a running VM's vCPUs within the range.
 - Boot through UEFI firmware, or boot a Linux kernel directly ([Kernel boot](docs/public/src/user-guide/kernel-boot.md)).
 - A serial console in the browser or in `gxctl`, shared and logged to disk ([Console](docs/public/src/user-guide/console.md)).
 - Guest logins (username, password, SSH keys) set up for you by cloud-init ([Guest credentials](docs/public/src/user-guide/credentials.md)).
 
 **Images and storage**
 
-- Checksum-verified cloud images (Ubuntu, Debian, Fedora) from a built-in catalog, or from any HTTPS URL ([Images and disks](docs/public/src/user-guide/images-and-disks.md)).
+- Checksum-verified cloud images (Ubuntu, Debian, Fedora, AlmaLinux) from a built-in catalog, or from any HTTPS URL ([Images and disks](docs/public/src/user-guide/images-and-disks.md)).
 - A thin root disk per VM, plus data disks you attach to VMs.
-- Datastores: the directories that hold disks and images, local to a node or shared by every node, with disks you can move between them ([Datastores](docs/public/src/operator-guide/datastores.md)).
+- Datastores: where disks and images live: a directory on each node, a shared filesystem (NFS, CephFS), LVM-thin pools, or a hyperstor cluster, with disks you can move between them ([Datastores](docs/public/src/operator-guide/datastores.md)).
 
 **Networking**
 
-- NAT, isolated and bridged networks on Open vSwitch ([Networks](docs/public/src/user-guide/networks.md), [Host networking](docs/public/src/operator-guide/host-networking.md)).
+- NAT, isolated and bridged networks on Open vSwitch, attached to and detached from VMs as you need ([Networks](docs/public/src/user-guide/networks.md), [Host networking](docs/public/src/operator-guide/host-networking.md)).
 - Fast paths for bridged uplinks (kernel, AF_XDP, DPDK) and vhost-user VM ports.
 
 **Hardware**
 
-- PCI passthrough (VFIO) of devices such as GPUs and NICs, with device pools the scheduler picks from ([PCI passthrough](docs/public/src/operator-guide/pci-passthrough.md)).
+- PCI passthrough (VFIO) of devices such as GPUs and NICs, with device pools the scheduler picks from, shared out to tenants and projects ([PCI passthrough](docs/public/src/operator-guide/pci-passthrough.md)).
+- GPU requests: ask for N GPUs from a pool and get them with NUMA placement and per-GPU sizing ([GPU requests](docs/public/src/operator-guide/host-resources.md#gpu-requests)).
 - A view of each host's NUMA nodes, CPUs, memory and hugepages, and VMs on dedicated CPUs ([Host resources](docs/public/src/operator-guide/host-resources.md)).
 
 **People and access**
 
 - Projects with members, teams, roles and quotas, Cedar policies and an audit log ([Projects](docs/public/src/user-guide/projects.md), [Access control](docs/public/src/operator-guide/access-control.md)).
+- Tenants and directories: tenants own projects and are admitted to a cluster with a cap; a directory can let its users create tenants of their own (self-service), and the operator can admit them automatically ([A tenant of your own](docs/public/src/user-guide/projects.md#a-tenant-of-your-own), [Directory settings](docs/public/src/operator-guide/access-control.md#directory-settings)).
 - Sign-in with local accounts, passkeys, OIDC single sign-on, Google or JumpCloud ([Authentication](docs/public/src/operator-guide/authentication.md#login-connectors), [Passkeys](docs/public/src/operator-guide/authentication.md#passkeys)).
 - Users from your identity provider: SCIM provisioning, Google Workspace directory sync, and invitations ([SCIM](docs/public/src/operator-guide/authentication.md#provisioning-with-scim), [Invitations](docs/public/src/operator-guide/authentication.md#invitations)).
 - HTTPS everywhere: a self-signed certificate by default, or your own, or a Tailscale one ([TLS](docs/public/src/operator-guide/tls.md)).
+- Workload identity: software in a VM gets short-lived identity tokens, or acts as a service account, from the VM's metadata endpoint; CI jobs exchange their own tokens for Glidex ones ([Workload federation](docs/public/src/operator-guide/workload-federation.md)).
 - Metered CPU, memory, disk and network use ([Usage](docs/public/src/user-guide/usage.md)).
 
 **Clusters**
@@ -288,12 +293,17 @@ crates/
   glidex-netd/            root helper for host networking
   glidex-ovs/             Open vSwitch, NAT, uplinks and VM ports
   glidex-ovn/             OVN: cluster networks, the edge, routers
+  glidex-stord/           root helper for LVM-thin datastores
   glidex-authd/           root helper that checks local passwords (PAM)
+  glidex-metad/           the metadata endpoint guests reach at 169.254.169.254
   glidex-tls/             TLS certificates
+  glidex-topology/        a host's NUMA, PCIe and network ports from sysfs (shared with hyperstor)
   glidex-raftstore/       replicated ReDB store on Raft (shared with hyperstor)
   glidex-auth/            sessions, tokens, Cedar engine, OIDC login (shared with hyperstor)
   glidex-install/         installer and uninstaller
+  glidex-ui/              serves the web UI and proxies the API
   glidex-ui/ui/           web UI (Vite + React)
+  glidex-ui/kit/          @glidex/ui-kit: shared sign-in and session pieces
   glidex-ui/e2e/          web UI end-to-end tests (Playwright)
   glidex-e2e/             cluster end-to-end tests (nested VMs)
 docs/                     user and operator docs (docs/public)
@@ -304,9 +314,14 @@ scripts/dev/              test helpers
 
 ### Contributing
 
-The design specs are in [spec/](spec/README.md); start with its README.
-[docs/README.md](docs/README.md) explains how they differ from the user
-docs.
+Start with [AGENTS.md](AGENTS.md): how a change is made, the checks
+to run before pushing, and how sessions work side by side.
+[Contributing](docs/public/src/developer-guide/contributing.md) covers
+building, the test layers and conventions;
+[spec/progress.md](spec/progress.md) shows what is built, in flight and
+next. The design specs are in [spec/](spec/README.md); start with its
+README. [docs/README.md](docs/README.md) explains how they differ from
+the user docs.
 
 ## License
 

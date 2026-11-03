@@ -527,7 +527,8 @@ gxctl> stop my-vm --graceful 120      # wait up to 120 s (at most 300)
 
 The web UI's **Shut down** waits 60 seconds. **Force off** stops the VM
 like pulling the plug, after you confirm; it also cuts short a shutdown
-that is still waiting for the guest.
+that is still waiting for the guest, and stops a VM that is still
+trying to start.
 
 The timeout you give is kept as the VM's stop grace (`stop_grace_secs`)
 and used again by later stops that don't give one, such as `stop`

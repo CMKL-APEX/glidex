@@ -249,6 +249,15 @@ gxctl connector list
   Workspace](#directory-sync-from-google-workspace).
 - Changing a connector needs a recent login (see [Sessions and
   re-authentication](#sessions-and-re-authentication)).
+- Where the directory turns it on, a user's first sign-in through one of
+  its connectors also makes them a tenant of their own (see [Directory
+  settings](access-control.md#directory-settings)).
+- In a cluster, the leader runs both ends of a browser sign-in through
+  an identity provider (its start and the provider's callback; `oidc`,
+  `google` and `jumpcloud` connectors, `file-oidc`, and another
+  organization's directory): any server forwards them, so the callback may
+  reach another server than the start did, and a load balancer needs no
+  session affinity for it.
 
 Run `gxctl connector` without arguments for every option.
 
@@ -742,6 +751,11 @@ gxctl token revoke <id>
   (`~/.config/glidex/token`, mode 0600).
 - A disabled user's personal tokens stop working; a deleted user's are
   deleted (see [Removing people](access-control.md#removing-people)).
+- A VM can act as a service account of its own tenant without holding
+  its token: it gets 15-minute tokens from the metadata endpoint (see
+  [Workload identity](../user-guide/vms.md#workload-identity)). Giving a
+  VM one needs `owner` of the service account's project
+  (`useServiceAccount`).
 
 Store tokens in a secret manager or a mode 0600 file, not in shell
 history or scripts. Revoke a token you no longer need, and any token

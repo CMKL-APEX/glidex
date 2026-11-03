@@ -279,7 +279,8 @@ share into [tenant pools](#tenant-pools) as from any granted pool.
 
 A VM asks with `devices`, for example `[{"pool": "a100", "count": 2,
 "same_switch": true}]` (in `gxctl create`, `a100:2:switch`; in the
-web UI's VM form, **Device Pools**). Glidex picks devices of the pool
+web UI's VM form, **Device Pools**, or **GPUs** for pools of class
+`gpu`, with **Under one PCIe switch**). Glidex picks devices of the pool
 that are ready, not cordoned and not held by another VM (whole IOMMU
 groups counted), on the NUMA node of the VM's other devices first, then
 by address. With `same_switch`, all of them sit under one PCIe switch,
@@ -296,7 +297,7 @@ waits for a node; on a single host the request is refused with `409`.
 
 A user can ask for GPUs by count instead of sizing the VM:
 `"gpus": {"count": 4, "pool": "a100"}` (in `gxctl create`, `4:a100`;
-in the web UI, a GPU pool's count). Glidex turns it into:
+in the web UI's VM form, a count next to the pool under **GPUs**). Glidex turns it into:
 
 - a pool request for 4 devices of `a100`;
 - `NUMA_POLICY_ALIGNED`, so the VM spans exactly its GPUs' NUMA nodes

@@ -30,7 +30,8 @@ or on many hosts joined into one cluster.
   once, and pick it when you create a VM. Glidex puts it into a
   cloud-init seed it generates for the VM.
 - **Networking.** NAT networks with DHCP, isolated networks, and
-  bridged networks on the host's own LAN, built on Open vSwitch. Uplinks
+  bridged networks on the host's own LAN, built on Open vSwitch. Attach
+  and detach a VM's networks after it is created. Uplinks
   can use the kernel, AF_XDP or DPDK; VM ports are tap or vhost-user.
 - **Console.** Each VM's serial console in the browser or in `gxctl`,
   shared by any number of clients and logged to disk.
@@ -38,6 +39,11 @@ or on many hosts joined into one cluster.
   roles and teams, tenants and directories, API tokens, login with
   local accounts (PAM), single sign-on (OIDC, Google, JumpCloud) or
   passkeys, invitations, Cedar policies, and an audit log.
+- **Self-service tenants.** A directory can let its users create
+  tenants of their own (a lab, a team), within limits and with optional
+  approval, or give each new user one at first sign-in. The operator
+  can admit them automatically with a default cap and open device pools
+  to all of them.
 - **Workload identity.** Software in a VM gets short-lived identity
   tokens, and can act as a service account, from the VM's metadata
   endpoint, with no secret stored in the guest.

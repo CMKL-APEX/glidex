@@ -274,11 +274,9 @@ not reachable here".
 **Detach:** a node holding disks on a registered datastore can't leave
 with them (`409`). The other cluster has no record of the datastore.
 
-**Not yet:** a departed or forgotten node's rows stay until its
-datastore is deleted. The leader should prune them as it does image
-copies (`prune_departed_copies`).
-- Until it does, a stale row can make the scheduler try a node that is
-  gone. That node is refused there anyway, as not ready.
+**Departed nodes' rows** are pruned by the leader at each probe round
+(`datastore::record::stale_row_nodes`, #233), with a standalone host's
+`local` rows from before it formed the cluster.
 
 ### 4.4 As built (S3a): shared datastores
 

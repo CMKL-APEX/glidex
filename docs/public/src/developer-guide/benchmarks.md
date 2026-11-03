@@ -151,7 +151,10 @@ synthetic 2,000 VMs on 50 simulated nodes) is listed as not done in
 | Snapshot install on a new server | 24 GB: about 3 min at 1 GbE, about 30 s at 10 GbE | | network, then disk |
 
 Raft defaults (configuration): heartbeat 1 s, election timeout 3–6 s,
-node heartbeat every 5 s.
+node heartbeat every 5 s. Limits: a write set is at most 1 MiB, an
+append carries at most 4 entries (5 MiB in all); a write not committed
+within 10 election timeouts fails
+([14-clustering.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/14-clustering.md) D24).
 
 Measured in tests rather than at scale:
 
