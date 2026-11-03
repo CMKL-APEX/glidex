@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
-import type { BridgeRecord, EntityRef, OvsProfile, OvsStatus } from "../types";
-import { netdAccessLabel } from "../types";
+import type { BridgeRecord, EntityRef, OvsProfile, OvsStatus, SourceRoutes } from "../types";
+import { netdAccessLabel, sourceAddressStateLabel } from "../types";
 import BridgesCard from "./BridgesCard";
 import Modal from "./Modal";
 import { LoadingCard } from "./Loading";
@@ -194,6 +194,72 @@ function InstallDialog({
 }
 
 
+/** Subnets two or more ports share, with netd's source routes
+ * (spec/09-networking.md §8.6): a warning while any address isn't `ok`. */
+function SharedSubnetsCard({ routes }: { routes: SourceRoutes }) {
+  const subnets = routes.subnets ?? [];
+  const pending = subnets.some((s) =>
+    (s.ports ?? []).some((p) => (p.addresses ?? []).some((a) => a.state !== "SOURCE_ADDRESS_STATE_OK")),
+  );
+  return (
+    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6" data-testid="shared-subnets">
+      <h3 className="text-base font-semibold text-gray-900">Ports that share a subnet</h3>
+      {pending && (
+        <p className="mt-2 text-sm text-yellow-800 bg-yellow-50 border border-yellow-200 rounded-lg p-2">
+          Traffic from some of these addresses leaves by another port. Name the subnet in{" "}
+          <code>source_routes.subnets</code> of <code>/etc/glidex/netd.json</code> and restart glidex-netd, or
+          resolve the conflicting rule.
+        </p>
+      )}
+      {(routes.notes ?? []).map((n) => (
+        <p key={n} className="mt-2 text-sm text-yellow-800">
+          {n}
+        </p>
+      ))}
+      <table className="w-full text-sm mt-4">
+        <thead className="text-left text-gray-500">
+          <tr>
+            <th className="py-1 pr-3 font-medium">Subnet</th>
+            <th className="py-1 pr-3 font-medium">Port</th>
+            <th className="py-1 pr-3 font-medium">Table</th>
+            <th className="py-1 pr-3 font-medium">Addresses</th>
+            <th className="py-1 font-medium">ARP / rp_filter</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-gray-100">
+          {subnets.flatMap((s) =>
+            (s.ports ?? []).map((p, i) => (
+              <tr key={`${s.subnet}/${p.ifname}`}>
+                <td className="py-2 pr-3 font-mono">
+                  {i === 0 && (
+                    <>
+                      {s.subnet} <Badge ok={!!s.managed}>{s.managed ? "managed" : "not managed"}</Badge>
+                    </>
+                  )}
+                </td>
+                <td className="py-2 pr-3 font-mono">{p.ifname}</td>
+                <td className="py-2 pr-3">{p.table ?? "—"}</td>
+                <td className="py-2 pr-3 space-y-1">
+                  {(p.addresses ?? []).map((a) => (
+                    <div key={a.address} title={a.conflict}>
+                      <span className="font-mono">{a.address}</span>{" "}
+                      <Badge ok={a.state === "SOURCE_ADDRESS_STATE_OK"}>{sourceAddressStateLabel(a.state)}</Badge>
+                      {a.conflict && <span className="ml-1 text-xs text-gray-500">{a.conflict}</span>}
+                    </div>
+                  ))}
+                </td>
+                <td className="py-2 font-mono text-xs">
+                  {p.arp_ignore ?? "?"}/{p.arp_announce ?? "?"} · {p.rp_filter ?? "?"}
+                </td>
+              </tr>
+            )),
+          )}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 /** A host's Open vSwitch, install and bridges (spec/28-host-page.md W1), on
  * `node` through the server serving the UI (W2). Hidden without the right
  * to read the host's OVS status. */
@@ -226,6 +292,7 @@ export default function HostNetworking({ node, host }: { node: string; host: Ent
       {error && <div className="p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>}
       {status ? <StatusPanel status={status} onInstall={() => setInstalling(true)} /> : !error && <LoadingCard />}
       {status?.netd.access === "NETD_ACCESS_FULL" && <BridgesCard bridges={bridges} node={node} host={host} onChanged={refresh} />}
+      {!!status?.source_routes?.subnets?.length && <SharedSubnetsCard routes={status.source_routes} />}
       {installing && (
         <InstallDialog
           node={node}

@@ -327,9 +327,12 @@ every minute. If an address already has a `from` rule from someone else
 leaves that address alone and reports a conflict. IPv6 subnets work the
 same way, without the ARP settings.
 
-To see the shared subnets, managed or not, and the state of each
-address (`ok`, `missing`, `unmanaged`, `conflict`), ask netd's
-`list_source_routes`:
+The host's page in the web UI lists the shared subnets, managed or not,
+under **Ports that share a subnet**: each port's table, the state of
+each address (`ok`, `missing`, `unmanaged`, `conflict`, with the other
+rule), and its ARP and `rp_filter` settings. It warns while any address
+isn't `ok`. `GET /ovs/status` has the same as `source_routes`. On the
+host itself, ask netd:
 
 ```bash
 echo '{"id":1,"op":"hello","args":{"protocol":1}}

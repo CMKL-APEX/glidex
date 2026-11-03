@@ -468,11 +468,40 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn ovs_status_and_bridges() {
     let h = harness(true);
+    // Two ports in one subnet netd doesn't manage (spec/09-networking.md §8.6).
+    h.exec.on(
+        "ip -j addr show",
+        Output::ok(
+            r#"[{"ifname":"ib0","addr_info":[{"local":"10.40.1.5","prefixlen":24,"scope":"global"}]},
+                {"ifname":"ib1","addr_info":[{"local":"10.40.1.6","prefixlen":24,"scope":"global"}]}]"#,
+        ),
+    );
+    h.exec
+        .file("/proc/sys/net/ipv4/conf/ib0/arp_ignore", "1\n")
+        .file("/proc/sys/net/ipv4/conf/ib0/rp_filter", "1\n");
     let (status, body) = request(&h.app, "GET", "/ovs/status", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["netd"]["available"], true);
     assert_eq!(body["netd"]["access"], "NETD_ACCESS_FULL");
     assert_eq!(body["host"]["ovs_version"], "3.7.1");
+    let shared = &body["source_routes"]["subnets"][0];
+    assert_eq!(shared["subnet"], "10.40.1.0/24", "{body}");
+    assert!(
+        shared["managed"].is_null() || shared["managed"] == false,
+        "{body}"
+    );
+    let ib0 = &shared["ports"][0];
+    assert_eq!(ib0["ifname"], "ib0");
+    assert_eq!(ib0["addresses"][0]["address"], "10.40.1.5");
+    assert_eq!(
+        ib0["addresses"][0]["state"],
+        "SOURCE_ADDRESS_STATE_UNMANAGED"
+    );
+    assert_eq!(
+        (ib0["arp_ignore"].as_u64(), ib0["rp_filter"].as_u64()),
+        (Some(1), Some(1)),
+        "{body}"
+    );
 
     let (status, body) = request(
         &h.app,

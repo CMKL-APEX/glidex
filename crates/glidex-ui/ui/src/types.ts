@@ -2167,6 +2167,34 @@ export interface OvsStatus {
   netd: { available?: boolean; access?: NetdAccess; error?: string };
   /** What netd found; absent when it didn't answer. */
   host?: HostCapabilities;
+  /** Subnets two or more ports share (09-networking.md §8.6); absent
+   * without full access to netd. */
+  source_routes?: SourceRoutes;
+}
+
+export type SourceAddressState =
+  | "SOURCE_ADDRESS_STATE_OK"
+  | "SOURCE_ADDRESS_STATE_MISSING"
+  | "SOURCE_ADDRESS_STATE_UNMANAGED"
+  | "SOURCE_ADDRESS_STATE_CONFLICT";
+
+/** `SOURCE_ADDRESS_STATE_OK` → `ok` (the label shown). */
+export const sourceAddressStateLabel = (s: SourceAddressState | undefined) => enumLabel(s, "SOURCE_ADDRESS_STATE_");
+
+export interface SourceRoutes {
+  subnets?: {
+    subnet: string;
+    managed?: boolean;
+    ports?: {
+      ifname: string;
+      table?: number;
+      addresses?: { address: string; state?: SourceAddressState; conflict?: string }[];
+      rp_filter?: number;
+      arp_ignore?: number;
+      arp_announce?: number;
+    }[];
+  }[];
+  notes?: string[];
 }
 
 export type OvsProfile = "OVS_PROFILE_KERNEL" | "OVS_PROFILE_DPDK";
