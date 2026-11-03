@@ -90,6 +90,26 @@ impl<S: Schema> LogStore<S> {
             && self.kv::<Vote>(VOTE)?.is_none()
             && self.kv::<LogId>(PURGED)?.is_none())
     }
+
+    /// Call `f` with each entry of the log file at `path` from index `from`
+    /// on, in order, and the size it is stored at: for offline reports on a
+    /// copy (a running server holds the file's lock). Opening may repair a
+    /// copy taken in the middle of a commit, so it can write to the copy.
+    pub fn scan_file(
+        path: &Path,
+        from: u64,
+        mut f: impl FnMut(u64, usize, openraft::Entry<TypeConfig<S>>),
+    ) -> Result<(), StorageError> {
+        let db = s(redb::Database::open(path))?;
+        let txn = s(db.begin_read())?;
+        let t = s(txn.open_table(LOG))?;
+        for r in s(t.range(from..))? {
+            let (k, v) = s(r)?;
+            let bytes = v.value();
+            f(k.value(), bytes.len(), s(serde_json::from_slice(bytes))?);
+        }
+        Ok(())
+    }
 }
 
 impl<S: Schema> RaftLogReader<TypeConfig<S>> for LogStore<S> {
@@ -239,5 +259,49 @@ impl<S: Schema> RaftLogStorage<TypeConfig<S>> for LogStore<S> {
         })
         .await
         .map_err(io_err)?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Op, WRITE_SET_FORMAT, WriteSet};
+    use crate::testing::{Test, TestOrigin, TestTable};
+
+    #[test]
+    fn scan_file_reads_entries_from_an_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.redb");
+        let entry = |i: u64| openraft::Entry::<TypeConfig<Test>> {
+            log_id: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), i),
+            payload: openraft::EntryPayload::Normal(WriteSet {
+                format: WRITE_SET_FORMAT,
+                origin: TestOrigin::Api,
+                ops: vec![Op::Put {
+                    table: TestTable::Data,
+                    key: format!("k{i}").into_bytes(),
+                    value: b"v".to_vec(),
+                }],
+            }),
+        };
+        {
+            let store = LogStore::<Test>::open(&path).unwrap();
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut t = txn.open_table(LOG).unwrap();
+                for i in 1..=4 {
+                    t.insert(i, serde_json::to_vec(&entry(i)).unwrap().as_slice())
+                        .unwrap();
+                }
+            }
+            txn.commit().unwrap();
+        }
+        let mut seen = Vec::new();
+        LogStore::<Test>::scan_file(&path, 3, |i, size, e| {
+            assert_eq!(size, serde_json::to_vec(&e).unwrap().len());
+            seen.push((i, e));
+        })
+        .unwrap();
+        assert_eq!(seen, vec![(3, entry(3)), (4, entry(4))]);
     }
 }

@@ -763,7 +763,8 @@ Two departures from this spec explain most of it, and C9 fixes them:
   instance. §4.1 requires `last_reconciled_at` to be written only with
   another change or at most every 10 minutes; a condition field that
   changes on every round defeats that. What the remaining writes changed
-  was not established by the measurement.
+  was not established by the measurement; the C9 command found it
+  (§20, C9): `HypervisorReachable`'s transition time, reset every round.
 
 **Settled for C9** (2026-11-03):
 
@@ -2074,6 +2075,30 @@ Deviations and not done:
 - Image records come in as their own records (as the spec says); disks keep backing files in place.
 - Staged import rows are chunked at 1 MiB, but the commit is one Raft entry holding every live row: a very large import can exceed `max_payload`. Metering history and audit records are not imported (D19).
 - The import host's NIC IP reservations for mapped networks are not made (no node-network to cluster-network mapping on import).
+
+### C9: store diet
+
+Built (tests in `cluster/store_writes.rs`, `glidex-raftstore` `log_store.rs`):
+
+- **The measurement as a command** (§6.7): `glidex-control-plane --store-writes <copy of raft/log.redb> [--since <index>] [--json]` reads the log entry by entry (`LogStore::scan_file`) and gives entries and bytes per origin and per table, puts of an unchanged value, writes per distinct key, the field sets the other puts changed (two levels deep; a name that isn't an identifier shows as `*`), VM writes of bookkeeping only (D27) with those less than 10 minutes after the last, and which condition (by kind) and which of its fields each VM write changed. It reports no key or value; the time covered comes from VMs' `last_reconciled_at` and the ledger cursors. Documented in the operator guide (Clusters, *What the log is made of*).
+
+**Before C9**, measured with the command on 2026-11-04 on prism2 (main at `2cf6e80`; log entries 2 to 38,095, about 92 hours by the values, three servers, 21 VMs written in that time): 9,937 entries and 48 MB a day.
+
+| Table | Puts | Share of bytes | Keys | Unchanged | Note |
+|---|---|---|---|---|---|
+| `rate_5m` | 160,741 | 58.2% | 565 | 71,396 | 284 puts per subject and hour (D28) |
+| `vms` | 17,822 | 35.2% | 21 | 0 | 17,568 bookkeeping only, 17,507 of them within 10 minutes of the last |
+| `ledger_inbox` | 19,071 | 1.3% | 4,087 | 0 | 15,000 rewrites of the nodes' cursors (D29) |
+| `meter_meta` | 29,978 | 0.6% | 4 | 29,900 | completeness rows rewritten unchanged (D29) |
+| `nodes` | 112 | 1.1% | 3 | 0 | 86 changed only `status.ui_url` |
+
+What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_transition_at`. The reconcile round clears that condition (`controller/vm.rs`, after observing the instance) and later sets it again, so it is a new condition with a new transition time every round, and the status never equals the stored one. That is §6.7's unexplained VM writes, and the fix for D27.
+
+Not yet:
+
+- D28 (slot rows), D29 (unchanged puts, ship with nothing new) and D27 (VM bookkeeping, the `HypervisorReachable` reset): next PRs.
+- The measurement after C9, on the test cluster.
+- Why a node's `status.ui_url` changed 86 times: not looked at.
 
 ### Validation against real OVN and conntrack (after C8)
 

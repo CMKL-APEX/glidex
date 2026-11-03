@@ -62,6 +62,38 @@ voters has it.
 If a cluster stops taking changes, see [A cluster stops
 committing](troubleshooting.md#a-cluster-stops-committing).
 
+### What the log is made of
+
+To see which tables and fields fill the Raft log, run the report on a
+**copy** of a server's log (the running server holds the file). The
+log holds every value written, sealed secrets included, so keep the
+copy private and delete it afterwards. The report itself names tables
+and fields and gives counts and sizes; it shows no key or value.
+
+```bash
+d=$(sudo mktemp -d)
+sudo cp /var/lib/glidex-control-plane/.glidex/cluster/raft/log.redb "$d/"
+sudo /usr/local/bin/glidex-control-plane --store-writes "$d/log.redb"
+sudo rm -r "$d"
+```
+
+It gives entries and bytes per day, per origin and per table, sorted
+by size, with:
+
+- **unchanged**: writes of exactly the value the key already held;
+- **per key**: writes per distinct key (for `rate_5m`, per VM and hour);
+- **fields changed**: which top-level fields the other writes changed,
+  most frequent first;
+- the VM writes that changed only bookkeeping (`status.conditions`,
+  `status.last_reconciled_at`), and how many came less than 10 minutes
+  after the last.
+- **conditions changed**: for VM writes that changed
+  `status.conditions`, which condition (`Ready`, `HypervisorReachable`,
+  …) and which of its fields.
+
+`--since <index>` starts at a log index (the first line gives the range
+covered), to compare two times; `--json` gives the same as JSON.
+
 ## Before you start
 
 Install Glidex on every host as in [Installation](installation.md). OVN
