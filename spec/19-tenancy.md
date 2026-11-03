@@ -157,6 +157,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D80 | Open pools | A `pci.allow` entry with `"tenants": ["*"]` grants its pool to every tenant admitted on the cluster. It is a grant like any other: VM requests, tenant pools (§9.1a of 22-host-topology.md) and the project's pool listing see it. How much each tenant takes is its cap's `devices.<pool>`. | A site policy that permits `usePciPool` lets VMs use a pool, but tenant pools check `pci.allow` grants only; one place for grants keeps both right. |
 | D81 | The display label | A directory sets what its users' web UI calls a tenant (`tenant_label`, singular and plural, default *Tenant*). The API, gxctl, audit, errors and docs keep *tenant*. | Each organization has its word (lab, team, workspace); one model underneath keeps the policies, the API and the docs the same. Per directory, because a host's directories are different organizations. |
 | D82 | A tenant at first sign-in | With `self_service.auto_create` on, a user who signs in through one of the directory's connectors, may create tenants (D78), and is a member of no tenant (the connector's `default_tenant` aside) gets one made for them, as if they had created it: the same limits, prefix, approval and automatic admission. Once per user: deleting it doesn't bring it back. Its slug is the prefix and the user's sign-in name (the address before `@`), made a valid slug, `-2`, `-3`… when taken; its display name is *&lt;name&gt;'s &lt;label&gt;*. A failure doesn't stop the sign-in; it is audited. Off by default. | Onboarding in one step: a new user lands in a tenant of their own, ready for projects, without finding the create form. A user invited to a lab, or added to one before signing in, is already a member and gets none. Once, so a user who deletes theirs isn't handed another at every sign-in. |
+| D83 | Members by email | Where a request adds a user to a tenant (`AddMember`, a tenant role) or gives a user a project role (`AddProjectBinding`), the user may be named by email instead of id (`EntityRef.email`). It matches, ignoring case, the addresses an identity provider verified at the user's sign-ins, the addresses of users an IdP provisions, and pre-added users' addresses (D77), of enabled users of the caller's own directory only; it is resolved after the caller is authorized. No match answers as an unknown id does; two users with the address are refused (`409 ambiguous`). Identities record whether their address was verified, refreshed at each IdP sign-in. | Ids are UUIDs nobody knows; only directory readers see the user list, so a lab's administrator had to ask each person for theirs. A verified address is what invitations and pre-adding already trust. Resolving only for those allowed to add, in their directory, and answering a miss as an unknown id, keeps the form from becoming a way to look people up. |
 
 ## 3. Threat model additions
 
@@ -450,6 +451,34 @@ Without linking, one person signing in two ways is two users.
   `user list` shows *not signed in yet*.
 - **Web UI.** The Access page's **Add user** (email, tenant, role,
   connector), for `host.manageUsers`.
+
+### 6.4 Members by email (D83)
+
+- **Request.** `EntityRef` gets `email` (optional). `AddMember` and
+  `AddBinding` on a tenant, and `AddProjectBinding`, take `{type:
+  "User", email}` in place of an id; anything else that takes an
+  `EntityRef` still needs an id.
+- **Order.** The caller's right to add (`manageTenantMembers`,
+  `manageTenantBindings`, `manageBindings`) is checked first; only then
+  is the address resolved, in the tenant's directory (a project: the
+  caller's).
+- **Matches** (lower case): an `Identity` with `email` and
+  `email_verified`; a provisioned user's `email`; a pre-added user's
+  `pending_login.email`. Disabled users don't match.
+- **Answers.** One user: added as by id; the audit entry names the user
+  id, not the address. None: `400 invalid` "no user with that address in
+  this directory", as an unknown id. Several: `409 ambiguous`, "give the
+  user's id".
+- **Verified addresses.** `Identity.email_verified` (absent: `false`).
+  An IdP sign-in (§6 step 2) records the identity's address and whether
+  the IdP verified it, at creation and, when either changed, at later
+  sign-ins on the leader (IdP sign-ins run there, #245). Identities from
+  before this have none verified until their user signs in again.
+- **gxctl.** `user:<email>` wherever `user:<id>` names a member or a
+  role holder (ids never hold `@`).
+- **Web UI.** The member and role forms' text box takes a user id or an
+  email. On a tenant, an address with no user offers an invitation to it
+  (§6.1) instead.
 
 ## 7. Using a cluster
 
@@ -1531,6 +1560,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T6b** directory standby | §12.1 "Losing a directory": streaming to a standby, `gxctl directory promote`, epochs | The §17 promote test. Not scheduled. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
 | **T9** self-service tenants | §11.1, D78–D82: directory settings, `createOwnTenant`, limits, pending tenants and approval, a tenant at first sign-in, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the prism cluster with the Google connector. |
+| **T10** members by email | §6.4, D83: a user named by a verified email where members and roles are added; identities record whether their address was verified | Service tests; gxctl and the forms take an address. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Directory`, `Tenant`, `Admission` and stores;
@@ -1777,6 +1807,16 @@ order):
    connector sign-in; tests (off, made once, not for a member of a
    tenant, the connector's default tenant aside, a taken slug, the
    limits, a refusal doesn't stop the sign-in), docs.
+
+**T10 tasks** (members by email, §6.4, D83; one PR):
+
+1. `Identity.email_verified`, recorded and refreshed at IdP sign-ins;
+   `EntityRef.email`, resolved in `AddMember`, `AddBinding` and
+   `AddProjectBinding`; gxctl `user:<email>`; the forms; tests (a
+   verified address, an unverified one, another directory's user, a
+   disabled user, a provisioned and a pre-added user, two users with the
+   address, refused before resolving for a caller who may not add),
+   docs.
 
 ## 19. Out of scope
 
