@@ -335,6 +335,19 @@ pub async fn ovs_status(
         NetdAccess::Status => pb::NetdAccess::NETD_ACCESS_STATUS,
         NetdAccess::None => pb::NetdAccess::NETD_ACCESS_NONE,
     };
+    // Source routes need the full socket; a netd without the op reports none.
+    let source_routes = if access == pb::NetdAccess::NETD_ACCESS_FULL && result.is_ok() {
+        let netd = call.manager().netd().clone();
+        tokio::task::spawn_blocking(move || {
+            netd.call::<glidex_ovs::srcroute::Report>(Op::ListSourceRoutes)
+        })
+        .await
+        .ok()
+        .and_then(Result::ok)
+        .map(|r| source_routes_pb(&r))
+    } else {
+        None
+    };
     let (available, error, host) = match result {
         Ok(v) => (
             true,
@@ -354,8 +367,62 @@ pub async fn ovs_status(
         }
         .into(),
         host: host.into(),
+        source_routes: source_routes.into(),
         ..Default::default()
     })
+}
+
+fn source_routes_pb(r: &glidex_ovs::srcroute::Report) -> pb::SourceRoutes {
+    use glidex_ovs::srcroute::AddrState;
+    pb::SourceRoutes {
+        subnets: r
+            .subnets
+            .iter()
+            .map(|s| pb::SharedSubnet {
+                subnet: s.subnet.to_string(),
+                managed: s.managed,
+                ports: s
+                    .ports
+                    .iter()
+                    .map(|p| pb::SharedSubnetPort {
+                        ifname: p.ifname.clone(),
+                        table: p.table,
+                        addresses: p
+                            .addresses
+                            .iter()
+                            .map(|a| pb::SourceAddress {
+                                address: a.address.to_string(),
+                                state: match a.state {
+                                    AddrState::Ok => {
+                                        pb::SourceAddressState::SOURCE_ADDRESS_STATE_OK
+                                    }
+                                    AddrState::Missing => {
+                                        pb::SourceAddressState::SOURCE_ADDRESS_STATE_MISSING
+                                    }
+                                    AddrState::Unmanaged => {
+                                        pb::SourceAddressState::SOURCE_ADDRESS_STATE_UNMANAGED
+                                    }
+                                    AddrState::Conflict => {
+                                        pb::SourceAddressState::SOURCE_ADDRESS_STATE_CONFLICT
+                                    }
+                                }
+                                .into(),
+                                conflict: a.conflict.clone(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                        rp_filter: p.sysctls.rp_filter.map(u32::from),
+                        arp_ignore: p.sysctls.arp_ignore.map(u32::from),
+                        arp_announce: p.sysctls.arp_announce.map(u32::from),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            })
+            .collect(),
+        notes: r.notes.clone(),
+        ..Default::default()
+    }
 }
 
 pub async fn install_ovs(

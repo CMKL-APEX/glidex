@@ -178,6 +178,54 @@ message GetOvsStatusResponse {
   NetdStatus netd = 1;
   // What netd found; absent when it didn't answer.
   HostCapabilities host = 2;
+  // Subnets two or more of the host's ports share, with their source
+  // routes (spec/09-networking.md §8.6). Absent without full access to
+  // netd, or from a netd that doesn't report them.
+  SourceRoutes source_routes = 3 [json_name = "source_routes"];
+}
+
+message SourceRoutes {
+  repeated SharedSubnet subnets = 1;
+  // What netd couldn't do, or did again (a full table range, an ARP
+  // setting changed outside netd).
+  repeated string notes = 2;
+}
+
+// A subnet two or more ports have addresses in.
+message SharedSubnet {
+  string subnet = 1;
+  // Named in netd.json's `source_routes.subnets`.
+  bool managed = 2;
+  repeated SharedSubnetPort ports = 3;
+}
+
+message SharedSubnetPort {
+  string ifname = 1;
+  // The port's routing table, when netd manages it.
+  optional uint32 table = 2;
+  repeated SourceAddress addresses = 3;
+  optional uint32 rp_filter = 4 [json_name = "rp_filter"];
+  optional uint32 arp_ignore = 5 [json_name = "arp_ignore"];
+  optional uint32 arp_announce = 6 [json_name = "arp_announce"];
+}
+
+enum SourceAddressState {
+  SOURCE_ADDRESS_STATE_UNSPECIFIED = 0;
+  // Its rule and its port's route are in place.
+  SOURCE_ADDRESS_STATE_OK = 1;
+  // Managed, not in place yet.
+  SOURCE_ADDRESS_STATE_MISSING = 2;
+  // In a subnet netd.json doesn't name.
+  SOURCE_ADDRESS_STATE_UNMANAGED = 3;
+  // Another manager's rule has this address; netd leaves it alone.
+  SOURCE_ADDRESS_STATE_CONFLICT = 4;
+}
+
+message SourceAddress {
+  string address = 1;
+  SourceAddressState state = 2;
+  // The other manager's rule, for a conflict.
+  optional string conflict = 3;
 }
 
 enum OvsProfile {

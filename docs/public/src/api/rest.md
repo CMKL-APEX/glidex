@@ -448,7 +448,7 @@ UI's Host pages send it.
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/ovs/status` | Open vSwitch and networking helper status |
+| `GET` | `/ovs/status` | Open vSwitch and networking helper status, and the subnets two or more ports share with their source routes (`source_routes`) |
 | `POST` | `/ovs/install` | Install Open vSwitch (kernel or DPDK profile) |
 | `POST` | `/ovs/dpdk-init` | Initialize DPDK in Open vSwitch |
 | `GET` | `/ovs/bridges` | List glidex bridges |
