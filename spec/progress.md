@@ -19,6 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
+| Tenancy and directories | [19-tenancy.md](19-tenancy.md) §6.4, T10 | `spec/tenancy-member-email` → `feat/tenancy-member-email` | Members and roles given by a verified email instead of a user id (D83) |
 | Networking | [09-networking.md](09-networking.md) §8.6, M9 | `spec/networking-source-routes` | netd adds a table and a `from` rule per address on ports that share a subnet (issue #256, hyperstor's D216); decisions 11–17 |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
