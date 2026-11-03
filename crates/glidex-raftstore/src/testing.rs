@@ -333,6 +333,42 @@ impl TestCluster {
         self.by_id(id).node.shutdown().await;
     }
 
+    /// Stop member `id` and start it again from its database and log, as
+    /// a control plane's restart does: it comes back replicating.
+    pub async fn restart(&mut self, id: RaftId) {
+        self.kill(id).await;
+        let i = self.nodes.iter().position(|n| n.id == id).unwrap();
+        let dir = self.nodes[i].dir.clone();
+        // The old member's handles let go of the database file first.
+        self.nodes.remove(i);
+        // A caller's write in flight holds it until that write gives up.
+        let mut tries = 0;
+        let db = loop {
+            match Db::create(dir.join("store.db")) {
+                Ok(db) => break Arc::new(db),
+                Err(e) if tries < 1500 => {
+                    let _ = e;
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("reopening n{id}'s store: {e}"),
+            }
+        };
+        let node = ClusterNode::start(
+            db.clone(),
+            &dir.join("raft"),
+            id,
+            &self.settings,
+            self.mesh.transport(id),
+        )
+        .await
+        .unwrap();
+        self.mesh.register(id, node.service.clone());
+        self.mesh.set_down(id, false);
+        node.replicate();
+        self.nodes.insert(i, TestNode { id, node, db, dir });
+    }
+
     /// One write through member `id`'s store: sets `key` in the `meta` table.
     pub fn put(&self, id: RaftId, key: &str, value: &str) -> Result<(), StoreError> {
         let db = self.by_id(id).db.clone();
