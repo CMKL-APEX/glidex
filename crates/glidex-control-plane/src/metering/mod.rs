@@ -435,29 +435,49 @@ impl crate::state::VmManager {
         let Some(pending) = shipped.trim(&mut export).map_err(|e| e.to_string())? else {
             return Ok(());
         };
+        // In parts the leader can take (a backlog after a long absence
+        // is more than one request or write set holds), a few per round.
+        let parts = export
+            .clone()
+            .split(ledger::SHIP_PART_BYTES)
+            .map_err(|e| e.to_string())?;
+        let whole = parts.len() <= ledger::SHIP_PARTS_PER_ROUND;
+        for part in parts.into_iter().take(ledger::SHIP_PARTS_PER_ROUND) {
+            self.ship_part(meter, &part).await?;
+            if part.more {
+                local.ack_part(&part).map_err(|e| e.to_string())?;
+                shipped.acked_part(&part, &pending);
+            }
+        }
+        if whole {
+            local.ack_export(&export).map_err(|e| e.to_string())?;
+            shipped.acked(pending);
+        }
+        Ok(())
+    }
+
+    /// One part of an export to the leader: merged here when this node
+    /// leads, else posted to it.
+    async fn ship_part(&self, meter: &Arc<Meter>, part: &ledger::Export) -> Result<(), String> {
         let node = self.local_node_id();
         let cluster = self.cluster().ok_or("not in a cluster")?;
-        let leader_here = cluster.is_leader();
-        if leader_here {
+        if cluster.is_leader() {
             let central = meter.ledger().clone_handle();
-            let (n, e) = (node.clone(), export.clone());
-            tokio::task::spawn_blocking(move || central.import(&n, &e))
+            let e = part.clone();
+            tokio::task::spawn_blocking(move || central.import(&node, &e))
                 .await
                 .map_err(|e| e.to_string())?
                 .map_err(|e| e.to_string())?;
-        } else {
-            let body = bytes::Bytes::from(serde_json::to_vec(&export).map_err(|e| e.to_string())?);
-            let reply = match self.node_link() {
-                Some(link) => link.post_leader("/cluster/v1/ledger", body).await?,
-                None => cluster.post_leader("/cluster/v1/ledger", body).await?,
-            };
-            if !reply.status.is_success() {
-                return Err(format!("the leader answered {}", reply.status));
-            }
+            return Ok(());
         }
-        let local = meter.local_ledger().expect("checked");
-        local.ack_export(&export).map_err(|e| e.to_string())?;
-        shipped.acked(pending);
+        let body = bytes::Bytes::from(serde_json::to_vec(part).map_err(|e| e.to_string())?);
+        let reply = match self.node_link() {
+            Some(link) => link.post_leader("/cluster/v1/ledger", body).await?,
+            None => cluster.post_leader("/cluster/v1/ledger", body).await?,
+        };
+        if !reply.status.is_success() {
+            return Err(format!("the leader answered {}", reply.status));
+        }
         Ok(())
     }
 
