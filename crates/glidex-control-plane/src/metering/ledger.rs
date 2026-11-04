@@ -1465,6 +1465,52 @@ pub struct Export {
     pub slots: Vec<(String, SlotRow)>,
 }
 
+/// What a node's shipping loop last had acknowledged (spec/14-clustering.md
+/// D28, D29). Kept in memory: a restarted node sends its slot rows once
+/// more, and the leader's merge writes none that are unchanged.
+#[derive(Debug, Default)]
+pub struct Shipped {
+    position: Option<(u64, u64)>,
+    slots: HashMap<String, u64>,
+}
+
+/// An export on its way, for [`Shipped::acked`] once the leader has it.
+#[derive(Debug)]
+pub struct Pending {
+    position: (u64, u64),
+    slots: HashMap<String, u64>,
+}
+
+fn row_hash(row: &SlotRow) -> Result<u64, MeteringError> {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    serde_json::to_vec(row)?.hash(&mut h);
+    Ok(h.finish())
+}
+
+impl Shipped {
+    /// Drop from `e` the slot rows acknowledged as they are now; `None`
+    /// when nothing is left to send: no rows, and the closed hour and
+    /// start time as last acknowledged.
+    pub fn trim(&self, e: &mut Export) -> Result<Option<Pending>, MeteringError> {
+        let mut slots = HashMap::with_capacity(e.slots.len());
+        for (k, row) in &e.slots {
+            slots.insert(k.clone(), row_hash(row)?);
+        }
+        e.slots.retain(|(k, _)| self.slots.get(k) != slots.get(k));
+        let position = (e.closed_through, e.started_at_ms);
+        if e.hourly.is_empty() && e.slots.is_empty() && self.position == Some(position) {
+            return Ok(None);
+        }
+        Ok(Some(Pending { position, slots }))
+    }
+
+    pub fn acked(&mut self, p: Pending) {
+        self.position = Some(p.position);
+        self.slots = p.slots;
+    }
+}
+
 /// A node's slots of hours this far behind its closing point stay locally,
 /// where late samples may still merge into them.
 const SLOT_KEEP_SECS: u64 = 3 * 3600;
@@ -2038,6 +2084,48 @@ mod tests {
 
     /// §13.1: what nodes ship merges once, whatever is retransmitted, and the
     /// cluster ledger is complete only as far as its slowest node.
+    #[test]
+    fn slot_rows_ship_once_until_they_change() {
+        let row = |p: u16| SlotRow {
+            present: p,
+            ..Default::default()
+        };
+        let export = |slots: Vec<(&str, SlotRow)>, closed: u64| Export {
+            started_at_ms: 1,
+            closed_through: closed,
+            hourly: vec![],
+            slots: slots.into_iter().map(|(k, r)| (k.to_string(), r)).collect(),
+        };
+        let mut shipped = Shipped::default();
+        let keys = |e: &Export| e.slots.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>();
+        // First time: everything.
+        let mut e = export(vec![("a", row(1)), ("b", row(1))], 10);
+        let p = shipped.trim(&mut e).unwrap().expect("something to send");
+        assert_eq!(keys(&e), ["a", "b"]);
+        shipped.acked(p);
+        // The same again: nothing, not even a request.
+        let mut e = export(vec![("a", row(1)), ("b", row(1))], 10);
+        assert!(shipped.trim(&mut e).unwrap().is_none());
+        // A late sample changed b: only b.
+        let mut e = export(vec![("a", row(1)), ("b", row(3))], 10);
+        let p = shipped.trim(&mut e).unwrap().unwrap();
+        assert_eq!(keys(&e), ["b"]);
+        // Not acknowledged: b goes again.
+        let mut e = export(vec![("a", row(1)), ("b", row(3))], 10);
+        assert_eq!(
+            keys(&{
+                shipped.trim(&mut e).unwrap().unwrap();
+                e
+            }),
+            ["b"]
+        );
+        shipped.acked(p);
+        // The closed hour moved with no rows: sent, to move the cursor.
+        let mut e = export(vec![("a", row(1)), ("b", row(3))], 11);
+        assert!(shipped.trim(&mut e).unwrap().is_some());
+        assert!(e.slots.is_empty());
+    }
+
     #[test]
     fn shipped_hours_merge_exactly_once() {
         let central_dir = tempfile::TempDir::new().unwrap();

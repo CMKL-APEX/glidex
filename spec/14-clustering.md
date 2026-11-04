@@ -2084,6 +2084,8 @@ Built (tests in `cluster/store_writes.rs`, `glidex-raftstore` `log_store.rs`):
 
 - **Writes that change nothing** (D29): `RecTable::insert` in `glidex-raftstore` records no put of the value the key already holds, so a write left with no operations commits nothing. That also drops the leader's rewrites of unchanged slot rows (D28's leader side; slot rows serialize deterministically, `series` is a `BTreeMap`) and of the unchanged completeness rows in `meter_meta`. The leader writes a node's `ledger_inbox` cursor only when its closed hour or start time moved, and a node's shipping loop sends nothing when it has no rows and neither has moved since the last acknowledgement (kept in memory: a restarted node ships once). Tests: a write of only held values commits nothing and a mixed one records only the change (`store.rs`); a repeated merge writes nothing (`shipped_hours_merge_exactly_once`).
 
+- **Slot rows shipped once** (D28, node side): the shipping loop keeps, in memory, a hash of each slot row the leader acknowledged (`ledger::Shipped`), and sends a row again only when a late sample changed it; with no rows and the closed hour and start time unchanged it sends nothing. A restarted node sends its slot rows once more, which the leader's merge doesn't write (D29). Test: `slot_rows_ship_once_until_they_change`.
+
 **Before C9**, measured with the command on 2026-11-04 on prism2 (main at `2cf6e80`; log entries 2 to 38,095, about 92 hours by the values, three servers, 21 VMs written in that time): 9,937 entries and 48 MB a day.
 
 | Table | Puts | Share of bytes | Keys | Unchanged | Note |
@@ -2098,7 +2100,7 @@ What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_tr
 
 Not yet:
 
-- D28's node side (a slot row shipped once and again only when it changed) and D27 (VM bookkeeping, the `HypervisorReachable` reset): next PRs. Until D28's node side, a node still has slot rows to send every minute, so D29's skip on the node rarely applies; the leader writes none of them unchanged.
+- D27 (VM bookkeeping, the `HypervisorReachable` reset): next PR.
 - The measurement after C9, on the test cluster.
 - Why a node's `status.ui_url` changed 86 times: not looked at.
 
