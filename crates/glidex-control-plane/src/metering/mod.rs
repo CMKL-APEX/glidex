@@ -405,10 +405,10 @@ impl crate::state::VmManager {
             let me = self.arc();
             let m = meter.clone();
             let ship = tokio::spawn(async move {
-                let mut acked = None;
+                let mut shipped = ledger::Shipped::default();
                 loop {
                     tokio::time::sleep(Duration::from_secs(60)).await;
-                    if let Err(e) = me.ship_ledger(&m, &mut acked).await {
+                    if let Err(e) = me.ship_ledger(&m, &mut shipped).await {
                         tracing::warn!("shipping usage to the leader: {}", e);
                     }
                 }
@@ -420,21 +420,21 @@ impl crate::state::VmManager {
 
     /// Send this node's closed hours to the leader; once it has them, forget
     /// them locally (§13.1: at-least-once shipping, idempotent merge).
-    /// `acked` is the closed hour and start time the leader last
-    /// acknowledged: with no rows and neither moved, nothing is sent (D29).
+    /// `shipped` is what the leader last acknowledged: slot rows go again
+    /// only once they changed (D28), and with nothing new nothing is sent
+    /// (D29).
     pub async fn ship_ledger(
         &self,
         meter: &Arc<Meter>,
-        acked: &mut Option<(u64, u64)>,
+        shipped: &mut ledger::Shipped,
     ) -> Result<(), String> {
         let Some(local) = meter.local_ledger() else {
             return Ok(());
         };
-        let export = local.export().map_err(|e| e.to_string())?;
-        let position = (export.closed_through, export.started_at_ms);
-        if export.hourly.is_empty() && export.slots.is_empty() && *acked == Some(position) {
+        let mut export = local.export().map_err(|e| e.to_string())?;
+        let Some(pending) = shipped.trim(&mut export).map_err(|e| e.to_string())? else {
             return Ok(());
-        }
+        };
         let node = self.local_node_id();
         let cluster = self.cluster().ok_or("not in a cluster")?;
         let leader_here = cluster.is_leader();
@@ -457,7 +457,7 @@ impl crate::state::VmManager {
         }
         let local = meter.local_ledger().expect("checked");
         local.ack_export(&export).map_err(|e| e.to_string())?;
-        *acked = Some(position);
+        shipped.acked(pending);
         Ok(())
     }
 
