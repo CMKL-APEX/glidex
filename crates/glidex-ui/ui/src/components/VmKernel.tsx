@@ -7,7 +7,16 @@ import { imageState, isKernel } from "../types";
 /** A kernel-boot VM's kernel (spec/23-kernel-boot.md §6, §10.5): the kernel
  * image it names, the one it boots when following the guest's kernel, the
  * one before, and changing them from the next start. */
-export default function VmKernel({ vm, onChanged }: { vm: VmResponse; onChanged: () => void }) {
+export default function VmKernel({
+  vm,
+  onChanged,
+  editable = true,
+}: {
+  vm: VmResponse;
+  onChanged: () => void;
+  /** May change it (`updateVm`); otherwise only shown. */
+  editable?: boolean;
+}) {
   const [kernels, setKernels] = useState<ImageInfo[]>([]);
   const [choice, setChoice] = useState(vm.kernel ?? "");
   const [busy, setBusy] = useState<string | null>(null);
@@ -66,6 +75,7 @@ export default function VmKernel({ vm, onChanged }: { vm: VmResponse; onChanged:
           )}
         </p>
       )}
+      {editable && (
       <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
         <select
           className="px-2 py-1 border border-gray-300 rounded-lg bg-white"
@@ -123,6 +133,7 @@ export default function VmKernel({ vm, onChanged }: { vm: VmResponse; onChanged:
           </button>
         )}
       </div>
+      )}
       {busy && <p className="mt-1 text-xs text-gray-500">{busy}…</p>}
       {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
     </div>

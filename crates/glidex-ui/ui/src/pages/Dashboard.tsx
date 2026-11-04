@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { VmResponse } from "../types";
 import { settled } from "../types";
-import type { VmAction } from "../components/VmActions";
+import { type VmAction, VM_ALLOW_ACTIONS, vmAllow } from "../components/VmActions";
 import VmCard from "../components/VmCard";
 import DeleteVmDialog from "../components/DeleteVmDialog";
 import { LoadingCard } from "../components/Loading";
@@ -11,7 +11,7 @@ import CreateVmForm from "../components/CreateVmForm";
 import type { CreateVmRequest } from "../types";
 import { useCan, useSession } from "../session";
 import { useLiveRefresh } from "../live";
-import { useNodes } from "../nodes";
+import { useAllowed, useNodes } from "../nodes";
 import { selectClass } from "../components/ui";
 
 export default function Dashboard() {
@@ -24,6 +24,11 @@ export default function Dashboard() {
   const nodes = useNodes();
   const [nodeFilter, setNodeFilter] = useState("");
   const [canCreate] = useCan(project ? [{ action: "createVm", resource: { type: "Project", id: project } }] : []) ?? [];
+  // Each card's power and delete buttons, for the VMs listed, in one call.
+  const vmRefs = (vms ?? []).map((vm) => ({ type: "Vm" as const, id: vm.id }));
+  const may = useAllowed([...VM_ALLOW_ACTIONS], vmRefs);
+  const allowOf = (id: string) =>
+    vmAllow(may ? VM_ALLOW_ACTIONS.map((action) => may({ type: "Vm", id }, action)) : null);
 
   const fetchVms = useCallback(async () => {
     try {
@@ -144,7 +149,12 @@ export default function Dashboard() {
           {vms
             .filter((vm) => !nodeFilter || vm.node === nodeFilter)
             .map((vm) => (
-              <VmCard key={vm.id} vm={vm} onAction={(id, action) => (action === "delete" ? setDeleting(vm) : handleAction(id, action))} />
+              <VmCard
+                key={vm.id}
+                vm={vm}
+                allow={allowOf(vm.id)}
+                onAction={(id, action) => (action === "delete" ? setDeleting(vm) : handleAction(id, action))}
+              />
             ))}
         </div>
       ) : vms && vms.length === 0 ? (
