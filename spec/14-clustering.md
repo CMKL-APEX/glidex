@@ -2082,6 +2082,8 @@ Built (tests in `cluster/store_writes.rs`, `glidex-raftstore` `log_store.rs`):
 
 - **The measurement as a command** (§6.7): `glidex-control-plane --store-writes <copy of raft/log.redb> [--since <index>] [--json]` reads the log entry by entry (`LogStore::scan_file`) and gives entries and bytes per origin and per table, puts of an unchanged value, writes per distinct key, the field sets the other puts changed (two levels deep; a name that isn't an identifier shows as `*`), VM writes of bookkeeping only (D27) with those less than 10 minutes after the last, and which condition (by kind) and which of its fields each VM write changed. It reports no key or value; the time covered comes from VMs' `last_reconciled_at` and the ledger cursors. Documented in the operator guide (Clusters, *What the log is made of*).
 
+- **Writes that change nothing** (D29): `RecTable::insert` in `glidex-raftstore` records no put of the value the key already holds, so a write left with no operations commits nothing. That also drops the leader's rewrites of unchanged slot rows (D28's leader side; slot rows serialize deterministically, `series` is a `BTreeMap`) and of the unchanged completeness rows in `meter_meta`. The leader writes a node's `ledger_inbox` cursor only when its closed hour or start time moved, and a node's shipping loop sends nothing when it has no rows and neither has moved since the last acknowledgement (kept in memory: a restarted node ships once). Tests: a write of only held values commits nothing and a mixed one records only the change (`store.rs`); a repeated merge writes nothing (`shipped_hours_merge_exactly_once`).
+
 **Before C9**, measured with the command on 2026-11-04 on prism2 (main at `2cf6e80`; log entries 2 to 38,095, about 92 hours by the values, three servers, 21 VMs written in that time): 9,937 entries and 48 MB a day.
 
 | Table | Puts | Share of bytes | Keys | Unchanged | Note |
@@ -2096,7 +2098,7 @@ What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_tr
 
 Not yet:
 
-- D28 (slot rows), D29 (unchanged puts, ship with nothing new) and D27 (VM bookkeeping, the `HypervisorReachable` reset): next PRs.
+- D28's node side (a slot row shipped once and again only when it changed) and D27 (VM bookkeeping, the `HypervisorReachable` reset): next PRs. Until D28's node side, a node still has slot rows to send every minute, so D29's skip on the node rarely applies; the leader writes none of them unchanged.
 - The measurement after C9, on the test cluster.
 - Why a node's `status.ui_url` changed 86 times: not looked at.
 

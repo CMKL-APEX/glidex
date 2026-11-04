@@ -404,8 +404,17 @@ impl<'tx, S: Schema> Deref for RecTable<'tx, S> {
 }
 
 impl<S: Schema> RecTable<'_, S> {
+    /// Put `value` at `key`. Writing the value the key already holds
+    /// records nothing, so a write that changes nothing makes no Raft entry
+    /// (glidex spec/14-clustering.md D29).
     pub fn insert(&mut self, key: &str, value: &[u8]) -> Result<(), redb::StorageError> {
-        self.table.insert(key, value)?;
+        if self
+            .table
+            .insert(key, value)?
+            .is_some_and(|old| old.value() == value)
+        {
+            return Ok(());
+        }
         self.ops.borrow_mut().push(Op::Put {
             table: self.id,
             key: key.as_bytes().to_vec(),
@@ -991,17 +1000,41 @@ mod tests {
         db.write(TestOrigin::Api, |_| -> Result<(), StoreError> { Ok(()) })
             .unwrap();
         assert_eq!(db.revision(), rev);
+        // So does one that puts only the values already held (D29); a put
+        // that changes something is recorded alone.
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Data, "b", b"2");
+            put(tx, TestTable::Other, "u", b"3");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.revision(), rev);
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Data, "b", b"2");
+            put(tx, TestTable::Data, "c", b"5");
+            Ok(())
+        })
+        .unwrap();
+        let last = db.journal().last().unwrap().clone();
+        assert_eq!(
+            last.ops,
+            vec![Op::Put {
+                table: TestTable::Data,
+                key: b"c".to_vec(),
+                value: b"5".to_vec()
+            }]
+        );
         // A failed closure leaves nothing behind, in the database or the journal.
         let failed: Result<(), StoreError> = db.write(TestOrigin::Api, |tx| {
             put(tx, TestTable::Data, "x", b"9");
             Err(StoreError::NotLeader { leader: None })
         });
         assert!(failed.is_err());
-        assert_eq!(db.journal().len(), 2);
+        assert_eq!(db.journal().len(), 3);
 
         let replayed = Db::<Test>::replay(dir.path().join("b.db"), &db.journal()).unwrap();
         assert_eq!(db.dump().unwrap(), replayed.dump().unwrap());
-        assert_eq!(replayed.revision(), 2);
+        assert_eq!(replayed.revision(), 3);
     }
 
     /// Commits once the runtime's timer fires, as Raft's commit waits on

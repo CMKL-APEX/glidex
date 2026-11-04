@@ -1600,10 +1600,18 @@ impl Ledger {
                 for (k, row) in &e.slots {
                     slots.insert(k.as_str(), serde_json::to_vec(row)?.as_slice())?;
                 }
-                inbox.insert(
-                    format!("cursor/{node}").as_str(),
-                    serde_json::to_vec(&(e.closed_through, e.started_at_ms, now))?.as_slice(),
-                )?;
+                // The cursor changes only when what is read of it does (D29):
+                // its third field, the time of the merge, is not read.
+                let cursor = format!("cursor/{node}");
+                let held = inbox
+                    .get(cursor.as_str())?
+                    .and_then(|v| serde_json::from_slice::<(u64, u64, u64)>(v.value()).ok());
+                if held.is_none_or(|(c, s, _)| (c, s) != (e.closed_through, e.started_at_ms)) {
+                    inbox.insert(
+                        cursor.as_str(),
+                        serde_json::to_vec(&(e.closed_through, e.started_at_ms, now))?.as_slice(),
+                    )?;
+                }
                 // Forget old duplicates guards.
                 let cutoff = now.saturating_sub(INBOX_KEEP_SECS);
                 let old: Vec<String> = inbox
@@ -2073,8 +2081,11 @@ mod tests {
         let ea = la.export().unwrap();
         assert!(!ea.hourly.is_empty());
         assert_eq!(central.import(&na, &ea).unwrap(), ea.hourly.len());
-        // The acknowledgement was lost: the same rows arrive again.
+        // The acknowledgement was lost: the same rows arrive again, and
+        // change nothing, so nothing is written (D29).
+        let rev = central_db.revision();
         assert_eq!(central.import(&na, &ea).unwrap(), 0);
+        assert_eq!(central_db.revision(), rev, "a repeated merge wrote");
         la.ack_export(&ea).unwrap();
         assert!(
             la.export().unwrap().hourly.is_empty(),
