@@ -653,6 +653,9 @@ state is `desired_state`. The VM's `conditions` say what is in the way
 (the `Ready` condition), and `last_exit` says how the last run ended:
 stopped on request, stopped by the host, guest powered off, crashed (with
 its exit code or signal), failed to launch, host rebooted, or lost.
+A condition's status (`True`, `False`, `Unknown`) is up to date; its
+message and reason can be up to 10 minutes behind when nothing else about
+the VM changed.
 
 On a cluster, a VM that boots through a firmware image, or boots a
 kernel image, needs that image's copy on its node. Until the node has

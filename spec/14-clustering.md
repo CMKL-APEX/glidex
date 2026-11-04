@@ -96,7 +96,7 @@ Non-goals for this revision (each in §18):
 | D24 | **An append fits in a heartbeat.** A write set is at most 1 MiB of JSON, an append carries at most 4 entries (5 MiB in all), the Raft endpoints take that much once the peer is known, and the default heartbeat is 1 s (election 3–6 s). | openraft 0.9 cancels an append that takes longer than the heartbeat interval and sends it again, for ever: one large entry stopped the log on every follower, and axum's 2 MB body limit refused larger ones outright (prism, 2026-11-03). A failover of 3–6 s is fine for a control plane; a write over 1 MiB is refused up front rather than stalling the cluster. |
 | D25 | **The log keeps about a week, and is trimmed whatever the restarts.** `log_keep_entries` defaults to 70,000; a member trims its log to that many behind its snapshot when it starts, and records a snapshot every tenth of that, so the log stays near the setting. | A restart makes the live database the snapshot and restarted openraft's count towards the next one: servers restarted every few hours never trimmed (27,000 entries in three days on prism, 2026-11-03). During development the history helps trace a change; 70,000 entries are about a week at today's ~9,000 a day, about 300 MB. |
 | D26 | **Three tiers of data; Raft carries only the cluster's.** The replicated store holds desired state, decisions and *closed* results. What one host observes or is still accumulating stays in that host's own database. Append-only history read by time range (usage, audit) moves to a history tier outside the Raft snapshot before the cluster grows past about 100 VMs (§6.7). All three stay embedded ReDB: no database server. | Measured on the test cluster (§6.7), about 90% of Raft writes were one host's metering slots and VM bookkeeping, which no other server needs at that detail, while the history tables are what make the snapshot large at scale (§4.1). An external database (PostgreSQL, a time-series store) would add a service to install, secure and make highly available without changing what is replicated; it fits as an optional export target. |
-| D27 | **VM bookkeeping at most every 10 minutes.** A VM record is written when its phase, power, instance, placement or an error changes; a change only to `status.conditions` or `last_reconciled_at` waits until 10 minutes after the record's last write. | About a third of VM writes were bookkeeping alone (§6.7). Kept in the record rather than moved to the host, so the record still shows when it was last checked; 144 writes per idle VM a day is small. |
+| D27 | **VM bookkeeping at most every 10 minutes.** A VM record is written when its phase, power, instance, placement, an error or a condition's status changes; a change only to conditions' messages or reasons, or to `last_reconciled_at`, waits until 10 minutes after the record's last write. A condition keeps its transition time while its status holds. | About a third of VM writes were bookkeeping alone (§6.7). Kept in the record rather than moved to the host, so the record still shows when it was last checked; 144 writes per idle VM a day is small. |
 | D28 | **A slot row reaches the store only when it changed**, checked on both sides: a node ships a closed hour's slot row once and again only after a late sample changes it, and the leader's merge skips a row equal to the one it holds. | Nodes re-sent three hours of slot rows every minute and the leader rewrote them all (§6.7). The node side saves the traffic; the leader side keeps a resend after a lost acknowledgement from becoming a write. |
 | D29 | **A write that changes nothing makes no Raft entry.** The store records no `put` whose value equals the stored one, as it already records no `delete` of an absent key; a write left with no operations commits nothing. A node with no new ledger rows, whose closed hour and start time are unchanged, doesn't ship; and the leader's `ledger_inbox` cursor for a node holds only what it reads (its closed hour and start time), so it changes only when they do. | The ledger merge rewrote each node's cursor (with the time of the merge, which nothing reads) and the completeness rows every minute: about 4,300 entries a day for three nodes, nearly half of §6.7's 9,000, outside D28. Checking at the store catches every write of an unchanged value, the merge's slot rows (D28's leader side) included, in one place; a follower already holds the same bytes, and a watch has nothing to report. |
 
@@ -778,7 +778,12 @@ Two departures from this spec explain most of it, and C9 fixes them:
 3. *The history tier's spec* is written after C9, once §6.7's
    measurement has been repeated, and before the cluster grows past
    about 100 VMs.
-4. *Writes that change nothing* (D29, 2026-11-04): found reading the
+4. *A condition's status is written at once* (D27, refined 2026-11-04):
+   only its message and reason wait for the 10 minutes, so the UI
+   never shows a stale `Ready` or `ConsoleReady`. Once the
+   `HypervisorReachable` reset is fixed, conditions change in about 120
+   of the 17,822 VM writes measured (§20, C9).
+5. *Writes that change nothing* (D29, 2026-11-04): found reading the
    code after the measurement. Every ship, every minute, rewrote the
    node's `ledger_inbox` cursor (with the time of the merge) and the
    completeness rows in `meter_meta`, whether or not anything was new:
@@ -2086,6 +2091,8 @@ Built (tests in `cluster/store_writes.rs`, `glidex-raftstore` `log_store.rs`):
 
 - **Slot rows shipped once** (D28, node side): the shipping loop keeps, in memory, a hash of each slot row the leader acknowledged (`ledger::Shipped`), and sends a row again only when a late sample changed it; with no rows and the closed hour and start time unchanged it sends nothing. A restarted node sends its slot rows once more, which the leader's merge doesn't write (D29). Test: `slot_rows_ship_once_until_they_change`.
 
+- **VM bookkeeping** (D27, `VmManager::write_status`): a condition set again with the status it had keeps its stored `last_transition_at`, which ends the `HypervisorReachable` reset; and a status that differs from the stored one only in conditions' messages and reasons (in kind order) is written with the 10-minute stamp, not before. Test: `an_unchanged_status_writes_nothing`, extended: a condition cleared and set again, and a message change, write nothing; a condition's status change writes once. Documented in the user guide (VMs: a condition's message can be 10 minutes behind).
+
 **Before C9**, measured with the command on 2026-11-04 on prism2 (main at `2cf6e80`; log entries 2 to 38,095, about 92 hours by the values, three servers, 21 VMs written in that time): 9,937 entries and 48 MB a day.
 
 | Table | Puts | Share of bytes | Keys | Unchanged | Note |
@@ -2100,8 +2107,7 @@ What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_tr
 
 Not yet:
 
-- D27 (VM bookkeeping, the `HypervisorReachable` reset): next PR.
-- The measurement after C9, on the test cluster.
+- The measurement after C9, on the test cluster, against C9's acceptance.
 - Why a node's `status.ui_url` changed 86 times: not looked at.
 
 ### Validation against real OVN and conntrack (after C8)

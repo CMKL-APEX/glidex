@@ -173,6 +173,19 @@ fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind,
 /// unchanged status is written to refresh it.
 const RECONCILED_STAMP_SECS: u64 = 600;
 
+/// What of a status is written at once (spec/14-clustering.md D27): all of
+/// it but the conditions' messages and reasons, with the conditions in
+/// kind order.
+fn acted_on(s: &VmStatus) -> VmStatus {
+    let mut s = s.clone();
+    for c in &mut s.conditions {
+        c.message.clear();
+        c.reason.clear();
+    }
+    s.conditions.sort_by(|a, b| a.kind.cmp(&b.kind));
+    s
+}
+
 /// The port a NIC gets: on its network's bridge, or, on a cluster network,
 /// on `br-int` as the logical port OVN knows (spec/14-clustering.md §11.3, §11.5).
 fn port_spec(
@@ -333,7 +346,21 @@ impl VmManager {
         if status.phase != cur.status.phase {
             status.phase_since = Some(now);
         }
-        if cur.status == status
+        // D27: a condition keeps its transition time while its status holds,
+        // also when the round cleared it and set it again.
+        for c in &mut status.conditions {
+            if let Some(old) = cur
+                .status
+                .conditions
+                .iter()
+                .find(|o| o.kind == c.kind && o.status == c.status)
+            {
+                c.last_transition_at = old.last_transition_at;
+            }
+        }
+        // D27: a change only to conditions' messages or reasons waits for the
+        // stamp; a status change of any condition is written at once.
+        if acted_on(&cur.status) == acted_on(&status)
             && events.is_empty()
             && now.saturating_sub(cur.status.last_reconciled_at) < RECONCILED_STAMP_SECS
         {
@@ -2328,6 +2355,42 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(db.revision(), before, "ten idle rounds wrote to the store");
+        // D27: a condition cleared and set again with the same status, or a
+        // change only to its message, waits for the stamp.
+        let cond = |status: Tristate, message: &str, at: u64| Condition {
+            kind: "HypervisorReachable".into(),
+            status,
+            reason: "Reachable".into(),
+            message: message.into(),
+            last_transition_at: at,
+        };
+        let mut st = manager.get_vm(&vm.id).await.unwrap().status;
+        st.conditions = vec![cond(Tristate::True, "", 1)];
+        manager
+            .write_status(&vm.id, vm.generation, st, vec![])
+            .await
+            .unwrap();
+        let before = db.revision();
+        for (i, message) in ["", "", "a new message"].into_iter().enumerate() {
+            let mut st = manager.get_vm(&vm.id).await.unwrap().status;
+            st.conditions = vec![cond(Tristate::True, message, 100 + i as u64)];
+            manager
+                .write_status(&vm.id, vm.generation, st, vec![])
+                .await
+                .unwrap();
+        }
+        assert_eq!(db.revision(), before, "condition bookkeeping wrote");
+        let stored = manager.get_vm(&vm.id).await.unwrap().status;
+        assert_eq!(stored.conditions[0].last_transition_at, 1);
+        // A condition's status change is written at once.
+        let mut st = stored;
+        st.conditions = vec![cond(Tristate::False, "", 200)];
+        manager
+            .write_status(&vm.id, vm.generation, st, vec![])
+            .await
+            .unwrap();
+        assert_eq!(db.revision(), before + 1);
+        let before = db.revision();
         // A real change is written.
         let mut changed = manager.get_vm(&vm.id).await.unwrap().status;
         changed.never_started = !changed.never_started;
