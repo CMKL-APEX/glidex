@@ -1463,6 +1463,59 @@ pub struct Export {
     pub closed_through: u64,
     pub hourly: Vec<(String, UsageRecord)>,
     pub slots: Vec<(String, SlotRow)>,
+    /// More parts of the same export follow ([`Export::split`]): the leader
+    /// merges the rows and leaves the node's cursor where it is.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub more: bool,
+}
+
+/// About the most row bytes one shipped part carries: well under the
+/// leader's request body limit (2 MiB) and a write set's 1 MiB, so a node
+/// that fell behind (a leader away for hours) still gets its rows across.
+pub const SHIP_PART_BYTES: usize = 256 * 1024;
+/// Parts a node sends in one round of its shipping loop: a backlog drains
+/// at about 2 MiB a minute rather than in one burst of Raft writes.
+pub const SHIP_PARTS_PER_ROUND: usize = 8;
+
+impl Export {
+    /// `self` in parts of at most about `max` bytes of rows each (a row
+    /// larger than that goes alone), in order: hourly rows, then slot rows.
+    /// Every part but the last has `more` set; with no rows there is one
+    /// part, which moves the cursor.
+    pub fn split(self, max: usize) -> Result<Vec<Export>, MeteringError> {
+        let Export {
+            started_at_ms,
+            closed_through,
+            hourly,
+            slots,
+            ..
+        } = self;
+        let empty = || Export {
+            started_at_ms,
+            closed_through,
+            more: true,
+            ..Default::default()
+        };
+        let mut parts = vec![empty()];
+        let mut size = 0;
+        let mut room = |n: usize, parts: &mut Vec<Export>| {
+            if size > 0 && size + n > max {
+                parts.push(empty());
+                size = 0;
+            }
+            size += n;
+        };
+        for (k, row) in hourly {
+            room(k.len() + serde_json::to_vec(&row)?.len(), &mut parts);
+            parts.last_mut().expect("one part").hourly.push((k, row));
+        }
+        for (k, row) in slots {
+            room(k.len() + serde_json::to_vec(&row)?.len(), &mut parts);
+            parts.last_mut().expect("one part").slots.push((k, row));
+        }
+        parts.last_mut().expect("one part").more = false;
+        Ok(parts)
+    }
 }
 
 /// What a node's shipping loop last had acknowledged (spec/14-clustering.md
@@ -1503,6 +1556,16 @@ impl Shipped {
             return Ok(None);
         }
         Ok(Some(Pending { position, slots }))
+    }
+
+    /// The leader has `part` of `p`'s export: its slot rows count as
+    /// acknowledged, so a backlog sent over several rounds moves on.
+    pub fn acked_part(&mut self, part: &Export, p: &Pending) {
+        for (k, _) in &part.slots {
+            if let Some(h) = p.slots.get(k) {
+                self.slots.insert(k.clone(), *h);
+            }
+        }
     }
 
     pub fn acked(&mut self, p: Pending) {
@@ -1569,7 +1632,22 @@ impl Ledger {
             closed_through: closed,
             hourly,
             slots,
+            more: false,
         })
+    }
+
+    /// The leader has `part` of an export, with more to come: forget its
+    /// hourly rows. Slot rows stay until the whole export is acknowledged.
+    pub fn ack_part(&self, part: &Export) -> Result<(), MeteringError> {
+        let txn = self.db.begin(crate::store::Origin::Metering)?;
+        {
+            let mut h = txn.open_table(HOURLY)?;
+            for (k, _) in &part.hourly {
+                h.remove(k.as_str())?;
+            }
+        }
+        txn.commit()?;
+        Ok(())
     }
 
     /// The leader has `e`: forget the hourly rows, and slots too old to change.
@@ -1598,7 +1676,8 @@ impl Ledger {
     /// in `ledger_inbox` is skipped; a new hourly row takes the next free
     /// sequence number for its subject and hour; slot rows replace (a node is
     /// the only writer of its subjects). Completeness (`closed_through`) is
-    /// the least any live node has closed.
+    /// the least any live node has closed; a part with `more` to come
+    /// leaves the node's cursor as it is.
     pub fn import(&self, node: &str, e: &Export) -> Result<usize, MeteringError> {
         let now = now_ms() / 1000;
         let mut added = 0;
@@ -1652,7 +1731,9 @@ impl Ledger {
                 let held = inbox
                     .get(cursor.as_str())?
                     .and_then(|v| serde_json::from_slice::<(u64, u64, u64)>(v.value()).ok());
-                if held.is_none_or(|(c, s, _)| (c, s) != (e.closed_through, e.started_at_ms)) {
+                if !e.more
+                    && held.is_none_or(|(c, s, _)| (c, s) != (e.closed_through, e.started_at_ms))
+                {
                     inbox.insert(
                         cursor.as_str(),
                         serde_json::to_vec(&(e.closed_through, e.started_at_ms, now))?.as_slice(),
@@ -2095,6 +2176,7 @@ mod tests {
             closed_through: closed,
             hourly: vec![],
             slots: slots.into_iter().map(|(k, r)| (k.to_string(), r)).collect(),
+            more: false,
         };
         let mut shipped = Shipped::default();
         let keys = |e: &Export| e.slots.iter().map(|(k, _)| k.clone()).collect::<Vec<_>>();
@@ -2227,6 +2309,141 @@ mod tests {
                 .iter()
                 .all(|r| r.written_at > 0)
         );
+    }
+
+    #[test]
+    fn a_backlog_ships_in_parts() {
+        let central_dir = tempfile::TempDir::new().unwrap();
+        let central_db = Arc::new(Db::create(central_dir.path().join("c.db")).unwrap());
+        let central = Ledger::attach(central_db.clone());
+        let n = crate::node::Node::new(
+            "a",
+            crate::node::NodeSpec {
+                name: "a".into(),
+                role: crate::node::NodeRole::Server,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
+            },
+        );
+        crate::node::NodeStore::new(central_db.clone())
+            .put(&n)
+            .unwrap();
+        // A node away from the leader for hours: many subjects, many hours.
+        let (_d, l) = ledger();
+        let subjects: Vec<Subject> = (0..20)
+            .map(|i| {
+                let id = format!("vm-{i}");
+                Subject::new(SubjectKind::Vm, &id, &id, Some("p1".into()))
+            })
+            .collect();
+        for h in 0..6u64 {
+            let mut r = l.begin_round(T0 + h * H + 30_000).unwrap();
+            for s in &subjects {
+                r.counter(
+                    s,
+                    "cpu.used",
+                    "run",
+                    h * 1000,
+                    T0 + h * H,
+                    Origin::ZeroAt(T0),
+                )
+                .unwrap();
+                r.counter(
+                    s,
+                    "net.rx_bytes",
+                    "run",
+                    h * 7000,
+                    T0 + h * H,
+                    Origin::ZeroAt(T0),
+                )
+                .unwrap();
+            }
+            l.commit(r).unwrap();
+        }
+        let mut r = l.begin_round(T0 + 10 * H).unwrap(); // closes the hours
+        for s in &subjects {
+            r.counter(s, "cpu.used", "run", 6000, T0 + 10 * H, Origin::Unknown)
+                .unwrap();
+            r.counter(
+                s,
+                "net.rx_bytes",
+                "run",
+                42_000,
+                T0 + 10 * H,
+                Origin::Unknown,
+            )
+            .unwrap();
+        }
+        l.commit(r).unwrap();
+        let mut export = l.export().unwrap();
+        assert!(!export.hourly.is_empty() && !export.slots.is_empty());
+        let mut shipped = Shipped::default();
+        let pending = shipped.trim(&mut export).unwrap().unwrap();
+
+        let max = 4096;
+        let parts = export.clone().split(max).unwrap();
+        assert!(parts.len() > 3, "{} parts", parts.len());
+        let size = |e: &Export| {
+            e.hourly
+                .iter()
+                .map(|(k, r)| k.len() + serde_json::to_vec(r).unwrap().len())
+                .chain(
+                    e.slots
+                        .iter()
+                        .map(|(k, r)| k.len() + serde_json::to_vec(r).unwrap().len()),
+                )
+                .sum::<usize>()
+        };
+        assert!(parts.iter().all(|p| size(p) <= max));
+        assert!(parts[..parts.len() - 1].iter().all(|p| p.more));
+        assert!(!parts.last().unwrap().more);
+        let keys = |e: &Export| {
+            e.hourly
+                .iter()
+                .map(|(k, _)| k.clone())
+                .chain(e.slots.iter().map(|(k, _)| k.clone()))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            parts.iter().flat_map(keys).collect::<Vec<_>>(),
+            keys(&export),
+            "every row once, in order"
+        );
+
+        // The parts before the last merge their rows and leave the cursor.
+        for p in &parts[..parts.len() - 1] {
+            central.import("a", p).unwrap();
+            l.ack_part(p).unwrap();
+            shipped.acked_part(p, &pending);
+            assert_eq!(central.complete_through().unwrap(), 0, "complete too early");
+        }
+        // What was acknowledged isn't sent again: the next try is smaller.
+        let mut again = l.export().unwrap();
+        shipped.trim(&mut again).unwrap().unwrap();
+        assert_eq!(keys(&again), keys(parts.last().unwrap()));
+        // The last part moves the cursor.
+        central.import("a", parts.last().unwrap()).unwrap();
+        l.ack_export(&export).unwrap();
+        shipped.acked(pending);
+        assert_eq!(central.complete_through().unwrap(), export.closed_through);
+        let total = |rows: &[UsageRecord], m: &str| {
+            rows.iter()
+                .map(|r| r.meters.get(m).copied().unwrap_or(0))
+                .sum::<u64>()
+        };
+        // Exactly what was exported (the open hour's share stays on the node).
+        let rows = central.scan(0, u64::MAX / 10, None).unwrap();
+        let shipped_rows: Vec<UsageRecord> = export.hourly.iter().map(|(_, r)| r.clone()).collect();
+        for m in ["cpu.used", "net.rx_bytes"] {
+            assert!(total(&shipped_rows, m) > 0);
+            assert_eq!(total(&rows, m), total(&shipped_rows, m), "{m}");
+        }
+        let mut done = l.export().unwrap();
+        assert!(shipped.trim(&mut done).unwrap().is_none(), "nothing left");
     }
 
     #[test]

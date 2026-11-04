@@ -1520,6 +1520,14 @@ every 30 s with nothing but cursors in it. Instead:
   sample changed it, and the leader's merge skips a row equal to the one
   it holds. Hourly rows are already shipped once and deleted when
   acknowledged.
+- **A backlog ships in parts.** A node that couldn't ship for a while
+  (no leader, a leader that refused it) has more rows than one request or
+  one write set (1 MiB) holds. It ships them in parts of about 256 KiB, at
+  most eight a minute, oldest rows first. The leader merges a part's rows
+  as they come; every part but the last says more follow, and the node's
+  cursor moves only with the last, so the ledger is never complete past
+  rows that haven't arrived. The node forgets a part's hourly rows when it
+  is acknowledged, so a backlog shrinks even if a later part fails.
 - **Nothing new, nothing shipped** (C9, D29): a node ships only when it
   has rows to send or its closed hour or start time moved; the leader's
   cursor for a node holds just those two, and the store makes no entry
@@ -2104,6 +2112,8 @@ Built (tests in `cluster/store_writes.rs`, `glidex-raftstore` `log_store.rs`):
 | `nodes` | 112 | 1.1% | 3 | 0 | 86 changed only `status.ui_url` |
 
 What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_transition_at`. The reconcile round clears that condition (`controller/vm.rs`, after observing the instance) and later sets it again, so it is a new condition with a new transition time every round, and the status never equals the stored one. That is §6.7's unexplained VM writes, and the fix for D27.
+
+**Found by the first measurement after C9** (2026-11-04, from log index 46,134): gpu-dev2's usage had not reached the cluster since 2026-11-03 09:12 +07, just after that morning's outage. Its backlog was more than one request holds, and the leader refused it every minute (`413 Payload Too Large`; a request that fit would still have been a write set over 1 MiB). Not acknowledged, the rows stayed, so the backlog only grew (`meter.db` 71 MB against under 0.5 MB on the other servers). Shipping now goes in parts (§13.1, `Export::split`; test `a_backlog_ships_in_parts`: the parts' sizes and order, no completeness before the last part, totals exact, an acknowledged part not sent again).
 
 Not yet:
 
