@@ -81,6 +81,18 @@ fn no_new_privs() -> Option<()> {
 
 #[tokio::main]
 async fn main() {
+    // `--store-writes <copy of raft/log.redb>` (spec/14-clustering.md §6.7): a
+    // report on the Raft log's writes, then exit; before the banner, so its
+    // output is only the report.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--store-writes") {
+            std::process::exit(glidex_control_plane::cluster::store_writes::run(
+                &args[i + 1..],
+            ));
+        }
+    }
+
     // Print startup banner
     print_banner();
 
