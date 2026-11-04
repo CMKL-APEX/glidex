@@ -628,6 +628,16 @@ gxctl audit --project web
 gxctl audit --user <user-id> --since 1767225600000   # Unix milliseconds
 ```
 
+Both show the newest entries. The **Audit** page shows 100 to a page,
+newest first: *Older* and *Newer* move between pages, and a column
+header sorts by that column (again, the other way). A sort by a column
+other than the time covers the newest 20,000 matching entries; the page
+says so when there are more: choose a project or a time to narrow it.
+The **Project** filter's first choice reads all of the log you may read:
+*All (cluster)*, or *All (my directory)* for someone of a hosted
+directory (below). `gxctl audit` prints the newest page oldest first,
+and the command for the page before it.
+
 `auditor` and `system-admin` read all of it; a project's owners read
 their project's. A [hosted
 directory](authentication.md#hosting-other-organizations-directories)

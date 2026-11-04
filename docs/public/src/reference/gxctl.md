@@ -239,7 +239,7 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `policy history <id>` | A policy's versions |
 | `policy delete <id>` | Delete after confirmation |
 | `policy reload` | Reload policies |
-| `audit [--project P \| --directory D] [--since <unix-ms>] [--limit N] [--user U]` | The audit log; `--directory`: a hosted directory's own log |
+| `audit [--project P \| --directory D] [--since <unix-ms>] [--limit N] [--user U] [--page <token>]` | The audit log's newest entries (default 500), printed oldest first; `--page`: the page before, as printed; `--directory`: a hosted directory's own log |
 
 Roles are written `owner` or `role.owner`; principals are `user:<id>`,
 `team:<id>` or `token:<id>`. Where a member or a project or tenant role

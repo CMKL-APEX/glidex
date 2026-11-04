@@ -855,7 +855,7 @@ fn print_help() {
     println!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
     println!(
         "  {} - Audit log",
-        "audit [--project P | --directory D] [--since <unix-ms>] [--limit N] [--user U]".cyan()
+        "audit [--project P | --directory D] [--since <unix-ms>] [--limit N] [--user U] [--page <token>]".cyan()
     );
     println!(
         "  {} - Resource usage (default: this billing month by project)",

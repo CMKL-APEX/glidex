@@ -1145,13 +1145,40 @@ export const deletePolicy = (id: string, version: number) =>
   rpc(PolicyService.method.deletePolicy, { id, version: String(version) }).then(none);
 
 /** `since` is Unix milliseconds. */
-export function readAudit(q: { project?: string; user?: string; since?: number; limit?: number }): Promise<AuditEntry[]> {
+/** A column the audit sorts by (spec/11-security.md decision 23). */
+export type AuditOrder = "time" | "user" | "action" | "project" | "target" | "source" | "result";
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  /** Empty on the last page. */
+  next: string;
+  /** A sort other than time stopped at its cap: narrow the filters. */
+  truncated: boolean;
+}
+
+/** One page of the audit, newest first unless `order`/`ascending` say otherwise (decision 22). */
+export function readAudit(q: {
+  project?: string;
+  user?: string;
+  since?: number;
+  limit?: number;
+  order?: AuditOrder;
+  ascending?: boolean;
+  page?: string;
+}): Promise<AuditPage> {
   return rpc(AuditService.method.readAudit, {
     project: q.project || undefined,
     user: q.user || undefined,
     since: q.since ? new Date(q.since).toISOString() : undefined,
     limit: q.limit || undefined,
-  }).then((r) => (r.entries ?? []) as AuditEntry[]);
+    order_by: q.order && q.order !== "time" ? q.order : undefined,
+    ascending: q.ascending || undefined,
+    page_token: q.page || undefined,
+  }).then((r) => ({
+    entries: (r.entries ?? []) as AuditEntry[],
+    next: r.next_page_token ?? "",
+    truncated: !!r.truncated,
+  }));
 }
 
 // ---- usage (spec/13-metering.md §9) ---------------------------------------------
