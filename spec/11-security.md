@@ -51,6 +51,8 @@ bullets of [09-networking.md §14](09-networking.md#14-security).
 | 19 | Browser-trusted certificates on a tailnet | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled` (granted by `TS_PERMIT_CERT_UID=glidex-ui`), chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs. UI only, port 5173; the control plane keeps its certificate ([21-tailscale-tls.md](21-tailscale-tls.md) §2). |
 | 20 | Client address behind a tunnel | `glidex-ui` takes the browser's address from one named header (`GLIDEX_UI_CLIENT_IP_HEADER`, such as Cloudflare's `CF-Connecting-IP`) **only from a loopback peer**: a tunnel daemon on the same host (`cloudflared`). From any other peer, or when unset, the address is the TCP peer's, as before. Off by default; one header, one address, no list of proxies. Anything that can connect to the UI over loopback can then choose its address in rate limits and audit, which is acceptable on a host whose local users are its administrators. |
 | 21 | Console tickets in a cluster | A server's console ticket is the **leader's**: a server that isn't the leader forwards `POST /vms/{id}/console/ticket` (and `CreateConsoleTicket`) to the leader, which keeps the ticket in memory, and the server that takes the WebSocket redeems it there (`/cluster/v1/console-ticket`, servers only). So the two requests may reach different servers, as they do behind a load balancer or tunnel replicas with no affinity, and a ticket still works once. No Raft write: a leader change in a ticket's 30 seconds drops it, and the user opens the console again. A standalone host keeps its tickets as before. |
+| 22 | Audit pages, newest first | `ReadAudit` (`GET /audit`) returns the **newest** matching entries first unless `order_by` says otherwise, at most `limit` (default 500, at most 5000) per page, with `next_page_token` for the next page; an empty token means no more. A time-ordered page reads the log's keys from one end and stops at `limit`, so it costs only the page. The token is opaque: it carries the order, the filters and where the last page stopped, and is refused with other filters. Before this, the oldest 500 came back, so a log past 500 entries hid its recent ones. |
+| 23 | Audit sorted by a column | `order_by` is one of `time` (default), `user`, `action`, `project`, `target`, `source`, `result`, with `ascending` (default false: newest or Z–A first); ties go newest first. Any order but time gathers the filter's matches, **at most 20,000**, sorts them on the server and pages through them; the response says `truncated` when the cap stopped it, and the UI says to narrow the filters (a `since` or a project). The cap bounds one request's work; the log is kept 90 days. |
 
 ## 3. Threat model
 
@@ -1206,6 +1208,12 @@ connect` uses the API's console WebSocket instead of the raw socket.
   logged only for an allowlist of non-secret fields.
 - `GET /audit?project=&user=&since=` needs `system.audit`, or
   `project.members` for that project's entries.
+- Pages (decisions 22, 23): newest first by default; `order_by` and
+  `ascending` sort by another column; `page_token` continues a page.
+  The web UI's Audit page pages with *Older* and *Newer*, sorts by a
+  column header, and names what *All* covers: *All (cluster)* for a
+  cluster audit reader, *All (my directory)* for a hosted directory's
+  reader (that directory's own audit, D74 of 19-tenancy).
 - Usage exports (`GET /usage?format=csv`) are audited although they are
   reads (`details.export = "csv"`): a bulk export of tenant data.
 

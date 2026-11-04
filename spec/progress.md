@@ -19,6 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
+| Security | [11-security.md](11-security.md) §10, decisions 22–23 | `spec/audit-pages` → `feat/audit-pages` | The audit newest first, paged, sorted by a column; the Audit page's *All* named |
 | Clustering | [14-clustering.md](14-clustering.md) §6.7, C9 | `spec/clustering-c9-d29` → `feat/clustering-c9-measure` → … | Store diet: cluster, host and history tiers (D26); VM bookkeeping at most every 10 minutes (D27); slot rows shipped and merged only when changed (D28); no Raft entry for a write that changes nothing (D29); the measurement as a command (`--store-writes`) |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
