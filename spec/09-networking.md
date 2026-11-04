@@ -1,7 +1,8 @@
 # VM Networking with Open vSwitch (DPDK / AF_XDP)
 
-**Status: implemented (M1–M9); M9's real check on a pilot GPU host
-not run yet.** All
+**Status: implemented (M1–M9); M9 checked on prism1's eight IPoIB
+ports (2026-11-04); hyperstor's check with endpoints and a host with
+strict `rp_filter` not run yet.** All
 design questions are decided (§1).
 This document is the implementation spec: component boundaries, wire
 protocol, data models, host commands, and milestones with acceptance
@@ -23,7 +24,7 @@ protocol/client library), control-plane `network.rs`; packaging in
 | M6 bridged | yes | `bridged_uplink_e2e`: refused, rolled back, committed, VM on LAN, restored |
 | M7 DPDK / vhost-user | yes | `vhost_user_e2e` on OVS-DPDK 25.11.0 (no DPDK *NIC* uplink: no IOMMU on the test host) |
 | M8 AF_XDP + source build | yes | `afxdp_uplink_e2e` (generic mode, veth); the source build is unit-tested only |
-| M9 source routes (§8.6) | `glidex-ovs` `srcroute.rs` (plan, apply, report; 17 unit tests); netd: `source_routes` config and start check, `source_tables`/`arp_saved`, the start pass (before the OVS check), the `ip monitor address` watcher and 60 s pass, `list_source_routes` (4 tests); the installer's `rt_protos.d` file; `GET /ovs/status` `source_routes` (API test) and the host page's **Ports that share a subnet** card (UI e2e, mocked) | `in_a_network_namespace` (ignored, root, Linux 6.8): two veth ports in one subnet, each address answers out of its own port, ARP settings set and restored. The netd binary in a namespace (2026-11-03): rules at start, a new address's rule within a second, a removed address's rule deleted, `list_source_routes` over the socket |
+| M9 source routes (§8.6) | `glidex-ovs` `srcroute.rs` (plan, apply, report; 17 unit tests); netd: `source_routes` config and start check, `source_tables`/`arp_saved`, the start pass (before the OVS check), the `ip monitor address` watcher and 60 s pass, `list_source_routes` (4 tests); the installer's `rt_protos.d` file; `GET /ovs/status` `source_routes` (API test) and the host page's **Ports that share a subnet** card (UI e2e, mocked) | `in_a_network_namespace` (ignored, root, Linux 6.8): two veth ports in one subnet, each address answers out of its own port, ARP settings set and restored. The netd binary in a namespace (2026-11-03): rules at start, a new address's rule within a second, a removed address's rule deleted, `list_source_routes` over the socket. On prism1 (2026-11-04, main at `3f9bdf0`; Linux 6.8, eight IPoIB ports in one /24, `rp_filter` 2): before, every address's traffic left by one port; with the subnet in `netd.json`, the start pass added eight tables (4200–4207) and rules, `ip route get` and pings to a peer (20 from each address, all answered) left by each address's own port, a rule deleted by hand was back within 30 s, and `list_source_routes` reported every address `ok`. hyperstor's `check` passes but has no endpoints there, so its rule check didn't run |
 
 End-to-end tests are `#[ignore]`d in
 `crates/glidex-control-plane/tests/functional_tests.rs` and need a root
@@ -767,7 +768,9 @@ an endpoint without a rule, and its D216 leaves the rules to netd.
 On prism1 (Linux 6.8), in a network namespace with two veth ports and no
 rules, strict filtering did *not* drop what arrived on the second port
 (the reverse-path drop counter stayed at 0); only the outbound part
-reproduced. Whether the pilot's IPoIB hosts drop is for M9's real check.
+reproduced. prism1's IPoIB ports use loose filtering (`rp_filter` 2),
+so its check (§0) showed the outbound fix only; whether a host with
+strict filtering drops is still to be seen on one.
 Any service that binds one of those addresses has the same problem.
 
 These ports aren't OVS uplinks: netd adds nothing to OVS here. It
