@@ -2107,7 +2107,7 @@ What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_tr
 
 Not yet:
 
-- The measurement after C9, on the test cluster, against C9's acceptance.
+- The measurement after C9, against C9's acceptance: not run yet. C9 was installed on the prism cluster (main at `c8e2a83`) on 2026-11-04 at 16:24 +07; the measurement takes the log from index 46,134 (`--since 46134`).
 - Why a node's `status.ui_url` changed 86 times: not looked at.
 
 ### Validation against real OVN and conntrack (after C8)
