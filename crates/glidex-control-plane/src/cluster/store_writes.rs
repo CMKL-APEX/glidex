@@ -620,8 +620,11 @@ mod tests {
         assert_eq!(r.origins[0].origin, "controller");
         // Nothing of a key or a value in the report.
         let text = r.render() + &serde_json::to_string(&r).unwrap();
-        for secret in ["vm-1", "0000003600", "Running", "example.com"] {
-            assert!(!text.contains(secret), "{secret} in the report");
+        for fixture in ["vm-1", "0000003600", "Running", "example.com"] {
+            assert!(
+                !text.contains(fixture),
+                "a fixture's key or value in the report"
+            );
         }
     }
 
