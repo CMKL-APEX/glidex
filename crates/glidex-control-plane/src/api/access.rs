@@ -1222,6 +1222,13 @@ pub struct AuditQuery {
     /// A hosted directory's own audit (spec/19-tenancy.md D74).
     #[serde(default)]
     directory: Option<String>,
+    /// Pages (spec/11-security.md decisions 22, 23).
+    #[serde(default)]
+    order_by: Option<String>,
+    #[serde(default)]
+    ascending: Option<bool>,
+    #[serde(default)]
+    page_token: Option<String>,
 }
 
 /// `GET /audit` → `{entries}`.
@@ -1242,6 +1249,9 @@ pub async fn read_audit(
         user: q.user,
         limit: q.limit,
         directory: q.directory,
+        order_by: q.order_by,
+        ascending: q.ascending,
+        page_token: q.page_token,
         ..Default::default()
     };
     Ok(Proto(StatusCode::OK, acc::read_audit(&c, req)?))

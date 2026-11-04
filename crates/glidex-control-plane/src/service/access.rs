@@ -2122,7 +2122,8 @@ pub fn read_audit(call: &Call, req: pb::ReadAuditRequest) -> ServiceResult<pb::R
         (req.project.is_none() && crate::auth::is_hosted(&mine)).then_some(mine)
     });
     if let Some(dir) = directory.filter(|d| crate::auth::is_hosted(d)) {
-        return read_directory_audit(call, &req, &dir);
+        require_directory_audit(call, &dir)?;
+        return audit_pages(call, &req, Some(&dir), req.project.clone());
     }
     let project = match &req.project {
         Some(p) => Some(call.target_project(Some(p))?),
@@ -2140,37 +2141,13 @@ pub fn read_audit(call: &Call, req: pb::ReadAuditRequest) -> ServiceResult<pb::R
             None => call.require_action("readAudit", Ent::Cluster, EntitySet::new(), &[])?,
         }
     }
-    let since_ms = req
-        .since
-        .as_option()
-        .map(|t| (t.seconds.max(0) as u64) * 1000 + (t.nanos.max(0) as u64) / 1_000_000)
-        .unwrap_or(0);
-    let limit = req.limit.map(|l| l as usize).unwrap_or(500).min(5000);
-    let entries = call
-        .auth()
-        .store
-        .audit(since_ms, limit, |e| {
-            project
-                .as_ref()
-                .is_none_or(|p| e.project.as_deref() == Some(p.as_str()))
-                && req.user.as_ref().is_none_or(|u| {
-                    e.principal.get("user").and_then(|v| v.as_str()) == Some(u.as_str())
-                })
-        })
-        .map_err(store_err)?;
-    Ok(pb::ReadAuditResponse {
-        entries: entries.iter().map(audit_pb).collect(),
-        ..Default::default()
-    })
+    audit_pages(call, &req, None, project)
 }
 
-/// Hosted directory `dir`'s own audit (D74): its directory readers' only;
-/// the host's operator sees that a directory exists, not what is in it.
-fn read_directory_audit(
-    call: &Call,
-    req: &pb::ReadAuditRequest,
-    dir: &str,
-) -> ServiceResult<pb::ReadAuditResponse> {
+/// Hosted directory `dir`'s own audit (D74) is its directory readers'
+/// only; the host's operator sees that a directory exists, not what is in
+/// it.
+fn require_directory_audit(call: &Call, dir: &str) -> ServiceResult<()> {
     if call
         .auth()
         .tenants
@@ -2192,26 +2169,191 @@ fn read_directory_audit(
         EntitySet::new(),
         &[],
     )?;
-    let since_ms = req
+    Ok(())
+}
+
+/// The orders of `ReadAudit` (decision 23).
+const AUDIT_ORDERS: [&str; 7] = [
+    "time", "user", "action", "project", "target", "source", "result",
+];
+
+/// Most matches an order other than time sorts (decision 23).
+const AUDIT_SORT_CAP: usize = 20_000;
+
+/// Where a page of the audit stopped: the order and filters it was asked
+/// with, and the last key of a time-ordered page or how many entries of
+/// another order came before the next.
+#[derive(serde::Serialize, serde::Deserialize, PartialEq)]
+struct AuditCursor {
+    order: String,
+    ascending: bool,
+    directory: Option<String>,
+    project: Option<String>,
+    user: Option<String>,
+    since: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key: Option<String>,
+    #[serde(default)]
+    skip: usize,
+}
+
+impl AuditCursor {
+    fn encode(&self) -> String {
+        use base64::Engine;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(serde_json::to_vec(self).unwrap_or_default())
+    }
+
+    fn decode(token: &str) -> Option<Self> {
+        use base64::Engine;
+        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .decode(token)
+            .ok()?;
+        serde_json::from_slice(&json).ok()
+    }
+}
+
+/// An entry's value in column `order`, as the Audit page shows it.
+fn audit_column(order: &str, e: &auth::store::AuditEntry) -> Option<String> {
+    let s = |v: Option<&str>| v.unwrap_or_default().to_string();
+    Some(match order {
+        "user" => {
+            let p = &e.principal;
+            s(p.get("name")
+                .or_else(|| p.get("system"))
+                .or_else(|| p.get("user"))
+                .and_then(|v| v.as_str()))
+        }
+        "action" => e.action.clone(),
+        "project" => s(e.project.as_deref()),
+        "target" => s(e.target.as_deref()),
+        "source" => e.source.clone(),
+        "result" => e.result.clone(),
+        _ => return None,
+    })
+}
+
+/// One page of the cluster's audit or of hosted directory `dir`'s
+/// (decisions 22, 23): newest first unless asked otherwise.
+fn audit_pages(
+    call: &Call,
+    req: &pb::ReadAuditRequest,
+    dir: Option<&str>,
+    project: Option<String>,
+) -> ServiceResult<pb::ReadAuditResponse> {
+    let since = req
         .since
         .as_option()
         .map(|t| (t.seconds.max(0) as u64) * 1000 + (t.nanos.max(0) as u64) / 1_000_000)
         .unwrap_or(0);
-    let limit = req.limit.map(|l| l as usize).unwrap_or(500).min(5000);
-    let entries = call
-        .auth()
-        .store
-        .directory_audit(dir, since_ms, limit, |e| {
-            req.project
-                .as_ref()
-                .is_none_or(|p| e.project.as_deref() == Some(p.as_str()))
-                && req.user.as_ref().is_none_or(|u| {
-                    e.principal.get("user").and_then(|v| v.as_str()) == Some(u.as_str())
-                })
-        })
-        .map_err(store_err)?;
+    let limit = req.limit.map(|l| l as usize).unwrap_or(500).clamp(1, 5000);
+    let order = req
+        .order_by
+        .clone()
+        .filter(|o| !o.is_empty())
+        .unwrap_or_else(|| "time".into());
+    if !AUDIT_ORDERS.contains(&order.as_str()) {
+        return Err(bad(format!(
+            "order_by is one of time, user, action, project, target, source, result, not {order}"
+        )));
+    }
+    let mut cursor = AuditCursor {
+        order,
+        ascending: req.ascending.unwrap_or(false),
+        directory: dir.map(str::to_string),
+        project,
+        user: req.user.clone(),
+        since,
+        key: None,
+        skip: 0,
+    };
+    if let Some(token) = req.page_token.as_deref().filter(|t| !t.is_empty()) {
+        let c =
+            AuditCursor::decode(token).ok_or_else(|| bad("page_token is not an audit page's"))?;
+        let asked = AuditCursor {
+            key: c.key.clone(),
+            skip: c.skip,
+            ..cursor
+        };
+        if c != asked {
+            return Err(bad(
+                "page_token was made with other filters or another order",
+            ));
+        }
+        cursor = asked;
+    }
+    let filter = |e: &auth::store::AuditEntry| {
+        cursor
+            .project
+            .as_ref()
+            .is_none_or(|p| e.project.as_deref() == Some(p.as_str()))
+            && cursor.user.as_ref().is_none_or(|u| {
+                e.principal.get("user").and_then(|v| v.as_str()) == Some(u.as_str())
+            })
+    };
+    let store = &call.auth().store;
+    let (entries, next, truncated) = if cursor.order == "time" {
+        let mut page = store
+            .audit_page(
+                dir,
+                since,
+                cursor.key.as_deref(),
+                cursor.ascending,
+                limit + 1,
+                filter,
+            )
+            .map_err(store_err)?;
+        let more = page.len() > limit;
+        page.truncate(limit);
+        let next = more.then(|| page.last().map(|(k, _)| k.clone())).flatten();
+        let next = next.map(|key| {
+            AuditCursor {
+                key: Some(key),
+                ..cursor
+            }
+            .encode()
+        });
+        (
+            page.into_iter().map(|(_, e)| e).collect::<Vec<_>>(),
+            next,
+            false,
+        )
+    } else {
+        // Newest first, so a stable sort leaves ties newest first.
+        let mut all = store
+            .audit_page(dir, since, None, false, AUDIT_SORT_CAP + 1, filter)
+            .map_err(store_err)?;
+        let truncated = all.len() > AUDIT_SORT_CAP;
+        all.truncate(AUDIT_SORT_CAP);
+        let mut keyed: Vec<_> = all
+            .into_iter()
+            .map(|(_, e)| (audit_column(&cursor.order, &e).unwrap_or_default(), e))
+            .collect();
+        keyed.sort_by(|a, b| {
+            let o = a.0.cmp(&b.0);
+            if cursor.ascending { o } else { o.reverse() }
+        });
+        let skip = cursor.skip;
+        let more = keyed.len() > skip + limit;
+        let page: Vec<_> = keyed
+            .into_iter()
+            .skip(skip)
+            .take(limit)
+            .map(|(_, e)| e)
+            .collect();
+        let next = more.then(|| {
+            AuditCursor {
+                skip: skip + limit,
+                ..cursor
+            }
+            .encode()
+        });
+        (page, next, truncated)
+    };
     Ok(pb::ReadAuditResponse {
         entries: entries.iter().map(audit_pb).collect(),
+        next_page_token: next.unwrap_or_default(),
+        truncated,
         ..Default::default()
     })
 }

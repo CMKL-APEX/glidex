@@ -1432,11 +1432,13 @@ pub async fn audit(client: &ApiClient, args: &[&str]) {
         };
         req.limit = Some(n);
     }
+    // The newest page, printed oldest first like a log; `--page` goes back.
+    req.page_token = flag_value(args, "--page").map(str::to_string);
     let svc = svc!(client, AuditServiceClient);
-    match svc.read_audit(req).await.map(|r| r.into_owned().entries) {
-        Ok(es) if es.is_empty() => println!("No audit entries."),
-        Ok(es) => {
-            for e in es {
+    match svc.read_audit(req).await.map(|r| r.into_owned()) {
+        Ok(r) if r.entries.is_empty() => println!("No audit entries."),
+        Ok(r) => {
+            for e in r.entries.iter().rev() {
                 let principal = serde_json::to_value(e.principal.as_option()).unwrap_or_default();
                 let details = serde_json::to_value(e.details.as_option()).unwrap_or_default();
                 let who = principal["name"]
@@ -1462,6 +1464,12 @@ pub async fn audit(client: &ApiClient, args: &[&str]) {
                     result,
                     e.target.as_deref().unwrap_or(""),
                     details["http"].as_str().unwrap_or("").dimmed()
+                );
+            }
+            if !r.next_page_token.is_empty() {
+                println!(
+                    "{}",
+                    format!("Older entries: add --page {}", r.next_page_token).dimmed()
                 );
             }
         }

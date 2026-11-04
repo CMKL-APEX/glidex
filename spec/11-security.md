@@ -1451,6 +1451,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Client address behind a tunnel (decision 20) | `crates/glidex-ui/src/main.rs` (`client_addr`, test `the_client_ip_header_counts_from_loopback_only`) |
 | Tailscale certificates for the UI (decision 19) | UI: `crates/glidex-tls/src/tailscale.rs` (local API client, polling; shared with hyperstor's management service), `crates/glidex-ui/src/main.rs` (`Host`, HSTS); same-origin rule `api/mod.rs` `ui_same_origin`. Installer: `crates/glidex-install/src/tailscale.rs` ([21-tailscale-tls.md](21-tailscale-tls.md) §4.6) |
 | Console tickets in a cluster (decision 21) | `api/gate.rs` (`is_console_ticket`: issued on the leader), `cluster/server.rs` (`/cluster/v1/console-ticket`), `Cluster::redeem_console_ticket`, `service::vm::console_target`; test `console_tickets_are_the_leaders_and_redeemed_once_from_any_server` |
+| Audit pages and sorts (decisions 22, 23) | `auth/store.rs` (`audit_page`), `service/access.rs` (`audit_pages`, `AuditCursor`), gxctl `audit --page`, UI `pages/Audit.tsx`; tests `the_audit_pages_newest_first_and_sorts_by_a_column`, `an_audit_page_stays_in_its_directory_and_goes_both_ways`, UI e2e `audit-pages.spec.ts` |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |

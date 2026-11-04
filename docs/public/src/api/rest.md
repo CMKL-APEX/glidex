@@ -164,7 +164,11 @@ Lists return everything you may see in one answer, except:
 - `GET /tenants`: `page_size`, `page_token`; the answer has
   `next_page_token`.
 - `GET /audit`: `since`, `limit` (default 500, at most 5000),
-  `project`, `user`, `directory`.
+  `project`, `user`, `directory`; newest first. `order_by` (`time`,
+  `user`, `action`, `project`, `target`, `source`, `result`) and
+  `ascending=true` sort otherwise; an order other than `time` sorts at
+  most 20,000 matches and the answer has `truncated: true` past that.
+  `page_token`; the answer has `next_page_token`, with the same filters.
 
 ### Live changes: `GET /watch`
 
@@ -526,7 +530,7 @@ UI's Host pages send it.
 | `POST` | `/authz/validate` | Check a policy without saving it |
 | `POST` | `/authz/simulate` | Decide requests under the current policies plus proposed changes |
 | `POST` | `/authz/reload` | Reload policies |
-| `GET` | `/audit` | The audit log (`since`, `limit`, `project`, `user`; `directory`: a hosted directory's own log) |
+| `GET` | `/audit` | The audit log, newest first (`since`, `limit`, `project`, `user`, `order_by`, `ascending`, `page_token`; `directory`: a hosted directory's own log) |
 
 ### Tenants and login connectors
 

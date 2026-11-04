@@ -1485,6 +1485,66 @@ impl IdentityStore {
         Ok(out)
     }
 
+    /// One page of the cluster's audit, or of hosted directory `dir`'s
+    /// (spec/11-security.md decision 22): entries at or after `since`,
+    /// newest first unless `oldest_first`, past `after` (the last key of
+    /// the page before), at most `limit`, each with its key.
+    pub fn audit_page(
+        &self,
+        dir: Option<&str>,
+        since: u64,
+        after: Option<&str>,
+        oldest_first: bool,
+        limit: usize,
+        filter: impl Fn(&AuditEntry) -> bool,
+    ) -> Result<Vec<(String, AuditEntry)>, StoreError> {
+        use std::ops::Bound;
+        // A directory's keys sort before the next byte after its `/`.
+        let (table, prefix, end) = match dir {
+            Some(d) => (DIRECTORY_AUDIT, format!("{d}/"), Some(format!("{d}0"))),
+            None => (AUDIT, String::new(), None),
+        };
+        let start = format!("{prefix}{:016}", since);
+        let (lower, upper) = match after {
+            Some(a) if oldest_first && a >= start.as_str() => (Bound::Excluded(a), None),
+            Some(a) if !oldest_first => {
+                if a <= start.as_str() {
+                    return Ok(Vec::new());
+                }
+                (Bound::Included(start.as_str()), Some(Bound::Excluded(a)))
+            }
+            _ => (Bound::Included(start.as_str()), None),
+        };
+        let upper = upper.unwrap_or(match &end {
+            Some(e) => Bound::Excluded(e.as_str()),
+            None => Bound::Unbounded,
+        });
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(table) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let range = t.range::<&str>((lower, upper))?;
+        let entries: Box<dyn Iterator<Item = _>> = if oldest_first {
+            Box::new(range)
+        } else {
+            Box::new(range.rev())
+        };
+        let mut out = Vec::new();
+        for e in entries {
+            let (k, v) = e?;
+            let entry: AuditEntry = serde_json::from_slice(v.value())?;
+            if filter(&entry) {
+                out.push((k.value().to_string(), entry));
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Remove hosted directory `dir`'s audit (the directory is deleted).
     pub fn remove_directory_audit(&self, dir: &str) -> Result<usize, StoreError> {
         let prefix = format!("{dir}/");
@@ -2066,6 +2126,55 @@ mod tests {
         assert_eq!(s.audit(1500, 10, |_| true).unwrap().len(), 2);
         assert_eq!(s.prune_audit(2500).unwrap(), 2);
         assert_eq!(s.audit(0, 10, |_| true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_audit_page_stays_in_its_directory_and_goes_both_ways() {
+        let (s, _d) = store();
+        let entry = |t: u64, action: &str| AuditEntry {
+            time: t,
+            request_id: "r".into(),
+            principal: serde_json::json!({"user": "u"}),
+            source: "test".into(),
+            action: action.into(),
+            project: None,
+            target: None,
+            result: "ok".into(),
+            error_code: None,
+            policies: vec![],
+            details: serde_json::Value::Null,
+        };
+        // `a` sorts before `a0` and `a/`'s keys before `a0/`'s.
+        for (dir, t, action) in [("a", 1000, "a1"), ("a", 2000, "a2"), ("a0", 3000, "b1")] {
+            s.append_directory_audit(dir, &entry(t, action)).unwrap();
+        }
+        let actions = |page: Vec<(String, AuditEntry)>| -> Vec<String> {
+            page.into_iter().map(|(_, e)| e.action).collect()
+        };
+        let newest = s
+            .audit_page(Some("a"), 0, None, false, 10, |_| true)
+            .unwrap();
+        let last = newest[0].0.clone();
+        assert_eq!(actions(newest), ["a2", "a1"]);
+        assert_eq!(
+            actions(
+                s.audit_page(Some("a"), 0, Some(&last), false, 10, |_| true)
+                    .unwrap()
+            ),
+            ["a1"]
+        );
+        assert_eq!(
+            actions(
+                s.audit_page(Some("a"), 0, None, true, 10, |_| true)
+                    .unwrap()
+            ),
+            ["a1", "a2"]
+        );
+        assert!(
+            s.audit_page(None, 0, None, false, 10, |_| true)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
