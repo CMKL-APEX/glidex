@@ -5202,6 +5202,85 @@ async fn a_standalone_ui_targets_only_itself_and_publishes_a_custom_address() {
     );
 }
 
+/// W3 across a restart (a one-server cluster): a server keeps the address it last published
+/// until glidex-ui reports one, so glidex-ui reporting the same address
+/// again writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_restart_keeps_the_published_ui_address() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let host = new_cp();
+    manage::init(
+        &host.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(host.addr),
+            tunnel_ip: None,
+            listen: Some(host.addr),
+        },
+    )
+    .await
+    .unwrap();
+    host.manager.initialize().await.unwrap();
+    let ui_with_fallback = |cp: &Cp| {
+        let mut cfg = Config {
+            ui_user: nix::unistd::User::from_uid(nix::unistd::getuid())
+                .unwrap()
+                .unwrap()
+                .name,
+            ..Default::default()
+        };
+        cfg.auth.allowed_origins = vec!["https://fallback.example".into()];
+        let auth =
+            glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg)
+                .unwrap();
+        glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App {
+            manager: cp.manager.clone(),
+            auth,
+        }))
+    };
+    let reported = json!({"url": "https://host1.example.ts.net:5173"});
+    let ui = ui_with_fallback(&host);
+    assert_eq!(
+        host.manager.ui_url().as_deref(),
+        Some("https://fallback.example"),
+        "nothing published yet: the first allowed origin"
+    );
+    let (s, _, v) = via_ui_with(&ui, "PUT", "/ui/self", &[], Some(reported.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The changed address is written by a self-report of its own.
+    let me = host.manager.local_node_id();
+    let published = || {
+        host.manager
+            .nodes()
+            .get(&me)
+            .unwrap()
+            .filter(|n| n.status.ui_url.as_deref() == Some("https://host1.example.ts.net:5173"))
+    };
+    wait_for("the reported address to be published", || async {
+        published().is_some()
+    })
+    .await;
+    let before = published().unwrap();
+
+    // A restart builds the router again over the same store.
+    let ui = ui_with_fallback(&host);
+    assert_eq!(
+        host.manager.ui_url().as_deref(),
+        Some("https://host1.example.ts.net:5173"),
+        "the published address stands, not the fallback"
+    );
+    host.manager.report_self().unwrap();
+    let (s, _, v) = via_ui_with(&ui, "PUT", "/ui/self", &[], Some(reported)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    host.manager.report_self().unwrap();
+    let after = host.manager.nodes().get(&me).unwrap().unwrap();
+    assert_eq!(
+        after.meta.resource_version, before.meta.resource_version,
+        "the node record is not written again"
+    );
+}
+
 /// spec/16-clustering-ui.md §8a: OVN as a cluster setting. Enabling is refused
 /// while a node lacks OVN, reaches an agent without a restart, and can't be
 /// undone while a cluster network exists; a cluster enabled by its file is

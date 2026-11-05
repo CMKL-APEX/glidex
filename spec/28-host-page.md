@@ -53,7 +53,10 @@ PUT /ui/self {"url": "https://gpu-dev2.example.ts.net:5173"}
   (`ui_peer_ok`), as for every `ui.sock` request. It is not an API route
   (no user, no audit). It keeps the reported URL in memory. A server
   writes `status.ui_url` (W3) through its node self-report
-  (`VmManager::report_self`), and only when the URL changes.
+  (`VmManager::report_self`), and only when the URL changes. Until
+  glidex-ui reports after a start, the server keeps the address it
+  published before (W3's third choice only when it published none), so
+  a restart writes nothing for it.
 - glidex-ui keeps the last answer. If the control plane is unreachable,
   it keeps using that answer, and a host that never got one serves
   normally (a standalone host, or a node before it joins). A host that
