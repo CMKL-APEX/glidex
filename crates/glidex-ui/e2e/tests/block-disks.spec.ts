@@ -18,6 +18,10 @@ function disk(id: string, name: string, extra: Record<string, unknown> = {}) {
 
 async function mock(page: Page): Promise<Seen> {
   const seen: Seen = [];
+  // The mocked VM and disks aren't the server's: everything is allowed on them.
+  await rpcRoute(page, "glidex.access.v1.AuthzService/Allowed", (req) =>
+    ok({ allowed: (req.resources ?? []).map(() => ({ actions: req.actions ?? [] })) }),
+  );
   // No live stream: the pages poll, so the mocks are what they see.
   await rpcRoute(page, "glidex.watch.v1.WatchService/Watch", () => ({
     error: { code: RpcCode.UNAVAILABLE, reason: "too_many_watchers", message: "poll", httpStatus: 503 },
