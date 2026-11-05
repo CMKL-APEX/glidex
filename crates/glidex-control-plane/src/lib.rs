@@ -29,5 +29,7 @@ pub mod state;
 pub mod store;
 pub mod tenancy;
 pub mod tenants;
+#[cfg(test)]
+pub(crate) mod test_script;
 pub mod topology;
 pub mod trust;

@@ -1598,19 +1598,16 @@ mod tests {
     /// busy.
     #[test]
     fn regions_go_through_hyperstorctl() {
-        use std::os::unix::fs::PermissionsExt;
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("args");
         let ctl = tmp.path().join("hyperstorctl");
-        std::fs::write(
+        crate::test_script::write_script(
             &ctl,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$@\" >> {log}\ncase \"$*\" in *read-volume*) shift 11; head -c 8 /dev/zero > \"$1\";; esac\ncase \"$*\" in *busy*) echo 'the volume is attached by client instance 1' >&2; exit 1;; esac\n",
                 log = log.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let vol = "0123456789abcdef0123456789abcdef";
         let p = PathBuf::from(tool_path("m:1", vol));
         let out = tmp.path().join("out");
