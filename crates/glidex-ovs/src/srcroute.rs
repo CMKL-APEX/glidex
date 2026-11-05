@@ -1394,9 +1394,8 @@ mod tests {
 
     /// Real routing, inside a network namespace of its own: two veth ports
     /// in one subnet, bridged to a peer namespace, with strict reverse-path
-    /// filtering. (On Linux 6.8 strict filtering didn't drop here even
-    /// without rules; the test shows each address answering out of its own
-    /// port, which it doesn't without them.) As root:
+    /// filtering: each address answers out of its own port, and without its
+    /// rule the second address's traffic is dropped. As root:
     ///
     /// ```text
     /// ip netns add gxsr && ip netns exec gxsr <test binary> --ignored in_a_network_namespace; ip netns del gxsr
@@ -1452,8 +1451,13 @@ mod tests {
             ip(&a);
         }
         // Known ARP settings to restore: a namespace inherits the host's defaults.
+        // The kernel filters by the higher of `all` and the port's own value,
+        // and both start at the host's (often 2, loose): strict means `all` 0
+        // and the ports 1.
         for set in [
-            "net/ipv4/conf/all/rp_filter=1",
+            "net/ipv4/conf/all/rp_filter=0",
+            "net/ipv4/conf/a0/rp_filter=1",
+            "net/ipv4/conf/a1/rp_filter=1",
             "net/ipv4/conf/a0/arp_ignore=0",
             "net/ipv4/conf/a1/arp_ignore=0",
             "net/ipv4/conf/a0/arp_announce=0",
@@ -1497,10 +1501,13 @@ mod tests {
         );
 
         // Without its rule, .6 answers out of a0, the main table's first
-        // route to the subnet; the next pass puts the rule back.
+        // route to the subnet, and strict filtering drops what reaches it on
+        // a1; the next pass puts the rule back.
         ip(&["-4", "rule", "del", "from", "10.40.1.6", "priority", "1000"]);
         let out = ip(&["-4", "route", "get", "10.40.1.100", "from", "10.40.1.6"]).stdout_str();
         assert!(out.contains("dev a0"), "without the rule: {out}");
+        let ping = in_peer(&["ping", "-c", "2", "-W", "1", "10.40.1.6"]);
+        assert_ne!(ping.status, 0, "without the rule: {}", ping.stdout_str());
         let p = plan(&cfg, &observe(&exec).unwrap(), &again.state);
         assert_eq!(
             cmds(&p),
@@ -1509,6 +1516,8 @@ mod tests {
         assert_eq!(apply(&exec, &p.actions), Vec::<String>::new());
         let out = ip(&["-4", "route", "get", "10.40.1.100", "from", "10.40.1.6"]).stdout_str();
         assert!(out.contains("dev a1"), "with the rule again: {out}");
+        let ping = in_peer(&["ping", "-c", "2", "-W", "2", "10.40.1.6"]);
+        assert_eq!(ping.status, 0, "with the rule again: {}", ping.stdout_str());
 
         // An address that goes loses its rule, and its port its ARP settings.
         ip(&["addr", "del", "10.40.1.6/24", "dev", "a1"]);
