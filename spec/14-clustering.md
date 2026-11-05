@@ -669,8 +669,8 @@ leader is known, or the term moved since the last check. An applied
 entry clears the trouble. Trouble not cleared for 10 election timeouts
 is a stall, dated from the first trouble:
 
-- The journal gets a warning, `the Raft log has applied nothing since
-  <time>`, with the term, the leader (or none) and how many entries
+- The journal gets a warning, `the Raft log has applied nothing for
+  <n>s`, with the term, the leader (or none) and how many entries
   wait; again every 5 minutes while the stall lasts; and an info line
   with its length when an entry is applied again.
 - `cluster status` gives `raft.stalled_since` (absent otherwise).
