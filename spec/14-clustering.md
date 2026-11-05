@@ -2115,10 +2115,13 @@ What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_tr
 
 **Found by the first measurement after C9** (2026-11-04, from log index 46,134): gpu-dev2's usage had not reached the cluster since 2026-11-03 09:12 +07, just after that morning's outage. Its backlog was more than one request holds, and the leader refused it every minute (`413 Payload Too Large`; a request that fit would still have been a write set over 1 MiB). Not acknowledged, the rows stayed, so the backlog only grew (`meter.db` 71 MB against under 0.5 MB on the other servers). Shipping now goes in parts (§13.1, `Export::split`; test `a_backlog_ships_in_parts`: the parts' sizes and order, no completeness before the last part, totals exact, an acknowledged part not sent again).
 
+The same measurement found why one network's 5-minute rows (`rate_5m`) for about 70 past hours were written again every minute. Metering forgets the cursors of subjects that are gone, and it looked networks up by name, while a network's subject is keyed by its id (spec/19-tenancy.md D24). So every other round dropped all of a network's cursors, and the next round counted its VM ports again from each VM's launch, which rewrote every hour since. The cluster's merge takes each hourly row once, so the re-counts added nothing to hours already closed; but the hour still open got its share of every re-count, so the network's `bridge.bytes` is overcounted in the hours since its VMs launched, and its slot rows were replaced every minute. Live subjects now use the network's id (test `a_networks_cursors_survive_rounds`). With it: on a gateway that also runs one of a network's VMs, pruning the ports that are gone also dropped the network's conntrack parts, so external inbound never reached `bridge.bytes` there. Pruning now leaves them (test `a_gateway_with_vm_ports_keeps_the_networks_inbound`).
+
 Not yet:
 
 - The measurement after C9, against C9's acceptance: not run yet. C9 was installed on the prism cluster (main at `c8e2a83`) on 2026-11-04 at 16:24 +07; the measurement takes the log from index 46,134 (`--since 46134`).
 - Why a node's `status.ui_url` changed 86 times: not looked at.
+- A cluster network's slot rows have no node in their key, so the leader's merge keeps the last node's row and drops the others' share of the network's 5-minute rates (the hourly rows are kept per node). Not fixed yet.
 
 ### Validation against real OVN and conntrack (after C8)
 

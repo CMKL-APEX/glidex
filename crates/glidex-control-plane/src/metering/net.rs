@@ -10,6 +10,9 @@ use glidex_ovs::nat_meter::{Direction, NatCounter};
 use glidex_ovs::stats::{BridgeStats, PortRole, PortStats};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
+/// The part name prefix of a conntrack counter (`ct/<zone>/<ip>`).
+const CT_PART: &str = "ct/";
+
 /// A network's bridge ports, each with where its counters start.
 type Ingress<'a> = (Subject, Vec<(&'a PortStats, Origin)>);
 
@@ -252,7 +255,7 @@ pub fn sample_ct(
             continue;
         };
         let part = format!(
-            "ct/{}/{}",
+            "{CT_PART}{}/{}",
             c.zone,
             c.ip.map(|i| i.to_string()).unwrap_or_default()
         );
@@ -383,9 +386,12 @@ fn sample_bridge(
         }
         round.counter_part(s, "bridge.packets", &p.uuid, &p.uuid, pk, now, *origin)?;
     }
-    let keep: BTreeSet<String> = ports.iter().map(|(p, _)| p.uuid.clone()).collect();
-    round.prune_parts(s, "bridge.bytes", &keep)?;
-    round.prune_parts(s, "bridge.packets", &keep)?;
+    let ports_now: BTreeSet<&str> = ports.iter().map(|(p, _)| p.uuid.as_str()).collect();
+    // Only ports go: the conntrack parts (`sample_ct`) are another source
+    // of the same meter, sampled after this.
+    let keep = |part: &str| part.starts_with(CT_PART) || ports_now.contains(part);
+    round.prune_parts(s, "bridge.bytes", keep)?;
+    round.prune_parts(s, "bridge.packets", keep)?;
     if let Some(kbps) = summed_rate(&bytes, 8) {
         round.max(s, "bridge.kbps_peak", kbps / 1000, now);
         round.live(s, "mbps", kbps as f64 / 1e6);
@@ -514,6 +520,53 @@ mod tests {
         // 4 MB in 30 s = 1066 kbps (integer).
         assert_eq!(t["nat"]["bridge.kbps_peak"], 1066);
         assert_eq!(t["b.0"]["net.rx_kbps_peak"], 1066);
+    }
+
+    /// A network is known by its id (spec/19-tenancy.md D24), not its
+    /// name: its cursors outlive the round, so each byte counts once.
+    #[test]
+    fn a_networks_cursors_survive_rounds() {
+        let (_d, l) = setup();
+        let vms = vec![vm("a", &["nat"])];
+        let mut n = net("nat", "gxbr-nat", None);
+        n.id = "0b6f3c1e-5d2a-4e8f-9a1b-7c3d2e1f0a9b".into();
+        let mut total = 0;
+        for (i, v) in [100u64, 200, 300].into_iter().enumerate() {
+            let now = T0 + 30_000 * (i as u64 + 1);
+            let snap = crate::metering::Snapshot {
+                vms: vms.clone(),
+                disks: vec![],
+                networks: vec![n.clone()],
+                bridges: Some(vec![BridgeStats {
+                    bridge: "gxbr-nat".into(),
+                    ports: vec![port("pa", PortRole::Vm, Some(("a", 0)), v, 0)],
+                }]),
+                nat: None,
+                ct: None,
+            };
+            let with = l
+                .cursor_subjects(&[SubjectKind::Vm, SubjectKind::Nic, SubjectKind::Network])
+                .unwrap();
+            let mut r = l.begin_round(now).unwrap();
+            sample_ports(
+                &mut r,
+                snap.bridges.as_ref().unwrap(),
+                &snap.vms,
+                &snap.networks,
+                now,
+            )
+            .unwrap();
+            super::super::sampler::forget_gone(&mut r, &with, &snap.live_subjects());
+            l.commit(r).unwrap();
+            total = by_subject(&l)[&n.id]["bridge.bytes"];
+            assert!(
+                l.cursor_subjects(&[SubjectKind::Network])
+                    .unwrap()
+                    .contains(&format!("network/{}", n.id)),
+                "round {i}: the network's cursors are kept"
+            );
+        }
+        assert_eq!(total, 300, "counted from launch, once");
     }
 
     #[test]
@@ -736,6 +789,43 @@ mod tests {
             T0 + 120_000,
         )
         .unwrap();
+    }
+
+    /// A gateway that also runs one of the network's VMs: pruning the
+    /// ports that are gone leaves the conntrack parts alone.
+    #[test]
+    fn a_gateway_with_vm_ports_keeps_the_networks_inbound() {
+        let (_d, l) = setup();
+        let vms = [vm("a", &["web"])];
+        let nets = [cluster_net("web", None)];
+        let res = [Reservation {
+            network: "web".into(),
+            mac: "02:00:00:00:00:01".into(),
+            ip: "10.89.0.5".parse().unwrap(),
+            vm_id: "a".into(),
+            nic: 0,
+        }];
+        for (i, (sent, inbound)) in [(0, 5000), (700, 9000), (1000, 9500)]
+            .into_iter()
+            .enumerate()
+        {
+            let now = T0 + 30_000 * (i as u64 + 1);
+            let bridges = [BridgeStats {
+                bridge: "br-int".into(),
+                ports: vec![port("pa", PortRole::Vm, Some(("a", 0)), sent, 0)],
+            }];
+            let mut r = l.begin_round(now).unwrap();
+            sample_ports(&mut r, &bridges, &vms, &nets, now).unwrap();
+            sample_ct(&mut r, &ct(7, 0, 0, inbound), false, &res, &vms, &nets, now).unwrap();
+            l.commit(r).unwrap();
+        }
+        let t = by_subject(&l);
+        assert_eq!(t["web"]["bridge.ext_rx_bytes"], 4500);
+        assert_eq!(
+            t["web"]["bridge.bytes"],
+            1000 + 4500,
+            "the VM's port and the external inbound"
+        );
     }
 
     #[test]
