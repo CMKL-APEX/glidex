@@ -372,6 +372,10 @@ export default function Networking() {
     ...(host.createNetwork ? [{ value: "", label: "Host network" }] : []),
     ...ownProjects.map((p) => ({ value: p.id, label: `Project ${projectName(p.id)}` })),
   ];
+  // Host status (Open vSwitch, bridges) is asked only of those who may
+  // read it: asked anyway, it is a denial in the audit.
+  const ovsCan = useCan([{ action: "readOvsStatus", resource: { type: "Host" } }]);
+  const mayOvs = ovsCan === null ? null : ovsCan[0];
   const [status, setStatus] = useState<OvsStatus | null>(null);
   // Host status (Open vSwitch, bridges) needs host.read. Without it the
   // page falls back to the networks the current project can use.
@@ -385,16 +389,17 @@ export default function Networking() {
   const shown = hostView ? networks : networks.filter((n) => networkUsableBy(n, project));
 
   const refresh = useCallback(async () => {
+    if (mayOvs === null) return;
     // Independent requests: the host status being forbidden must not hide
     // the network list.
-    const [nets, st] = await Promise.allSettled([api.listNetworks(), api.ovsStatus()]);
+    const [nets, st] = await Promise.allSettled([api.listNetworks(), mayOvs ? api.ovsStatus() : Promise.resolve(null)]);
     const errors: string[] = [];
     if (nets.status === "fulfilled") {
       setNetworks([...nets.value].sort((a, c) => a.name.localeCompare(c.name)));
     } else {
       errors.push(errorText(nets.reason));
     }
-    if (st.status === "fulfilled") {
+    if (st.status === "fulfilled" && st.value) {
       setStatus(st.value);
       setHostView(true);
       if (st.value.netd.access === "NETD_ACCESS_FULL") {
@@ -404,7 +409,7 @@ export default function Networking() {
           errors.push(errorText(e));
         }
       }
-    } else if (st.reason instanceof ApiRequestError && st.reason.status === 403) {
+    } else if (st.status === "fulfilled" || (st.reason instanceof ApiRequestError && st.reason.status === 403)) {
       setStatus(null);
       setBridges([]);
       setHostView(false);
@@ -413,7 +418,7 @@ export default function Networking() {
       setHostView((v) => v ?? false);
     }
     setError(errors.length ? errors.join("; ") : null);
-  }, []);
+  }, [mayOvs]);
 
   useEffect(() => {
     refresh();
