@@ -356,7 +356,10 @@ Sections, top to bottom:
 4. **Detaches in progress**: nodes in phase `Departing`, with the step
    (freeze, bundle, ack, commit, switch) from the node's status, and
    *Abort* (`POST /nodes/{id}/detach {abort: true}`).
-5. **Raft** (existing) + per voter: reachable, match index lag.
+5. **Raft** (existing) + per voter: reachable, match index lag. When
+   the serving server's log is stalled (`raft.stalled_since`,
+   14-clustering.md D30), a warning at the top of the card: *No change
+   has been applied since <time>*, with how many entries wait.
 6. **CA** (§7.6).
 7. **Danger zone** (§7.7), collapsed by default.
 

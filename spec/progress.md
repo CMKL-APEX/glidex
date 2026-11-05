@@ -19,6 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
+| Clustering | [14-clustering.md](14-clustering.md) D30, §6.2a | `spec/cluster-stall-alert` → `feat/cluster-stall-alert` | A server warns when its Raft log stops applying (the 2026-11-03 outage went unnoticed) |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas
