@@ -47,8 +47,11 @@ export function useConnectorNames(): Record<string, string> {
 /** Node id → name, when the caller may list nodes: a local account in a
  *  cluster is one host's. Empty otherwise. */
 export function useNodeNames(): Record<string, string> {
+  const { host } = useSession();
   const [names, setNames] = useState<Record<string, string>>({});
   useEffect(() => {
+    // Asked without the right, the list is a denial in the audit.
+    if (!host.listNodes) return;
     let live = true;
     api
       .listNodes()
@@ -57,7 +60,7 @@ export function useNodeNames(): Record<string, string> {
     return () => {
       live = false;
     };
-  }, []);
+  }, [host.listNodes]);
   return names;
 }
 

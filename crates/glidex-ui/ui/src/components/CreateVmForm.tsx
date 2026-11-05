@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 import type { ApiToken, CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
 import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwareFor, formatBytes, imageState, isDiskImage, isKernel, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
-import { useNodes } from "../nodes";
+import { hostOf, useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
 import GpuPicker, { sysfsPath } from "./GpuPicker";
 
@@ -260,6 +260,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const otherPools = pools.filter((p) => p.class !== "gpu");
   // Whose GPUs are listed: this host's, or in a cluster the node chosen.
   const gpuNode = nodes.clustered ? node || null : (nodes.self ?? "local");
+  const gpuHost = nodes.clustered && gpuNode ? hostOf(gpuNode, nodes.self) : ({ type: "Host" } as const);
   // The picked GPUs and the paths typed under Advanced, each once.
   const vfioPaths = [
     ...new Set([
@@ -482,6 +483,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         onAsk={askPool}
         sizesVm={!sizedByHand}
         node={gpuNode}
+        host={gpuHost}
         picked={pickedGpus}
         onPick={setPickedGpus}
       />

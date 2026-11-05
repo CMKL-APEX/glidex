@@ -41,6 +41,13 @@ function CreateTokenForm({ onCreated, onCancel }: { onCreated: (t: CreatedToken)
     let live = true;
     api
       .listTenants()
+      // Only the tenants whose clusters the caller may read: asked anyway,
+      // each is a denial in the audit. A check call takes 200 at most.
+      .then(async (all) => {
+        const ts = all.slice(0, 200);
+        const may = await api.checkAccess(ts.map((t) => ({ action: "readTenantClusters", resource: { type: "Tenant" as const, id: t.id } })));
+        return ts.filter((_, i) => may[i]);
+      })
       .then((ts) => Promise.all(ts.map((t) => api.listTenantClusters(t.id).catch(() => [] as api.TenantCluster[]))))
       .then((lists) => {
         const seen = new Map<string, string>();

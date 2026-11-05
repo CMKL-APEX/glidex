@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import { ApiRequestError } from "../api";
+import { useCan } from "../session";
 import type { BridgeRecord, EntityRef, OvsProfile, OvsStatus, SourceRoutes } from "../types";
 import { netdAccessLabel, sourceAddressStateLabel } from "../types";
 import BridgesCard from "./BridgesCard";
@@ -264,6 +265,9 @@ function SharedSubnetsCard({ routes }: { routes: SourceRoutes }) {
  * `node` through the server serving the UI (W2). Hidden without the right
  * to read the host's OVS status. */
 export default function HostNetworking({ node, host }: { node: string; host: EntityRef }) {
+  // Asked without the right, the status is a denial in the audit.
+  const can = useCan([{ action: "readOvsStatus", resource: host }]);
+  const may = can === null ? null : can[0];
   const [status, setStatus] = useState<OvsStatus | null>(null);
   const [bridges, setBridges] = useState<BridgeRecord[]>([]);
   const [forbidden, setForbidden] = useState(false);
@@ -271,6 +275,7 @@ export default function HostNetworking({ node, host }: { node: string; host: Ent
   const [installing, setInstalling] = useState(false);
 
   const refresh = useCallback(async () => {
+    if (!may) return;
     try {
       const st = await api.ovsStatus(node);
       setStatus(st);
@@ -280,12 +285,12 @@ export default function HostNetworking({ node, host }: { node: string; host: Ent
       if (e instanceof ApiRequestError && e.status === 403) setForbidden(true);
       else setError(errorText(e));
     }
-  }, [node]);
+  }, [node, may]);
   useEffect(() => {
     refresh();
   }, [refresh]);
 
-  if (forbidden) return null;
+  if (forbidden || may === false) return null;
   return (
     <section className="space-y-4 mt-6" aria-label="Host networking">
       <h2 className="text-lg font-semibold text-gray-900">Networking</h2>
