@@ -426,6 +426,7 @@ const STATUS: &[(&str, Rule)] = &[
     ("ca.started_at", Rule::Secs),
     ("ca.not_after", Rule::Secs),
     ("raft.state", Rule::Enum("RAFT_STATE")),
+    ("raft.stalled_since", Rule::Secs),
     ("nodes.role", Rule::Enum("NODE_ROLE")),
     ("nodes.phase", Rule::Enum("NODE_PHASE")),
     ("nodes.ready", Rule::Enum("CONDITION_STATUS")),

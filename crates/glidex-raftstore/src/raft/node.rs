@@ -10,8 +10,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::marker::PhantomData;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, OnceLock};
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 
 /// Raft timing and log retention (glidex: `cluster.raft.*`, §10.2).
 #[derive(Debug, Clone)]
@@ -53,6 +53,136 @@ async fn trim_log<S: Schema>(raft: Raft<S>, keep: u64) {
     }
 }
 
+/// How often a stall is reported again while it lasts (D30).
+const STALL_REPEAT: Duration = Duration::from_secs(300);
+
+/// One look at a member's Raft metrics, as the stall watch needs it.
+#[derive(Debug, Clone, Copy)]
+struct RaftView {
+    applied: Option<u64>,
+    last_log: Option<u64>,
+    leader: Option<RaftId>,
+    term: u64,
+}
+
+#[derive(Debug, PartialEq)]
+enum StallEvent {
+    Began,
+    Still,
+    Ended(Duration),
+}
+
+/// Whether a member's log stopped (spec/14-clustering.md §6.2a, D30):
+/// nothing applied for `limit` while entries waited, no leader was known or
+/// the term moved. Prism's servers held elections for two hours on
+/// 2026-11-03 with nothing applied, and nobody knew until the UI went down.
+#[derive(Debug, Default)]
+struct StallWatch {
+    last: Option<RaftView>,
+    /// When the trouble began, unless an entry was applied since.
+    trouble: Option<(Instant, SystemTime)>,
+    /// When the current stall was last reported.
+    reported: Option<Instant>,
+}
+
+impl StallWatch {
+    fn check(
+        &mut self,
+        now: Instant,
+        wall: SystemTime,
+        v: RaftView,
+        limit: Duration,
+    ) -> Option<StallEvent> {
+        let last = self.last.replace(v);
+        let mut ended = None;
+        if last.is_some_and(|l| v.applied > l.applied) {
+            if self.reported.take().is_some() {
+                ended = self.trouble.map(|(t, _)| StallEvent::Ended(now - t));
+            }
+            self.trouble = None;
+        }
+        let trouble =
+            v.last_log > v.applied || v.leader.is_none() || last.is_some_and(|l| l.term != v.term);
+        if trouble && self.trouble.is_none() {
+            self.trouble = Some((now, wall));
+        }
+        if ended.is_some() {
+            return ended;
+        }
+        let (began, _) = self.trouble?;
+        if now - began < limit {
+            return None;
+        }
+        match self.reported {
+            None => {
+                self.reported = Some(now);
+                Some(StallEvent::Began)
+            }
+            Some(r) if now - r >= STALL_REPEAT => {
+                self.reported = Some(now);
+                Some(StallEvent::Still)
+            }
+            Some(_) => None,
+        }
+    }
+
+    fn stalled_since(&self) -> Option<SystemTime> {
+        self.reported.and(self.trouble.map(|(_, w)| w))
+    }
+}
+
+/// Run the stall watch each second until Raft stops; `stalled` holds
+/// when the current stall began.
+async fn watch_stalls<S: Schema>(
+    raft: Raft<S>,
+    stalled: Arc<Mutex<Option<SystemTime>>>,
+    limit: Duration,
+) {
+    let rx = raft.metrics();
+    drop(raft);
+    let mut w = StallWatch::default();
+    let mut tick = tokio::time::interval(Duration::from_secs(1));
+    loop {
+        tick.tick().await;
+        if rx.has_changed().is_err() {
+            return;
+        }
+        let v = {
+            let m = rx.borrow();
+            RaftView {
+                applied: m.last_applied.map(|l| l.index),
+                last_log: m.last_log_index,
+                leader: m.current_leader,
+                term: m.current_term,
+            }
+        };
+        let event = w.check(Instant::now(), SystemTime::now(), v, limit);
+        *stalled.lock().unwrap() = w.stalled_since();
+        let waiting = v
+            .last_log
+            .unwrap_or(0)
+            .saturating_sub(v.applied.unwrap_or(0));
+        let leader = v.leader.map_or("none".to_string(), |l| l.to_string());
+        let lasted = |since: Option<SystemTime>| {
+            since
+                .and_then(|t| t.elapsed().ok())
+                .map_or(0, |d| d.as_secs())
+        };
+        match event {
+            Some(StallEvent::Began | StallEvent::Still) => tracing::warn!(
+                "the Raft log has applied nothing for {}s: term {}, leader {leader}, {waiting} entries wait",
+                lasted(w.stalled_since()),
+                v.term
+            ),
+            Some(StallEvent::Ended(d)) => tracing::info!(
+                "the Raft log applies again, after a stall of {}s",
+                d.as_secs()
+            ),
+            None => {}
+        }
+    }
+}
+
 /// Where a member finds the leader's address when the membership it has
 /// applied doesn't say yet (glidex: the replicated `nodes` table).
 pub type LeaderLookup = Box<dyn Fn(RaftId) -> Option<String> + Send + Sync>;
@@ -69,6 +199,8 @@ pub struct ClusterNode<S: Schema> {
     /// was committed before it.
     ready_term: AtomicU64,
     leader_lookup: OnceLock<LeaderLookup>,
+    /// When the current stall began (D30).
+    stalled: Arc<Mutex<Option<SystemTime>>>,
 }
 
 impl<S: Schema> ClusterNode<S> {
@@ -116,6 +248,12 @@ impl<S: Schema> ClusterNode<S> {
             .await
             .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
         tokio::spawn(trim_log(raft.clone(), settings.log_keep_entries));
+        let stalled = Arc::new(Mutex::new(None));
+        tokio::spawn(watch_stalls(
+            raft.clone(),
+            stalled.clone(),
+            Duration::from_millis(settings.election_ms.1) * COMMIT_ELECTIONS,
+        ));
         let service = Arc::new(RaftService {
             raft: raft.clone(),
             dir: dir.join("snapshots"),
@@ -130,6 +268,7 @@ impl<S: Schema> ClusterNode<S> {
             runtime: tokio::runtime::Handle::current(),
             ready_term: AtomicU64::new(0),
             leader_lookup: OnceLock::new(),
+            stalled,
         }))
     }
 
@@ -194,6 +333,12 @@ impl<S: Schema> ClusterNode<S> {
     pub fn replicate(self: &Arc<Self>) {
         self.db
             .set_replicator(Arc::new(RaftReplicator { node: self.clone() }));
+    }
+
+    /// When this member's log stopped applying, while it stays stopped
+    /// (spec/14-clustering.md §6.2a).
+    pub fn stalled_since(&self) -> Option<SystemTime> {
+        *self.stalled.lock().unwrap()
     }
 
     pub fn is_leader(&self) -> bool {
@@ -418,4 +563,105 @@ where
         let _ = tx.send(f.await);
     });
     tokio::task::block_in_place(|| rx.recv().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LIMIT: Duration = Duration::from_secs(60);
+
+    fn view(applied: u64, last_log: u64, leader: Option<RaftId>, term: u64) -> RaftView {
+        RaftView {
+            applied: Some(applied),
+            last_log: Some(last_log),
+            leader,
+            term,
+        }
+    }
+
+    /// Feed one view a second for `secs` seconds from `start`; the events seen.
+    fn run(
+        w: &mut StallWatch,
+        t0: Instant,
+        start: u64,
+        secs: u64,
+        f: impl Fn(u64) -> RaftView,
+    ) -> Vec<(u64, StallEvent)> {
+        (start..start + secs)
+            .filter_map(|s| {
+                let at = t0 + Duration::from_secs(s);
+                w.check(
+                    at,
+                    SystemTime::UNIX_EPOCH + Duration::from_secs(s),
+                    f(s),
+                    LIMIT,
+                )
+                .map(|e| (s, e))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn an_idle_member_with_a_leader_never_stalls() {
+        let mut w = StallWatch::default();
+        let t0 = Instant::now();
+        assert!(run(&mut w, t0, 0, 3600, |_| view(10, 10, Some(1), 3)).is_empty());
+        assert_eq!(w.stalled_since(), None);
+    }
+
+    #[test]
+    fn entries_that_wait_are_a_stall_after_the_limit_until_one_is_applied() {
+        let mut w = StallWatch::default();
+        let t0 = Instant::now();
+        assert!(run(&mut w, t0, 0, 5, |_| view(10, 10, Some(1), 3)).is_empty());
+        // From second 5 an entry waits and nothing is applied.
+        let events = run(&mut w, t0, 5, 400, |_| view(10, 11, Some(1), 3));
+        assert_eq!(
+            events,
+            vec![(65, StallEvent::Began), (365, StallEvent::Still)]
+        );
+        assert_eq!(
+            w.stalled_since(),
+            Some(SystemTime::UNIX_EPOCH + Duration::from_secs(5))
+        );
+        let events = run(&mut w, t0, 405, 1, |_| view(11, 11, Some(1), 3));
+        assert_eq!(
+            events,
+            vec![(405, StallEvent::Ended(Duration::from_secs(400)))]
+        );
+        assert_eq!(w.stalled_since(), None);
+    }
+
+    #[test]
+    fn elections_without_end_are_a_stall_though_nothing_waits() {
+        // A follower that the leaders never reach with their entries: it
+        // sees a new term, and often a leader, but applies nothing.
+        let mut w = StallWatch::default();
+        let t0 = Instant::now();
+        let events = run(&mut w, t0, 0, 120, |s| {
+            view(10, 10, (s % 30 > 5).then_some(2), 3 + s / 30)
+        });
+        assert_eq!(events, vec![(60, StallEvent::Began)]);
+    }
+
+    #[test]
+    fn no_leader_is_a_stall() {
+        let mut w = StallWatch::default();
+        let t0 = Instant::now();
+        let events = run(&mut w, t0, 0, 61, |_| view(10, 10, None, 3));
+        assert_eq!(events, vec![(60, StallEvent::Began)]);
+    }
+
+    #[test]
+    fn a_member_that_catches_up_or_recovers_in_time_is_not_stalled() {
+        let mut w = StallWatch::default();
+        let t0 = Instant::now();
+        // Behind by 100 entries, applying one a second.
+        assert!(run(&mut w, t0, 0, 100, |s| view(s, 100, Some(1), 3)).is_empty());
+        // An election, and the new leader's first entry applied 50 s later.
+        assert!(run(&mut w, t0, 100, 50, |_| view(100, 100, None, 4)).is_empty());
+        assert!(run(&mut w, t0, 150, 100, |_| view(101, 101, Some(2), 4)).is_empty());
+        assert_eq!(w.stalled_since(), None);
+    }
 }

@@ -99,8 +99,9 @@ async fn main() {
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "glidex_control_plane=info,tower_http=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "glidex_control_plane=info,glidex_raftstore=info,tower_http=info".into()
+            }),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();

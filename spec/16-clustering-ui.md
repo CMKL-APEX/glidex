@@ -359,7 +359,9 @@ Sections, top to bottom:
 5. **Raft** (existing) + per voter: reachable, match index lag. When
    the serving server's log is stalled (`raft.stalled_since`,
    14-clustering.md D30), a warning at the top of the card: *No change
-   has been applied since <time>*, with how many entries wait.
+   has been applied on <server> since <time>*. The live stream leaves
+   out the log indexes, so the card doesn't count the entries that wait;
+   `gxctl cluster status` does.
 6. **CA** (§7.6).
 7. **Danger zone** (§7.7), collapsed by default.
 

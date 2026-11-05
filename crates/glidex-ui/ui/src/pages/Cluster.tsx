@@ -342,6 +342,12 @@ export default function Cluster() {
 
       {raft && (
         <Card title="Raft">
+          {raft.stalled_since && (
+            <div role="alert" className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+              No change has been applied on {summary.served_by?.name ?? summary.name ?? "this server"} since{" "}
+              {formatTimestamp(raft.stalled_since)}. Changes fail until the cluster commits again.
+            </div>
+          )}
           <p className="text-sm text-gray-700">
             {summary.served_by ? `${summary.served_by.name} is ` : ""}
             {raftStateLabel(raft.state)}, term {num(raft.term)}, leader {raft.leader?.name ?? raft.leader?.address ?? "none"}

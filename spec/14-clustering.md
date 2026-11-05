@@ -2089,7 +2089,7 @@ Deviations and not done:
 - A server cannot remove itself: run the removal on another server (openraft 0.9 has no leadership transfer, and the request would die with the leader).
 - OVN CA files and netd certificates are not rotated by this step: a node's own certificate still doubles as its OVN certificate (C5), and netd is not told when the bundle changes. OVN's window therefore stays open until a node re-runs `ensure_ovn_chassis`.
 - `cluster/leave` by the departing server itself is not used; the leader kicks it.
-- **Stall watch (D30, §6.2a):** not built yet.
+- **Stall watch (D30, §6.2a):** `StallWatch` in `glidex-raftstore` (`raft/node.rs`), checked each second by a task each member starts; `ClusterNode::stalled_since` feeds `raft.stalled_since` in `cluster status`, gxctl's `STALLED` line and the Raft card. Tests: the watch's rules (`raft::node::tests`), a leader cut off with a write it can't commit says so while the majority doesn't (`tests/raft.rs` `a_member_whose_log_stops_says_so`), gxctl's line, and the card (`cluster.spec.ts`). The control plane's default log filter now takes `glidex_raftstore=info`. Not run on the test cluster yet.
 - Not done: the scale run and figures for §4.1, `glidex-install --reset`, `--seal-ca-key`, certificate renewal under load, a rolling-upgrade test with two builds, and the recovery exercise on a test cluster (the runbook describes it; `--force-new-cluster` is tested, the OVN half is not).
 
 ### C8: detach and import

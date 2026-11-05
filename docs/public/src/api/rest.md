@@ -747,7 +747,7 @@ id or its name.
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/cluster/status` | Raft group, nodes, versions, CA rotation (`?ports=true`: port reachability) |
+| `GET` | `/cluster/status` | Raft group, nodes, versions, CA rotation (`?ports=true`: port reachability). `raft.stalled_since` while the serving server's log applies nothing |
 | `POST` | `/cluster/init` | Turn this host into a cluster of one |
 | `POST` | `/cluster/join` | Join this host to a cluster with a join token |
 | `POST` | `/cluster/import` | Join with this host's VMs and disks (waits for approval) |
