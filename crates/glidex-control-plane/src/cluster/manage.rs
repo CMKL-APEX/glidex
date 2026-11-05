@@ -770,6 +770,7 @@ pub fn status_of(c: &Cluster) -> Value {
             "last_log_index": m.last_log_index,
             "last_applied": m.last_applied.map(|l| l.index),
             "purged": m.purged.map(|l| l.index),
+            "stalled_since": n.stalled_since().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
             "replication": m.replication.as_ref().map(|r| r.iter().map(|(id, l)| json!({ "raft_id": id, "name": name_of(*id), "matched": l.as_ref().map(|l| l.index) })).collect::<Vec<_>>()),
         })
     });

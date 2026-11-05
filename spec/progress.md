@@ -19,7 +19,6 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| Clustering | [14-clustering.md](14-clustering.md) D30, §6.2a | `spec/cluster-stall-alert` → `feat/cluster-stall-alert` | A server warns when its Raft log stops applying (the 2026-11-03 outage went unnoticed) |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas
@@ -32,7 +31,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177); S26 stale hyperstor holds preempted (#203); hyperstor pools' space and `--no-overcommit` on them (S27, #213; S27 open for review); full hyperstor pools refuse new disks (S30, open for review) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
 | GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3; GV6's code (#206, #211); the create form's GPUs section, with GPUs other VMs hold greyed (#210) | GV6's reboot test, docs (G15) and a pool's `bar_mib`; GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
-| Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C9; UI U0–U7 | The history tier's spec (D26, after C9); C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
+| Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C9; UI U0–U7; the stall watch (D30) | The history tier's spec (D26, after C9); C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
 | Networking | [09-networking.md](09-networking.md) | M1–M9 (M9 source routes, #271 #273 #274; checked on prism1, loose and strict `rp_filter`) | M9 with hyperstor endpoints; M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host | §0 Implementation status |
 | Metering | [13-metering.md](13-metering.md) | M0–M4 (M4 not yet run on a host) | M4 host acceptance; §15.8 "After M4" | §15 Milestones |
 | Reconciliation | [12-reconciliation.md](12-reconciliation.md) | M1–M4 | M4 on an installed KVM host | §18 Milestones |

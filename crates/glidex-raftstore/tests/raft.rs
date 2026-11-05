@@ -358,6 +358,53 @@ async fn a_write_that_no_leader_commits_gives_up() {
     c.put(new, "fresh", "2").unwrap();
 }
 
+/// A leader cut off with a write it can't commit says its log stalled,
+/// once 10 election timeouts pass, and stops saying so when it is healed;
+/// the majority, which elects a leader and commits, never stalls
+/// (spec/14-clustering.md D30).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_whose_log_stops_says_so() {
+    let c = TestCluster::new(3).await;
+    let old = c.leader(&c.ids()).await;
+    c.put(old, "committed", "1").unwrap();
+    c.converge(&c.ids(), old).await;
+    c.mesh.isolate(old, &c.ids());
+    let db = c.by_id(old).db.clone();
+    let write = tokio::task::spawn_blocking(move || {
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(definition::<Test>(TestTable::Data))?
+                .insert("stuck", b"x".as_slice())?;
+            Ok(())
+        })
+    });
+    let rest: Vec<_> = c.ids().into_iter().filter(|i| *i != old).collect();
+    let new = c.leader(&rest).await;
+    c.put(new, "fresh", "2").unwrap();
+    // 10 election timeouts of the test's 1.6 s, and a margin.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while c.by_id(old).node.stalled_since().is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "n{old} doesn't say its log stalled"
+        );
+        for id in &rest {
+            assert_eq!(c.by_id(*id).node.stalled_since(), None, "n{id} stalled");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(write.await.unwrap().is_err());
+    c.mesh.heal();
+    c.converge(&c.ids(), new).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while c.by_id(old).node.stalled_since().is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "n{old} still says its log stalled once healed"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
 /// A member restarted more often than its snapshot policy fires still
 /// trims its log to `log_keep_entries` (a restart makes the live database
 /// the snapshot and starts the policy's count again; the log grew without

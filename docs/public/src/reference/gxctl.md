@@ -323,7 +323,7 @@ See [Authentication](../operator-guide/authentication.md),
 
 | Command | Effect |
 |---|---|
-| `cluster status`, `cluster` | Raft group, nodes, versions and port reachability; says so on a standalone host |
+| `cluster status`, `cluster` | Raft group, nodes, versions and port reachability; says so on a standalone host. `! STALLED since …` when this server's log has applied nothing for 10 election timeouts ([troubleshooting](../operator-guide/troubleshooting.md#a-cluster-stops-committing)) |
 | `cluster init [--advertise <ip:port>] [--tunnel-ip <ip>] --force` | Make this host a cluster of one (keeps a backup; can't be undone) |
 | `cluster join-token [--role agent\|server] [--ttl <hours>h] [--allow-import]` | Create a one-time join token, printed once (default role `agent`) |
 | `cluster join --server <ip:8842> [--role server\|agent] [--advertise <ip:port>] [--tunnel-ip <ip>] [--name <name>] [--token-file <file>] [--import]` | Join this host to a cluster. The token is read from the file (mode `0600`) or stdin, never from the command line. `--import` brings this host's VMs and disks once an administrator approves |

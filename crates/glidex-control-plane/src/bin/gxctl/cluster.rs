@@ -218,6 +218,17 @@ fn status_lines(v: &GetClusterStatusResponse) -> Vec<String> {
             num(r.last_applied),
             num(r.last_log_index)
         ));
+        if let Some(t) = r.stalled_since.as_option() {
+            let waiting = r
+                .last_log_index
+                .unwrap_or(0)
+                .saturating_sub(r.last_applied.unwrap_or(0));
+            out.push(format!(
+                "  {} STALLED since {}: nothing applied, {waiting} entries wait",
+                "!".yellow(),
+                when(Some(t))
+            ));
+        }
         for (kind, members) in [("voter", &r.voters), ("learner", &r.learners)] {
             for m in members {
                 out.push(format!(
@@ -1453,7 +1464,8 @@ mod tests {
                     "leader": {"raft_id": "1", "name": "alpha", "address": "10.0.0.1:8843"},
                     "voters": [{"raft_id": "1", "name": "alpha", "address": "10.0.0.1:8843"}],
                     "learners": [{"raft_id": "2", "name": "beta", "address": "10.0.0.2:8843"}],
-                    "last_log_index": "120", "last_applied": "118"},
+                    "last_log_index": "120", "last_applied": "118",
+                    "stalled_since": "2026-11-03T06:29:00Z"},
                 "nodes": [{"id": "n-1", "name": "alpha", "role": "NODE_ROLE_SERVER",
                     "phase": "NODE_PHASE_ACTIVE", "advertise": "10.0.0.1:8842", "version": "0.9.0",
                     "feature_level": 3, "ready": "CONDITION_STATUS_TRUE"},
@@ -1469,6 +1481,7 @@ mod tests {
             [
                 "Cluster c-1  node alpha (server, 10.0.0.1:8842)",
                 "  Raft: Leader term 4  leader: alpha (10.0.0.1:8843)  applied 118  last log 120",
+                "  ! STALLED since 2026-11-03 06:29 UTC: nothing applied, 2 entries wait",
                 "    voter    alpha  10.0.0.1:8843",
                 "    learner  beta  10.0.0.2:8843",
                 "  node alpha            server  Active     10.0.0.1:8842  v0.9.0 level 3",

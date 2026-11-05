@@ -262,6 +262,10 @@ message RaftStatus {
   optional uint64 purged = 9;
   // On the leader: how far each follower has the log.
   repeated Replication replication = 10;
+  // Set while this server's log is stalled: nothing applied for 10
+  // election timeouts while entries waited, no leader was known or the
+  // term moved. When that began.
+  google.protobuf.Timestamp stalled_since = 11 [json_name = "stalled_since"];
 }
 
 message CaStatus {

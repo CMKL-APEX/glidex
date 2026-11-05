@@ -75,7 +75,25 @@ the restart.
 The servers answer, but changes fail on every one of them: with
 `cluster_unavailable` or `leader_changed`, or with *the write was not
 committed within …s (no leader commits); it may still be applied
-later*. Run this on each server, twice, a minute apart:
+later*.
+
+Each server also says so itself once its log has applied nothing for 10
+election timeouts (60 seconds with the defaults) while entries wait, no
+leader is known or elections repeat:
+
+- its journal has the warning *the Raft log has applied nothing for
+  …s: term …, leader …, … entries wait*, again every 5 minutes, and
+  *the Raft log applies again, after a stall of …s* when it ends;
+- `gxctl cluster status` adds `! STALLED since …` under its `Raft:`
+  line, and the Cluster page's **Raft** card a warning.
+
+Point your log monitoring at the first line to hear of a stall early:
+
+```bash
+journalctl -u glidex-control-plane -g 'the Raft log has applied nothing'
+```
+
+To find the cause, run this on each server, twice, a minute apart:
 
 ```bash
 gxctl cluster status

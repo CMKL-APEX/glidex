@@ -1645,6 +1645,8 @@ export interface ClusterStatus {
     last_applied?: U64;
     last_log_index?: U64;
     purged?: U64;
+    /** While this server's log applies nothing (14-clustering.md D30). */
+    stalled_since?: string;
   };
   nodes?: ClusterNodeRow[];
   ports?: { node: string; port: number; proto: string; reachable?: boolean }[];
