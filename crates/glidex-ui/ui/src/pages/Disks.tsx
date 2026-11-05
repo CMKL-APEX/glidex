@@ -9,7 +9,7 @@ import { useLiveRefresh } from "../live";
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import NodeName from "../components/NodeName";
-import { useNodes } from "../nodes";
+import { useAllowed, useNodes } from "../nodes";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -322,6 +322,9 @@ export default function Disks() {
   const nodes = useNodes();
   const [canCreate] = useCan(project ? [{ action: "createDisk", resource: { type: "Project", id: project } }] : []) ?? [];
   const [disks, setDisks] = useState<DiskInfo[] | null>(null);
+  // Each disk's row actions, for those who may take them.
+  const may = useAllowed(["resizeDisk", "moveDisk", "extendRoot", "deleteDisk"], (disks ?? []).map((d) => ({ type: "Disk" as const, id: d.id })));
+  const can = (d: DiskInfo, action: string) => !!may?.({ type: "Disk", id: d.id }, action);
   const [images, setImages] = useState<ImageInfo[]>([]);
   const [datastores, setDatastores] = useState<Datastore[]>([]);
   const [vms, setVms] = useState<VmResponse[]>([]);
@@ -462,14 +465,16 @@ export default function Disks() {
                     <DiskStatus d={d} />
                   </td>
                   <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
-                    <button
-                      className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
-                      disabled={diskPhase(d) !== "ready" || !!d.deleting || !!d.moving_to}
-                      onClick={() => setResizing(d)}
-                    >
-                      Resize
-                    </button>
-                    {manyStores && (
+                    {can(d, "resizeDisk") && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
+                        disabled={diskPhase(d) !== "ready" || !!d.deleting || !!d.moving_to}
+                        onClick={() => setResizing(d)}
+                      >
+                        Resize
+                      </button>
+                    )}
+                    {manyStores && can(d, "moveDisk") && (
                       <button
                         className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
                         disabled={diskPhase(d) !== "ready" || !!d.deleting || !!d.moving_to}
@@ -478,7 +483,7 @@ export default function Disks() {
                         Move
                       </button>
                     )}
-                    {d.origin?.image && (
+                    {d.origin?.image && can(d, "extendRoot") && (
                       <button
                         className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg disabled:opacity-40"
                         disabled={diskPhase(d) !== "ready" || !!d.deleting}
@@ -487,14 +492,16 @@ export default function Disks() {
                         Extend root
                       </button>
                     )}
-                    <button
-                      className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-40"
-                      disabled={!!d.attached_to || !!d.deleting}
-                      title={d.attached_to ? "Detach it or delete the VM first" : ""}
-                      onClick={() => confirm(`Delete disk ${d.name} and its data?`) && act(() => api.deleteDisk(d.id))}
-                    >
-                      Delete
-                    </button>
+                    {can(d, "deleteDisk") && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-40"
+                        disabled={!!d.attached_to || !!d.deleting}
+                        title={d.attached_to ? "Detach it or delete the VM first" : ""}
+                        onClick={() => confirm(`Delete disk ${d.name} and its data?`) && act(() => api.deleteDisk(d.id))}
+                      >
+                        Delete
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

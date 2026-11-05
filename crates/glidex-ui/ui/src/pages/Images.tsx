@@ -19,7 +19,8 @@ import {
 import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import { useLiveRefresh } from "../live";
-import { useNodes } from "../nodes";
+import { useAllowed, useNodes } from "../nodes";
+import { useCan } from "../session";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -187,8 +188,11 @@ function SourceCell({ img }: { img: ImageInfo }) {
 interface TableProps {
   images: ImageInfo[];
   kind: "disk" | "firmware" | "kernel";
-  onRetry: (img: ImageInfo) => void;
+  /** Left out without `pullImage`, as are the copies and kernels. */
+  onRetry?: (img: ImageInfo) => void;
   onRemove: (img: ImageInfo) => void;
+  /** Whether the caller may delete `img` (`deleteImage`). */
+  canRemove: (img: ImageInfo) => boolean;
   /** In a cluster: copies on chosen nodes (spec/14-clustering.md §9.2.2). */
   clustered?: boolean;
   onCopy?: (img: ImageInfo) => void;
@@ -199,7 +203,7 @@ interface TableProps {
   hasKernel?: (img: ImageInfo) => boolean;
 }
 
-function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemoveCopy, onExtractKernel, hasKernel }: TableProps) {
+function ImageTable({ images, kind, onRetry, onRemove, canRemove, clustered, onCopy, onRemoveCopy, onExtractKernel, hasKernel }: TableProps) {
   // Firmware and kernels are booted through, so VMs are their users.
   const firmware = kind === "firmware";
   const boot = kind !== "disk";
@@ -272,7 +276,7 @@ function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemo
                       Copy to node…
                     </button>
                   )}
-                  {imageState(img) === "failed" && (
+                  {onRetry && imageState(img) === "failed" && (
                     <button
                       className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
                       onClick={() => onRetry(img)}
@@ -280,14 +284,16 @@ function ImageTable({ images, kind, onRetry, onRemove, clustered, onCopy, onRemo
                       Retry
                     </button>
                   )}
-                  <button
-                    className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-50"
-                    disabled={users.length > 0 && boot}
-                    title={users.length > 0 && firmware ? "VMs boot through it" : undefined}
-                    onClick={() => onRemove(img)}
-                  >
-                    {imageState(img) === "downloading" ? "Cancel" : "Delete"}
-                  </button>
+                  {canRemove(img) && (
+                    <button
+                      className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg disabled:opacity-50"
+                      disabled={users.length > 0 && boot}
+                      title={users.length > 0 && firmware ? "VMs boot through it" : undefined}
+                      onClick={() => onRemove(img)}
+                    >
+                      {imageState(img) === "downloading" ? "Cancel" : "Delete"}
+                    </button>
+                  )}
                 </td>
               </tr>
             );
@@ -494,6 +500,11 @@ export default function Images() {
   const [arch, setArch] = useState("");
   const [pulling, setPulling] = useState<{ catalog?: string; firmware?: string; label: string } | null>(null);
   const [copying, setCopying] = useState<ImageInfo | null>(null);
+  // Pulling, retrying, copies and kernels are `pullImage`; deleting is
+  // `deleteImage`, on each image. Without them the buttons are left out.
+  const [mayPull] = useCan([{ action: "pullImage", resource: { type: "Cluster" } }]) ?? [];
+  const mayDelete = useAllowed(["deleteImage"], (images ?? []).map((i) => ({ type: "Image" as const, id: i.id })));
+  const canRemove = (img: ImageInfo) => !!mayDelete?.({ type: "Image", id: img.id }, "deleteImage");
 
   const refresh = useCallback(() => {
     api.imageCatalog(arch || undefined).then(setCatalog).catch(() => setCatalog([]));
@@ -605,9 +616,11 @@ export default function Images() {
             published checksum.
           </p>
         </div>
-        <button className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg whitespace-nowrap" onClick={() => setPullingUrl(true)}>
-          Download from URL
-        </button>
+        {mayPull && (
+          <button className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg whitespace-nowrap" onClick={() => setPullingUrl(true)}>
+            Download from URL
+          </button>
+        )}
       </div>
 
       {error && <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg text-red-700">{error}</div>}
@@ -642,9 +655,11 @@ export default function Images() {
             {c.downloaded_image_id ? (
               <span className="text-xs text-green-700">Downloaded</span>
             ) : (
+              mayPull && (
               <button className={pullClass} disabled={inFlight("catalog", c.key)} onClick={() => pull({ catalog: c.key }, `${c.distro} ${c.release}`)}>
-                {inFlight("catalog", c.key) ? "Downloading…" : "Pull"}
-              </button>
+                  {inFlight("catalog", c.key) ? "Downloading…" : "Pull"}
+                </button>
+              )
             )}
           </div>
         ))}
@@ -677,13 +692,15 @@ export default function Images() {
             {f.downloaded_image_id ? (
               <span className="text-xs text-green-700">{f.source === "host" ? "Imported" : "Downloaded"}</span>
             ) : (
+              mayPull && (
               <button
                 className={pullClass}
                 disabled={!f.available || inFlight("firmware", f.key)}
                 onClick={() => pull({ firmware: f.key }, f.name)}
               >
-                {inFlight("firmware", f.key) ? "Downloading…" : f.source === "host" ? "Import" : "Pull"}
-              </button>
+                  {inFlight("firmware", f.key) ? "Downloading…" : f.source === "host" ? "Import" : "Pull"}
+                </button>
+              )
             )}
           </div>
         ))}
@@ -700,12 +717,13 @@ export default function Images() {
         <ImageTable
           images={diskImages}
           kind="disk"
-          onRetry={retry}
+          onRetry={mayPull ? retry : undefined}
           onRemove={remove}
+          canRemove={canRemove}
           clustered={dir.clustered}
-          onCopy={setCopying}
-          onRemoveCopy={removeCopy}
-          onExtractKernel={(img) => void extractKernel(img)}
+          onCopy={mayPull ? setCopying : undefined}
+          onRemoveCopy={mayPull ? removeCopy : undefined}
+          onExtractKernel={mayPull ? (img) => void extractKernel(img) : undefined}
           hasKernel={(img) => kernelImages.some((k) => k.for_image === img.id)}
         />
       )}
@@ -718,13 +736,13 @@ export default function Images() {
           No firmware yet. VMs booting cloud images need one: pull it from the firmware catalog above.
         </div>
       ) : (
-        <ImageTable images={firmwareImages} kind="firmware" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+        <ImageTable images={firmwareImages} kind="firmware" onRetry={mayPull ? retry : undefined} onRemove={remove} canRemove={canRemove} clustered={dir.clustered} onCopy={mayPull ? setCopying : undefined} onRemoveCopy={mayPull ? removeCopy : undefined} />
       )}
 
       {kernelImages.length > 0 && (
         <>
           <h2 className="text-lg font-semibold text-gray-800 mt-8 mb-3">Kernels</h2>
-          <ImageTable images={kernelImages} kind="kernel" onRetry={retry} onRemove={remove} clustered={dir.clustered} onCopy={setCopying} onRemoveCopy={removeCopy} />
+          <ImageTable images={kernelImages} kind="kernel" onRetry={mayPull ? retry : undefined} onRemove={remove} canRemove={canRemove} clustered={dir.clustered} onCopy={mayPull ? setCopying : undefined} onRemoveCopy={mayPull ? removeCopy : undefined} />
         </>
       )}
 
