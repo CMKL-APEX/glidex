@@ -2040,7 +2040,6 @@ mod tests {
     #[test]
     fn a_hyperstor_disk_shows_its_partition_table() {
         use crate::datastore::record::{Datastore, DriverSpec};
-        use std::os::unix::fs::PermissionsExt;
         let Some(sgdisk) = qemu_img::SGDISK.find() else {
             return;
         };
@@ -2073,16 +2072,14 @@ mod tests {
         // hyperstorctl, standing in: `read-volume` copies the range asked.
         let log = dir.path().join("args");
         let ctl = dir.path().join("hyperstorctl");
-        std::fs::write(
+        crate::test_script::write_script(
             &ctl,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$@\" >> {log}\n[ \"$3\" = read-volume ] || exit 1\ndd if={img} of=\"${{11}}\" bs=512 skip=$(($7 / 512)) count=$(($9 / 512)) 2>/dev/null\n",
                 log = log.display(),
                 img = img.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         // SAFETY: test-only; no other test reads it.
         unsafe { std::env::set_var("GLIDEX_HYPERSTORCTL", &ctl) };
 

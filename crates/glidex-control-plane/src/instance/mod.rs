@@ -204,6 +204,14 @@ mod tests {
         let l = std::os::unix::net::UnixListener::bind(&api).unwrap();
         assert_eq!(check(None, None, "b", None, a, s), Liveness::Live);
         drop(l);
+        // A child another test thread forks holds a copy of the listener
+        // until it execs, and a connect succeeds meanwhile.
+        let gone = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while check(None, None, "b", None, a, s) != Liveness::Dead
+            && std::time::Instant::now() < gone
+        {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
         assert_eq!(check(None, None, "b", None, a, s), Liveness::Dead);
     }
 }
