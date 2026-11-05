@@ -450,13 +450,13 @@ impl Round {
         self.counter_at_key(key, subject, meter, reset_key, value, at, origin)
     }
 
-    /// Drop the cursors of a meter's parts that are not in `keep` (ports
+    /// Drop the cursors of a meter's parts that `keep` refuses (ports
     /// that are gone).
     pub fn prune_parts(
         &mut self,
         subject: &Subject,
         meter: &str,
-        keep: &BTreeSet<String>,
+        keep: impl Fn(&str) -> bool,
     ) -> Result<(), MeteringError> {
         let prefix = format!("{}/{}#", subject.key(), meter);
         let txn = self.db.begin_read()?;
@@ -472,7 +472,7 @@ impl Round {
             .cloned();
         let all: BTreeSet<String> = stored.into_iter().chain(known).collect();
         for k in all {
-            if !keep.contains(&k[prefix.len()..]) {
+            if !keep(&k[prefix.len()..]) {
                 self.cursors.insert(k, None);
             }
         }
@@ -2637,7 +2637,7 @@ mod tests {
         assert_eq!(total(&l, "bridge.bytes"), 1450);
         // port-a went away: its cursor is dropped, port-b's is kept.
         let mut r = l.begin_round(T0 + 90_000).unwrap();
-        r.prune_parts(&net, "bridge.bytes", &["port-b".to_string()].into())
+        r.prune_parts(&net, "bridge.bytes", |p| p == "port-b")
             .unwrap();
         r.counter_part(
             &net,

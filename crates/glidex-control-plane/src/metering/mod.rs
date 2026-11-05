@@ -250,7 +250,8 @@ impl Snapshot {
                     .map(|n| format!("nic/{}.{}", v.id, n.nic_index)),
             );
         }
-        live.extend(self.networks.iter().map(|n| format!("network/{}", n.name)));
+        // A network subject is keyed by its id (`net::network_subject`), not its name.
+        live.extend(self.networks.iter().map(|n| format!("network/{}", n.id)));
         if let Some(bridges) = &self.bridges {
             live.extend(
                 bridges
