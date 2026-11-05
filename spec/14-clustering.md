@@ -99,6 +99,7 @@ Non-goals for this revision (each in §18):
 | D27 | **VM bookkeeping at most every 10 minutes.** A VM record is written when its phase, power, instance, placement, an error or a condition's status changes; a change only to conditions' messages or reasons, or to `last_reconciled_at`, waits until 10 minutes after the record's last write. A condition keeps its transition time while its status holds. | About a third of VM writes were bookkeeping alone (§6.7). Kept in the record rather than moved to the host, so the record still shows when it was last checked; 144 writes per idle VM a day is small. |
 | D28 | **A slot row reaches the store only when it changed**, checked on both sides: a node ships a closed hour's slot row once and again only after a late sample changes it, and the leader's merge skips a row equal to the one it holds. | Nodes re-sent three hours of slot rows every minute and the leader rewrote them all (§6.7). The node side saves the traffic; the leader side keeps a resend after a lost acknowledgement from becoming a write. |
 | D29 | **A write that changes nothing makes no Raft entry.** The store records no `put` whose value equals the stored one, as it already records no `delete` of an absent key; a write left with no operations commits nothing. A node with no new ledger rows, whose closed hour and start time are unchanged, doesn't ship; and the leader's `ledger_inbox` cursor for a node holds only what it reads (its closed hour and start time), so it changes only when they do. | The ledger merge rewrote each node's cursor (with the time of the merge, which nothing reads) and the completeness rows every minute: about 4,300 entries a day for three nodes, nearly half of §6.7's 9,000, outside D28. Checking at the store catches every write of an unchanged value, the merge's slot rows (D28's leader side) included, in one place; a follower already holds the same bytes, and a watch has nothing to report. |
+| D30 | **A server says when its log stops.** Each server watches its own Raft view. The log is *stalled* when nothing has been applied for 10 election timeouts (60 s with the defaults, as long as a write waits for its commit) and, in that time, entries waited to be applied, no leader was known, or the term changed. The server then logs a warning, again every 5 minutes while it lasts and once when it ends; `cluster status` carries `raft.stalled_since`, which `gxctl cluster status` and the UI's Raft card show (§6.2a). | On 2026-11-03 nothing committed on prism from 06:29 to 08:39, and nobody knew until the web UI stopped answering, though `cluster status` had the numbers all along (troubleshooting has them compared by hand). A stall that lasts longer than a write's wait means every write is failing. Each server judges alone, so a server cut off from the others says so too. Applied entries are the measure, not commits: a follower knows what it applied, and an idle cluster with a leader is not stalled. Sending the alert elsewhere (mail, a webhook) needs a notification channel glidex doesn't have; the journal line is what host monitoring picks up. |
 
 ## 4. Topology
 
@@ -659,6 +660,26 @@ exactly that.
 
 Because applying an entry and advancing `last_applied` are one
 transaction, a crash never applies an entry twice or skips one.
+
+### 6.2a Stall watch (D30)
+
+Every server checks its Raft metrics each second. It notes *trouble*
+when entries wait to be applied (`last_log_index > last_applied`), no
+leader is known, or the term moved since the last check. An applied
+entry clears the trouble. Trouble not cleared for 10 election timeouts
+is a stall, dated from the first trouble:
+
+- The journal gets a warning, `the Raft log has applied nothing for
+  <n>s`, with the term, the leader (or none) and how many entries
+  wait; again every 5 minutes while the stall lasts; and an info line
+  with its length when an entry is applied again.
+- `cluster status` gives `raft.stalled_since` (absent otherwise).
+  `gxctl cluster status` adds a `STALLED since …` line under `Raft:`,
+  and the UI's Raft card a warning (16-clustering-ui.md §6).
+
+A cluster idle with a leader has no trouble: a new leader's first entry
+is applied, and nothing waits. A follower that is merely behind applies
+entries as it catches up, so it isn't stalled either.
 
 ### 6.3 New tables
 
@@ -1629,6 +1650,7 @@ Findings from the OVN 26.03 documentation (`ovn-nb(5)`, `ovn-sb(5)`,
 | External pool exhausted | VPC router creation fails with `409 external_pool_exhausted`; existing routers unaffected | site enlarges `ovn.edge.external_pool` |
 | Active gateway node dies | OVN fails SNAT over to the next chassis in the HA group; connections through it are cut, the gateway address stays the same | automatic |
 | OVN NB/SB quorum lost | Existing flows keep forwarding (`ovn-controller` keeps its last state); network changes and new ports wait (`NetworkReady=False/OvnUnavailable`) | as for the glidex store |
+| The log stops: elections without end, or a leader whose entries no majority takes | Writes fail after 10 election timeouts; each server logs that its log stalled and `cluster status` shows `raft.stalled_since` (D30) | Find the cause with the troubleshooting guide's *A cluster stops committing* |
 | netd restart on a node | as today (09-networking.md §7.7); `br-int` ports and `iface-id`s are preserved | automatic |
 
 ## 15. Testing
@@ -2067,6 +2089,7 @@ Deviations and not done:
 - A server cannot remove itself: run the removal on another server (openraft 0.9 has no leadership transfer, and the request would die with the leader).
 - OVN CA files and netd certificates are not rotated by this step: a node's own certificate still doubles as its OVN certificate (C5), and netd is not told when the bundle changes. OVN's window therefore stays open until a node re-runs `ensure_ovn_chassis`.
 - `cluster/leave` by the departing server itself is not used; the leader kicks it.
+- **Stall watch (D30, §6.2a):** not built yet.
 - Not done: the scale run and figures for §4.1, `glidex-install --reset`, `--seal-ca-key`, certificate renewal under load, a rolling-upgrade test with two builds, and the recovery exercise on a test cluster (the runbook describes it; `--force-new-cluster` is tested, the OVN half is not).
 
 ### C8: detach and import
