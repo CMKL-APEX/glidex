@@ -2117,9 +2117,19 @@ What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_tr
 
 The same measurement found why one network's 5-minute rows (`rate_5m`) for about 70 past hours were written again every minute. Metering forgets the cursors of subjects that are gone, and it looked networks up by name, while a network's subject is keyed by its id (spec/19-tenancy.md D24). So every other round dropped all of a network's cursors, and the next round counted its VM ports again from each VM's launch, which rewrote every hour since. The cluster's merge takes each hourly row once, so the re-counts added nothing to hours already closed; but the hour still open got its share of every re-count, so the network's `bridge.bytes` is overcounted in the hours since its VMs launched, and its slot rows were replaced every minute. Live subjects now use the network's id (test `a_networks_cursors_survive_rounds`). With it: on a gateway that also runs one of a network's VMs, pruning the ports that are gone also dropped the network's conntrack parts, so external inbound never reached `bridge.bytes` there. Pruning now leaves them (test `a_gateway_with_vm_ports_keeps_the_networks_inbound`).
 
-Not yet:
+**After C9**, measured with the command on 2026-11-05 on prism2 (main at `6e61817`, installed on the three servers at once at 09:44 +07; log entries 48,899 to 49,213, from just after that install to 13:05 +07, 3.3 hours by the values; no restart in between): 2,273 entries and 6.5 MB a day, against 9,937 entries and 48 MB before. **Raft write volume is 86.5% lower**; without the first 20 minutes, when each restarted node sends its slot rows once more (entries from 48,929), 5.6 MB a day, 88.5% lower. Against C9's acceptance:
 
-- The measurement after C9, against C9's acceptance: not run yet. C9 was installed on the prism cluster (main at `c8e2a83`) on 2026-11-04 at 16:24 +07; the measurement takes the log from index 46,134 (`--since 46134`).
+| Criterion | Before | After | |
+|---|---|---|---|
+| `rate_5m` writes per subject and closed hour within 2× of one | 284 | 1.1 (223 puts over 208 keys, each a subject and an hour; 1.15 without the restart's) | met |
+| No write equal to the row before, in any table | 71,396 in `rate_5m` and 29,900 in `meter_meta`, among others | 0 | met |
+| No ledger write from a node with nothing new | 15,000 cursor rewrites; a metering entry from each node every minute | 15 metering entries in 3.3 hours; `ledger_inbox` 228 puts over 219 keys, the 9 rewrites cursors whose closed hour moved | met |
+| An idle VM's record at most every 10 minutes | 17,507 bookkeeping writes within 10 minutes of the last | 113 bookkeeping writes (6 VMs), none within 10 minutes of the last | met |
+| Raft write volume at least 80% lower | 48 MB a day | 6.5 MB a day | met |
+
+What is left is mostly VM bookkeeping (48% of the bytes: about one write per VM every 10 minutes, as D27 allows), the closed hours (`usage_hourly` 14%, `ledger_inbox` 5%), `rate_5m` (16%, a third of it the restart's resend) and an image download in progress (`images` 9%, its `status.received_bytes`).
+
+Not yet:
 - Why a node's `status.ui_url` changed 86 times: not looked at.
 - A cluster network's slot rows have no node in their key, so the leader's merge keeps the last node's row and drops the others' share of the network's 5-minute rates (the hourly rows are kept per node). Not fixed yet.
 
