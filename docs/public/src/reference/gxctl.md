@@ -16,9 +16,10 @@ Words can be quoted: `project create lab --description "Lab VMs"`.
 Noun commands also answer to their plural (`images`, `projects`,
 `tenants`, …), and many subcommands to short forms (`ls`, `rm`).
 
-`gxctl --help` shows the global options. Commands have no `--help` of
-their own: run one without its arguments to see its usage line, or
-`gxctl help` for the full list. Both are authoritative over this page.
+`gxctl --help` shows the global options. A command's `--help` (or
+`-h`), and `help <command>`, show that command's usage lines and never
+run it: `gxctl audit --help`. `gxctl help` gives the full list. Help
+needs no server. Both are authoritative over this page.
 
 ## Global options
 

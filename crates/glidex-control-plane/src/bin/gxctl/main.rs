@@ -581,315 +581,377 @@ fn chrono_now() -> String {
 
 /// After a `DELETE …?wait`: gone (no body), or still being deleted by its
 /// controller (spec/12-reconciliation.md §6.3), with the reason it waits.
-fn print_help() {
-    println!("{}", "Available commands:".bold());
-    println!("  {}              - List all VMs", "list".cyan());
-    println!("  {}    - Show VM details", "get <name|id>".cyan());
-    println!(
+/// The help: every command, one line each (`help`).
+fn help_text() -> String {
+    use std::fmt::Write as _;
+    let mut out = String::new();
+    macro_rules! line {
+        ($($a:tt)*) => {
+            let _ = writeln!(out, $($a)*);
+        };
+    }
+    line!("{}", "Available commands:".bold());
+    line!("  {}              - List all VMs", "list".cyan());
+    line!("  {}    - Show VM details", "get <name|id>".cyan());
+    line!(
         "  {}           - Create a new VM (interactive)",
         "create".cyan()
     );
-    println!(
+    line!(
         "  {}  - Start a VM (waits until it runs; --no-wait returns at once)",
         "start <name|id>".cyan()
     );
-    println!("  {}   - Stop a VM", "stop <name|id>".cyan());
-    println!(
+    line!("  {}   - Stop a VM", "stop <name|id>".cyan());
+    line!(
         "  {} - Place a stopped or lost VM on another node (its disks on shared datastores)",
         "place <name|id> [--node N]".cyan()
     );
-    println!(
+    line!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
         "stop <name|id> --graceful [secs]".cyan()
     );
-    println!("  {}  - Pause a VM", "pause <name|id>".cyan());
-    println!(
+    line!("  {}  - Pause a VM", "pause <name|id>".cyan());
+    line!(
         "  {} - A kernel-boot VM's kernel; change it from the next start",
         "kernel <name|id> [--set <kernel image>] [--follow on|off] [--extract]".cyan()
     );
-    println!(
+    line!(
         "  {} - A VM's service account, for its workload identity",
         "service-account <name|id> [--set <service account> | --none]".cyan()
     );
-    println!(
+    line!(
         "  {} - Scale or adjust VM CPU elasticity (min/max vCPUs, weight)",
         "scale <name|id> [--vcpus N] [--min N] [--max N] [--weight N]".cyan()
     );
-    println!(
+    line!(
         "  {} - Show or change a VM's memory (MiB, or with G); from the next start",
         "memory <name|id> [<size>]".cyan()
     );
-    println!(
+    line!(
         "  {} - Attach a data disk to a VM; on a running VM from the next start",
         "attach-disk <name|id> <disk>".cyan()
     );
-    println!(
+    line!(
         "  {} - Detach a data disk (kept); on a running VM at the next start",
         "detach-disk <name|id> <disk>".cyan()
     );
-    println!(
+    line!(
         "  {} - Give a VM a NIC on one more network; on a running VM from the next start",
         "attach-network <name|id> <network> [--mac <mac>]".cyan()
     );
-    println!(
+    line!(
         "  {} - Remove a VM's NIC on a network; on a running VM at the next start",
         "detach-network <name|id> <network> [--mac <mac>]".cyan()
     );
-    println!(
+    line!(
         "  {} - Connect to VM console (interactive)",
         "connect <name|id>".cyan()
     );
-    println!(
+    line!(
         "  {}     - Show VM serial console log",
         "log <name|id>".cyan()
     );
-    println!(
+    line!(
         "  {}  - What happened to a VM (starts, exits, restarts, adoptions)",
         "events <name|id>".cyan()
     );
-    println!(
+    line!(
         "  {}  - Follow VMs, disks, images and networks as they change (Ctrl-C stops)",
         "watch [vms,disks,images,networks]".cyan()
     );
-    println!(
+    line!(
         "  {} - Delete a VM (and its own root disk)",
         "delete <name|id> [--keep-disk]".cyan()
     );
-    println!(
+    line!(
         "  {} <init|join|join-token|status|promote|snapshot> - Form or inspect the cluster",
         "cluster".cyan()
     );
-    println!(
+    line!(
         "  {}             - List the cluster's nodes (a standalone host has one)",
         "nodes".cyan()
     );
-    println!("  {}               - List host PCI devices", "pci".cyan());
-    println!(
+    line!("  {}               - List host PCI devices", "pci".cyan());
+    line!(
         "  {}     - Show detailed info (incl. sysfs path) for one device",
         "pci <address>".cyan()
     );
-    println!(
+    line!(
         "  {} - Attach PCI device to VM",
         "attach-device <name|id> <path>".cyan()
     );
-    println!(
+    line!(
         "  {} - Detach PCI device from VM",
         "detach-device <name|id> <path>".cyan()
     );
-    println!(
+    line!(
         "  {}       - List stored guest login credentials",
         "credentials".cyan()
     );
-    println!(
+    line!(
         "  {}    - Add a credential (interactive)",
         "credential-add".cyan()
     );
-    println!(
+    line!(
         "  {} - Change a credential's password",
         "credential-passwd <user>".cyan()
     );
-    println!(
+    line!(
         "  {} - Replace a credential's SSH keys",
         "credential-keys <user>".cyan()
     );
-    println!("  {}  - Delete a credential", "credential-rm <user>".cyan());
-    println!("  {}          - List networks", "networks".cyan());
-    println!(
+    line!("  {}  - Delete a credential", "credential-rm <user>".cyan());
+    line!("  {}          - List networks", "networks".cyan());
+    line!(
         "  {} - Create a network (default: NAT)",
         "network-add <name> [--nat|--isolated|--bridged <br>] [--node N]".cyan()
     );
-    println!("  {}  - Delete a network", "network-rm <name>".cyan());
-    println!("  {}           - List glidex OVS bridges", "bridges".cyan());
-    println!("  {}  - List a bridge's uplinks", "uplinks <bridge>".cyan());
-    println!(
+    line!("  {}  - Delete a network", "network-rm <name>".cyan());
+    line!("  {}           - List glidex OVS bridges", "bridges".cyan());
+    line!("  {}  - List a bridge's uplinks", "uplinks <bridge>".cyan());
+    line!(
         "  {} - Add an uplink (kernel/AF_XDP/DPDK)",
         "uplink-add <bridge> --kernel <if> [--migrate-ip] [--force] [--accept-dhcp]".cyan()
     );
-    println!(
+    line!(
         "  {} - Set up again an uplink rolled back at start",
         "uplink-reapply <bridge> <name>".cyan()
     );
-    println!(
+    line!(
         "  {} - Remove an uplink, restoring the NIC",
         "uplink-rm <bridge> <name>".cyan()
     );
-    println!("  {}        - Host networking status", "ovs status".cyan());
-    println!(
+    line!("  {}        - Host networking status", "ovs status".cyan());
+    line!(
         "  {} - Install Open vSwitch",
         "ovs install [--profile kernel|dpdk] [--force]".cyan()
     );
-    println!(
+    line!(
         "  {}     - Cloud images in the built-in catalog",
         "image catalog".cyan()
     );
-    println!("  {}        - List downloaded images", "image list".cyan());
-    println!(
+    line!("  {}        - List downloaded images", "image list".cyan());
+    line!(
         "  {} - Download and verify an image",
         "image pull <catalog-key|https-url> [--name N] [--sha256 H]".cyan()
     );
-    println!(
+    line!(
         "  {} - Pull UEFI firmware VMs boot through",
         "image pull --firmware <key> [--name N]".cyan()
     );
-    println!(
+    line!(
         "  {} - Download firmware (QEMU: with its variable store)",
         "image pull <url> --firmware-for <hv> [--vars-url U] [--vars-sha256 H]".cyan()
     );
-    println!(
+    line!(
         "  {} - Pull a kernel image, or take it from a disk image",
         "image pull <url> --kernel [--initrd-url U] [--cmdline C] | --kernel-from <image>".cyan()
     );
-    println!(
+    line!(
         "  {} - Take the kernel out of a disk image",
         "image extract-kernel <name|id>".cyan()
     );
-    println!("  {}   - Delete an image", "image rm <name|id>".cyan());
-    println!(
+    line!("  {}   - Delete an image", "image rm <name|id>".cyan());
+    line!(
         "  {}    - Datastores, and what each node finds",
         "datastore list".cyan()
     );
-    println!(
+    line!(
         "  {} - A datastore and each node's view",
         "datastore show <name|id>".cyan()
     );
-    println!(
+    line!(
         "  {} - Register a directory under /srv/glidex",
         "datastore create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
             .cyan()
     );
-    println!(
+    line!(
         "  {} - Change paths, nodes, the default, overcommit",
         "datastore set <name|id> [--node-path NODE=P] [--nodes N,M|--all-nodes] [--default|--no-default] [--overcommit|--no-overcommit]"
             .cyan()
     );
-    println!(
+    line!(
         "  {}  - Delete a datastore no disk is on",
         "datastore rm <name|id>".cyan()
     );
-    println!("  {}         - List disks", "disk list".cyan());
-    println!(
+    line!("  {}         - List disks", "disk list".cyan());
+    line!(
         "  {}  - Disk details and partitions",
         "disk show <name|id>".cyan()
     );
-    println!(
+    line!(
         "  {} - Create a disk",
         "disk create <name> [--size-gib N] [--image I] [--full] [--raw] [--no-extend] [--datastore D]".cyan()
     );
-    println!(
+    line!(
         "  {} - Grow or shrink a disk",
         "disk resize <disk> <GiB> [--no-extend]".cyan()
     );
-    println!(
+    line!(
         "  {} - Move a disk to another datastore (offline)",
         "disk move <disk> --datastore D [--node N] [--flatten]".cyan()
     );
-    println!(
+    line!(
         "  {} - Grow the root partition",
         "disk extend-root <disk> [--on-boot]".cyan()
     );
-    println!("  {}    - Delete a disk", "disk rm <name|id>".cyan());
-    println!("  {}            - Check API server health", "health".cyan());
-    println!();
-    println!("{}", "Access control:".bold());
-    println!(
+    line!("  {}    - Delete a disk", "disk rm <name|id>".cyan());
+    line!("  {}            - Check API server health", "health".cyan());
+    line!();
+    line!("{}", "Access control:".bold());
+    line!(
         "  {}            - Who you are: method, teams, roles",
         "whoami".cyan()
     );
-    println!(
+    line!(
         "  {} - Log in over TCP (OIDC device flow or a pasted token)",
         "login --oidc [--connector ID] | --token".cyan()
     );
-    println!("  {} - Forget the saved token", "logout [--revoke]".cyan());
-    println!(
+    line!("  {} - Forget the saved token", "logout [--revoke]".cyan());
+    line!(
         "  {} - Login profiles for remote control planes: target, trust and token of a server, under a name",
         "auth login | logout [--revoke] | status | use <P> | profiles | trust list|fetch|remove"
             .cyan()
     );
-    println!(
+    line!(
         "  {}                - Print the web UI address",
         "ui".cyan()
     );
-    println!(
+    line!(
         "  {} - Access tokens",
         "token list | create <name> [--days N] [--service-account] [--role R[@P]] | revoke <id>"
             .cyan()
     );
-    println!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|approve|delete <t> | members|add-member|remove-member …".cyan());
-    println!(
+    line!("  {} - Tenants", "tenant list | show <t> | create <slug> [--operator] | suspend|resume|approve|delete <t> | members|add-member|remove-member …".cyan());
+    line!(
         "  {} - Tenants admitted on this cluster, and their caps",
         "admission list | set <t> [vms=N … | unlimited] [--suspend|--resume] | remove <t> | offer <t> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories | auto [set <dir> --mode self_service|all --cap k=v,… | remove <dir>]".cyan()
     );
-    println!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google|jumpcloud <id> … | update <id> … | secret set <id> | test <id> | remove <id> | scim-token list|create|revoke <id>".cyan());
-    println!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
-    println!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
-    println!(
+    line!("  {} - Login connectors of this directory", "connector list | show <id> | add oidc|pam|google|jumpcloud <id> … | update <id> … | secret set <id> | test <id> | remove <id> | scim-token list|create|revoke <id>".cyan());
+    line!("  {} - Invite an email address to a tenant (a link, shown once)", "invite list <tenant> | create <tenant> <email> --connector C [--role R] [--days N] | revoke <id>".cyan());
+    line!("  {} - Workload federations: CI jobs exchange their OIDC tokens for a service account's", "federation list <tenant> | show <tenant> <id> | add <tenant> <id> --issuer URL --audience A (--match K=V... --service-account TOKEN [--ttl S] | --rules-file F) | enable|disable|remove <tenant> <id>".cyan());
+    line!(
         "  {} - Directories this host serves (operator), the token signing keys of yours (rotating needs a fresh login), and its settings: self-service tenants and the web UI's word for a tenant",
         "directory list | create <id> --admin-email EMAIL [--name T] [--owner SLUG] [--trust-domain NAME] | delete <id> | keys [rotate] | settings [...]".cyan()
     );
-    println!(
+    line!(
         "  {} - Projects",
         "project list | show <p> | create <name> [--description D] [--tenant T] | delete <p>"
             .cyan()
     );
-    println!(
+    line!(
         "  {} - Quotas (none = unlimited)",
         "project quota <p> vms=10 memory_mib=none ...".cyan()
     );
-    println!("  {} - Set your default project", "project use <p>".cyan());
-    println!(
+    line!("  {} - Set your default project", "project use <p>".cyan());
+    line!(
         "  {} - Project role bindings",
         "binding list <p> | add <p> <role> user:<id|email> | remove <p> <id>".cyan()
     );
-    println!(
+    line!(
         "  {} - Host role bindings",
         "system-binding list [--node N] | add <role> <principal> [--node N] | remove <id>".cyan()
     );
-    println!(
+    line!(
         "  {} - Users and their sign-ins; pre-add one by email; link one, on a node or every node",
         "user list | add <email> --tenant T --connector C [--role R] [--name N] | link <user> <provider> <subject> [--all-nodes] | unlink <user> <provider>:<subject>".cyan()
     );
-    println!(
+    line!(
         "  {} - Teams",
         "team list | create <name> | add-member <team> <user> | remove-member <team> <user>".cyan()
     );
-    println!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
-    println!(
+    line!("  {} - Site Cedar policies", "policy list | show <id> | put <id> <file> [--disable] | delete <id> | validate <id> <file> | history <id>".cyan());
+    line!(
         "  {} - Audit log",
         "audit [--project P | --directory D] [--since <unix-ms>] [--limit N] [--user U] [--page <token>]".cyan()
     );
-    println!(
+    line!(
         "  {} - Resource usage (default: this billing month by project)",
         "usage [--project P] [--from D] [--to D] [--by project,vm,disk,nic,network] [--granularity hour|day|month] [--meters m,…] [--tz Z] [--csv]".cyan()
     );
-    println!(
+    line!(
         "  {} - Average, 30-second peak and 95th percentile per billing month",
         "usage bandwidth|disk-io|compute [--month YYYY-MM] [--by project,vm,nic,network|disk] [--csv]".cyan()
     );
-    println!(
+    line!(
         "  {} - A VM's current CPU, memory, NIC and disk rates",
         "stats <vm>".cyan()
     );
-    println!(
+    line!(
         "  {} - 5-minute series with the 95th percentile",
         "bandwidth <vm> | --network N · io <vm> | --disk D · compute <vm>".cyan()
     );
-    println!("  {} - Project networks", "network create <name> --project P [--isolated] [--vhost-user] | share <net> <project-id> | unshare <net> <project-id>".cyan());
-    println!(
+    line!("  {} - Project networks", "network create <name> --project P [--isolated] [--vhost-user] | share <net> <project-id> | unshare <net> <project-id>".cyan());
+    line!(
         "  {} - Shares offered to a project",
         "network shares <p> | accept <p> <net> | leave <p> <net>".cyan()
     );
-    println!(
+    line!(
         "  {} - A network's id, mode, grants or shares",
         "network show <net>".cyan()
     );
-    println!();
-    println!("  {}              - Show this help", "help".cyan());
-    println!("  {}              - Exit the CLI", "exit".cyan());
-    println!();
-    println!(
+    line!();
+    line!("  {}              - Show this help", "help".cyan());
+    line!("  {}              - Exit the CLI", "exit".cyan());
+    line!();
+    line!(
         "{} You can use either VM name or ID for commands. Global --project P scopes creates, lists and name lookups.",
         "Note:".dimmed()
     );
+    out
+}
+
+/// The help's lines for `command` (`help audit`, `audit --help`): those
+/// whose usage starts with it; all of the help when none does.
+fn command_help(command: &str) -> String {
+    let text = help_text();
+    let lines: Vec<&str> = text
+        .lines()
+        .filter(|l| {
+            let usage = strip_ansi(l);
+            let usage = usage.trim_start();
+            usage
+                .strip_prefix(command)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })
+        .collect();
+    if lines.is_empty() {
+        return text;
+    }
+    lines.iter().map(|l| format!("{l}\n")).collect()
+}
+
+/// `s` without its terminal colour codes.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars();
+    while let Some(c) = chars.next() {
+        if c == '\u{1b}' {
+            // `ESC [ … m`
+            for c in chars.by_ref() {
+                if c.is_ascii_alphabetic() {
+                    break;
+                }
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The help `words` ask for, if they ask for it instead of a command:
+/// `help`, `help audit`, or a command with `--help` or `-h` among its
+/// arguments (which then never runs).
+fn help_request(words: &[&str]) -> Option<String> {
+    match words {
+        ["help" | "?"] => Some(help_text()),
+        ["help" | "?", command, ..] => Some(command_help(command)),
+        [command, args @ ..] if args.iter().any(|a| *a == "--help" || *a == "-h") => {
+            Some(command_help(command))
+        }
+        _ => None,
+    }
 }
 
 fn format_unix_time(secs: u64) -> String {
@@ -1479,9 +1541,12 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         return true;
     }
 
-    match parts[0] {
-        "help" | "?" => print_help(),
+    if let Some(help) = help_request(&parts) {
+        print!("{help}");
+        return true;
+    }
 
+    match parts[0] {
         "exit" | "quit" | "q" => return false,
 
         "list" | "ls" => vm::list(client).await,
@@ -1642,6 +1707,12 @@ fn needs_no_session(words: &[String]) -> bool {
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    // Help needs no server: answered before connecting.
+    let words: Vec<&str> = cli.command.iter().map(String::as_str).collect();
+    if let Some(help) = help_request(&words) {
+        print!("{help}");
+        return;
+    }
     let client = match build_client(&cli) {
         Ok(c) => c,
         // The session isn't used: any client will do.
@@ -1754,6 +1825,33 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn help_is_asked_for_and_never_runs_the_command() {
+        let help = |s: &str| {
+            help_request(&s.split_whitespace().collect::<Vec<_>>()).map(|h| strip_ansi(&h))
+        };
+        // A command's own line, for `--help`, `-h` or `help <command>`.
+        for asked in ["audit --help", "audit --since 0 -h", "help audit"] {
+            let h = help(asked).unwrap();
+            assert_eq!(h.lines().count(), 1, "{asked}: {h}");
+            assert!(h.trim_start().starts_with("audit ["), "{asked}: {h}");
+        }
+        // Every line starting with the command, not a longer one's.
+        let user = help("user -h").unwrap();
+        assert!(
+            user.lines().all(|l| l.trim_start().starts_with("user ")),
+            "{user}"
+        );
+        // `help` alone, and an unknown command's help: all of it.
+        let all = help("help").unwrap();
+        assert!(all.contains("Available commands:") && all.contains("audit ["));
+        assert_eq!(help("no-such-command --help").unwrap(), all);
+        // Not a help request: the command runs.
+        assert_eq!(help("audit --since 0"), None);
+        assert_eq!(help("list"), None);
+        assert_eq!(help(""), None);
+    }
 
     #[test]
     fn auth_login_runs_without_a_local_session() {
