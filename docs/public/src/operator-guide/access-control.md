@@ -635,7 +635,8 @@ other than the time covers the newest 20,000 matching entries; the page
 says so when there are more: choose a project or a time to narrow it.
 The **Project** filter's first choice reads all of the log you may read:
 *All (cluster)*, or *All (my directory)* for someone of a hosted
-directory (below). `gxctl audit` prints the newest page oldest first,
+directory (below); a project owner who reads no more chooses among the
+projects they own. `gxctl audit` prints the newest page oldest first,
 and the command for the page before it.
 
 `auditor` and `system-admin` read all of it; a project's owners read

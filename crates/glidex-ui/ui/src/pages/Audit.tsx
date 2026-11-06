@@ -4,6 +4,7 @@ import type { AuditEntry } from "../types";
 import { LoadingCard } from "../components/Loading";
 import { Badge, ErrorBanner, PageHeader, errorMessage, primaryButton, secondaryButton } from "../components/ui";
 import { isHostedDirectory, useSession } from "../session";
+import { useAllowed } from "../nodes";
 import { useDirectory } from "../hooks";
 
 const filterClass = "mt-1 px-2 py-1.5 border border-gray-300 rounded-lg text-sm bg-white";
@@ -32,8 +33,12 @@ export default function Audit() {
   // A hosted directory's readers see its own audit, all of it (D74).
   const hosted = isHostedDirectory(me.directory_id);
   const all = host.readAudit || (host.readDirectoryAudit && hosted);
-  // Otherwise only a project's own entries (project owners).
-  const [project, setProject] = useState<string>(all ? "" : (selected ?? ""));
+  // Otherwise only a project's own entries, of the projects whose audit they
+  // may read: asked, since a token narrowed below owner may not.
+  const refs = all ? [] : projects.map((p) => ({ type: "Project" as const, id: p.id }));
+  const may = useAllowed(["readProjectAudit"], refs);
+  const choices = all ? projects : may ? projects.filter((p) => may({ type: "Project", id: p.id }, "readProjectAudit")) : null;
+  const [project, setProject] = useState<string>("");
   const [user, setUser] = useState("");
   const [since, setSince] = useState("");
   const [order, setOrder] = useState<api.AuditOrder>("time");
@@ -47,11 +52,11 @@ export default function Audit() {
   const [open, setOpen] = useState<string | null>(null);
 
   const load = useCallback(
-    async (page: number, pages: string[], by: api.AuditOrder, up: boolean) => {
+    async (page: number, pages: string[], by: api.AuditOrder, up: boolean, from = project) => {
       setError(null);
       try {
         const r = await api.readAudit({
-          project: project || undefined,
+          project: from || undefined,
           user: user.trim() || undefined,
           since: since ? new Date(since).getTime() : undefined,
           limit: PAGE,
@@ -72,10 +77,14 @@ export default function Audit() {
     [project, user, since],
   );
 
+  // Load once the choices are known; later loads come from the filter form, a header or a page button.
+  const ready = choices !== null;
   useEffect(() => {
-    load(0, [""], order, ascending);
-    // Load once on entry; later loads come from the filter form, a header or a page button.
-  }, []);
+    if (!choices || (!all && choices.length === 0)) return;
+    const first = all ? "" : (choices.find((p) => p.id === selected) ?? choices[0]).id;
+    setProject(first);
+    load(0, [""], order, ascending, first);
+  }, [ready]);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
@@ -94,6 +103,16 @@ export default function Audit() {
 
   const userName = (id?: string | null) => (id ? dir?.users.find((u) => u.id === id)?.display_name ?? id.slice(0, 8) : "—");
 
+  if (choices === null) return <LoadingCard />;
+  if (!all && choices.length === 0) {
+    return (
+      <div>
+        <PageHeader title="Audit log" />
+        <p className="text-gray-500">You can't read the audit log: it is for the cluster's auditors and the owners of a project.</p>
+      </div>
+    );
+  }
+
   return (
     <div>
       <PageHeader title="Audit log" subtitle="Writes, logins and denied requests, newest first unless sorted by a column." />
@@ -104,7 +123,7 @@ export default function Audit() {
           </label>
           <select id="audit-project" className={filterClass} value={project} onChange={(e) => setProject(e.target.value)}>
             {all && <option value="">{hosted ? "All (my directory)" : "All (cluster)"}</option>}
-            {projects.map((p) => (
+            {choices.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
               </option>

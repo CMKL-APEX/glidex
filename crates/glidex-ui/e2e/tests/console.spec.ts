@@ -3,11 +3,19 @@
 // (React StrictMode's double mount in dev, or leaving the page at once).
 // The `pageErrors` fixture fails the test on any such error.
 import type { Page } from "@playwright/test";
-import { consoleTerminal, consoleText, expect, test } from "../fixtures";
+import { consoleTerminal, consoleText, expect, rpcRoute, test } from "../fixtures";
 
 // There is no such VM: the console WebSocket is refused and its detail
 // page gets 404s.
 test.use({ ignoredConsoleErrors: /WebSocket|status of 404/ });
+
+// The page asks before opening a console; on a VM the server doesn't
+// know, the answer would be no.
+test.beforeEach(({ page }) =>
+  rpcRoute(page, "glidex.access.v1.AuthzService/Allowed", (req) => ({
+    message: { allowed: (req.resources ?? []).map(() => ({ actions: req.actions ?? [] })) },
+  })),
+);
 
 for (const kind of ["xterm", "ghostty"]) {
   test.describe(kind, () => {
