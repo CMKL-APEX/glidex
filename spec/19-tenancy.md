@@ -1891,8 +1891,8 @@ order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started;
-T9 has tasks 1–4 (settings and the label; creating one's own tenant; automatic admission; open pools); task 5, the real check, is not run yet.
-T8 (D75–D77) is implemented.
+T9 has tasks 1–6 (settings and the label; creating one's own tenant; automatic admission; open pools; the real check, passed on 2026-11-05; a tenant at first sign-in).
+T8 (D75–D77) is implemented; its real check passed on 2026-11-03.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -2329,7 +2329,7 @@ T8, verified addresses and pre-added users:
 | Tests (D76) | `connector_tests::an_oidc_allowlist_picks_who_gets_an_account`; UI e2e `connectors.spec.ts` (the same OIDC test) |
 | D77: pre-added users (§6.3) | `auth::store::User.pending_login` (`PendingLogin`), `IdentityStore::take_pending_login`; `AuthService::external_login_invited` (binds before the allowlist and JIT); `service::access::create_user` → `preadd_user` (`invitations::may_give_role`, `usable_connector`); proto `CreateUserRequest.pending` (`PendingUser`), `User.pending_connector`; gxctl `user add`, `user list`; the Access page's **Add user** and *not signed in yet* |
 | Tests (D77) | `connector_tests::a_pre_added_user_is_taken_by_its_first_verified_login` (role there before the login; refused twice, outside the domains, not an address, with identities, an unknown or provisioned connector; unverified, another connector and another subject take nothing; taken once, JIT off); UI e2e `access.spec.ts` "users: add one by email before they sign in" |
-| Not yet | the real check on the prism cluster with a Google Workspace connector |
+| Real check | passed on 2026-11-03 on the prism cluster (`72b9d7f`) with the Google Workspace connector, through `glidex.cmkl.ai`: [20-idp-checks.md](20-idp-checks.md) "Verified addresses and pre-added users (T8)" |
 
 T9, self-service tenants (§11.1):
 
@@ -2347,4 +2347,5 @@ T9, self-service tenants (§11.1):
 | Tests (task 6) | `tenancy_tests::a_user_in_no_tenant_gets_one_at_first_sign_in` (off, named from the address or the display name, the user its admin, once and not again after deleting it, a taken slug, a tenant member gets none, the connector's default tenant aside, over a limit none and made at the next sign-in). Not through a real connector login: the call is the same after each |
 | T10: members by email (D83) | `Identity.email_verified`, `IdentityStore::{record_identity_email (at each connector sign-in, on the leader, when changed), users_by_email}`; `EntityRef.email`; `service::common::{email_of, user_by_email}` used by `AddMember`, `AddBinding` (`tenancy::member_principal`) and `AddProjectBinding`, after the caller's right to add; gxctl `user:<email>`; the member and role forms take an id or an email, and the tenant page offers an invitation for an address with no user |
 | Tests (T10) | `tenancy_tests::members_and_roles_by_verified_email` (a verified address in any case, pre-added and provisioned users, an unverified address, another directory's user, a disabled one and nobody as an unknown id, two users `409 ambiguous`, a caller who may not add refused first, a tenant and a project role, a sign-in recording the address); gxctl `parse_principal`. No UI e2e: the harness signs in as a directory administrator, who picks users from a list |
-| Not yet | task 5: the real check on the prism cluster. Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |
+| Real check | task 5 passed on 2026-11-05 on the prism cluster (`6e61817`, then `2c05489`) with the Google Workspace connector, members added by email (D83) included: [20-idp-checks.md](20-idp-checks.md) "Self-service tenants (T9) and members by email (T10)" |
+| Not yet | Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |

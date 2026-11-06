@@ -161,10 +161,36 @@ No IdP is involved; the accounts are the directory's own.
 8. `gxctl --profile <directory profile> auth logout --revoke`: its access
    token is refused at once and its refresh token too.
 
+## Verified addresses and pre-added users (T8)
+
+On a cluster with a Google Workspace connector, as its operator:
+
+1. The connector's allowed domain (and, if wanted, *Allowed emails*).
+2. On Access, **Add user** with an address in that domain and a role,
+   before its owner has signed in: listed as *not signed in yet*.
+3. They sign in with Google: they arrive with that role.
+4. An address outside the domain or the allowlist is refused at sign-in.
+
+## Self-service tenants (T9) and members by email (T10)
+
+On a cluster with a Google Workspace connector:
+
+1. The operator turns on self-service tenants in the directory's
+   **Settings**, with a per-user limit and automatic admission at the
+   default cap (an open device pool too, to try one).
+2. A Workspace user without a role creates a lab: it is admitted.
+3. They add a member by email: a user who has signed in is added; an
+   address with no user is offered an invitation.
+4. They create a project and run a VM in it.
+5. A second lab past the per-user limit is refused, as is going past
+   the cap.
+
 ## Results
 
 | Date | Build | Check | Result |
 |---|---|---|---|
+| 2026-11-05 | `6e61817`, then `2c05489` (T9 #260–#267, T10 #278) | Self-service tenants and members by email on the prism cluster through `glidex.cmkl.ai`, steps 1–5 above | pass, as reported by the operator. The cluster's audit has the lab's members and roles added (10:41 +07, `6e61817`) and a lab created with its project, network and VMs (17:56 +07, `2c05489`); settings, admissions and earlier labs from 2–4 November. No refusal at the limit is in the audit |
+| 2026-11-03 | `72b9d7f` (T8 #243, #244, #246) | Verified addresses and pre-added users on the prism cluster through `glidex.cmkl.ai`, steps 1–4 above | pass, as reported by the operator; the pre-adds are in the cluster's audit at 08:53 and 08:59 +07 |
 | — | T4 (#74–#85) | Google Workspace directory sync (`provisioning: pull`) | **not run yet**: deferred by the operator; run it before relying on the pull |
 | 2026-10-22 | `ac5a0e2` (T6 #165, #167, #168) | Two organizations: steps 1–8 above, between a cluster and a standalone host on a tailnet | pass (step 8 at `985e97b`), after three fixes found by it and made in #168: a standalone host's server-info now names its token audience (gxctl's directory login asked for the wrong one); a tenant role lists the tenant's projects; `auth logout --revoke` ends a directory login (it refused for want of an API token id). Staleness and logout at the directory ending cluster sessions were checked in-process only |
 | — | T5 (#92–#100) | GitHub Actions workload federation | **not run yet**: needs a test repository and a tunnel; run it before relying on federation with GitHub |
