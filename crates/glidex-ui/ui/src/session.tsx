@@ -14,17 +14,19 @@ import { Loading } from "./components/Loading";
 /** Host-wide capabilities the UI shows or hides pages for, each with the
  * resource type it is checked on, as `appliesTo` in
  * policies/glidex.cedarschema has it: cluster-wide actions take `Cluster`,
- * the host's own networking `Host`, users and teams the host's
+ * the host's own networking `Host`, users and teams the caller's
  * `Directory`, project creation a `Tenant` (spec/19-tenancy.md). A check on a
  * type the schema doesn't
  * list is never allowed, so a wrong entry hides the page from everyone
  * (tests/ui_capabilities.rs in glidex-control-plane compares the two). */
-/** The entity a host capability is checked on: the host's own directory
- * (`local`), and the `default` tenant for creating projects. */
+/** The entity a host capability is checked on: the caller's own directory,
+ * as the server checks directory actions (a hosted directory's people hold
+ * their roles on theirs, spec/19-tenancy.md D59), and the `default` tenant
+ * for creating projects. */
 type HostResourceType = SingletonEntityType | "Directory" | "Tenant";
 
-function hostResource(type: HostResourceType): EntityRef {
-  if (type === "Directory") return { type, id: "local" };
+function hostResource(type: HostResourceType, directory: string): EntityRef {
+  if (type === "Directory") return { type, id: directory };
   if (type === "Tenant") return { type, id: "default" };
   return { type };
 }
@@ -150,9 +152,10 @@ export function useCan(checks: { action: string; resource: EntityRef }[]): boole
 }
 
 /** What the caller may do host- and cluster-wide; all false if the check fails. */
-async function hostCapabilities(): Promise<Record<HostAction, boolean>> {
+async function hostCapabilities(me: WhoAmI): Promise<Record<HostAction, boolean>> {
+  const directory = me.directory_id || "local";
   const allowed = await api
-    .checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: hostResource(HOST_ACTION_RESOURCE[action]) })))
+    .checkAccess(HOST_ACTIONS.map((action) => ({ action, resource: hostResource(HOST_ACTION_RESOURCE[action], directory) })))
     .catch(() => HOST_ACTIONS.map(() => false));
   return Object.fromEntries(HOST_ACTIONS.map((a, i) => [a, allowed[i]])) as Record<HostAction, boolean>;
 }
@@ -189,7 +192,7 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [project, setProject] = useState<string | null>(null);
 
   const load = useCallback(async (me: WhoAmI): Promise<Extra> => {
-    const [projects, host] = await Promise.all([api.listProjects().catch(() => [] as ProjectView[]), hostCapabilities()]);
+    const [projects, host] = await Promise.all([api.listProjects().catch(() => [] as ProjectView[]), hostCapabilities(me)]);
     setProject((current) => {
       const known = (id: string | null | undefined) => !!id && projects.some((p) => p.id === id);
       if (known(current)) return current;
@@ -233,9 +236,9 @@ function GlidexSession({ project, setProject, children }: { project: string | nu
   const { me, methods, extra, setExtra, refresh, logout } = kit;
 
   const refreshCapabilities = useCallback(async () => {
-    const host = await hostCapabilities();
+    const host = await hostCapabilities(me);
     setExtra((x) => ({ ...x, host }));
-  }, [setExtra]);
+  }, [me, setExtra]);
 
   const session = useMemo<Session>(
     () => ({
