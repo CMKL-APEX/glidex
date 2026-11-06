@@ -2152,8 +2152,10 @@ The same measurement found why one network's 5-minute rows (`rate_5m`) for about
 
 What is left is mostly VM bookkeeping (48% of the bytes: about one write per VM every 10 minutes, as D27 allows), the closed hours (`usage_hourly` 14%, `ledger_inbox` 5%), `rate_5m` (16%, a third of it the restart's resend) and an image download in progress (`images` 9%, its `status.received_bytes`).
 
+Why 86 node writes changed only `status.ui_url` (before C9): a restarted server published W3's fallback (`cluster.ui_url`, else the first allowed origin, spec/28-host-page.md) until its glidex-ui reported its address, within 30 seconds, and that report was a second node write. The three servers' control planes started 54 times in the before window, and the 13:06 restart on 2026-11-05 showed one such write per server and none after. A server now keeps the address it last published until glidex-ui reports (test `a_restart_keeps_the_published_ui_address`). The other writes are likely glidex-ui's own 14 starts, if it reports the host's name before its Tailscale certificate is loaded; not checked.
+
 Not yet:
-- Why a node's `status.ui_url` changed 86 times: not looked at.
+
 - A cluster network's slot rows have no node in their key, so the leader's merge keeps the last node's row and drops the others' share of the network's 5-minute rates (the hourly rows are kept per node). Not fixed yet.
 
 ### Validation against real OVN and conntrack (after C8)

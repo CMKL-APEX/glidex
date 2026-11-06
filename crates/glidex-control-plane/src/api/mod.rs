@@ -157,12 +157,18 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 pub fn router(app: AppState) -> Router {
     // What a server publishes as its web UI's address until its glidex-ui
     // reports one (spec/28-host-page.md W3); the next self-report writes it.
+    // The address it published before a restart stands meanwhile: glidex-ui
+    // reports the same one again, so a restart writes nothing for it.
     let cfg = &app.auth.config;
-    app.manager.set_ui_url(
-        cfg.cluster
-            .ui_origin()
-            .or_else(|| cfg.auth.allowed_origins.first().cloned()),
-    );
+    app.manager.set_ui_url(cfg.cluster.ui_origin().or_else(|| {
+        app.manager
+            .nodes()
+            .get(&app.manager.local_node_id())
+            .ok()
+            .flatten()
+            .and_then(|n| n.status.ui_url)
+            .or_else(|| cfg.auth.allowed_origins.first().cloned())
+    }));
     let (r, _) = routes(&app);
     r.merge(rpc::routes(&app))
         .layer(from_fn_with_state(app.clone(), gate::cluster_gate))
