@@ -1,6 +1,7 @@
 // Browsing asks only what the caller may read: a project member without a
 // host role opens the pages that read host state for those who have one,
-// and the audit has no denial from it (spec/11-security.md §10). Seen
+// and the audit has no denial from it (spec/11-security.md §10), nor from
+// the pages it reaches only by typing their address. Seen
 // through a personal token narrowed to one project role. No VM is booted.
 import { api, del, expect, test } from "../fixtures";
 
@@ -54,6 +55,17 @@ test("a project editor browses without a denial in the audit", async ({ browser 
     // Let the form's requests land; the live stream keeps the network busy,
     // so there is no idle to wait for.
     await page.waitForTimeout(1500);
+    // Pages the menu doesn't offer them, typed in: each says so and asks nothing.
+    await page.goto("/hosts");
+    await expect(page.getByText("You can't see this cluster's hosts.")).toBeVisible();
+    await page.goto("/hosts/some-node");
+    await expect(page.getByText("You can't see this cluster's hosts.")).toBeVisible();
+    await page.goto("/directories");
+    await expect(page.getByText("You can't see the directories this host serves.")).toBeVisible();
+    await page.goto("/audit");
+    await expect(page.getByText(/You can't read the audit log/)).toBeVisible();
+    await page.goto("/vms/00000000-0000-4000-8000-000000000000/console");
+    await expect(page.getByText("You can't open this VM's console.")).toBeVisible();
   } finally {
     await editor.close();
   }

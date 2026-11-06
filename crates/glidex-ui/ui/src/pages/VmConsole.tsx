@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as api from "../api";
 import { nodeUnreachable } from "../types";
+import { useAllowed } from "../nodes";
 import {
   type ConsoleTerminal,
   type TerminalKind,
@@ -37,10 +38,14 @@ export default function VmConsole() {
   // Reconnects since the console last opened: a dropped connection (code
   // 1006, from a proxy that cut it) connects again by itself, a few times.
   const dropped = useRef(0);
+  // Typed in by someone who may not open it: say so instead of asking for a ticket.
+  const vm = { type: "Vm" as const, id: id ?? "" };
+  const can = useAllowed(["openConsole"], [vm]);
+  const allowed = can ? can(vm, "openConsole") : undefined;
 
   useEffect(() => {
     const container = containerRef.current;
-    if (!id || !container) return;
+    if (!id || !container || !allowed) return;
     setStatus(dropped.current > 0 ? "reconnecting" : "connecting");
     setError(null);
 
@@ -145,7 +150,7 @@ export default function VmConsole() {
       // Whatever the terminal left behind: the next one opens here.
       container.replaceChildren();
     };
-  }, [id, attempt, kind]);
+  }, [id, attempt, kind, allowed]);
 
   const statusColor =
     status === "connected"
@@ -157,6 +162,17 @@ export default function VmConsole() {
           : status === "reconnecting"
             ? "text-amber-600"
           : "text-sky-600";
+
+  if (allowed === false) {
+    return (
+      <div>
+        <Link to={`/vms/${id}`} className="text-sky-600 hover:text-sky-700">
+          Back to VM
+        </Link>
+        <p className="mt-3 text-gray-500">You can't open this VM's console.</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col" style={{ height: "calc(100vh - 140px)" }}>

@@ -71,6 +71,7 @@ export default function HostDetail() {
   const canTopology = !!canConf?.(nodeHost, "readHostTopology");
 
   const load = useCallback(async () => {
+    if (!host.listNodes) return;
     try {
       const [n, v, d] = await Promise.all([live.live ? Promise.resolve(null) : api.getNode(id), api.listVms(null), api.listDisks(null).catch(() => [] as DiskInfo[])]);
       if (n) setPolled(n);
@@ -80,11 +81,21 @@ export default function HostDetail() {
     } catch (e) {
       setError(errorMessage(e));
     }
-  }, [id, live.live]);
+  }, [id, live.live, host.listNodes]);
   useEffect(() => {
     load();
   }, [load]);
   useLiveRefresh(["vm", "disk"], load);
+
+  // Typed in by someone the menu offers no Hosts: say so instead of asking.
+  if (!host.listNodes) {
+    return (
+      <div>
+        <PageHeader title="Host" />
+        <p className="text-gray-500">You can't see this cluster's hosts.</p>
+      </div>
+    );
+  }
 
   const node = (live.live ? live.nodes.get(id) : null) ?? polled;
   if (!node) return error ? <ErrorBanner error={error} /> : <LoadingCard />;
