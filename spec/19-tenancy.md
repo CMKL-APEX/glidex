@@ -2214,7 +2214,7 @@ Task 4a, records in one directory:
 | Filters | lists keep the caller's directory (`list_users`, `list_teams`, `list_tokens`, `list_connectors`, `list_tenants`); another directory's user, team or connector answers `404` (`user_here`, `team`, `get_visible`); tenant slugs resolve in the caller's directory (`TenantStore::resolve_in`) and are unique there (`create_in`) |
 | Membership | `AuthService::principal_directory`: members and role holders of a tenant, team or project must be of its directory (another's answer as missing, `400`) |
 | Tests | `connector_tests.rs::hosted_directories_dont_see_each_other` (a second directory made with `TenantStore::create_directory`) |
-| D74 | Table `directory_audit` (63, directory scope); `AuthService::write_audit` (by the principal's directory, `auth::is_hosted`; `system_directory` for `directory:`, `system:scim:`, `system:sync:`, `system:federation:` actors); `IdentityStore::{append_directory_audit, directory_audit, remove_directory_audit}`, `prune_audit` pruning both; `ReadAuditRequest.directory` (REST `?directory=`), `service::access::read_directory_audit` (`readDirectoryAudit`, `directory.read`); `DeleteDirectory` removes it; gxctl `audit --directory`; the web UI's Audit page for a hosted directory's readers |
+| D74 | Table `directory_audit` (63, directory scope); `AuthService::write_audit` (by the principal's directory, `auth::is_hosted`; `system_directory` for `directory:`, `system:scim:`, `system:sync:`, `system:federation:` actors); `IdentityStore::{append_directory_audit, directory_audit, remove_directory_audit}`, `prune_audit` pruning both; `ReadAuditRequest.directory` (REST `?directory=`), `service::access::read_directory_audit` (`readDirectoryAudit`, `directory.read`); `DeleteDirectory` removes it; gxctl `audit --directory`; the web UI's Audit page for a hosted directory's readers, its capabilities checked on the caller's `Directory` (as the server checks them) |
 | Tests | `connector_tests.rs::a_hosted_directory_keeps_its_own_audit` |
 
 Task 4b, creating directories:
@@ -2238,7 +2238,7 @@ Task 4d, the web UI and docs:
 |---|---|
 | UI | `pages/Directories.tsx` (`/directories`, menu **Hosting**, with `listDirectories`; create with `manageDirectories`, the invitation link shown once; delete); `pages/Invite.tsx` creates the invitee's passkey for a passkey invitation (`api.acceptPasskeyInvitation`); `/login/<directory>` loads that directory's methods (`session.tsx`), and the host's login page has **Your email** (`/auth/discover`) sending an organization's people to their directory's page |
 | Docs | the operator guide's "Hosting other organizations' directories"; 07-web-ui.md routes |
-| UI e2e | `hosted-directories.spec.ts`: a directory created on the Hosting page, its administrator's passkey in another browser (virtual authenticator), only themselves in its users, its login page |
+| UI e2e | `hosted-directories.spec.ts`: a directory created on the Hosting page, its administrator's passkey in another browser (virtual authenticator), only themselves in its users, its Audit page (*All (my directory)*: their sign-in, not the operator's entries), its login page |
 
 Task 5a, peer assertions and offers:
 
