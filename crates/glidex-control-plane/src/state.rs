@@ -1303,19 +1303,18 @@ impl VmManager {
             }
         };
         let mut probe = crate::node::SelfProbe::detect(&reserved);
-        // Agents publish no UI address: browsers go to a server (W5).
+        let stored = self.nodes.get(&self.local_node_id()).ok().flatten();
+        // Agents publish no UI address: browsers go to a server (W5). Before
+        // the API sets one (startup reports first), the published one stands:
+        // reporting none would clear it, and a restart would write it twice.
         if !self.is_agent() {
-            probe.ui_url = (**self.ui_url.load()).clone();
+            probe.ui_url = self
+                .ui_url()
+                .or_else(|| stored.as_ref().and_then(|n| n.status.ui_url.clone()));
         }
         // Unrecorded image files (spec/14-clustering.md §9.2.3): deleted when
         // asked (once per request), the rest reported.
-        if let Some(before) = self
-            .nodes
-            .get(&self.local_node_id())
-            .ok()
-            .flatten()
-            .and_then(|n| n.spec.drop_spare_files_before)
-        {
+        if let Some(before) = stored.and_then(|n| n.spec.drop_spare_files_before) {
             self.images.drop_spare_files(before);
         }
         probe.features.spare_image_files = self.images.spare_files();
