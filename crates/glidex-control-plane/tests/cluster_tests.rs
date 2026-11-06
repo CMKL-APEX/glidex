@@ -5263,7 +5263,22 @@ async fn a_restart_keeps_the_published_ui_address() {
     .await;
     let before = published().unwrap();
 
-    // A restart builds the router again over the same store.
+    // A restarted process holds no address yet, and reports itself while it
+    // loads, before the router sets one: that keeps the published address.
+    host.manager.set_ui_url(None);
+    host.manager.report_self().unwrap();
+    assert_eq!(
+        host.manager
+            .nodes()
+            .get(&me)
+            .unwrap()
+            .unwrap()
+            .meta
+            .resource_version,
+        before.meta.resource_version,
+        "the startup report kept the published address"
+    );
+    // Then it builds the router again over the same store.
     let ui = ui_with_fallback(&host);
     assert_eq!(
         host.manager.ui_url().as_deref(),
