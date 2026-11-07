@@ -1272,6 +1272,42 @@ pairs instead of real NICs, and tears down its bridges, the `inet
 glidex` table and dnsmasq even on failure. CI runs only unit and API
 tests.
 
+### Future work: DHCP, DNS and network boot
+
+Not planned yet (2026-11-07); recorded so the discussion isn't lost. A
+spec section with decisions comes first when it is taken up.
+
+- **Replace dnsmasq on NAT networks** with a small glidex daemon in
+  Rust: DHCP on `dhcproto`, DNS forwarding on `hickory-server`'s
+  forwarder. The preferred shape is its own systemd service, not a part
+  of netd: it parses guests' packets, so it should run as its own user
+  with only the capabilities to bind ports 53 and 67, away from netd's
+  root and its control of OVS and nftables. A crash then costs DHCP and
+  DNS only, and systemd restarts it. netd tells it the bridges, pools
+  and reservations over a local socket. Each socket is bound to its
+  bridge (`SO_BINDTODEVICE`), so it never answers on an uplink. It runs
+  beside dnsmasq behind a switch until it has run on the hosts.
+  - Considered and not chosen: the same code inside netd (guest-facing
+    parsing in the most privileged daemon); rDHCP (a separate program,
+    young, its interface binding on Linux undocumented); dora (a
+    standalone server, likely to need vendoring).
+  - Open: how dnsmasq's leases move over.
+- **Cluster (OVN) networks keep OVN's DHCP.** ovn-controller answers
+  on each host from the port's address and `DHCP_Options`: no process,
+  no lease store, no guest packets parsed by glidex. Replacing it would
+  need a local port in a namespace for every network on every host.
+- **Network boot.** DHCP replies carry the boot server and file, chosen
+  by client architecture (option 93) and vendor or user class (PXE,
+  UEFI HTTP boot, iPXE chain-loading). OVN can already send these
+  (`next_server`, `tftp_server`, `bootfile_name`, `bootfile_name_alt`
+  for iPXE). The files are served by TFTP from the same daemon,
+  read-only, or by HTTP from glidex's image store. Open:
+  - whether Cloud Hypervisor's firmware can boot from the network at
+    all (QEMU with OVMF or SeaBIOS and iPXE can);
+  - the API for which networks or VMs boot from the network, and from
+    which images;
+  - HTTP boot only, or classic PXE (TFTP) too.
+
 ## Appendix A: QEMU
 
 Implemented; see §3a. Verified on the host below with the ignored
