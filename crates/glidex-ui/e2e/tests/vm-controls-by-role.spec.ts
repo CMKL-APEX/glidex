@@ -57,6 +57,7 @@ test("an operator runs a VM; an editor also changes it", async ({ browser, hyper
     await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
     await expect(page.getByRole("link", { name: "Open Console" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Change memory" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Rename" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Scale CPU / Elasticity" })).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Delete" })).toHaveCount(0);
     await expect(page.getByLabel("Disk to attach")).toHaveCount(0);
@@ -70,6 +71,7 @@ test("an operator runs a VM; an editor also changes it", async ({ browser, hyper
     await page.goto(`/vms/${vm.id}`);
     await expect(page.getByRole("button", { name: "Start" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Change memory" })).toBeVisible();
+    await expect(page.getByRole("button", { name: "Rename" })).toBeVisible();
     await expect(page.getByRole("button", { name: "Delete" })).toBeVisible();
   } finally {
     await editor.close();

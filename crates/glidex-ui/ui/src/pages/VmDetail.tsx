@@ -29,6 +29,7 @@ import VmKernel from "../components/VmKernel";
 import VmServiceAccount from "../components/VmServiceAccount";
 import VmCpuScale from "../components/VmCpuScale";
 import VmMemory from "../components/VmMemory";
+import VmRename from "../components/VmRename";
 import VmNetworks from "../components/VmNetworks";
 import { Loading } from "../components/Loading";
 import { useCan, useSession } from "../session";
@@ -180,6 +181,7 @@ export default function VmDetail() {
             <div>
               <h1 className="text-2xl font-bold text-gray-900">{vm.name}</h1>
               <p className="text-gray-500 font-mono text-sm mt-1">{vm.id}</p>
+              {may("updateVm") && <VmRename vm={vm} onChanged={fetchVm} />}
             </div>
             <VmStateBadge vm={vm} large />
           </div>
