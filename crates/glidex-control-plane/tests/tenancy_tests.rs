@@ -716,6 +716,7 @@ async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
             nodes: vec![],
             prepare: false,
             per_device: None,
+            bar_mib: None,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,
@@ -1915,6 +1916,7 @@ async fn an_open_pool_is_granted_to_every_admitted_tenant() {
             nodes: vec![],
             prepare: false,
             per_device: None,
+            bar_mib: None,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,

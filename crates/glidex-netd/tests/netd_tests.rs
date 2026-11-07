@@ -1646,6 +1646,7 @@ fn devices_are_prepared_for_passthrough_and_released() {
         .handle(
             Op::PrepareDevice {
                 address: "0000:07:00.0".into(),
+                bar_mib: None,
             },
             &peer(),
         )
@@ -1697,8 +1698,14 @@ fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
     exec.file("/sys/bus/pci/drivers/vfio-pci", "");
     let dir = TempDir::new().unwrap();
     let (netd, _) = netd(exec.clone(), &dir);
-    netd.handle(Op::PrepareDevice { address: vf.into() }, &peer())
-        .unwrap();
+    netd.handle(
+        Op::PrepareDevice {
+            address: vf.into(),
+            bar_mib: None,
+        },
+        &peer(),
+    )
+    .unwrap();
     let s = netd
         .handle(
             Op::SetSriovVfs {
@@ -1763,6 +1770,7 @@ fn held_devices_are_not_released_and_their_vf_counts_stay() {
     netd.handle(
         Op::PrepareDevice {
             address: gpu.into(),
+            bar_mib: None,
         },
         &peer(),
     )

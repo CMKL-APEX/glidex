@@ -2510,6 +2510,7 @@ async fn pools_are_granted_and_hand_out_devices() {
         nodes: vec![],
         prepare: false,
         per_device: None,
+        bar_mib: None,
     }];
     let h = harness_with(|c| {
         c.pci.pools = pools.clone();
@@ -2653,6 +2654,7 @@ async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
         nodes: vec![],
         prepare: false,
         per_device: None,
+        bar_mib: None,
     }];
     let h = harness_with(|c| {
         c.pci.pools = pools.clone();
@@ -2750,6 +2752,7 @@ async fn gpu_requests_expand_from_the_pool() {
         nodes: vec![],
         prepare: false,
         per_device: per,
+        bar_mib: None,
     };
     let pools = vec![
         pool(

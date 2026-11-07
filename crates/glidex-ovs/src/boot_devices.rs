@@ -47,6 +47,11 @@ pub struct Selector {
     pub addresses: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vf_of: Option<Box<Selector>>,
+    /// The pool's `bar_mib`, a ceiling for the GPU windows of what this
+    /// selects (spec/27-gpu-vms.md G18, G19); the installer copies it
+    /// beside the pool's `match`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_mib: Option<u64>,
 }
 
 fn hex_id(s: &str) -> String {
@@ -103,8 +108,13 @@ impl Selector {
 pub enum Action {
     /// Already on `vfio-pci`: left as it is (a VM may hold it).
     AlreadyVfio,
-    /// To be bound, from this driver (`None`: unbound).
-    Bind { from: Option<String> },
+    /// To be bound, from this driver (`None`: unbound), with GPU windows
+    /// at most `bar_mib` (the smallest of the selectors that chose it).
+    Bind {
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bar_mib: Option<u64>,
+    },
 }
 
 /// The selected devices present now, each with what applying would do.
@@ -112,15 +122,25 @@ pub fn plan_devices(exec: &dyn Exec, cfg: &BootDevices) -> Vec<(String, Action)>
     let mut out: Vec<(String, Action)> = exec
         .list_dir(Path::new("/sys/bus/pci/devices"))
         .into_iter()
-        .filter(|bdf| cfg.select.iter().any(|s| s.matches(exec, bdf)))
-        .map(|bdf| {
+        .filter_map(|bdf| {
+            let chosen: Vec<&Selector> = cfg
+                .select
+                .iter()
+                .filter(|s| s.matches(exec, &bdf))
+                .collect();
+            if chosen.is_empty() {
+                return None;
+            }
             let driver = exec.link_name(&dev_dir(&bdf).join("driver"));
             let a = if driver.as_deref() == Some("vfio-pci") {
                 Action::AlreadyVfio
             } else {
-                Action::Bind { from: driver }
+                Action::Bind {
+                    from: driver,
+                    bar_mib: chosen.iter().filter_map(|s| s.bar_mib).min(),
+                }
             };
-            (bdf, a)
+            Some((bdf, a))
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
@@ -235,14 +255,16 @@ mod tests {
                 (
                     "0000:61:00.2".to_string(),
                     Action::Bind {
-                        from: Some("mlx5_core".into())
+                        from: Some("mlx5_core".into()),
+                        bar_mib: None,
                     }
                 ),
                 ("0000:61:00.3".to_string(), Action::AlreadyVfio),
                 (
                     "0000:87:00.0".to_string(),
                     Action::Bind {
-                        from: Some("nvidia".into())
+                        from: Some("nvidia".into()),
+                        bar_mib: None,
                     }
                 ),
                 ("0000:90:00.0".to_string(), Action::AlreadyVfio),
@@ -258,6 +280,33 @@ mod tests {
             }],
         };
         assert_eq!(plan_devices(&exec, &one).len(), 1);
+        // Two pools with a bar_mib choose a device: the smaller applies.
+        let sized = |mib| Selector {
+            addresses: vec!["0000:87:00.0".into()],
+            bar_mib: Some(mib),
+            ..Default::default()
+        };
+        let two = BootDevices {
+            sriov: vec![],
+            select: vec![
+                sized(16384),
+                sized(8192),
+                Selector {
+                    addresses: vec!["0000:87:00.0".into()],
+                    ..Default::default()
+                },
+            ],
+        };
+        assert_eq!(
+            plan_devices(&exec, &two),
+            vec![(
+                "0000:87:00.0".to_string(),
+                Action::Bind {
+                    from: Some("nvidia".into()),
+                    bar_mib: Some(8192),
+                }
+            )]
+        );
         // An empty selector selects nothing.
         let none = BootDevices {
             sriov: vec![],

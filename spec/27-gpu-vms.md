@@ -696,8 +696,20 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     `expand_gpus` resolves an absent `nvlink` to `false`, kept on the VM,
     and refuses `true` naming the pool. `security_tests`'
     `gpu_requests_expand_from_the_pool` checks both.
-  - **Not done:** a pool's own size (`bar_mib`, G18, G19); G13's check
-    of each Cloud Hypervisor PCI segment's share; the docs for an AMD
+  - **A pool's window size (G18, G19).** `pci.pools[].bar_mib`, checked
+    to be a power of two. `vfio::prepare` takes it as a ceiling: the
+    largest size the device has that is at most `bar_mib` and fits G17's
+    total; under every size it has, refused before anything is bound.
+    netd's `prepare_device` takes `bar_mib`; the control plane passes a
+    `prepare: true` pool's (the smallest when a device is in two pools),
+    and the installer copies a pool's into `vfio-devices.json` beside its
+    `match` for the boot binding. Unit tests: the ceiling below the cap,
+    above it, between sizes, under every size, a window already within
+    both, a device already on `vfio-pci`; two pools' sizes in
+    `to_prepare` and the boot plan; the config check; the installer's
+    copy.
+  - **Not done:** G13's check of each Cloud Hypervisor PCI segment's
+    share; the docs for an AMD
     pool and guest image (G15); the reboot test (asked again before
     gpu-dev2 reboots).
   - **To finish GV6**, one PR each:

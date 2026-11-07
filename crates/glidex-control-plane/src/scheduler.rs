@@ -1800,6 +1800,7 @@ mod tests {
                 nodes: vec![],
                 prepare: false,
                 per_device: None,
+                bar_mib: None,
             },
             count,
             same_switch,

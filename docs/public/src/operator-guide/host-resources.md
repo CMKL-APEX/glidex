@@ -246,6 +246,7 @@ pool, and Glidex picks them. Pools are defined in
 | `match` | `vendor_id`, `device_id`, `class_code` (or its start, `0x0302`) and `addresses`. Every key given must match. A pool must have a match. With `vf_of` (itself a match of physical functions), the pool takes those functions' SR-IOV virtual functions; see [SR-IOV virtual functions](pci-passthrough.md#sr-iov-virtual-functions). |
 | `nodes` | Node names or ids the pool is on. Default: every node. |
 | `prepare` | Each node binds its devices of the pool to `vfio-pci` when glidex starts (see [Prepare devices](#prepare-devices)). |
+| `bar_mib` | The largest memory window (resizable BAR), in MiB and a power of two, that the pool's GPUs get when a node prepares them for the pool: with `prepare: true`, or at boot with `--vfio-devices <pool>`. It only makes a window smaller; the cap below still holds (see [Prepare devices](#prepare-devices)). |
 | `per_device` | What a VM asking for `gpus` from the pool gets per device, unless it sizes itself: `vcpus` and `memory_mib` (both required), and optionally `hugepages` (`true`/`false`) and `cpu_policy` (`shared` or `dedicated`). See [GPU requests](#gpu-requests). |
 
 The control plane refuses to start with two pools of the same name, a
@@ -416,7 +417,12 @@ Preparing:
   8 GiB. A window as large as the host's memory froze a test host when
   its VM started. The guest still reaches all of the GPU's memory
   through the smaller window. A GPU already on `vfio-pci` keeps its
-  size, and a window that can't be made small enough is refused;
+  size, and a window that can't be made small enough is refused. A
+  pool's `bar_mib` makes its GPUs' windows at most that size (the
+  largest size the GPU has under it) when a node prepares them for the
+  pool, with `prepare: true` or the boot binding; a `bar_mib` under
+  every size the GPU has is refused. A device prepared with
+  `prepare-device` gets the size above;
 - remembers the drivers they had, and the window sizes, for release;
 - writes `/etc/udev/rules.d/90-glidex-vfio-<group>.rules`, which gives
   `/dev/vfio/<group>` to the `glidex` group with mode `0660`, and

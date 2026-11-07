@@ -4544,8 +4544,15 @@ impl VmManager {
             return;
         }
         let mut prepared = 0;
-        for address in self.local_topology().to_prepare(&pools) {
-            match device_op_on(&self.netd, &address, "prepare") {
+        for (address, bar_mib) in self.local_topology().to_prepare(&pools) {
+            let r = self
+                .netd
+                .call::<serde_json::Value>(Op::PrepareDevice {
+                    address: address.clone(),
+                    bar_mib,
+                })
+                .map_err(VmManagerError::Network);
+            match r {
                 Ok(_) => {
                     tracing::info!("prepared {address} for its pool");
                     prepared += 1;
@@ -5989,7 +5996,10 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
 fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Value, VmManagerError> {
     let address = address.to_string();
     let r = match op {
-        "prepare" => netd.call(Op::PrepareDevice { address }),
+        "prepare" => netd.call(Op::PrepareDevice {
+            address,
+            bar_mib: None,
+        }),
         "release" => netd.call(Op::ReleaseDevice { address }),
         _ if let Some(vfs) = op.strip_prefix("sriov-").and_then(|n| n.parse().ok()) => {
             netd.call(Op::SetSriovVfs { address, vfs })

@@ -253,7 +253,9 @@ impl Netd {
                 Ok(Value::Null)
             }
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
-            Op::PrepareDevice { address } => to_value(self.prepare_device(&address)?),
+            Op::PrepareDevice { address, bar_mib } => {
+                to_value(self.prepare_device(&address, bar_mib)?)
+            }
             Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
             Op::DeviceHolders { groups } => {
                 to_value(glidex_ovs::vfio::group_holders(self.ex(), &groups))
@@ -422,10 +424,15 @@ impl Netd {
     /// vfio-pci and give its group device to the VMs' group, remembering
     /// the drivers for `release_device`. A group prepared already is
     /// prepared again with what it had first.
-    fn prepare_device(&self, address: &str) -> Result<glidex_ovs::vfio::Prepared, OvsError> {
+    fn prepare_device(
+        &self,
+        address: &str,
+        bar_mib: Option<u64>,
+    ) -> Result<glidex_ovs::vfio::Prepared, OvsError> {
         let address = address.to_ascii_lowercase();
         let uplinks = self.dpdk_uplink_addresses()?;
-        let mut p = glidex_ovs::vfio::prepare(self.ex(), &address, &uplinks, &self.config.group)?;
+        let mut p =
+            glidex_ovs::vfio::prepare(self.ex(), &address, &uplinks, &self.config.group, bar_mib)?;
         if let Some(before) = self
             .store
             .get::<glidex_ovs::vfio::Prepared>(DEVICES, &p.iommu_group)?
@@ -526,7 +533,7 @@ impl Netd {
         for (address, action) in plan_devices(self.ex(), cfg) {
             match action {
                 Action::AlreadyVfio => report.skipped.push((address, "already on vfio-pci".into())),
-                Action::Bind { .. } => match self.prepare_device(&address) {
+                Action::Bind { bar_mib, .. } => match self.prepare_device(&address, bar_mib) {
                     Ok(_) => report.bound.push(address),
                     Err(e) => report.failed.push((address, e.to_string())),
                 },

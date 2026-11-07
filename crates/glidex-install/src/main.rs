@@ -2849,8 +2849,9 @@ fn boot_devices_config(
             .with_context(|| {
                 format!("--vfio-devices {d}: not a PCI address, and {CP_CONFIG} has no pool {d}")
             })?;
-        let m: Selector = serde_json::from_value(pool["match"].clone())
+        let mut m: Selector = serde_json::from_value(pool["match"].clone())
             .with_context(|| format!("pool {d}: its match isn't one glidex-netd can apply"))?;
+        m.bar_mib = pool["bar_mib"].as_u64();
         select.push(m);
     }
     if !addresses.is_empty() {
@@ -2922,9 +2923,12 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
     for (address, action) in plan_devices(&exec, &cfg) {
         match action {
             Action::AlreadyVfio => println!("  {address}: on vfio-pci already (left as it is)"),
-            Action::Bind { from } => println!(
-                "  {address}: bound to vfio-pci (now on {})",
-                from.as_deref().unwrap_or("no driver")
+            Action::Bind { from, bar_mib } => println!(
+                "  {address}: bound to vfio-pci (now on {}){}",
+                from.as_deref().unwrap_or("no driver"),
+                bar_mib
+                    .map(|m| format!(", GPU windows at most {m} MiB"))
+                    .unwrap_or_default()
             ),
         }
     }
@@ -4130,7 +4134,7 @@ mod tests {
     #[test]
     fn boot_devices_take_pools_as_their_match_and_addresses_as_they_are() {
         let cp = r#"{"pci":{"pools":[
-            {"name":"a100","match":{"vendor_id":"0x10de","device_id":"0x20b0"}},
+            {"name":"a100","match":{"vendor_id":"0x10de","device_id":"0x20b0"},"bar_mib":16384},
             {"name":"cx7-vfs","match":{"vf_of":{"vendor_id":"0x15b3","device_id":"0xa2dc"}},"prepare":true}
         ]}}"#;
         assert_eq!(
@@ -4152,7 +4156,13 @@ mod tests {
         .unwrap();
         assert_eq!(c.select.len(), 3, "{c:?}");
         assert_eq!(c.select[0].device_id.as_deref(), Some("0x20b0"));
+        assert_eq!(
+            c.select[0].bar_mib,
+            Some(16384),
+            "the pool's window size beside its match"
+        );
         assert!(c.select[1].vf_of.is_some());
+        assert_eq!(c.select[1].bar_mib, None);
         assert_eq!(c.select[2].addresses, ["0000:87:00.0", "0000:90:00.0"]);
         assert_eq!(
             (c.sriov[0].pf.as_str(), c.sriov[0].vfs),
