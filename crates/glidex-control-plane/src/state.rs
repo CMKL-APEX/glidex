@@ -6130,6 +6130,53 @@ mod tests {
         serde_json::from_value(json).unwrap()
     }
 
+    /// §7.7: a VM being deleted keeps its name until it is gone, so neither
+    /// a rename nor a create takes it, and the VM itself can't be renamed.
+    #[tokio::test]
+    async fn a_vm_being_deleted_keeps_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        let config = || {
+            test_config(serde_json::json!({
+                "vcpu_count": 1, "mem_size_mib": 256,
+                "kernel_image_path": "/k", "rootfs_path": "/r", "kernel_args": ""
+            }))
+        };
+        let going = manager.create_vm("going".into(), config()).await.unwrap();
+        let other = manager.create_vm("other".into(), config()).await.unwrap();
+        // As delete_vm leaves a VM whose instance the controller must stop.
+        manager
+            .vms
+            .write()
+            .await
+            .get_mut(&going.id)
+            .unwrap()
+            .deletion_requested_at = Some(tenancy::now());
+        async fn rename(m: &VmManager, id: &str, name: &str) -> Result<Vm, VmManagerError> {
+            let patch = VmPatch {
+                name: Some(name.into()),
+                ..Default::default()
+            };
+            m.patch_vm(id, patch, QuotaMode::Enforce, "test", None)
+                .await
+                .map(|(vm, _)| vm)
+        }
+
+        let err = rename(&manager, &other.id, "going").await.unwrap_err();
+        assert!(
+            matches!(err, VmManagerError::VmAlreadyExists(ref n) if n == "going"),
+            "{err}"
+        );
+        let err = manager
+            .create_vm("going".into(), config())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VmManagerError::VmAlreadyExists(_)), "{err}");
+        let err = rename(&manager, &going.id, "gone").await.unwrap_err();
+        assert!(matches!(err, VmManagerError::Deleting(_)), "{err}");
+        assert_eq!(manager.get_vm(&going.id).await.unwrap().name, "going");
+    }
+
     #[test]
     fn elasticity_checks_bounds() {
         let ok = test_config(serde_json::json!({

@@ -708,6 +708,8 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
+    // The second login, after a rename, needs it again.
+    let password_again = password.clone();
     let hostname = "gx-functest";
     let (status, vm) = request(
         &app,
@@ -810,6 +812,44 @@ async fn firmware_boot_e2e(hypervisor: &str) {
         log.contains("reboot: Power down"),
         "guest did not power off cleanly:\n{log}"
     );
+
+    // A rename reaches the guest at its next start: the seed is written
+    // again with the new name (spec/12-reconciliation.md §7.7).
+    let renamed = "gx-renamed";
+    let (status, body) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({"change": {"name": renamed}})),
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    tokio::task::spawn_blocking(move || {
+        let mut console = Console::connect(&console_path);
+        console.expect(&format!("{renamed} login: "), Duration::from_secs(300));
+        console.send(&format!("{username}\r"));
+        console.expect("Password: ", Duration::from_secs(30));
+        console.send(&format!("{password_again}\r"));
+        console.expect(
+            &format!("{username}@{renamed}:~$ "),
+            Duration::from_secs(60),
+        );
+        console.send("echo GX_$(hostname)_up\r");
+        console.expect(&format!("GX_{renamed}_up"), Duration::from_secs(30));
+    })
+    .await
+    .unwrap();
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Delete cleans up the generated seed (and the variable store).
     let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;

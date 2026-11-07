@@ -1454,9 +1454,14 @@ audit entry's details carry `name` and `root_disk` as `{from, to}`.
 Tests: `test_patch_renames_a_vm_without_a_spec_change` (api_tests),
 `renaming_a_vm_needs_update_vm_and_a_name_free_in_its_project`
 (security_tests), `renaming_a_vm_renames_the_root_disk_it_owns`
-(image_tests). Not tested yet: a VM being deleted holding its name (the
-same scan as create's), the audit details, and the next launch's seed
-(built from the VM's name at every launch, §9.1).
+(image_tests), `a_vm_being_deleted_keeps_its_name` (state.rs: neither a
+rename nor a create takes it, and it can't be renamed itself),
+`a_rename_is_audited_with_the_old_and_new_names` (security_tests: `name`
+and `root_disk` as `{from, to}`, and no `name` on a spec change), and
+the `#[ignore]`d `firmware_boot_with_generated_cloud_init`
+(functional_tests: a stopped guest renamed, started again, logs in under
+the new hostname). It and its QEMU twin passed on a dev host on
+2026-11-07 with an Ubuntu 24.04 cloud image.
 
 As built: M5 task 2. `gxctl rename <name|id> <new-name>` sends
 `UpdateVm` with the mask `name`. gxctl has no tests that run against a
