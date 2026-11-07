@@ -1,7 +1,7 @@
 # GPU VMs
 
 Status: **design; GV1, GV2 and GV3 implemented; GV6 (AMD on gpu-dev2)
-designed** (§12 milestones, §14 notes). Builds on
+implemented but for its reboot test** (§12 milestones, §14 notes). Builds on
 [22-host-topology.md](22-host-topology.md) (HT0–HT5: topology, readiness,
 NUMA policy, device pools, SR-IOV), [04-hypervisors.md](04-hypervisors.md)
 (command lines) and [05-installer.md](05-installer.md).
