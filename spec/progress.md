@@ -33,8 +33,8 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
 | Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C9; UI U0–U7; the stall watch (D30) | The history tier's spec (D26, after C9); C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
 | Networking | [09-networking.md](09-networking.md) | M1–M9 (M9 source routes, #271 #273 #274; checked on prism1, loose and strict `rp_filter`) | M9 with hyperstor endpoints; M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host; later, not planned: DHCP and DNS without dnsmasq, network boot (§15 Future work) | §0 Implementation status |
-| Metering | [13-metering.md](13-metering.md) | M0–M4 (M4 not yet run on a host) | M4 host acceptance; §15.8 "After M4" | §15 Milestones |
-| Reconciliation | [12-reconciliation.md](12-reconciliation.md) | M1–M4; M5 renaming a VM (D21, #326–#328) | M4 on an installed KVM host | §18 Milestones |
+| Metering | [13-metering.md](13-metering.md) | M0–M4 (M4's host run passed 2026-11-07) | §15.8 "After M4" | §15 Milestones |
+| Reconciliation | [12-reconciliation.md](12-reconciliation.md) | M1–M4 (M4 checked on an installed KVM host, 2026-11-07); M5 renaming a VM (D21, #326–#328) | — | §18 Milestones |
 | Kernel boot | [23-kernel-boot.md](23-kernel-boot.md) | K0–K4; extraction on a node of the kernel's architecture (#153) | §13 changes to other specs | §12 Milestones |
 | Security | [11-security.md](11-security.md) | S0–S6 | On a real host: nftables rules, systemd sandboxing with VFIO, hugepages and taps, a real PAM stack, OIDC against the production IdP | §17 Implementation status |
 | RPC API | [18-grpc.md](18-grpc.md) | G0–G5 | — | §15 Implementation status |
@@ -59,8 +59,7 @@ Things only a real account, device or host can show, not run yet (see
   result row yet.
 - Passkeys on a real device; SSO through a server's UI from an agent's
   redirect (host page).
-- Metering M4 and reconciliation M4 host runs; security's real-host list
-  (above).
+- Security's real-host list (above).
 
 ## Hosts
 

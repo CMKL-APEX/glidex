@@ -1234,7 +1234,8 @@ Reads (properties, signals, `Subscribe`) need no authorization (F6).
   `RuntimeDirectoryPreserve=yes` stays and is now required (the shims'
   directories live in `/run/glidex-cp/vms/`).
 - No hypervisor children: drop all `DeviceAllow=` (keep
-  `DevicePolicy=closed`) and `ReadWritePaths=-/run/glidex/vhost`; add
+  `DevicePolicy=closed`) but `block-device-mapper rw`, which LVM
+  datastores need (spec/24-storage.md S18) and `ReadWritePaths=-/run/glidex/vhost`; add
   `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX AF_INET
   AF_INET6 AF_NETLINK`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
   `SystemCallFilter=@system-service`, `ProtectKernelTunables=yes`,
@@ -1407,8 +1408,16 @@ finalizers, port drift. *Accept:* disk, image and network tests.
 
 As built: M4. The control-plane unit sandbox of §13.3. The disk tools
 and the API test suites pass under its syscall filter, no_new_privs and
-address-family restrictions (run in a transient unit); the installed
-unit with the systemd runner on a KVM host is the remaining check.
+address-family restrictions (run in a transient unit). On an installed
+KVM host (2026-11-07, prism2, main at `e5ab686`, the systemd runner, the
+`hs` hyperstor datastore): the unit has §13.3's settings
+(`NoNewPrivs: 1` in the process), and VM create (stopped and running),
+start, graceful and hard stop, delete (running and stopped), a stopped
+root disk grown 10 → 12 GiB with its partition extended, grown again
+with `--no-extend` then `disk extend-root`, a data disk created,
+attached and resized, and credential create and delete all succeeded,
+with no seccomp, `EPERM` or `EACCES` in the unit's or the kernel's
+journal and no restart (**pass**).
 `GET /vms/{id}?view=full` requires `readSystemStatus` (`host.read`),
 because the stored record carries host paths, PIDs and the boot id that
 the flat view leaves out.

@@ -3,8 +3,8 @@
 > Status: **M0–M3 implemented** (2026-10-05; branches `metering-m1`,
 > `-m2`, `-m3`). Unit, integration, security and Playwright tests pass,
 > and so do the KVM host acceptance runs on a deployed build (§15.4–§15.6,
-> *As built*). **M4** (CPU and memory rates, §8.7) is built and
-> unit-tested, but has no host acceptance run yet (§15.7). §15.8 lists
+> *As built*). **M4** (CPU and memory rates, §8.7) is built, unit-tested
+> and passed its host acceptance run (2026-11-07, §15.7). §15.8 lists
 > what comes after.
 >
 > Built differently from the first draft, with the reasons in the
@@ -1872,13 +1872,25 @@ query p95 is under 200 ms for a month of one project.
   `group_by` validation.
 - *(host)* `stress-ng --cpu 1` in a 2-vCPU VM for 10 minutes gives
   p95 ≈ 1 core and ≈ 50 %. A guest that holds 1 GiB of a 2 GiB VM
-  gives memory ≈ 50 %.
+  raises memory by ≈ 50 % of the allocation over the idle VM's figure.
+  (Memory is the VM's host-side working set, §8.7: a booted guest
+  already holds part of it, and pages it touched stay counted after it
+  frees them.)
 
 **As built (M4), 2026-10-07.** The unit and API tests above pass. The
 load test (`metering/bench.rs`) now also times the CPU and memory p95:
 20 ms for one project's VMs over 2 days of history, about the same as
 bandwidth. A round still takes 49 ms. VM slot rows add about 20 % to
-`rate_5m`. **The host acceptance run is still to do.**
+`rate_5m`.
+
+**Host acceptance, 2026-11-07** (prism2, main at `e5ab686`, Cloud
+Hypervisor, a 2-vCPU 2 GiB `ubuntu-24.04` VM on the node NAT network;
+slot rows read once the hour had shipped):
+
+| Check | Result |
+|---|---|
+| `stress-ng --cpu 1` for 25 minutes | **pass**: full 5-minute slots 0.968–1.005 cores (50.1–50.2 %); `gxctl compute` and `GET /vms/{id}/compute?p95=true` p95 1.005 cores, 50.239 %; `usage compute --by vm` the same p95, 30-second peak 1.016; live `cpu_cores` 1.002–1.004 |
+| 1 GiB held (`python3`, a touched `bytearray`) in a fresh VM | **pass** under the reworded criterion: idle 613 MiB (29.9 %), holding 1632–1640 MiB (79.7–80.1 %), +1019 MiB, ≈ 49.8 % of the allocation; after the process exited, still 1639 MiB (the guest's `free`: 320 MiB used), as a working set does. Read from live `/vms/{id}/stats`; this run's slot rows weren't read |
 
 ### 15.8 After M4
 
