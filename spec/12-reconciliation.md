@@ -1449,6 +1449,10 @@ Tests: `test_patch_renames_a_vm_without_a_spec_change` (api_tests),
 same scan as create's), the audit details, and the next launch's seed
 (built from the VM's name at every launch, §9.1).
 
+As built: M5 task 2. `gxctl rename <name|id> <new-name>` sends
+`UpdateVm` with the mask `name`. gxctl has no tests that run against a
+server: its help test covers the command's line.
+
 ## 19. Testing
 
 Integration tests run real hypervisors (as `functional_tests.rs` does

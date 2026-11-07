@@ -616,7 +616,8 @@ example `node agent1: not enough 2M hugepages (1024 of 2048 MiB taken)`.
 
 ### Rename
 
-Rename a VM with `name` in `change`, in any state:
+Rename a VM in any state with `gxctl rename my-vm db-1`, or over the API
+with `name` in `change`:
 
 ```bash
 curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \

@@ -628,6 +628,10 @@ fn help_text() -> String {
         "memory <name|id> [<size>]".cyan()
     );
     line!(
+        "  {} - Rename a VM (and the root disk it made); the guest's hostname at the next start",
+        "rename <name|id> <new-name>".cyan()
+    );
+    line!(
         "  {} - Attach a data disk to a VM; on a running VM from the next start",
         "attach-disk <name|id> <disk>".cyan()
     );
@@ -1136,6 +1140,7 @@ const COMMANDS: &[&str] = &[
     "attach-network",
     "detach-network",
     "memory",
+    "rename",
     "credentials",
     "creds",
     "credential-add",
@@ -1560,6 +1565,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "service-account" => vm::service_account(client, &parts[1..]).await,
         "scale" => vm::scale(client, &parts[1..]).await,
         "memory" => vm::memory(client, &parts[1..]).await,
+        "rename" => vm::rename(client, &parts[1..]).await,
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {
@@ -1842,6 +1848,13 @@ mod tests {
         assert!(
             user.lines().all(|l| l.trim_start().starts_with("user ")),
             "{user}"
+        );
+        let rename = help("rename my-vm db-1 --help").unwrap();
+        assert!(
+            rename
+                .trim_start()
+                .starts_with("rename <name|id> <new-name>"),
+            "{rename}"
         );
         // `help` alone, and an unknown command's help: all of it.
         let all = help("help").unwrap();
