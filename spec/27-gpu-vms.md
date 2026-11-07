@@ -146,7 +146,9 @@ What this host shows that prism1 doesn't, and what it can't:
 | G14 | Pylon and dedicated CPUs | A VM with `cpu_policy: dedicated` may be elastic on Pylon: pylond may park its vCPUs within `min_vcpus`..`max_vcpus`. Its cores stay in its placement while parked; glidex doesn't give them back to the shared pool. Nothing is built for this: no check refuses the combination today. | The user's call (Q9). A GPU VM's load comes and goes, and parking an idle vCPU keeps its pin. |
 | G15 | Guest image | Glidex ships no GPU image. The docs say how to build or import one: Ubuntu with the generic kernel (or `linux-modules-extra`) for `amdgpu`, and `linux-firmware` for the GPU; ROCm only to run work. | The user's call (Q8). The image follows the driver and ROCm releases, which the operator chooses. |
 | G16 | Binding before `amdgpu` | GV3's boot unit as built: it unbinds `amdgpu` and binds `vfio-pci`. Claiming the cards before `amdgpu` loads is built only if gpu-dev2's reboot test shows the unbind failing. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
-| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For devices with a resizable BAR, the sum of a VM's GPU windows stays below the host's memory. As the size is set when a device is prepared, before any VM picks it, glidex keeps the total of the host's prepared GPU windows below the host's memory: each gets the largest supported size that keeps the total under, given the GPUs prepared before it (on gpu-dev2, 30.5 GiB: the first R9700 16 GiB, a second 8 GiB). The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name the size (`bar_mib`); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 checks (§12): a 32 GiB window on a 32 GiB host froze the host when the VM started; 256 MiB and 16 GiB ran. The total cap is the user's call for multi-GPU VMs, so two windows never add up to the size that froze. |
+| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For devices with a resizable BAR, the sum of a VM's GPU windows stays below the host's memory. As the size is set when a device is prepared, before any VM picks it, glidex keeps the total of the host's prepared GPU windows below the host's memory: each gets the largest supported size that keeps the total under, given the GPUs prepared before it (on gpu-dev2, 30.5 GiB: the first R9700 16 GiB, a second 8 GiB). The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name a smaller size (`bar_mib`, G18, G19); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 checks (§12): a 32 GiB window on a 32 GiB host froze the host when the VM started; 256 MiB and 16 GiB ran. The total cap is the user's call for multi-GPU VMs, so two windows never add up to the size that froze. |
+| G18 | A pool's window size | A pool's `bar_mib` (MiB, a power of two) is a ceiling: each GPU window of the pool's devices gets the largest size the device supports that is at most `bar_mib` and keeps G17's total below the host's memory. A `bar_mib` smaller than any size the device supports refuses the prepare, naming the device. | The user's call (2026-11-07). The cap guards against the freeze at 32 GiB; `bar_mib` can only make a window smaller, so it never undoes that guard. |
+| G19 | Where `bar_mib` applies | When a node prepares a pool's devices: `prepare: true`, and the boot binding of a pool (`--vfio-devices <pool>` copies `bar_mib` into `vfio-devices.json`). A device prepared by hand (`gxctl node prepare-device`) gets the automatic size, and one already on `vfio-pci` keeps its size (a VM may hold it). When a device is in two pools with a `bar_mib`, the smaller applies. | The user's call (2026-11-07). The size belongs to the pool, as its `per_device` sizing does; prepare by hand stays one step. |
 
 ## 3. The request
 
@@ -694,7 +696,22 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     `expand_gpus` resolves an absent `nvlink` to `false`, kept on the VM,
     and refuses `true` naming the pool. `security_tests`'
     `gpu_requests_expand_from_the_pool` checks both.
-  - **Not done:** a pool's own size (`bar_mib`); G13's check of each
-    Cloud Hypervisor PCI segment's share; the docs for an AMD pool and
-    guest image (G15); the reboot test. 16 GiB plus 8 GiB together hasn't
+  - **Not done:** a pool's own size (`bar_mib`, G18, G19); G13's check
+    of each Cloud Hypervisor PCI segment's share; the docs for an AMD
+    pool and guest image (G15); the reboot test (asked again before
+    gpu-dev2 reboots).
+  - **To finish GV6**, one PR each:
+    1. `bar_mib` (G18, G19): `pci.pools[].bar_mib` (a power of two),
+       netd's `prepare_device` taking `bar_mib`, `vfio::prepare`'s
+       ceiling, the control plane passing a `prepare: true` pool's
+       value, and the installer copying it into `vfio-devices.json`.
+       *Accept:* unit tests on a gpu-dev2-shaped sysfs (a ceiling below
+       the cap, above it, below every supported size, a device already
+       on `vfio-pci`); config and installer tests.
+    2. Docs: an AMD pool (`r9700`, `prepare: true`, `bar_mib`) and the
+       guest image (G15) in the operator guide; the TODO in the VMs
+       guide.
+    3. G13's per-segment check for Cloud Hypervisor, after reading how
+       v53 places 64-bit BARs between PCI segments.
+    4. The reboot test on gpu-dev2, when the user agrees. 16 GiB plus 8 GiB together hasn't
     been run on gpu-dev2 (2 × 8 GiB has).

@@ -19,6 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
+| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) §14, GV6 | `spec/gpu-bar-mib` → `feat/gpu-bar-mib` → docs → CH segments | A pool's `bar_mib` as a ceiling under G17's cap, for pools only (G18, G19); the AMD pool and guest image docs (G15); G13's per-segment check |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas
