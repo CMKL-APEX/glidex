@@ -1438,6 +1438,17 @@ netd was unreachable.
    `updateVm`, with 07-web-ui.md and the user guide. *Accept:* a UI e2e
    that renames a VM and sees the new name in the list.
 
+As built: M5 task 1. `VmChange.name` (field 23) and the mask path
+`name`; `patch_vm` renames under the VM table's write lock and commits
+the VM, the renamed root disk and the `Renamed` event together; the
+audit entry's details carry `name` and `root_disk` as `{from, to}`.
+Tests: `test_patch_renames_a_vm_without_a_spec_change` (api_tests),
+`renaming_a_vm_needs_update_vm_and_a_name_free_in_its_project`
+(security_tests), `renaming_a_vm_renames_the_root_disk_it_owns`
+(image_tests). Not tested yet: a VM being deleted holding its name (the
+same scan as create's), the audit details, and the next launch's seed
+(built from the VM's name at every launch, §9.1).
+
 ## 19. Testing
 
 Integration tests run real hypervisors (as `functional_tests.rs` does

@@ -2023,6 +2023,51 @@ async fn operators_run_vms_and_editors_change_them() {
     );
 }
 
+/// Renaming a VM is `updateVm` (an editor's), and the name must be free
+/// in the VM's project only (spec/12-reconciliation.md §7.7).
+#[tokio::test]
+async fn renaming_a_vm_needs_update_vm_and_a_name_free_in_its_project() {
+    let h = harness();
+    let (pa, pb) = (h.project("pa"), h.project("pb"));
+    let (op, ed) = (h.user("op"), h.user("ed"));
+    h.link(
+        "role.operator",
+        Ent::User(op.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link(
+        "role.editor",
+        Ent::User(ed.clone()),
+        Ent::Project(pa.clone()),
+    );
+    let mut ids = Vec::new();
+    for (project, name) in [(&pa, "v"), (&pa, "w"), (&pb, "x")] {
+        let vm = h
+            .app
+            .manager
+            .create_vm_in(
+                project,
+                name.into(),
+                serde_json::from_value(json!({"vcpu_count": 1, "mem_size_mib": 64, "kernel_image_path": "/tmp/k", "rootfs_path": "/tmp/r", "kernel_args": ""})).unwrap(),
+                Default::default(),
+                glidex_control_plane::tenancy::QuotaMode::MayExceed,
+            )
+            .await
+            .unwrap()
+            .0;
+        ids.push(vm.id);
+    }
+    let path = format!("/vms/{}", ids[0]);
+    let rename = |to: &str| Some(json!({"change": {"name": to}}));
+    let (s, v, _) = h.call("PATCH", &path, rename("y"), &h.session(&op)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an operator renames no VM: {v}");
+    let (s, v, _) = h.call("PATCH", &path, rename("w"), &h.session(&ed)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "w is taken in pa: {v}");
+    let (s, v, _) = h.call("PATCH", &path, rename("x"), &h.session(&ed)).await;
+    assert!(s.is_success(), "x is only taken in pb: {v}");
+    assert_eq!(h.app.manager.get_vm(&ids[0]).await.unwrap().name, "x");
+}
+
 #[tokio::test]
 async fn console_tickets_need_vm_console() {
     let h = harness();

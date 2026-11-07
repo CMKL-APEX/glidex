@@ -579,6 +579,9 @@ message VmChange {
   optional uint32 min_vcpus = 20 [json_name = "min_vcpus"];
   optional uint32 max_vcpus = 21 [json_name = "max_vcpus"];
   optional uint32 cpu_weight = 22 [json_name = "cpu_weight"];
+  // A new name, unique in the project. A root disk the VM made for
+  // itself is renamed with it (spec/12-reconciliation.md §7.7).
+  optional string name = 23;
 }
 
 message UpdateVmRequest {

@@ -579,7 +579,9 @@ own format.
   "update_mask": "power,stop_grace_secs,mem_size_mib,data_disks,credential" }
 ```
 
-The fields: `power`, `restart_policy`, `on_host_boot`,
+The fields: `name` (12-reconciliation.md §7.7: free in the project, else
+`409`; an owned root disk is renamed with it; no new `generation`),
+`power`, `restart_policy`, `on_host_boot`,
 `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`,
 `credential` (in the mask but absent: removed), `hugepages`,
 `hugepage_size` (`2M`, `1G`, or empty for the node's default),

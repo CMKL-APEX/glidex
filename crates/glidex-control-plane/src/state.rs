@@ -231,6 +231,9 @@ pub struct VmOptions {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmPatch {
+    /// A new name (spec/12-reconciliation.md §7.7): `meta`, not `spec`.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub power: Option<PowerState>,
     #[serde(default)]
@@ -1909,6 +1912,31 @@ impl VmManager {
         Ok(vm)
     }
 
+    /// The root disk `vm` made for itself, renamed for the VM's new name
+    /// with create's rule (§7.7); `None` when the VM doesn't own it.
+    fn renamed_root_disk(&self, vm: &Vm, name: &str) -> Result<Option<Disk>, VmManagerError> {
+        let config = vm.config();
+        let Some(id) = config.root_disk.as_ref().filter(|_| config.owns_root_disk) else {
+            return Ok(None);
+        };
+        let mut disk = self.images.get_disk(id)?;
+        let scope = self.tenant_scope(&vm.project);
+        let taken = |n: &str| self.images.disk_name_taken_in(n, &scope, Some(&disk.id));
+        let preferred = root_disk_name(name);
+        let fallback = format!("{}-{}", preferred.trim_end_matches("-root"), &vm.id[..8]);
+        let Some(new) = [preferred, fallback].into_iter().find(|n| !taken(n)) else {
+            return Err(ImageError::AlreadyExists(format!(
+                "the root disk's names for {name} are taken in the tenant"
+            ))
+            .into());
+        };
+        if new == disk.name {
+            return Ok(None);
+        }
+        disk.name = new;
+        Ok(Some(disk))
+    }
+
     fn writable<'a>(
         vms: &'a HashMap<String, Vm>,
         id: &str,
@@ -2478,7 +2506,7 @@ impl VmManager {
             let mut disk_name = root_disk_name(&vm.name);
             if self
                 .images
-                .disk_name_taken_in(&disk_name, self.tenant_scope(&vm.project))
+                .disk_name_taken_in(&disk_name, self.tenant_scope(&vm.project), None)
             {
                 disk_name = format!("{}-{}", disk_name.trim_end_matches("-root"), &vm.id[..8]);
             }
@@ -3313,8 +3341,50 @@ impl VmManager {
                 self.refit_placement(&vms, &mut vm, &[])?;
             }
         }
+        let mut events = Vec::new();
+        if let Some(name) = patch.name
+            && name != cur.name
+        {
+            if name.is_empty() {
+                return Err(invalid("name must not be empty"));
+            }
+            // Names are unique per project, as at create (§7.7).
+            if vms
+                .values()
+                .any(|v| v.id != cur.id && v.name == name && v.project == project)
+            {
+                return Err(VmManagerError::VmAlreadyExists(name));
+            }
+            let mut message = format!("renamed from {} to {}", cur.name, name);
+            if let Some(d) = self.renamed_root_disk(&cur, &name)? {
+                message.push_str(&format!("; root disk now {}", d.name));
+                disk_writes.push(d);
+            }
+            vm.name = name;
+            events.push(Event::new(actor, EventKind::Normal, "Renamed", message));
+        }
+        let renamed = vm.name != cur.name;
         if vm.spec == cur.spec {
-            return Ok((cur, Vec::new()));
+            if !renamed {
+                return Ok((cur, Vec::new()));
+            }
+            // Not a spec change: no new generation, nothing to reconcile.
+            vm.resource_version += 1;
+            self.store.commit(Commit {
+                put_vm: Some(&vm),
+                put_disks: disk_writes.iter().collect(),
+                events: events
+                    .into_iter()
+                    .map(|ev| (event_key("vm", &vm.id), ev))
+                    .collect(),
+                ..Default::default()
+            })?;
+            for d in &disk_writes {
+                self.images.cache_disk(d);
+            }
+            vms.insert(vm.id.clone(), vm.clone());
+            self.notify_changed();
+            return Ok((vm, Vec::new()));
         }
         let mut bypassed = Vec::new();
         if (delta.running_vms + delta.vcpus + delta.memory_mib > 0 || !delta.devices.is_empty())
@@ -3325,11 +3395,19 @@ impl VmManager {
         }
         vm.generation += 1;
         vm.resource_version += 1;
-        let ev = Event::new(actor, EventKind::Normal, "SpecChanged", "spec updated");
+        events.push(Event::new(
+            actor,
+            EventKind::Normal,
+            "SpecChanged",
+            "spec updated",
+        ));
         self.store.commit(Commit {
             put_vm: Some(&vm),
             put_disks: disk_writes.iter().collect(),
-            events: vec![(event_key("vm", &vm.id), ev)],
+            events: events
+                .into_iter()
+                .map(|ev| (event_key("vm", &vm.id), ev))
+                .collect(),
             ..Default::default()
         })?;
         for d in &disk_writes {

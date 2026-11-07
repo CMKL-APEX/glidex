@@ -77,7 +77,7 @@ impl ImageManager {
         in_tenant: impl Fn(&str) -> bool,
     ) -> Result<Disk, ImageError> {
         validate_name("disk", &req.name)?;
-        if self.disk_name_taken_in(&req.name, in_tenant) {
+        if self.disk_name_taken_in(&req.name, in_tenant, None) {
             return Err(ImageError::AlreadyExists(format!(
                 "a disk named {} already exists",
                 req.name

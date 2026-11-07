@@ -1619,13 +1619,19 @@ impl ImageManager {
         }
     }
 
-    /// Whether a disk of the projects `in_scope` accepts is named `name`.
-    pub fn disk_name_taken_in(&self, name: &str, in_scope: impl Fn(&str) -> bool) -> bool {
+    /// Whether a disk of the projects `in_scope` accepts, other than
+    /// `except`, is named `name`.
+    pub fn disk_name_taken_in(
+        &self,
+        name: &str,
+        in_scope: impl Fn(&str) -> bool,
+        except: Option<&str>,
+    ) -> bool {
         self.disks
             .read()
             .unwrap()
             .values()
-            .any(|d| d.name == name && in_scope(&d.project))
+            .any(|d| d.name == name && in_scope(&d.project) && Some(d.id.as_str()) != except)
     }
 
     pub fn linked_disks(&self, image_id: &str) -> Vec<Disk> {
