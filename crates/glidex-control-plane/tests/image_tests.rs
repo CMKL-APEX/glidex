@@ -985,6 +985,104 @@ async fn grow_shrink_and_extend_root() {
     assert_eq!(num(&err["details"]["min_size_bytes"]), 32 * MIB, "{err}");
 }
 
+/// A VM's rename takes the root disk it made along, with create's naming
+/// rule; a root disk it was given keeps its name (spec/12-reconciliation.md
+/// §7.7).
+#[tokio::test]
+async fn renaming_a_vm_renames_the_root_disk_it_owns() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _manager) = create_app(tmp.path());
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+    let disk = |name: &'static str| {
+        request(
+            &app,
+            "POST",
+            "/disks?wait=30",
+            Some(json!({"name": name, "image": "base"})),
+        )
+    };
+    let (status, d) = disk("app-root").await;
+    assert!(status.is_success(), "{d}");
+
+    let (status, vm) = request(&app, "POST", "/vms", Some(json!({
+        "name": "web", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let vm_id = id_of(&vm);
+    let root_id = vm_of(&vm)["root_disk"].as_str().unwrap().to_string();
+    assert_eq!(ready_disk(&app, &root_id).await["name"], "web-root");
+    let vm_path = format!("/vms/{vm_id}");
+    let rename = |to: String| {
+        request(
+            &app,
+            "PATCH",
+            &vm_path,
+            Some(json!({"change": {"name": to}})),
+        )
+    };
+    let root_name = || async {
+        let (_, d) = request(&app, "GET", &format!("/disks/{root_id}"), None).await;
+        disk_of(&d)["name"].as_str().unwrap().to_string()
+    };
+
+    let (status, v) = rename("db 1".into()).await;
+    assert!(status.is_success(), "{v}");
+    assert_eq!(root_name().await, "db-1-root");
+
+    // `app-root` is taken: the VM id's first 8 characters instead.
+    let (status, v) = rename("app".into()).await;
+    assert!(status.is_success(), "{v}");
+    let fallback = format!("app-{}", &vm_id[..8]);
+    assert_eq!(root_name().await, fallback);
+
+    // Both taken: the whole rename is refused.
+    let (status, d) = disk("cache-root").await;
+    assert!(status.is_success(), "{d}");
+    let (status, d) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": format!("cache-{}", &vm_id[..8]), "image": "base"})),
+    )
+    .await;
+    assert!(status.is_success(), "{d}");
+    let (status, v) = rename("cache".into()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    let (_, v) = request(&app, "GET", &format!("/vms/{vm_id}"), None).await;
+    assert_eq!(vm_of(&v)["name"], "app");
+    assert_eq!(root_name().await, fallback);
+
+    // A root disk the VM was given keeps its name.
+    let (status, d) = disk("mine").await;
+    assert!(status.is_success(), "{d}");
+    let (status, vm2) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": "vm2", "vcpu_count": 1, "mem_size_mib": 512, "root_disk": "mine"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm2}");
+    let (status, v) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{}", id_of(&vm2)),
+        Some(json!({"change": {"name": "vm3"}})),
+    )
+    .await;
+    assert!(status.is_success(), "{v}");
+    let (_, d) = request(&app, "GET", "/disks/mine", None).await;
+    assert_eq!(disk_of(&d)["name"], "mine");
+}
+
 #[tokio::test]
 async fn vms_create_attach_and_own_disks() {
     if !tools_present() {

@@ -571,7 +571,7 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 
 ### Change a VM
 
-Change vCPUs, memory, networks, data disks, PCI devices, device pool
+Change the name ([Rename](#rename)), vCPUs, memory, networks, data disks, PCI devices, device pool
 requests, kernel arguments, the kernel image and following it (`kernel`,
 `kernel_from_disk`), the credential, hugepages and the policies
 with
@@ -613,6 +613,29 @@ VM that already has a node is fitted again on that node: its hugepages,
 NUMA node, dedicated CPUs and pool devices are picked again. If it no
 longer fits there, the change is refused with `409` and the reason, for
 example `node agent1: not enough 2M hugepages (1024 of 2048 MiB taken)`.
+
+### Rename
+
+Rename a VM with `name` in `change`, in any state:
+
+```bash
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X PATCH https://host.example.org:8841/vms/<id> \
+  -d '{"change": {"name": "db-1"}}'
+```
+
+The new name must be free in the VM's project (`409` otherwise), and
+renaming needs the same permission as other changes (an editor's). A
+rename restarts nothing. The VM's id stays, and so does everything
+keyed by it: its network ports, addresses and console log. A root disk
+the VM made from an image is renamed with it (`db-1-root`, or
+`db-1-` and the first 8 characters of the VM's id when that name is
+taken). A disk the VM was given keeps its name.
+
+The guest's hostname follows at the VM's next start, when cloud-init
+sets it from the VM's name. A running guest keeps its hostname until
+then. Scripts that name the VM by its old name stop finding it; use its
+id where a name may change.
 
 ### Delete
 

@@ -1031,6 +1031,7 @@ pub async fn pause_vm(call: &Call, req: pb::PauseVmRequest) -> ServiceResult<VmR
 
 /// The fields `UpdateVm` changes, by their mask path.
 pub const UPDATABLE: &[&str] = &[
+    "name",
     "power",
     "restart_policy",
     "on_host_boot",
@@ -1062,6 +1063,7 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
     let mut config = false;
     for path in mask {
         match path.as_str() {
+            "name" => p.name = Some(change.name.clone().unwrap_or_default()),
             "power" => p.power = power_of(change.power.as_known().unwrap_or_default()),
             "restart_policy" => {
                 p.restart_policy = restart_of(change.restart_policy.as_known().unwrap_or_default())
@@ -1231,6 +1233,8 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             call.require_admitted(&project)?;
         }
     }
+    let renamed = patch.name.as_ref().filter(|n| **n != vm.name).cloned();
+    update |= renamed.is_some();
     update |= patch
         .restart_policy
         .is_some_and(|r| r != vm.spec.restart_policy)
@@ -1349,6 +1353,16 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
         call.require_action("updateVm", e.clone(), es.clone(), &[])?;
     }
     patch.device_nodes = new_device_nodes;
+    let root_disk = |vm: &Vm| {
+        let c = vm.config();
+        c.root_disk
+            .as_ref()
+            .filter(|_| c.owns_root_disk)
+            .and_then(|id| call.manager().images.get_disk(id).ok())
+            .map(|d| d.name)
+    };
+    let old_root_disk = renamed.as_ref().and_then(|_| root_disk(&vm));
+    let old_name = vm.name.clone();
     let quota = call.quota_mode(&project);
     let (vm, over) = call
         .manager()
@@ -1362,6 +1376,17 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
         .await
         .map_err(manager_err)?;
     call.note_overruns(&over);
+    if renamed.is_some() {
+        call.detail(
+            "name",
+            serde_json::json!({ "from": old_name, "to": vm.name }),
+        );
+        if let (Some(from), Some(to)) = (old_root_disk, root_disk(&vm))
+            && from != to
+        {
+            call.detail("root_disk", serde_json::json!({ "from": from, "to": to }));
+        }
+    }
     respond(call, vm, req.wait_secs, Vec::new()).await
 }
 
