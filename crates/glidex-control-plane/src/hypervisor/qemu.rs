@@ -466,16 +466,9 @@ const DEFAULT_PCI_HOLE64_MIB: u64 = 32 * 1024;
 /// The sizes in MiB of the 64-bit memory BARs in a sysfs `resource` file:
 /// its first six lines (the ROM follows), flag `IORESOURCE_MEM_64`.
 fn bars64_mib(resource: &str) -> Vec<u64> {
-    let hex = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok();
-    resource
-        .lines()
-        .take(6)
-        .filter_map(|l| {
-            let mut f = l.split_whitespace();
-            let (start, end, flags) = (hex(f.next()?)?, hex(f.next()?)?, hex(f.next()?)?);
-            (start != 0 && end > start && flags & 0x0010_0000 != 0)
-                .then(|| (end - start + 1).div_ceil(1 << 20))
-        })
+    super::bars64(resource)
+        .into_iter()
+        .map(|b| b.div_ceil(1 << 20))
         .collect()
 }
 

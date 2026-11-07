@@ -288,6 +288,110 @@ pub(crate) fn extractor_args(
     .collect()
 }
 
+const GIB: u64 = 1 << 30;
+
+/// The VM's 64-bit device BARs fit their PCI segments' windows, as Cloud
+/// Hypervisor v53 lays them out (spec/27-gpu-vms.md G13): the 64-bit space
+/// runs from above guest RAM (4 GiB, or RAM + 1 GiB past 3 GiB) to the top
+/// of the guest's physical addresses less 64 KiB and 1 MiB of platform
+/// devices; segments share it equally in 4 GiB units, the last taking the
+/// rest; each segment places its devices' BARs in config order, top down,
+/// each aligned to its size. CH's own error names no device. `phys_bits`:
+/// the host's, capped at CH's default 46. `bars` gives a device's 64-bit
+/// BAR sizes in bytes. Virtio devices' small BARs on segment 0 are left
+/// out.
+pub(crate) fn check_mmio64(
+    config: &VmConfig,
+    phys_bits: u32,
+    bars: &dyn Fn(&str) -> Vec<u64>,
+) -> Result<(), String> {
+    if config.vfio_devices.is_empty() {
+        return Ok(());
+    }
+    let layout = super::guest_numa_layout(config);
+    let multi = config.host_numa_node.is_none() && !layout.is_empty();
+    let ram = if multi {
+        config.host_numa.iter().map(|s| s.memory_mib).sum::<u64>()
+    } else {
+        u64::from(config.mem_size_mib)
+    } << 20;
+    let end = (1u64 << phys_bits.min(46)) - (1 << 16) - (1 << 20);
+    let start = if ram <= 3 * GIB { 4 * GIB } else { ram + GIB };
+    let segments = if multi { layout.len() as u64 + 1 } else { 1 };
+    let unit = end.saturating_sub(start) / (4 * GIB * segments) * 4 * GIB;
+    if unit == 0 {
+        return Err(format!(
+            "no room for 64-bit PCI devices: the guest's {} GiB of memory leaves too little \
+             below the host's {phys_bits}-bit physical addresses for {segments} PCI segment(s)",
+            ram / GIB
+        ));
+    }
+    for seg in 0..segments {
+        let lo = start + unit * seg;
+        let hi = if seg + 1 == segments { end } else { lo + unit };
+        // Free ranges [from, to), highest last.
+        let mut free = vec![(lo, hi)];
+        let on_seg = config.vfio_devices.iter().filter(|p| {
+            let s = layout
+                .iter()
+                .position(|(_, _, ds)| ds.contains(p))
+                .filter(|_| multi)
+                .map_or(0, |i| i as u64 + 1);
+            s == seg
+        });
+        for p in on_seg {
+            for size in bars(p) {
+                let align = size.max(4096);
+                let placed = free.iter().enumerate().rev().find_map(|(i, &(from, to))| {
+                    let at = to.checked_sub(size)? / align * align;
+                    (at >= from).then_some((i, at))
+                });
+                let Some((i, at)) = placed else {
+                    return Err(format!(
+                        "{}'s 64-bit BAR of {} MiB doesn't fit PCI segment {seg}'s window \
+                         ({} GiB at {lo:#x}) with the devices before it: give the VM fewer \
+                         devices on that NUMA node, shrink the GPU's window (a pool's \
+                         bar_mib), or use QEMU",
+                        super::vfio_bdf(p),
+                        size >> 20,
+                        (hi - lo) / GIB
+                    ));
+                };
+                let (from, to) = free.remove(i);
+                if at + size < to {
+                    free.insert(i, (at + size, to));
+                }
+                if from < at {
+                    free.insert(i, (from, at));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The host's physical address bits (`/proc/cpuinfo`'s `address sizes`).
+fn host_phys_bits() -> Option<u32> {
+    std::fs::read_to_string("/proc/cpuinfo")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("address sizes")?.split(':').nth(1))?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// [`check_mmio64`] against this host's devices; skipped when the host's
+/// address bits can't be read.
+pub(crate) fn check_mmio64_here(config: &VmConfig) -> Result<(), HypervisorError> {
+    match host_phys_bits() {
+        Some(bits) => check_mmio64(config, bits, &super::device_bars64)
+            .map_err(HypervisorError::InvalidConfig),
+        None => Ok(()),
+    }
+}
+
 pub struct CloudHypervisorDriver;
 
 impl HypervisorDriver for CloudHypervisorDriver {
@@ -306,6 +410,7 @@ impl HypervisorDriver for CloudHypervisorDriver {
                 "cloud-hypervisor is not installed",
             ))
         })?;
+        check_mmio64_here(config)?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
         argv.extend(args(config, api_socket));
         Ok(LaunchArgs {
@@ -430,6 +535,74 @@ mod tests {
             (values(&a, "--console"), values(&a, "--serial")),
             (vec!["off"], vec!["tty"])
         );
+    }
+
+    #[test]
+    fn sixty_four_bit_bars_must_fit_their_pci_segment() {
+        const GIB: u64 = 1 << 30;
+        let dev = |a: &str| format!("/sys/bus/pci/devices/{a}");
+        // An A100: 64 GiB and 32 MiB; an R9700 shrunk to 16 GiB, and 256 MiB.
+        let bars = |p: &str| -> Vec<u64> {
+            if p.ends_with(":03:00.0") {
+                vec![16 * GIB, 256 << 20]
+            } else {
+                vec![64 * GIB, 32 << 20]
+            }
+        };
+        // One segment, 4 GiB of RAM, 48 bits: an R9700 fits.
+        let mut c = config(serde_json::json!({"mem_size_mib": 4096}));
+        c.vfio_devices = vec![dev("0000:03:00.0")];
+        assert_eq!(check_mmio64(&c, 48, &bars), Ok(()));
+        assert_eq!(
+            check_mmio64(&config(serde_json::json!({})), 30, &bars),
+            Ok(())
+        );
+
+        // Two guest NUMA nodes (3 segments), 64 GiB, 39 bits: segments of
+        // 148 GiB, the last 150 GiB with the rest, and a second 64 GiB BAR,
+        // aligned to 64 GiB, finds no room under the first.
+        let numa = |d0: Vec<&str>, d1: Vec<&str>| {
+            let mut c = config(serde_json::json!({"mem_size_mib": 65536, "vcpu_count": 4}));
+            c.host_numa = [d0, d1]
+                .into_iter()
+                .enumerate()
+                .map(|(i, ds)| crate::models::NumaShare {
+                    node: i as u32,
+                    vcpus: 2,
+                    memory_mib: 32768,
+                    devices: ds.iter().map(|a| a.to_string()).collect(),
+                })
+                .collect();
+            c.vfio_devices = ["0000:07:00.0", "0000:0b:00.0", "0000:87:00.0"]
+                .into_iter()
+                .map(dev)
+                .collect();
+            c
+        };
+        let apart = numa(vec!["0000:07:00.0"], vec!["0000:0b:00.0", "0000:87:00.0"]);
+        let e = check_mmio64(&apart, 39, &bars).unwrap_err();
+        assert!(
+            e.starts_with(
+                "0000:87:00.0's 64-bit BAR of 65536 MiB doesn't fit PCI segment 2's window (150 GiB"
+            ),
+            "{e}"
+        );
+        let mut one_each = numa(vec!["0000:07:00.0"], vec!["0000:0b:00.0"]);
+        one_each.vfio_devices.pop();
+        assert_eq!(check_mmio64(&one_each, 39, &bars), Ok(()));
+        // The same three on 46 bits: room enough.
+        assert_eq!(check_mmio64(&apart, 46, &bars), Ok(()));
+        // CH caps the bits at 46: a 52-bit host gives no more room.
+        assert_eq!(
+            check_mmio64(&apart, 52, &bars),
+            check_mmio64(&apart, 46, &bars)
+        );
+
+        // RAM up to near the top of 36 bits: no 4 GiB unit per segment.
+        let mut big = config(serde_json::json!({"mem_size_mib": 61440}));
+        big.vfio_devices = vec![dev("0000:03:00.0")];
+        let e = check_mmio64(&big, 36, &bars).unwrap_err();
+        assert!(e.starts_with("no room for 64-bit PCI devices"), "{e}");
     }
 
     #[test]

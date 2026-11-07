@@ -142,7 +142,7 @@ What this host shows that prism1 doesn't, and what it can't:
 | G10 | Persistence | `glidex-install --vfio-devices <pool or addresses>` writes a boot-time binding (driverctl-style override, modprobe options) and the VF counts, and keeps NVSwitches for the service VM. | Today a reboot leaves devices on their host drivers until glidex starts, and VF counts at 0. |
 | G11 | Vendors | Requests, pools, sizing and placement don't depend on the GPU's vendor: a pool's `match` names the GPU, and `gpus` takes a pool of class `gpu` whatever its vendor. Only the fabric (§7–§9) is NVIDIA's. A pool with no fabric resolves an absent `nvlink` to `false`. | AMD (gpu-dev2) works through the same path; nothing to add per vendor but what the host needs (G12, G13). |
 | G12 | Locked memory | A VM with VFIO devices may lock all its guest memory. `glidex-vm@.service` sets `LimitMEMLOCK=infinity`. The VM's memory is still bounded by its size and by `glidex-vms.slice`. | VFIO's type1 IOMMU pins the guest's RAM, counted against `RLIMIT_MEMLOCK`, which is 8 MiB for system services. The unit runs as `glidex`, and the control plane can't write a per-VM drop-in. |
-| G13 | Room for large BARs | At launch, the hypervisor's 64-bit PCI window is sized from the VM's devices: the sum of their 64-bit BARs (sysfs `resource`), each rounded up to its own alignment, with 1 GiB to spare, as a power of two. QEMU takes it as `-global q35-pcihost.pci-hole64-size=` when it exceeds QEMU's 32 GiB default. Cloud Hypervisor and Pylon place 64-bit BARs above RAM within the host's physical address bits, split between PCI segments (verify v53's split). Glidex checks that each PCI segment's share holds its devices, and refuses the launch naming the device when it doesn't. | Two R9700s need 64 GiB, and a 4-GPU A100 VM 256 GiB. QEMU's default fits neither. |
+| G13 | Room for large BARs | At launch, the hypervisor's 64-bit PCI window is sized from the VM's devices: the sum of their 64-bit BARs (sysfs `resource`), each rounded up to its own alignment, with 1 GiB to spare, as a power of two. QEMU takes it as `-global q35-pcihost.pci-hole64-size=` when it exceeds QEMU's 32 GiB default. Cloud Hypervisor and Pylon place 64-bit BARs above RAM within the host's physical address bits, split between PCI segments (v53's layout in §14). Glidex checks that each PCI segment's share holds its devices, and refuses the launch naming the device when it doesn't. | Two R9700s need 64 GiB, and a 4-GPU A100 VM 256 GiB. QEMU's default fits neither. |
 | G14 | Pylon and dedicated CPUs | A VM with `cpu_policy: dedicated` may be elastic on Pylon: pylond may park its vCPUs within `min_vcpus`..`max_vcpus`. Its cores stay in its placement while parked; glidex doesn't give them back to the shared pool. Nothing is built for this: no check refuses the combination today. | The user's call (Q9). A GPU VM's load comes and goes, and parking an idle vCPU keeps its pin. |
 | G15 | Guest image | Glidex ships no GPU image. The docs say how to build or import one: Ubuntu with the generic kernel (or `linux-modules-extra`) for `amdgpu`, and `linux-firmware` for the GPU; ROCm only to run work. | The user's call (Q8). The image follows the driver and ROCm releases, which the operator chooses. |
 | G16 | Binding before `amdgpu` | GV3's boot unit as built: it unbinds `amdgpu` and binds `vfio-pci`. Claiming the cards before `amdgpu` loads is built only if gpu-dev2's reboot test shows the unbind failing. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
@@ -712,8 +712,25 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     with `prepare: true` and `bar_mib`, the window, `--vfio-devices`,
     locked memory, and *The guest image* (`amdgpu` in the `generic`
     kernel, `linux-firmware`, ROCm to run work, and checking it).
-  - **Not done:** G13's check of each Cloud Hypervisor PCI segment's
-    share; the reboot test (asked again before
+  - **Cloud Hypervisor's segments (G13).** v53 (read at tag `v53.0`):
+    the 64-bit space runs from 4 GiB (RAM up to 3 GiB) or RAM + 1 GiB
+    to 2^P − 64 KiB − 1 MiB, P the host's physical address bits capped at
+    46 (`max_phys_bits`); `num_pci_segments` share it equally (weights
+    1) in 4 GiB units, the last taking the rest; each segment places its
+    devices' 64-bit BARs in config order, top down, each aligned to its
+    size; a BAR that finds no room fails with `Allocating space for an
+    IO BAR of size … failed`, naming no device. `check_mmio64` replays
+    that before Cloud Hypervisor or Pylon starts and refuses the launch
+    (`InvalidConfig`) naming the device, its segment and the window.
+    P is `/proc/cpuinfo`'s `address sizes` (CH reads CPUID directly;
+    with AMD SME the two may differ); unreadable, the check is skipped.
+    Left out: virtio devices' small BARs on segment 0, an MSI-X table
+    that doubles a BAR, the 32-bit window, and devices added to a
+    running VM (CH refuses those itself). Unit tests: an R9700 on one
+    segment; two A100s on one guest NUMA node at 39 bits refused, one
+    per node fitting, 46 bits fitting, bits capped at 46; RAM leaving
+    no 4 GiB unit.
+  - **Not done:** the reboot test (asked again before
     gpu-dev2 reboots).
   - **To finish GV6**, one PR each:
     1. `bar_mib` (G18, G19): `pci.pools[].bar_mib` (a power of two),
