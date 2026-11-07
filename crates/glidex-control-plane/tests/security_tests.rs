@@ -2068,6 +2068,95 @@ async fn renaming_a_vm_needs_update_vm_and_a_name_free_in_its_project() {
     assert_eq!(h.app.manager.get_vm(&ids[0]).await.unwrap().name, "x");
 }
 
+/// A rename's audit entry gives the old and new names, of the VM and of
+/// the root disk it owns (spec/12-reconciliation.md §7.7).
+#[tokio::test]
+async fn a_rename_is_audited_with_the_old_and_new_names() {
+    use glidex_control_plane::images::{Disk, DiskOrigin, qemu_img::DiskFormat};
+    let h = harness();
+    let pa = h.project("pa");
+    let ed = h.user("ed");
+    h.link(
+        "role.editor",
+        Ent::User(ed.clone()),
+        Ent::Project(pa.clone()),
+    );
+    // As create leaves a VM it made a root disk for.
+    let disk = Disk::new(
+        "d-root".into(),
+        "v-root".into(),
+        pa.clone(),
+        DiskFormat::Qcow2,
+        1 << 20,
+        DiskOrigin::Blank,
+    );
+    h.app.manager.images().put_disk(&disk).unwrap();
+    let vm = h
+        .app
+        .manager
+        .create_vm_in(
+            &pa,
+            "v".into(),
+            serde_json::from_value(json!({"vcpu_count": 1, "mem_size_mib": 64, "kernel_image_path": "/tmp/k", "rootfs_path": "/tmp/r", "kernel_args": "", "root_disk": "d-root", "owns_root_disk": true})).unwrap(),
+            Default::default(),
+            glidex_control_plane::tenancy::QuotaMode::MayExceed,
+        )
+        .await
+        .unwrap()
+        .0;
+
+    let path = format!("/vms/{}", vm.id);
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"name": "x"}})),
+            &h.session(&ed),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let entries = h
+        .app
+        .auth
+        .store
+        .audit(0, 100, |e| e.action == "updateVm")
+        .unwrap();
+    let [entry] = entries.as_slice() else {
+        panic!("one updateVm entry: {entries:#?}");
+    };
+    assert_eq!(entry.details["name"], json!({"from": "v", "to": "x"}));
+    assert_eq!(
+        entry.details["root_disk"],
+        json!({"from": "v-root", "to": "x-root"})
+    );
+
+    // A spec change alone names no rename.
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"stop_grace_secs": 9}})),
+            &h.session(&ed),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let entries = h
+        .app
+        .auth
+        .store
+        .audit(0, 100, |e| e.action == "updateVm")
+        .unwrap();
+    assert_eq!(entries.len(), 2, "{entries:#?}");
+    assert!(
+        entries
+            .iter()
+            .filter(|e| e.details.get("name").is_some())
+            .count()
+            == 1,
+        "{entries:#?}"
+    );
+}
+
 #[tokio::test]
 async fn console_tickets_need_vm_console() {
     let h = harness();
