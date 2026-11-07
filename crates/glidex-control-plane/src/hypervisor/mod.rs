@@ -359,6 +359,30 @@ pub(crate) fn needs_shared_memory(config: &VmConfig) -> bool {
 }
 
 /// Extract the BDF (e.g. "0000:41:00.0") from a sysfs device path.
+/// The sizes in bytes of the 64-bit memory BARs in a sysfs `resource`
+/// file: its first six lines (the ROM follows), flag `IORESOURCE_MEM_64`.
+pub(crate) fn bars64(resource: &str) -> Vec<u64> {
+    let hex = |v: &str| u64::from_str_radix(v.trim_start_matches("0x"), 16).ok();
+    resource
+        .lines()
+        .take(6)
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let (start, end, flags) = (hex(f.next()?)?, hex(f.next()?)?, hex(f.next()?)?);
+            (start != 0 && end > start && flags & 0x0010_0000 != 0).then(|| end - start + 1)
+        })
+        .collect()
+}
+
+/// The 64-bit BARs of the device at `path` (a VM's `vfio_devices` entry),
+/// as the host has them now.
+pub(crate) fn device_bars64(path: &str) -> Vec<u64> {
+    let resource = std::path::Path::new("/sys/bus/pci/devices")
+        .join(vfio_bdf(path))
+        .join("resource");
+    bars64(&std::fs::read_to_string(resource).unwrap_or_default())
+}
+
 pub(crate) fn vfio_bdf(path: &str) -> String {
     path.rsplit('/')
         .find(|s| !s.is_empty())

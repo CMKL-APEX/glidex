@@ -830,7 +830,13 @@ not the host's, and a GPU and a NIC that share a PCIe switch on the
 host don't share one in the guest. Both hypervisors lay the guest out
 this way.
 
-<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) across several PCI roots on Cloud Hypervisor (spec/27-gpu-vms.md G13's per-segment check). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) across several PCI roots. G13's per-segment check refuses what Cloud Hypervisor can't place; confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+
+On Cloud Hypervisor and Pylon, each guest NUMA node's GPUs share that
+node's slice of the guest's 64-bit address space, and each large window
+is aligned to its own size. A VM whose GPUs on one node don't fit is
+refused at start, naming the GPU (`… doesn't fit PCI segment …'s
+window`): ask for fewer GPUs per node, or use QEMU.
 
 A guest needs the GPU's driver and firmware: for AMD GPUs, see
 [The guest image](../operator-guide/pci-passthrough.md#the-guest-image).

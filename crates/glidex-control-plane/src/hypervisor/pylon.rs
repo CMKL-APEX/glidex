@@ -118,6 +118,7 @@ impl HypervisorDriver for PylonDriver {
                 "pylon is not installed",
             ))
         })?;
+        cloud_hypervisor::check_mmio64_here(config)?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
         argv.extend(args(config, api_socket));
         Ok(LaunchArgs {
