@@ -1631,6 +1631,42 @@ pub async fn memory(client: &ApiClient, args: &[&str]) {
     }
 }
 
+/// `rename <name|id> <new-name>` (spec/12-reconciliation.md §7.7).
+pub async fn rename(client: &ApiClient, args: &[&str]) {
+    let u = "Usage: rename <name|id> <new-name>";
+    let [_, name] = args else {
+        return usage(u);
+    };
+    let Some(vm_id) = resolve(client, args, u).await else {
+        return;
+    };
+    let svc = match rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let req = UpdateVmRequest {
+        id: vm_id,
+        change: VmChange {
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
+        .into(),
+        update_mask: buffa_types::google::protobuf::FieldMask {
+            paths: vec!["name".into()],
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    };
+    match svc.update_vm(req).await {
+        Ok(r) => {
+            let vm = r.into_owned().vm.as_option().cloned().unwrap_or_default();
+            println!("{} {} is now {}", "Renamed:".green(), args[0], vm.name);
+        }
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
 /// `attach-disk <name|id> <disk>` and `detach-disk …`: a data disk, by
 /// name or id.
 pub async fn disk(client: &ApiClient, attach: bool, args: &[&str]) {
