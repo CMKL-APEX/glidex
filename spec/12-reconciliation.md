@@ -94,6 +94,7 @@ Non-goals:
 | D18 | Spec edits are accepted in any VM state; what varies is when they take effect (§7.3). Hypervisor and boot source stay immutable. | Declarative edits with explicit `RestartRequired`, no surprise reboots. |
 | D19 | One-shot actions (extend-root, image retry) are spec counters (`seq`) the controller compares with the last applied value in status. | Actions stay level-triggered and idempotent. |
 | D20 | `?wait` returns the same error envelopes as today's synchronous calls when the reconcile fails. | gxctl and the UI keep their error behaviour. |
+| D21 | A VM can be **renamed** in any state (§7.7). A rename changes `meta.name`, not `spec`: it bumps `resource_version` but not `generation`, queues no reconcile and never sets `RestartRequired`. A root disk the VM owns is renamed with it. Names keep today's rules: not empty, unique in the project. | Everything on the host and in the network is keyed by the VM id, so a name is a label. The guest's hostname is regenerated at each launch and follows at the next start. The owned root disk carries the VM's name only because the VM made it. |
 
 ## 4. Verified host facts
 
@@ -492,6 +493,48 @@ with `DisksReady=False/DiskNotReady` until every referenced disk is
 `Ready`; a VM can therefore be created with `power: running` from an
 image that is still downloading. `NetworkReady` requires every
 referenced Network to be `Ready`.
+
+### 7.7 Renaming (D21)
+
+`PATCH /vms/{id}` (and `UpdateVm`) accepts `name` in `change`, with the
+mask path `name`. It is authorized as `updateVm`, the action for the
+"other mutable fields" of §12.1, and allowed in any VM state.
+
+- **Rules.** The same as `POST /vms`: not empty, and no other VM in the
+  project has it (`409 conflict`, as at create). VMs being deleted still
+  hold their names. The check runs under the VM table's write lock, as
+  at create. Renaming a VM to its current name changes nothing.
+- **What changes.** `meta.name` and `resource_version`. `generation`
+  stays, no reconcile is queued and `RestartRequired` is not set: a
+  rename is not a spec change (§7.3). `patch_vm` returns early when the
+  spec is unchanged, so a rename needs its own branch there.
+- **The root disk.** When the VM owns its root disk
+  (`config.owns_root_disk`, a disk made from `image` at create), the
+  disk is renamed in the same transaction, with create's rule: the
+  sanitized name plus `-root`, or the sanitized name plus `-` and the
+  first 8 characters of the VM id when that name is taken in the tenant.
+  When that one is taken too, the whole rename is refused with `409
+  conflict` naming the disk. A root disk the VM was given
+  (`root_disk`, not owned) and data disks keep their names. Disk files
+  are named by id (10-images.md §2), so nothing on disk moves. No
+  separate disk action is checked: the disk exists only for this VM.
+- **The guest.** The cloud-init seed is regenerated at every launch
+  (§9.1), so `local-hostname` takes the new name at the next start,
+  when the VM has a generated seed; whether the guest applies it is up
+  to its cloud-init. `instance-id` is the VM id, so the guest is not
+  treated as a new instance. A running guest keeps its hostname.
+- **Unaffected,** being keyed by the VM id: taps, OVS and OVN ports,
+  MACs, the systemd unit, the runtime directory and console log, Cedar
+  entities, audit targets and the workload identity's `sub`. Identity
+  tokens issued before the rename carry the old `glidex.vm.name` until
+  they expire. Metering keeps the name each usage record was taken
+  under (13-metering.md D13); queries group by id. An extracted kernel
+  image keeps its `<vm>-kernel-<id8>` name.
+- **Record.** A `Renamed` VM event with the old and new names, and the
+  audit entry of the `updateVm` write carries both in its details (and
+  the root disk's old and new names when it was renamed).
+- **Clients.** gxctl resolves VMs by name on the client (01-cli.md), so
+  a script that uses the old name stops finding the VM; ids never change.
 
 ## 8. Instances
 
@@ -989,7 +1032,7 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `POST /vms/{id}/pause` | `spec.power = Paused` | `pauseVm` |
 | `POST`/`DELETE /vms/{id}/devices` | edit `vfio_devices` (+ claim) | unchanged |
 | `POST /vms/{id}/disks`, `DELETE /vms/{id}/disks/{disk}` | edit `data_disks` (+ claim); no longer refused on a running VM: takes effect next launch | unchanged |
-| `PATCH /vms/{id}` (new) | JSON merge patch of `spec` | per changed field, all must allow: `power` → `startVm`/`stopVm`/`pauseVm`; `vfio_devices` → `attachDevice`/`detachDevice` + `usePciDevice`; `data_disks` → `attachDisk`/`detachDisk` + `useDisk`; `networks` → `attachNetwork` + `useNetwork` for added ones, `detachNetwork` when any is removed; `credential` → `updateVm` + `useCredential`; other mutable fields → **`updateVm` (new action)** |
+| `PATCH /vms/{id}` (new) | JSON merge patch of `spec` | per changed field, all must allow: `power` → `startVm`/`stopVm`/`pauseVm`; `vfio_devices` → `attachDevice`/`detachDevice` + `usePciDevice`; `data_disks` → `attachDisk`/`detachDisk` + `useDisk`; `networks` → `attachNetwork` + `useNetwork` for added ones, `detachNetwork` when any is removed; `credential` → `updateVm` + `useCredential`; other mutable fields, and `name` (§7.7) → **`updateVm` (new action)** |
 | `DELETE /vms/{id}[?keep_disk=true]` | deletion request | `deleteVm` |
 | `POST /disks/{id}/resize`, `/extend-root` | Disk spec writes | unchanged |
 | `POST /images/{id}/retry` (new) | bump `retry_seq` | `pullImage` |
@@ -1375,6 +1418,25 @@ through their controllers (§6.3, the `image.*` and `network.netd`
 finalizers): until then `delete_image` and `delete_network` ran
 synchronously in the API, and a network delete failed outright while
 netd was unreachable.
+
+**M5 — Renaming a VM (D21, §7.7).** Tasks, one PR each:
+
+1. API and server: `name` in `VmChange` (an additive proto field) and in
+   `UPDATABLE`; `patch_vm`'s rename branch with the uniqueness check, the
+   owned root disk's rename in the same transaction, the `Renamed`
+   event and the audit details. Docs: 03-data-model.md, 06-rest-api.md
+   (`PATCH /vms/{id}`), 11-security.md §7.4's `PATCH` row.
+   *Accept:* tests for a rename while stopped and while running
+   (`generation` and `RestartRequired` unchanged), a clash in the
+   project (`409`), the same name in another project, a VM being
+   deleted holding its name, the owned root disk renamed and its
+   fallback, a given root disk left alone, `updateVm` refused to an
+   operator, and the next launch's seed carrying the new hostname.
+2. gxctl: `rename <name|id> <new-name>`, with a row in 01-cli.md and
+   the gxctl reference.
+3. UI: rename on the VM page's header, shown only to callers who may
+   `updateVm`, with 07-web-ui.md and the user guide. *Accept:* a UI e2e
+   that renames a VM and sees the new name in the list.
 
 ## 19. Testing
 
