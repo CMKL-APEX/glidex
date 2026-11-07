@@ -830,7 +830,10 @@ not the host's, and a GPU and a NIC that share a PCIe switch on the
 host don't share one in the guest. Both hypervisors lay the guest out
 this way.
 
-<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; a pool's `bar_mib` (the MMIO aperture size) isn't built yet (spec/27-gpu-vms.md GV6). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) across several PCI roots on Cloud Hypervisor (spec/27-gpu-vms.md G13's per-segment check). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+
+A guest needs the GPU's driver and firmware: for AMD GPUs, see
+[The guest image](../operator-guide/pci-passthrough.md#the-guest-image).
 
 ## Elastic CPU
 

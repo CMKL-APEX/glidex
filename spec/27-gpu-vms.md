@@ -708,9 +708,12 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     both, a device already on `vfio-pci`; two pools' sizes in
     `to_prepare` and the boot plan; the config check; the installer's
     copy.
+  - **Docs (G15).** The operator guide's *AMD GPUs*: an `r9700` pool
+    with `prepare: true` and `bar_mib`, the window, `--vfio-devices`,
+    locked memory, and *The guest image* (`amdgpu` in the `generic`
+    kernel, `linux-firmware`, ROCm to run work, and checking it).
   - **Not done:** G13's check of each Cloud Hypervisor PCI segment's
-    share; the docs for an AMD
-    pool and guest image (G15); the reboot test (asked again before
+    share; the reboot test (asked again before
     gpu-dev2 reboots).
   - **To finish GV6**, one PR each:
     1. `bar_mib` (G18, G19): `pci.pools[].bar_mib` (a power of two),
