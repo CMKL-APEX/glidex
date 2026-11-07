@@ -19,7 +19,6 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) §14, GV6 | `spec/gpu-bar-mib` → `feat/gpu-bar-mib` → docs → CH segments | A pool's `bar_mib` as a ceiling under G17's cap, for pools only (G18, G19); the AMD pool and guest image docs (G15); G13's per-segment check |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas
@@ -30,7 +29,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Workload identity | [29-workload-identity.md](29-workload-identity.md) | WI0, WI1a, WI1b-1, WI1b-2's first part (metadata answers from the leader, #176) | WI1b-2's second part (tc/eBPF instead of the OpenFlow mark; designed, prototyped); then WI1b-3, WI1c, WI2, WI3, WI4 | §15 Implementation status |
 | Managed applications | [26-apps.md](26-apps.md) | Nothing (draft) | A0 (needs WI1) | §14 Milestones |
 | Datastores | [24-storage.md](24-storage.md) | S0–S6 (`dir`, `shared-dir`, `lvm`), S8 (`hyperstor`, #177); S26 stale hyperstor holds preempted (#203); hyperstor pools' space and `--no-overcommit` on them (S27, #213; S27 open for review); full hyperstor pools refuse new disks (S30, open for review) | S7 CSI adapter (design, gated); per-datastore quotas (queued) | §16 Milestones |
-| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3; GV6's code (#206, #211); the create form's GPUs section, with GPUs other VMs hold greyed (#210) | GV6's reboot test, docs (G15) and a pool's `bar_mib`; GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
+| GPU VMs | [27-gpu-vms.md](27-gpu-vms.md) | GV1–GV3; GV6's code (#206, #211; a pool's `bar_mib` #330, the AMD docs #331, Cloud Hypervisor's per-segment check #333); the create form's GPUs section, with GPUs other VMs hold greyed (#210) | GV6's reboot test on gpu-dev2 (with `bar_mib` there), when the user agrees; GV4 system VMs; GV5 Fabric Manager and NVLink (`nvlink: true` refused until then) | §14 Implementation notes |
 | Host topology | [22-host-topology.md](22-host-topology.md) | HT0–HT3, most of HT4; HT4b and HT5 per §17's notes (the status line names HT0–HT4) | HT4 `match.labels`; HT4b `max` on `tenant_grants`; HT5 per-VF MAC/VLAN, VFs across reboots | §17 Implementation notes |
 | Clustering | [14-clustering.md](14-clustering.md), [16-clustering-ui.md](16-clustering-ui.md) | C0–C9; UI U0–U7; the stall watch (D30) | The history tier's spec (D26, after C9); C7's leftovers (scale run, `--reset`, `--seal-ca-key`, renewal under load, rolling upgrade, recovery exercise, OVN CA rotation); §18 later items need their own design | clustering §20 Implementation notes; clustering-ui §10 |
 | Networking | [09-networking.md](09-networking.md) | M1–M9 (M9 source routes, #271 #273 #274; checked on prism1, loose and strict `rp_filter`) | M9 with hyperstor endpoints; M5 full installer run; M7 a DPDK NIC uplink; M8 source build on a host; later, not planned: DHCP and DNS without dnsmasq, network boot (§15 Future work) | §0 Implementation status |
