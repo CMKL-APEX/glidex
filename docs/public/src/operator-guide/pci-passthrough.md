@@ -365,6 +365,63 @@ never offered to VMs: NVIDIA Fabric Manager owns them, on the host or in
 a service VM (spec/27-gpu-vms.md). Today glidex VMs on such a board get
 their GPUs without NVLink between them.
 
+## AMD GPUs
+
+AMD GPUs take the same path as any other device: a pool, a grant, and
+`gpus` or `devices` in the VM. Nothing in Glidex depends on the
+vendor; only NVIDIA's NVLink fabric (above) is vendor-specific. A pool
+for Radeon AI PRO R9700s, prepared by each node at start:
+
+```json
+{ "name": "r9700", "class": "gpu",
+  "match": { "vendor_id": "0x1002", "device_id": "0x7551" },
+  "prepare": true,
+  "bar_mib": 16384,
+  "per_device": { "vcpus": 4, "memory_mib": 8192 } }
+```
+
+- **The memory window.** With resizable BAR on, an R9700's window is as
+  large as its memory (32 GiB). Preparing makes it smaller so that the
+  host's GPU windows add up to less than its memory: a window as large
+  as the host's memory froze a 32 GiB test host when its VM started.
+  `bar_mib` sets a smaller ceiling for the pool. The guest's `amdgpu`
+  still reaches all of the GPU's memory through it (`Detected VRAM
+  RAM=32624M, BAR=16384M`). See
+  [Prepare devices](host-resources.md#prepare-devices).
+- **Across reboots.** `glidex-install --vfio-devices r9700` binds the
+  pool's GPUs to `vfio-pci` at boot, taking them from `amdgpu`, before
+  Glidex and any VM start, with the pool's `bar_mib`. Without it,
+  `prepare: true` binds them when Glidex starts.
+- **Locked memory.** A VM with a GPU locks its guest memory; the VM
+  unit allows it (`LimitMEMLOCK=infinity`). A host installed before
+  that setting gets it when `glidex-install` runs again. Until then the
+  hypervisor fails with `Failed to DMA map VFIO device … Out of memory`.
+
+### The guest image
+
+Glidex ships no GPU image: the driver and ROCm releases are yours to
+choose. What the guest needs:
+
+- **`amdgpu`.** It's in Ubuntu's `generic` kernel. A `virtual` or `kvm`
+  kernel needs `linux-modules-extra-$(uname -r)`.
+- **The GPU's firmware: `linux-firmware`.** Ubuntu's cloud images don't
+  have it, and without it `amdgpu` stops at
+  `early_init of IP block <psp> failed -19`.
+- **ROCm**, only to run work on the GPU (`rocminfo`, PyTorch).
+
+On a VM from a stock Ubuntu image:
+
+```bash
+sudo apt-get install -y linux-firmware   # and linux-modules-extra-$(uname -r) on a virtual kernel
+sudo reboot
+# then:
+sudo dmesg | grep -i amdgpu              # "Detected VRAM RAM=…" and no "failed"
+ls /dev/kfd /dev/dri/renderD*
+```
+
+To skip that step for every VM, build an image with these packages and
+add it to the catalog ([Pulling an image](../user-guide/images-and-disks.md#pulling-an-image)).
+
 ## SR-IOV virtual functions
 
 A NIC (or GPU) with SR-IOV can be split into virtual functions (VFs),
