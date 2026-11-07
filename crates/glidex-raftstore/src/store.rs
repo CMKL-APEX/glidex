@@ -512,8 +512,38 @@ pub struct Db<S: Schema> {
     forwarder: Mutex<Option<Arc<dyn Forwarder<S>>>>,
 }
 
+/// Makes sure a redb file exists at `path`, made whole: a new one is built
+/// beside it (`<path>.new`) and renamed into place, then the directory is
+/// synced. redb writes a new file's header before its magic number, and
+/// refuses a file without one ever after ("invalid data"), so a kill while
+/// it creates the file in place leaves a store nothing opens. A kill here
+/// leaves no file or a complete one; a leftover `.new` is half made and
+/// holds nothing, so it is deleted.
+pub fn create_whole(path: &Path) -> Result<(), StoreError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".new");
+    let new = std::path::PathBuf::from(name);
+    match std::fs::remove_file(&new) {
+        Ok(()) => tracing::warn!("removed the half-made store file {}", new.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if path.exists() {
+        return Ok(());
+    }
+    drop(redb::Database::create(&new)?);
+    std::fs::rename(&new, path)?;
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
+}
+
 impl<S: Schema> Db<S> {
     pub fn create(path: impl AsRef<Path>) -> Result<Db<S>, StoreError> {
+        create_whole(path.as_ref())?;
         let inner = redb::Database::create(path.as_ref())?;
         // Reads open tables that nothing may have written yet.
         let txn = inner.begin_write()?;
@@ -965,6 +995,72 @@ impl<S: Schema> Drop for Db<S> {
 mod tests {
     use super::*;
     use crate::testing::{Test, TestOrigin, TestTable};
+
+    /// What a kill leaves while redb creates a file (#317): sized, with the
+    /// header written but not its magic number. Opening it in place fails.
+    fn half_made(path: &Path) {
+        let mut bytes = vec![0u8; 1_056_768];
+        bytes[8..16].copy_from_slice(&[0, 4, 0, 0, 0, 0x10, 0, 0]);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_half_made_file_is_refused_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        half_made(&path);
+        assert!(
+            redb::Database::create(&path).is_err(),
+            "redb opens it after all"
+        );
+    }
+
+    #[test]
+    fn a_kill_while_creating_leaves_a_store_that_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut new = path.as_os_str().to_owned();
+        new.push(".new");
+        half_made(Path::new(&new));
+        let db = Db::<Test>::create(&path).unwrap();
+        assert!(!Path::new(&new).exists(), "the half-made file stays");
+        drop(db);
+        Db::<Test>::create(&path).unwrap();
+    }
+
+    /// The child of the test below: creates the store named in the variable.
+    #[test]
+    fn create_in_a_child() {
+        if let Some(path) = std::env::var_os("GLIDEX_RAFTSTORE_CREATE_CHILD") {
+            Db::<Test>::create(Path::new(&path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_store_killed_at_any_point_of_its_creation_opens() {
+        let exe = std::env::current_exe().unwrap();
+        for i in 0..40u64 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let mut child = std::process::Command::new(&exe)
+                .args([
+                    "--exact",
+                    "store::tests::create_in_a_child",
+                    "--test-threads=1",
+                ])
+                .env("GLIDEX_RAFTSTORE_CREATE_CHILD", &path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            // Kill points spread over the child's start and its creation.
+            std::thread::sleep(std::time::Duration::from_micros(i * i * 10));
+            let _ = child.kill();
+            child.wait().unwrap();
+            Db::<Test>::create(&path)
+                .unwrap_or_else(|e| panic!("kill after {} us: {e}", i * i * 10));
+        }
+    }
 
     fn put(tx: &Tx<'_, Test>, t: TestTable, k: &str, v: &[u8]) {
         tx.open_table(definition::<Test>(t))
