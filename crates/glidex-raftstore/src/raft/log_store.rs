@@ -41,6 +41,7 @@ impl<S: Schema> LogStore<S> {
         if let Some(dir) = path.parent() {
             s(std::fs::create_dir_all(dir))?;
         }
+        s(crate::store::create_whole(path))?;
         let db = s(redb::Database::create(path))?;
         let t = s(db.begin_write())?;
         s(t.open_table(LOG))?;
@@ -267,6 +268,22 @@ mod tests {
     use super::*;
     use crate::store::{Op, WRITE_SET_FORMAT, WriteSet};
     use crate::testing::{Test, TestOrigin, TestTable};
+
+    #[test]
+    fn a_half_made_log_file_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raft/log.redb");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // What a kill leaves while redb creates the file (#317).
+        let new = path.with_extension("redb.new");
+        std::fs::write(&new, vec![0u8; 1 << 20]).unwrap();
+        let store = LogStore::<Test>::open(&path).unwrap();
+        assert!(store.is_fresh().unwrap());
+        assert!(!new.exists(), "the half-made file stays");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
 
     #[test]
     fn scan_file_reads_entries_from_an_index() {
