@@ -366,6 +366,9 @@ pub struct VmManager {
     /// netd's socket identity at the last port sync (restart detection).
     pub(crate) netd_seen: std::sync::Mutex<Option<(u64, u64)>>,
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
+    /// `initialize` has loaded the VMs into `vms`. Before that every VM is
+    /// unknown, and the probe keeps every hold (S26).
+    pub(crate) vms_loaded: std::sync::atomic::AtomicBool,
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
     /// This host's web UI address, as a server publishes it
@@ -565,6 +568,7 @@ impl VmManager {
             orphans: std::sync::Mutex::new(Vec::new()),
             netd_seen: std::sync::Mutex::new(None),
             controllers_started: std::sync::atomic::AtomicBool::new(false),
+            vms_loaded: std::sync::atomic::AtomicBool::new(false),
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
             ui_url: ArcSwap::from_pointee(None),
@@ -1124,38 +1128,25 @@ impl VmManager {
     }
 
     /// Lets go of this node's `hyperstor-vhost` holds on disks of datastore
-    /// `ds` whose VM isn't placed here (S26): left by a detach that failed,
-    /// or by a VM placed elsewhere while it was stopped. Blocks.
+    /// `ds` whose VM is placed on another node (S26): left by a detach that
+    /// failed, or by a VM placed elsewhere while it was stopped. Blocks.
     fn release_stale_holds(
         &self,
         driver: &crate::datastore::hyperstor::HyperstorDriver,
         ds: &str,
         me: &str,
     ) {
-        use crate::datastore::hyperstor::{stale_here, volume_id};
+        use crate::datastore::hyperstor::stale_here;
+        // Before the VMs are loaded every VM is unknown: keep every hold.
+        let Some(disks) = self.hold_nodes(ds) else {
+            return;
+        };
         let Ok(attached) = driver.attached_volumes() else {
             return;
         };
         if attached.is_empty() {
             return;
         }
-        let vms = self.vms.blocking_read();
-        let disks: Vec<(String, Option<String>)> = self
-            .images
-            .list_disks()
-            .into_iter()
-            .filter(|d| d.datastore == ds)
-            .map(|d| {
-                let node = d
-                    .attached_to
-                    .as_ref()
-                    .and_then(|vm| vms.get(vm))
-                    .and_then(|vm| vm.status.placement.as_ref())
-                    .map(|p| p.node.clone());
-                (volume_id(&d), node)
-            })
-            .collect();
-        drop(vms);
         for v in stale_here(&attached, &disks, me) {
             match driver.detach_volume(&v) {
                 Ok(()) => {
@@ -1164,6 +1155,34 @@ impl VmManager {
                 Err(e) => tracing::warn!(volume = %v, "letting go of a stale hold: {}", e),
             }
         }
+    }
+
+    /// Datastore `ds`'s disks, each as its volume and the node its VM is
+    /// placed on: `None` for a disk attached to no VM, to a VM not known
+    /// here, or to one placed nowhere (a VM starting is, S26). `None` in
+    /// all until `initialize` has loaded the VMs.
+    pub(crate) fn hold_nodes(&self, ds: &str) -> Option<Vec<(String, Option<String>)>> {
+        use crate::datastore::hyperstor::volume_id;
+        if !self.vms_loaded.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let vms = self.vms.blocking_read();
+        Some(
+            self.images
+                .list_disks()
+                .into_iter()
+                .filter(|d| d.datastore == ds)
+                .map(|d| {
+                    let node = d
+                        .attached_to
+                        .as_ref()
+                        .and_then(|vm| vms.get(vm))
+                        .and_then(|vm| vm.status.placement.as_ref())
+                        .map(|p| p.node.clone());
+                    (volume_id(&d), node)
+                })
+                .collect(),
+        )
     }
 
     /// Look at every datastore this node is on and say what it finds
@@ -1834,6 +1853,8 @@ impl VmManager {
                 vms.insert(vm.id.clone(), vm);
             }
         }
+        self.vms_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
         if writable {
             self.adopt_into_default_project()?;
         }
@@ -5925,6 +5946,97 @@ fn fill_macs(vm_id: &str, networks: &mut [NetworkAttachment]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #322: a restart's probe, run before `initialize` has loaded the VMs,
+    /// let go of the holds of VMs running here. Until the VMs are loaded no
+    /// disk has a node; after, only a VM placed on a node gives one.
+    #[test]
+    fn holds_name_a_node_only_for_a_loaded_vm_with_a_placement() {
+        use crate::images::qemu_img::DiskFormat;
+        use crate::images::{Disk, DiskOrigin};
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        let disk = |id: &str, vm: Option<&str>| {
+            let mut d = Disk::new(
+                id.into(),
+                id.into(),
+                String::new(),
+                DiskFormat::Qcow2,
+                1 << 20,
+                DiskOrigin::Blank,
+            );
+            d.datastore = "hs".into();
+            d.attached_to = vm.map(String::from);
+            manager.images.put_disk(&d).unwrap();
+            crate::datastore::hyperstor::volume_id(&d)
+        };
+        let here = disk("d-here", Some("vm-here"));
+        let away = disk("d-away", Some("vm-away"));
+        let starting = disk("d-starting", Some("vm-starting"));
+        let unknown = disk("d-unknown", Some("vm-unknown"));
+        let loose = disk("d-loose", None);
+        let attached = vec![
+            here.clone(),
+            away.clone(),
+            starting.clone(),
+            unknown.clone(),
+            loose.clone(),
+        ];
+
+        // Before the VMs are loaded: nothing to go on.
+        assert!(manager.hold_nodes("hs").is_none());
+
+        let config = test_config(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        let placed = |node: &str| crate::models::Placement {
+            node: node.into(),
+            at: 0,
+            page_kib: None,
+            numa_node: None,
+            numa: Vec::new(),
+            cpus: Vec::new(),
+            pool_devices: Vec::new(),
+        };
+        {
+            let mut vms = manager.vms.blocking_write();
+            for (id, node) in [
+                ("vm-here", Some("node-a")),
+                ("vm-away", Some("node-b")),
+                ("vm-starting", None),
+            ] {
+                let mut vm = Vm::new(id.into(), config.clone());
+                vm.id = id.into();
+                vm.status.placement = node.map(placed);
+                vms.insert(id.into(), vm);
+            }
+        }
+        // Loaded but not marked: still nothing.
+        assert!(manager.hold_nodes("hs").is_none());
+        manager
+            .vms_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let disks = manager.hold_nodes("hs").unwrap();
+        let node_of = |v: &str| {
+            disks
+                .iter()
+                .find(|(d, _)| d == v)
+                .map(|(_, n)| n.clone())
+                .unwrap()
+        };
+        assert_eq!(node_of(&here).as_deref(), Some("node-a"));
+        assert_eq!(node_of(&away).as_deref(), Some("node-b"));
+        assert_eq!(node_of(&starting), None, "a VM placed nowhere");
+        assert_eq!(node_of(&unknown), None, "a VM not known here");
+        assert_eq!(node_of(&loose), None, "a disk attached to no VM");
+        assert!(manager.hold_nodes("other").unwrap().is_empty());
+        // Only the disk of the VM placed on another node is let go.
+        assert_eq!(
+            crate::datastore::hyperstor::stale_here(&attached, &disks, "node-a"),
+            [away]
+        );
+    }
 
     fn test_config(json: serde_json::Value) -> VmConfig {
         serde_json::from_value(json).unwrap()

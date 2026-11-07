@@ -579,7 +579,10 @@ lease, and another node can't attach it meanwhile.
 
 A hold can outlive its VM there: the VM's node crashed, or a detach
 failed. Each node lets go, within a minute, of the volumes it holds for
-VMs placed elsewhere. And a VM starting on a node takes its disks from
+VMs placed on another node. It keeps the holds of VMs placed nowhere or
+not known to it, and lets go of nothing while its control plane is
+starting, so a restart doesn't take the disks of the VMs running there.
+And a VM starting on a node takes its disks from
 another node's `hyperstor-vhost` that still holds them, which cuts off
 only those volumes there; the node's other VMs carry on. A disk that a
 Glidex disk operation holds (`hyperstorctl`, on a server) is waited for:

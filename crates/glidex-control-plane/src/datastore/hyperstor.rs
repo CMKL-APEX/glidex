@@ -117,8 +117,10 @@ pub fn stale_hold(holder: &str, me: &str) -> bool {
 
 /// The volumes attached here (`attached`) that this node should let go
 /// (S26): each a glidex disk's (`disks`: volume and the node its VM is
-/// placed on, if any) whose VM isn't placed here. Volumes glidex doesn't
-/// know are left alone.
+/// placed on, if any) whose VM is placed on another node. A disk whose VM
+/// is placed nowhere, or isn't known, keeps its hold: a VM starting here
+/// is placed nowhere while its disks attach, and a VM not loaded yet may
+/// be running here. Volumes glidex doesn't know are left alone.
 pub fn stale_here(
     attached: &[String],
     disks: &[(String, Option<String>)],
@@ -130,7 +132,7 @@ pub fn stale_here(
             disks
                 .iter()
                 .find(|(d, _)| d == *v)
-                .is_some_and(|(_, node)| node.as_deref() != Some(me))
+                .is_some_and(|(_, node)| node.as_deref().is_some_and(|n| n != me))
         })
         .cloned()
         .collect()
@@ -1575,7 +1577,8 @@ mod tests {
 
     /// Which holds are stale (S26): another node's hyperstor-vhost's for a
     /// VM starting here; and, on the node holding them, those of disks
-    /// whose VM is placed elsewhere or nowhere.
+    /// whose VM is placed on another node. A VM placed nowhere or unknown
+    /// keeps its disks' holds (#322).
     #[test]
     fn stale_holds_are_another_nodes_vhost_and_disks_placed_elsewhere() {
         assert!(stale_hold("vhost:node-b", "node-a"));
@@ -1590,7 +1593,7 @@ mod tests {
             ("v2".to_string(), Some("node-b".to_string())),
             ("v3".to_string(), None),
         ];
-        assert_eq!(stale_here(&attached, &disks, "node-a"), ["v2", "v3"]);
+        assert_eq!(stale_here(&attached, &disks, "node-a"), ["v2"]);
     }
 
     /// The partition code's reads and writes of a volume go to hyperstorctl
