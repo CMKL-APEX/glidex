@@ -418,6 +418,12 @@ pub struct PciPool {
     /// sizes itself (spec/27-gpu-vms.md §6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_device: Option<PerDevice>,
+    /// The largest GPU window (resizable BAR), in MiB, a power of two,
+    /// that a node gives the pool's devices when it prepares them; under
+    /// the cap that keeps the host's GPU windows below its memory
+    /// (spec/27-gpu-vms.md G17–G19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_mib: Option<u64>,
 }
 
 /// A VM's share per device of a pool (spec/27-gpu-vms.md §6).
@@ -513,6 +519,12 @@ impl PciConfig {
             if p.matches.is_empty() {
                 return Err(format!(
                     "pci.pools: pool {} matches every device; give it a match",
+                    p.name
+                ));
+            }
+            if p.bar_mib.is_some_and(|m| !m.is_power_of_two()) {
+                return Err(format!(
+                    "pci.pools: pool {}: bar_mib must be a power of two (MiB), as GPU windows are",
                     p.name
                 ));
             }
@@ -846,6 +858,7 @@ mod tests {
             nodes: vec![],
             prepare: false,
             per_device: None,
+            bar_mib: None,
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],
@@ -873,6 +886,12 @@ mod tests {
         c.pools.push(pool("same", Some("0x10de")));
         assert!(c.check().unwrap_err().contains("match the same devices"));
         c.pools.pop();
+        // A GPU window's size is a power of two (spec/27-gpu-vms.md G18).
+        c.pools[0].bar_mib = Some(8192);
+        assert!(c.check().is_ok());
+        c.pools[0].bar_mib = Some(3000);
+        assert!(c.check().unwrap_err().contains("power of two"));
+        c.pools[0].bar_mib = None;
         let grant = |bdf: Option<&str>, pool: Option<&str>| PciGrant {
             bdf: bdf.map(Into::into),
             pool: pool.map(Into::into),

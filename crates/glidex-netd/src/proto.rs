@@ -130,6 +130,9 @@ pub enum Op {
     /// (spec/22-host-topology.md §5.3).
     PrepareDevice {
         address: String,
+        /// A pool's ceiling for GPU windows (spec/27-gpu-vms.md G18).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bar_mib: Option<u64>,
     },
     /// Put a prepared device's group back on its drivers.
     ReleaseDevice {

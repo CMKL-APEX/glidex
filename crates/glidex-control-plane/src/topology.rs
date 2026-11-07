@@ -68,8 +68,9 @@ pub struct PhysFn {
 
 impl TopologyTree {
     /// Devices of `pools` that binding to `vfio-pci` would make ready:
-    /// not ready, in an IOMMU group, and not an OVS-DPDK uplink.
-    pub fn to_prepare(&self, pools: &[crate::config::PciPool]) -> Vec<String> {
+    /// not ready, in an IOMMU group, and not an OVS-DPDK uplink; each with
+    /// the smallest `bar_mib` of its pools (spec/27-gpu-vms.md G19).
+    pub fn to_prepare(&self, pools: &[crate::config::PciPool]) -> Vec<(String, Option<u64>)> {
         self.devices
             .iter()
             .filter(|d| d.assignable && !d.ready)
@@ -80,11 +81,15 @@ impl TopologyTree {
                         || w.contains("virtual functions")
                 })
             })
-            .filter(|d| {
+            .filter_map(|d| {
                 let s = self.summary_of(d);
-                pools.iter().any(|p| p.matches.matches_device(&s))
+                let of: Vec<_> = pools
+                    .iter()
+                    .filter(|p| p.matches.matches_device(&s))
+                    .collect();
+                (!of.is_empty())
+                    .then(|| (d.address.clone(), of.iter().filter_map(|p| p.bar_mib).min()))
             })
-            .map(|d| d.address.clone())
             .collect()
     }
 
@@ -1046,8 +1051,12 @@ mod tests {
             nodes: vec![],
             prepare: true,
             per_device: None,
+            bar_mib: None,
         };
-        assert_eq!(t.to_prepare(std::slice::from_ref(&pool)), ["0000:61:00.3"]);
+        assert_eq!(
+            t.to_prepare(std::slice::from_ref(&pool)),
+            [("0000:61:00.3".to_string(), None)]
+        );
     }
 
     #[test]
@@ -1142,11 +1151,26 @@ mod tests {
             nodes: vec![],
             prepare: true,
             per_device: None,
+            bar_mib: None,
         };
         // 87:00.0 is ready; the NIC isn't the pool's.
         assert_eq!(
             t.to_prepare(std::slice::from_ref(&gpus)),
-            ["0000:07:00.0", "0000:09:00.0"]
+            [
+                ("0000:07:00.0".to_string(), None),
+                ("0000:09:00.0".to_string(), None)
+            ]
+        );
+        // With a window size, the smallest of the device's pools
+        // (spec/27-gpu-vms.md G19).
+        let sized = |name: &str, mib| crate::config::PciPool {
+            name: name.into(),
+            bar_mib: Some(mib),
+            ..gpus.clone()
+        };
+        assert_eq!(
+            t.to_prepare(&[sized("big", 16384), sized("small", 8192)])[0],
+            ("0000:07:00.0".to_string(), Some(8192))
         );
         assert!(t.to_prepare(&[]).is_empty());
         // Without an IOMMU there is nothing binding can fix.
