@@ -1453,6 +1453,12 @@ As built: M5 task 2. `gxctl rename <name|id> <new-name>` sends
 `UpdateVm` with the mask `name`. gxctl has no tests that run against a
 server: its help test covers the command's line.
 
+As built: M5 task 3. **Rename** under the VM page's name (`VmRename`,
+to callers who may `updateVm`). UI e2e: `vm-rename.spec.ts` (a taken
+name refused, a free one shown on the page and in the list) and
+`vm-controls-by-role.spec.ts` (hidden from an operator, shown to an
+editor).
+
 ## 19. Testing
 
 Integration tests run real hypervisors (as `functional_tests.rs` does

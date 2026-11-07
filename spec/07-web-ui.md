@@ -170,6 +170,7 @@ ui/src/
 │   ├── VmActions.tsx       # Start/Shut down/Force off/Pause/Delete buttons (Shut down: power button, 60 s)
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
 │   ├── VmMemory.tsx        # Change memory (UpdateVm mem_size_mib), from the next start
+│   ├── VmRename.tsx        # Rename under the VM's name (UpdateVm name, 12-reconciliation.md §7.7)
 │   ├── VmDisks.tsx         # Root and data disks; detach one, attach a free disk of the project
 │   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
 └── pages/
@@ -286,6 +287,9 @@ and `last_exit`.
   `api.ts` sends `?wait=60` with start, pause, stop (at least the grace
   plus 20 s, at most 300) and delete; a failed reconcile comes back as
   an `ApiRequestError` like any other.
+- **Rename.** **Rename** under the VM's name and id sends `UpdateVm`
+  with `name`, to callers who may `updateVm`; the server's `409` for a
+  name taken in the project is shown in the form.
 - **Memory and data disks.** **Change memory** under Memory sends
   `UpdateVm` with `mem_size_mib`. Under Disks, each data disk has
   **Detach** (`DetachDisk`), and a picker lists the project's free disks

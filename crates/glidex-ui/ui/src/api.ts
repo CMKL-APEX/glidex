@@ -803,6 +803,12 @@ export const setVmServiceAccount = (id: string, serviceAccount: string | null) =
 export const listServiceAccounts = (project: string) =>
   listTokens().then((all) => all.filter((t) => isServiceToken(t) && t.project === project));
 
+/** Rename a VM; a root disk it made is renamed with it. */
+export function setVmName(id: string, name: string) {
+  const vm = { name };
+  return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
+}
+
 /** Change a VM's memory; on a running VM from its next start. */
 export function setVmMemory(id: string, mib: number) {
   const vm = { mem_size_mib: mib };
