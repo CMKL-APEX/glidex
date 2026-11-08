@@ -149,6 +149,56 @@ sudo systemctl restart glidex-control-plane glidex-ui
 `journalctl -u glidex-ui` (or `-u glidex-control-plane`) shows
 `TLS certificate reloaded` with the new fingerprint.
 
+### Behind Cloudflare
+
+When users reach the UI through Cloudflare (a proxied DNS record or a
+Cloudflare Tunnel), Cloudflare can check the UI's certificate instead of
+skipping the check. A Cloudflare Origin CA certificate does for this:
+Cloudflare trusts it, browsers don't, and it lasts up to 15 years.
+
+1. In the Cloudflare dashboard, **SSL/TLS** → **Origin Server** →
+   **Create Certificate**, for the UI's name (`glidex.example.com`), in
+   PEM. The key is shown once: save it straight to a file on the host.
+2. Install the pair as in [Your own certificate](#your-own-certificate)
+   and give it to the UI as in [Web UI](#web-ui), on every host
+   Cloudflare sends requests to. `journalctl -u glidex-ui` shows
+   `self_signed=false` and the certificate's fingerprint.
+3. Have Cloudflare check it:
+   - **Tunnel:** in **Zero Trust** → **Networks** → **Tunnels**, the
+     public hostname's **Additional application settings** → **TLS**:
+     **Origin Server Name** set to the UI's name (the service is usually
+     `https://localhost:<port>`, which the certificate doesn't name) and
+     **No TLS Verify** off. `cloudflared` trusts the Origin CA without
+     a **CA Pool**.
+   - **Proxied DNS record:** the zone's SSL/TLS mode **Full (strict)**.
+
+Check it on the host, against Cloudflare's Origin CA root
+(`origin_ca_ecc_root.pem` or `origin_ca_rsa_root.pem`, from Cloudflare's
+documentation, matching the key type):
+
+```bash
+openssl s_client -connect 127.0.0.1:5173 -servername glidex.example.com \
+  -verify_hostname glidex.example.com -CAfile origin_ca_ecc_root.pem </dev/null
+```
+
+It should end with `Verify return code: 0 (ok)`. A tunnel that can't
+verify the UI logs `x509: certificate signed by unknown authority` in
+`journalctl -u cloudflared`, and Cloudflare answers 502.
+
+- **No TLS Verify is set per public hostname.** After changing a
+  tunnel's settings, check its other hostnames: one whose service has a
+  self-signed certificate and no longer skips the check gets 502s.
+- **Browsers reaching the host directly** get a certificate warning for
+  any name but its Tailscale names, as with the self-signed one. Use
+  `GLIDEX_UI_TLS_TAILSCALE` for direct access.
+- **HSTS:** with the certificate configured the UI sends
+  `Strict-Transport-Security`, which reaches browsers through Cloudflare.
+- **The name:** a cluster server accepts the name in `cluster.ui_url`;
+  otherwise list it in `GLIDEX_UI_HOSTS`. With a tunnel, set
+  `GLIDEX_UI_CLIENT_IP_HEADER=CF-Connecting-IP` so the audit records the
+  browser's address rather than the tunnel's
+  ([Configuration](configuration.md#web-ui)).
+
 ## Tailscale certificates
 
 On a host that is on a [Tailscale](https://tailscale.com) tailnet with
