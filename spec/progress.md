@@ -19,6 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
+| Security (`glidex-auth`) | OIDC login state kept by the caller | `feat/oidc-detached-login` | `OidcState::begin`/`finish`, for hyperstor's mgmt behind one name on several hosts ([11-security.md](11-security.md) §5.4) |
 
 ## Areas
 
