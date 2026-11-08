@@ -225,13 +225,9 @@ impl<S: Schema> RaftLogStorage<TypeConfig<S>> for LogStore<S> {
         tokio::task::spawn_blocking(move || {
             let txn = s(db.begin_write())?;
             {
-                let mut t = s(txn.open_table(LOG))?;
-                let keys: Vec<u64> = s(t.range(log_id.index..))?
-                    .filter_map(|r| r.ok().map(|(k, _)| k.value()))
-                    .collect();
-                for k in keys {
-                    s(t.remove(k))?;
-                }
+                // An entry that can't be read fails the truncate: skipping
+                // it would leave a conflicting entry in the log.
+                s(s(txn.open_table(LOG))?.retain_in(log_id.index.., |_, _| false))?;
             }
             s(txn.commit())
         })
@@ -245,13 +241,7 @@ impl<S: Schema> RaftLogStorage<TypeConfig<S>> for LogStore<S> {
         tokio::task::spawn_blocking(move || {
             let txn = s(db.begin_write())?;
             {
-                let mut t = s(txn.open_table(LOG))?;
-                let keys: Vec<u64> = s(t.range(..=log_id.index))?
-                    .filter_map(|r| r.ok().map(|(k, _)| k.value()))
-                    .collect();
-                for k in keys {
-                    s(t.remove(k))?;
-                }
+                s(s(txn.open_table(LOG))?.retain_in(..=log_id.index, |_, _| false))?;
                 let mut kv = s(txn.open_table(KV))?;
                 s(kv.insert(PURGED, s(serde_json::to_vec(&log_id))?.as_slice()))?;
             }
@@ -320,5 +310,36 @@ mod tests {
         })
         .unwrap();
         assert_eq!(seen, vec![(3, entry(3)), (4, entry(4))]);
+    }
+
+    #[tokio::test]
+    async fn purge_and_truncate_remove_exactly_their_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = LogStore::<Test>::open(&dir.path().join("log.redb")).unwrap();
+        let id = |i: u64| openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), i);
+        {
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut t = txn.open_table(LOG).unwrap();
+                for i in 1..=10u64 {
+                    t.insert(i, b"e".as_slice()).unwrap();
+                }
+            }
+            txn.commit().unwrap();
+        }
+        let keys = |store: &LogStore<Test>| -> Vec<u64> {
+            let txn = store.db.begin_read().unwrap();
+            let t = txn.open_table(LOG).unwrap();
+            t.iter().unwrap().map(|r| r.unwrap().0.value()).collect()
+        };
+        store.purge(id(3)).await.unwrap();
+        assert_eq!(keys(&store), (4..=10).collect::<Vec<_>>());
+        assert_eq!(store.kv::<LogId>(PURGED).unwrap(), Some(id(3)));
+        store.truncate(id(8)).await.unwrap();
+        assert_eq!(keys(&store), (4..=7).collect::<Vec<_>>());
+        // Past either end: nothing more to remove.
+        store.truncate(id(20)).await.unwrap();
+        store.purge(id(3)).await.unwrap();
+        assert_eq!(keys(&store), (4..=7).collect::<Vec<_>>());
     }
 }
