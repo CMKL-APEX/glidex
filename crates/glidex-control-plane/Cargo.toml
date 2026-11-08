@@ -32,7 +32,7 @@ reqwest = { version = "0.12", features = ["json", "stream"] }
 uuid = { version = "1", features = ["v4", "v5"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-thiserror = "1"
+thiserror = "2"
 tower-http = { version = "0.6", features = ["trace"] }
 clap = { version = "4", features = ["derive", "env"] }
 rustyline = "15"
