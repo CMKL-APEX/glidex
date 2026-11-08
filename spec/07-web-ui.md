@@ -159,7 +159,7 @@ ui/src/
 ├── index.css               # Tailwind entry
 ├── components/
 │   ├── Header.tsx          # Nav (by capability), activity, project selector, user, Log out, API health
-│   ├── Footer.tsx          # Build info: version tag (if any), git branch, commit
+│   ├── Footer.tsx          # Build info: release, git branch, commit, linked to GitHub
 │   ├── Activity.tsx        # "N in progress" indicator and list; Spinner
 │   ├── ReauthDialog.tsx    # Step-up re-login, then retry (the kit's, with passkeys)
 │   ├── AddBindingForm.tsx  # Role + user/team picker for role links
@@ -516,13 +516,26 @@ the disk moves; its status shows "· moving".
 ## Footer
 
 `components/Footer.tsx`, under every signed-in page, shows the build the
-UI came from: the version tag on the built commit (if any), the git
-branch and the commit (marked "(modified)" when built from a tree with
-uncommitted changes). `vite.config.ts` reads them from git at build (or
-dev-server start) time into `__GLIDEX_BUILD__`; `GLIDEX_BUILD_TAG`,
-`GLIDEX_BUILD_BRANCH` and `GLIDEX_BUILD_COMMIT` override them for builds
-without a checkout (CI also supplies `GITHUB_REF_NAME`). A detached HEAD
-shows no branch.
+UI came from:
+
+- **Version**: the version tag on the built commit (`v0.0.8`), linked to
+  that release on GitHub. A build of a later commit shows the release
+  before it and the commits since (`v0.0.8+12`), linked to GitHub's
+  comparison of that release with the commit.
+- **Branch**, unlinked; a detached HEAD shows none.
+- **Commit**, linked to the commit on GitHub, and marked "(modified)"
+  when built from a tree with uncommitted changes (the link then shows
+  the commit the changes were made on).
+
+Links open in a new tab. `vite.config.ts` reads all of it from git at
+build (or dev-server start) time into `__GLIDEX_BUILD__`;
+`GLIDEX_BUILD_TAG`, `GLIDEX_BUILD_RELEASE`, `GLIDEX_BUILD_BRANCH` and
+`GLIDEX_BUILD_COMMIT` override them for builds without a checkout (CI
+also supplies `GITHUB_REF_NAME`). The links go to
+`https://github.com/CMKL-APEX/glidex`, or `GLIDEX_BUILD_REPO`; the
+repository is never taken from the checkout's remote, whose URL can
+carry a credential. A checkout without tags (a shallow clone) shows no
+version.
 
 ## `VmConsole` contract
 

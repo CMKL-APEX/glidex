@@ -45,19 +45,31 @@ function git(...args: string[]): string | undefined {
 }
 
 /**
- * What the footer shows: the version tag on the built commit (if any), the
- * branch and the commit. GLIDEX_BUILD_TAG / _BRANCH / _COMMIT override them
- * for builds from a tarball or a detached CI checkout.
+ * What the footer shows: the version tag on the built commit (if any), else
+ * the release it follows and how many commits after it, the branch and the
+ * commit, each linked to the code on GitHub. GLIDEX_BUILD_TAG / _RELEASE /
+ * _BRANCH / _COMMIT override them for builds from a tarball or a detached
+ * CI checkout, and GLIDEX_BUILD_REPO the repository the links go to. The
+ * repository is never read from the checkout's remote, whose URL can carry
+ * a credential.
  */
 function buildInfo() {
   const env = process.env;
   const branch = env.GLIDEX_BUILD_BRANCH ?? env.GITHUB_REF_NAME ?? git("rev-parse", "--abbrev-ref", "HEAD");
+  const tag = env.GLIDEX_BUILD_TAG ?? git("describe", "--tags", "--exact-match", "HEAD") ?? null;
+  const release = tag ?? env.GLIDEX_BUILD_RELEASE ?? git("describe", "--tags", "--abbrev=0", "HEAD") ?? null;
+  const ahead = tag || !release ? 0 : Number(git("rev-list", "--count", `${release}..HEAD`) ?? 0);
   return {
-    tag: env.GLIDEX_BUILD_TAG ?? git("describe", "--tags", "--exact-match", "HEAD") ?? null,
+    tag,
+    release,
+    ahead: Number.isFinite(ahead) ? ahead : 0,
     // A detached HEAD has no branch.
     branch: branch && branch !== "HEAD" ? branch : null,
     commit: env.GLIDEX_BUILD_COMMIT ?? git("rev-parse", "--short=10", "HEAD") ?? null,
+    // For the link; GitHub takes a short one too.
+    commitFull: env.GLIDEX_BUILD_COMMIT ?? git("rev-parse", "HEAD") ?? null,
     dirty: env.GLIDEX_BUILD_COMMIT ? false : git("status", "--porcelain", "--untracked-files=no") !== undefined,
+    repo: (env.GLIDEX_BUILD_REPO ?? "https://github.com/CMKL-APEX/glidex").replace(/\/+$/, ""),
   };
 }
 
