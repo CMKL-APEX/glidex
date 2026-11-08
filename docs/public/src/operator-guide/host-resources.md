@@ -414,8 +414,10 @@ Preparing:
   host's GPUs on `vfio-pci` add up to less than the host's memory. Each
   gets the largest size that fits, given the GPUs prepared before it: on
   a host with 32 GiB, a 32 GiB window becomes 16 GiB, and a second GPU's
-  8 GiB. A window as large as the host's memory froze a test host when
-  its VM started. The guest still reaches all of the GPU's memory
+  8 GiB. On a host with far more memory the window stays as it is: a
+  32 GiB window froze a 247 GiB test host when its VM started, for a
+  reason not yet known, so give such a pool a `bar_mib` (below). The
+  guest still reaches all of the GPU's memory
   through the smaller window. A GPU already on `vfio-pci` keeps its
   size, and a window that can't be made small enough is refused. A
   pool's `bar_mib` makes its GPUs' windows at most that size (the

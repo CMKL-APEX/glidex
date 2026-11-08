@@ -2876,7 +2876,9 @@ fn boot_devices_config(
 /// them away. Nothing is changed on the host now unless `--now`: the
 /// settings apply at the next boot, before any VM starts.
 fn setup_boot_devices(opts: &Options) -> Result<()> {
-    use glidex_ovs::boot_devices::{Action, BOOT_DEVICES_FILE, plan_devices};
+    use glidex_ovs::boot_devices::{
+        Action, BOOT_DEVICES_FILE, CLAIM_MODPROBE_FILE, CLAIM_UDEV_FILE, plan_devices,
+    };
     let cp = fs::read_to_string(CP_CONFIG).ok();
     let Some(cfg) = boot_devices_config(&opts.vfio_devices, &opts.sriov, cp.as_deref())? else {
         if Path::new(BOOT_DEVICES_FILE).exists() || Path::new(VFIO_BOOT_UNIT).exists() {
@@ -2889,6 +2891,8 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
                 BOOT_DEVICES_FILE,
                 VFIO_BOOT_UNIT,
                 VFIO_MODULES,
+                CLAIM_MODPROBE_FILE,
+                CLAIM_UDEV_FILE,
             ]))?;
             sudo(&argv(&["systemctl", "daemon-reload"]))?;
             println!(
@@ -2920,11 +2924,39 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
         println!("  SR-IOV: {pf} gets {n} VFs");
     }
     let exec = glidex_ovs::SystemExec::new();
+    // Claimed before their host drivers load, so the boot unit never races
+    // one (G20).
+    let claim = claim_files(&exec, &cfg);
+    for (path, text) in [
+        (CLAIM_MODPROBE_FILE, claim.modprobe.as_deref()),
+        (CLAIM_UDEV_FILE, Some(claim.udev.as_str())),
+    ] {
+        match text {
+            Some(t) if fs::read_to_string(path).ok().as_deref() != Some(t) => {
+                sudo_write(path, t)?;
+                println!("{} {}", "Updated:".green(), path);
+            }
+            None if Path::new(path).exists() => sudo(&argv(&["rm", "-f", path]))?,
+            _ => {}
+        }
+    }
+    for d in &claim.drivers {
+        println!("  claimed before {d} loads");
+        if driver_in_initramfs(d) {
+            println!(
+                "  {} {d} is in the initramfs, where the claim doesn't run: \
+                 a device it binds there is unbound by the boot unit instead",
+                "Note:".yellow()
+            );
+        }
+    }
     for (address, action) in plan_devices(&exec, &cfg) {
         match action {
-            Action::AlreadyVfio => println!("  {address}: on vfio-pci already (left as it is)"),
+            Action::AlreadyVfio => {
+                println!("  {address}: on vfio-pci already (left as it is until the next boot)")
+            }
             Action::Bind { from, bar_mib } => println!(
-                "  {address}: bound to vfio-pci (now on {}){}",
+                "  {address}: goes to vfio-pci (now on {}){}",
                 from.as_deref().unwrap_or("no driver"),
                 bar_mib
                     .map(|m| format!(", GPU windows at most {m} MiB"))
@@ -2946,6 +2978,50 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// What claims the boot devices before their host drivers load (G20).
+struct ClaimFiles {
+    /// The host drivers they are claimed from.
+    drivers: Vec<String>,
+    /// `/etc/modprobe.d/glidex-vfio.conf`; `None` with no driver to hook.
+    modprobe: Option<String>,
+    /// The udev rule for devices added later.
+    udev: String,
+}
+
+fn claim_files(
+    exec: &dyn glidex_ovs::Exec,
+    cfg: &glidex_ovs::boot_devices::BootDevices,
+) -> ClaimFiles {
+    use glidex_ovs::boot_devices::{claim_drivers, claim_modprobe_conf, claim_udev_rules};
+    let drivers = claim_drivers(exec, cfg);
+    let modprobe = (!drivers.is_empty())
+        .then(|| claim_modprobe_conf(&drivers, &format!("{BIN_DIR}/glidex-netd")));
+    ClaimFiles {
+        drivers,
+        modprobe,
+        udev: claim_udev_rules(cfg),
+    }
+}
+
+/// Whether the running kernel's initramfs carries `driver`'s module, which
+/// loads before the claim's hook exists. Unknown counts as no.
+fn driver_in_initramfs(driver: &str) -> bool {
+    let Ok(release) = fs::read_to_string("/proc/sys/kernel/osrelease") else {
+        return false;
+    };
+    let image = format!("/boot/initrd.img-{}", release.trim());
+    let Ok(out) = Command::new("lsinitramfs").arg(&image).output() else {
+        return false;
+    };
+    let module = driver.replace('-', "_");
+    String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+        let name = l.rsplit('/').next().unwrap_or("");
+        name.split(".ko")
+            .next()
+            .is_some_and(|n| n != name && n.replace('-', "_") == module)
+    })
 }
 
 // --- Networking ---
@@ -4182,6 +4258,68 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn the_claim_hooks_the_host_drivers_of_what_is_selected() {
+        use glidex_ovs::exec::{Output, RecordingExec};
+        // gpu-dev2: one R9700 on amdgpu, one already on vfio-pci (its
+        // modalias says amdgpu), and a ConnectX VF a pool takes by vf_of.
+        let exec = RecordingExec::new();
+        for (bdf, vendor, device, driver) in [
+            ("0000:03:00.0", "0x1002", "0x7551", "amdgpu"),
+            ("0000:43:00.0", "0x1002", "0x7551", "vfio-pci"),
+            ("0000:61:00.2", "0x15b3", "0x101e", "mlx5_core"),
+        ] {
+            let d = format!("/sys/bus/pci/devices/{bdf}");
+            exec.file(&d, "");
+            exec.file(&format!("{d}/vendor"), vendor);
+            exec.file(&format!("{d}/device"), device);
+            exec.file(&format!("{d}/modalias"), &format!("pci:{bdf}\n"));
+            exec.link(&format!("{d}/driver"), driver);
+        }
+        exec.link("/sys/bus/pci/devices/0000:61:00.2/physfn", "0000:61:00.0");
+        exec.on(
+            "modprobe -R pci:0000:43:00.0",
+            Output::ok("vfio_pci\namdgpu\n"),
+        );
+        let cp = r#"{"pci":{"pools":[
+            {"name":"r9700","match":{"vendor_id":"0x1002","device_id":"0x7551"},"bar_mib":16384},
+            {"name":"cx7-vfs","match":{"vf_of":{"vendor_id":"0x15b3"}}}
+        ]}}"#;
+        let cfg = boot_devices_config(
+            &["r9700".into(), "cx7-vfs".into(), "0000:09:00.0".into()],
+            &[],
+            Some(cp),
+        )
+        .unwrap()
+        .unwrap();
+        let f = claim_files(&exec, &cfg);
+        assert_eq!(f.drivers, ["amdgpu"], "once, and no hook for the VFs");
+        let modprobe = f.modprobe.unwrap();
+        assert!(
+            modprobe.contains(
+                "install amdgpu /usr/local/bin/glidex-netd --claim-boot-devices; \
+                 /sbin/modprobe --ignore-install amdgpu $CMDLINE_OPTS\n"
+            ),
+            "{modprobe}"
+        );
+        assert!(!modprobe.contains("install vfio"), "{modprobe}");
+        assert_eq!(
+            f.udev
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>(),
+            [
+                r#"ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x1002", ATTR{device}=="0x7551", ATTR{driver_override}="vfio-pci""#,
+                r#"ACTION=="add", SUBSYSTEM=="pci", KERNEL=="0000:09:00.0", ATTR{driver_override}="vfio-pci""#,
+            ]
+        );
+        // Only VFs: nothing to hook before.
+        let vfs = boot_devices_config(&["cx7-vfs".into()], &[], Some(cp))
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim_files(&exec, &vfs).modprobe, None);
     }
 
     /// `--release-hugepages` is a one-time kernel-profile action: refused

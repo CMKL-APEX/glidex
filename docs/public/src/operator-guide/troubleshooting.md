@@ -330,7 +330,10 @@ lsmod | grep kvm
 - **After a reboot, devices are back on their host drivers, or VFs are
   gone.** Keep them with the installer's `--vfio-devices` and `--sriov`;
   `journalctl -u glidex-vfio-boot` shows what was bound, skipped or
-  failed. See [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots).
+  failed. A GPU that failed with `driver/unbind: Permission denied` was
+  still being started by its host driver: re-run `glidex-install`, which
+  claims the devices before that driver loads. See [Keep it across
+  reboots](pci-passthrough.md#keep-it-across-reboots).
 - **A GPU request is refused: `PCI device … has no NUMA node`.** The
   firmware reports no NUMA node for the device (`-1`), common on
   one-socket hosts; `gpus` aligns to NUMA nodes. Send `numa_policy:

@@ -506,8 +506,14 @@ fn host_settings(host: &dyn HostView, opts: &Options, steps: &mut Vec<Step>) {
             )));
         }
     }
-    if host.exists(Path::new(crate::VFIO_MODULES)) {
-        steps.push(Step::Remove(PathBuf::from(crate::VFIO_MODULES)));
+    for f in [
+        crate::VFIO_MODULES,
+        glidex_ovs::boot_devices::CLAIM_MODPROBE_FILE,
+        glidex_ovs::boot_devices::CLAIM_UDEV_FILE,
+    ] {
+        if host.exists(Path::new(f)) {
+            steps.push(Step::Remove(PathBuf::from(f)));
+        }
     }
     if !keep_dpdk && host.exists(Path::new(sysconfig::MODULES_DROPIN)) {
         steps.push(Step::Remove(PathBuf::from(sysconfig::MODULES_DROPIN)));
@@ -1256,6 +1262,26 @@ mod tests {
             "run: sysctl -w vm.nr_hugepages=0",
             "remove: /etc/sysctl.d/90-glidex.conf",
             "remove: /etc/modules-load.d/glidex.conf",
+        ] {
+            assert!(l.iter().any(|s| s == needle), "missing {needle}: {l:#?}");
+        }
+    }
+
+    #[test]
+    fn the_boot_claim_goes_with_the_boot_devices() {
+        let mut host = full_install();
+        for f in [
+            crate::VFIO_MODULES,
+            "/etc/modprobe.d/glidex-vfio.conf",
+            "/etc/udev/rules.d/70-glidex-vfio-claim.rules",
+        ] {
+            host.paths.insert(PathBuf::from(f));
+        }
+        let l = lines(&plan(&host, &Options::default(), Path::new("/home/alice")));
+        for needle in [
+            "remove: /etc/modules-load.d/glidex-vfio.conf",
+            "remove: /etc/modprobe.d/glidex-vfio.conf",
+            "remove: /etc/udev/rules.d/70-glidex-vfio-claim.rules",
         ] {
             assert!(l.iter().any(|s| s == needle), "missing {needle}: {l:#?}");
         }

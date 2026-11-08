@@ -88,7 +88,34 @@ fn watch_source_routes(netd: Arc<Netd>) {
     });
 }
 
+/// Give the boot devices with no driver yet a `driver_override` of
+/// `vfio-pci`; what it did goes to stderr (the journal, through udev).
+fn claim_boot_devices() {
+    let path = std::path::Path::new(glidex_ovs::boot_devices::BOOT_DEVICES_FILE);
+    let cfg = match glidex_ovs::boot_devices::load(path) {
+        Ok(Some(c)) => c,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("glidex-netd: claim: {e}");
+            return;
+        }
+    };
+    for (bdf, r) in glidex_ovs::boot_devices::claim(&SystemExec::new(), &cfg) {
+        match r {
+            Ok(()) => eprintln!("glidex-netd: claimed {bdf} for vfio-pci"),
+            Err(e) => eprintln!("glidex-netd: claim {bdf}: {e}"),
+        }
+    }
+}
+
 fn main() {
+    // `--claim-boot-devices`: from the modprobe hook, before a host driver
+    // loads (spec/27-gpu-vms.md G20). It reads nothing else and never fails,
+    // so the driver still loads for the devices it isn't kept from.
+    if std::env::args().any(|a| a == "--claim-boot-devices") {
+        claim_boot_devices();
+        return;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
