@@ -22,7 +22,12 @@ host checks H8–H9 are open for the owner's review. Implemented:
 
 S31 (this node's own stale hold) and S32 (a driver that can't tell
 whether a volume exists never reports it missing) are implemented, with
-unit tests; their reboot check is not run yet.
+unit tests (#346). Checked on gpu-dev2 on 2026-11-08 with main at
+`befe4846`: VM `v2`, left waiting since that morning's reboot
+(`DiskBusy`, held by `vhost:<gpu-dev2>`), started at the install,
+preempting the hold; and the control-plane restart left no
+`FileMissing` on its disk, where each start before had (**pass**). A
+reboot with the fix installed is not run yet.
 
 S7 is still design. Decisions S25, S27 and S30 are open for review too. The milestones are S0–S8
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
