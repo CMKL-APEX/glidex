@@ -4,8 +4,9 @@
 > `-m2`, `-m3`). Unit, integration, security and Playwright tests pass,
 > and so do the KVM host acceptance runs on a deployed build (§15.4–§15.6,
 > *As built*). **M4** (CPU and memory rates, §8.7) is built, unit-tested
-> and passed its host acceptance run (2026-11-07, §15.7). §15.8 lists
-> what comes after.
+> and passed its host acceptance run (2026-11-07, §15.7). **M5** (the
+> current hour on a cluster VM's charts, §15.8, D19) is specified, not
+> built. §15.9 lists what comes after.
 >
 > Built differently from the first draft, with the reasons in the
 > sections named: the cgroup is found from the shim's
@@ -206,6 +207,7 @@ traffic from addresses that are not reserved (§5.5).
 | D11 | Allocation meters count **from launch to exit**, using the sizing in `launch.json`, not `spec`. `cpu.alloc` stops while the VM is paused. `mem.alloc` does not stop. | `spec` can change at any time, but sizing only takes effect at the next launch ([12-reconciliation.md](12-reconciliation.md) §7.3). A paused guest keeps its memory and gives up its CPUs. |
 | D12 | The **shim writes a final counter snapshot** into `instance.json` when the hypervisor exits. | When the unit stops, its cgroup and the hypervisor's counters vanish. Without the snapshot, the usage between the last sample and the exit is lost every time, and all of it is lost for a VM that ran entirely while the control plane was down. |
 | D13 | Usage records are **attributed to the project that owned the subject when it was sampled** and keep a snapshot of the subject's name. Records outlive the subject. | Deleting a VM must not delete what it used. A later rename must not rewrite history. |
+| D19 | In a cluster, a VM's charts get **the current hour from the VM's host**, in the live-stats answer (`GET /vms/{id}/stats`, §9.4), with a **2-second limit** on that request. The current hour isn't added to the replicated store, and the p95 stays over closed hours. | Only closed hours reach the replicated store (§7.1), so the charts lacked up to the last hour. The page already asks the host for live rates every 30 s: folding the current hour in costs no extra request, no Raft write and no leader work, only one small read of the host's own ledger. With the limit, a slow host costs the page its live tiles and the current hour, not its charts. |
 
 ## 4. Architecture
 
@@ -1186,6 +1188,30 @@ design:
 - **Averages** are over the slots the group was present in (§8.5.1),
   so a VM that ran for a week is not averaged over the whole month.
 
+**The current hour (M5, D19).** In a cluster, a host keeps its open
+hour's slot rows to itself until the hour closes (§7.1), so the series
+routes (`/vms/{id}/compute`, `/bandwidth`, `/io`) end at the last
+closed hour. `GetVmStatsResponse` gains `open_hour`: the VM's 5-minute
+points from the end of the host's last closed hour up to now, read from
+the host's own ledger with the same grouping as the series routes:
+
+- `compute`: the VM's points, as `/vms/{id}/compute`;
+- `bandwidth`: its NICs summed, as `/vms/{id}/bandwidth`;
+- `io`: its disks summed, as `/vms/{id}/io`.
+
+It is set only where rounds write a host ledger of their own (a
+cluster's nodes, servers included). A standalone host leaves it unset:
+its series routes already include the open hour. A server relaying the
+request to the VM's host (§8.4) waits at most 2 seconds for it
+(10 before), and answers `502 node_unreachable` after that.
+
+The UI appends the points later than a chart's last point to that
+chart. It fetches the live rates on their own, so a failed or slow
+`stats` request leaves the charts with their closed hours and the
+tiles empty, where it used to replace the whole card with the error.
+The p95 lines stay over closed hours: one partial hour moves them
+little, and the figures stay the ones billing uses.
+
 ### 9.5 RPC and the proto shape (G2)
 
 The routes of §9.1–§9.4 are the REST twins of `glidex.usage.v1`
@@ -1892,7 +1918,27 @@ slot rows read once the hour had shipped):
 | `stress-ng --cpu 1` for 25 minutes | **pass**: full 5-minute slots 0.968–1.005 cores (50.1–50.2 %); `gxctl compute` and `GET /vms/{id}/compute?p95=true` p95 1.005 cores, 50.239 %; `usage compute --by vm` the same p95, 30-second peak 1.016; live `cpu_cores` 1.002–1.004 |
 | 1 GiB held (`python3`, a touched `bytearray`) in a fresh VM | **pass** under the reworded criterion: idle 613 MiB (29.9 %), holding 1632–1640 MiB (79.7–80.1 %), +1019 MiB, ≈ 49.8 % of the allocation; after the process exited, still 1639 MiB (the guest's `free`: 320 MiB used), as a working set does. Read from live `/vms/{id}/stats`; this run's slot rows weren't read |
 
-### 15.8 After M4
+### 15.8 M5: the current hour on a cluster VM's charts
+
+1. **`open_hour` in the live stats** (§9.4, D19): the proto message and
+   field, the host's points built with the series routes' grouping, the
+   2-second limit on the relay, and the UI appending the points and
+   fetching the live rates on their own. gxctl's `compute`, `bandwidth`
+   and `io` keep reading the series routes. Docs: the user guide's VM
+   usage section.
+
+*Accept:*
+- Unit tests: a host ledger with closed and open slots gives
+  `open_hour` only the open hour's points, grouped as the series
+  routes group them; a standalone meter gives no `open_hour`.
+- A cluster test: a server relaying `stats` for a VM on a node gets
+  the node's `open_hour`, and answers `502` within about 2 seconds when
+  the node doesn't answer.
+- *(host)* On the prism cluster, a VM on a node other than the one the
+  page reached shows the current hour's points minutes after they are
+  sampled, not after the hour closes.
+
+### 15.9 After M4
 
 These come from §16 and are scheduled separately, each with its own
 spec change:
