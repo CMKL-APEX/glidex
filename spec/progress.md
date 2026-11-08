@@ -20,7 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Security (`glidex-auth`) | OIDC login state kept by the caller | `feat/oidc-detached-login` | `OidcState::begin`/`finish`, for hyperstor's mgmt behind one name on several hosts ([11-security.md](11-security.md) §5.4) |
-| Clustering | C10 apply durability ([14-clustering.md](14-clustering.md) D31, D32) | `spec/raftstore-apply-durability` | Spec; the code needs redb 4.5 (#382) |
+| Clustering | C10 apply durability ([14-clustering.md](14-clustering.md) D31, D32) | #383 | Spec; the code is next (redb 4.5 is in, #382) |
 
 ## Areas
 
