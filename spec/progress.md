@@ -19,7 +19,6 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| CI | — | #347 | buf 1.75.0 in the `proto` job |
 
 ## Areas
 
