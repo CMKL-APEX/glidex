@@ -964,6 +964,17 @@ async fn wait_for<F: std::future::Future<Output = bool>>(what: &str, mut f: impl
     }
 }
 
+/// Waits out a new disk's create: the disk controller makes it after
+/// `POST /disks` returns, and until then a VM that claims it is refused
+/// as busy.
+async fn disk_created(cp: &Cp, id: &str) {
+    wait_for(&format!("disk {id}'s create"), || async {
+        let (_, v) = call(cp, "GET", &format!("/disks/{id}"), None, &[]).await;
+        v["disk"].is_object() && v["disk"]["busy_op"].is_null()
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     let _one = serial().await;
@@ -2401,6 +2412,7 @@ async fn a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk() {
         "{d}"
     );
     let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    disk_created(&server, &disk_id).await;
     vm["data_disks"] = json!(["ld"]);
     let (s, v) = call(&server, "POST", "/vms", Some(vm), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
@@ -2471,6 +2483,7 @@ async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
     let (s, d) = call(&server, "POST", "/disks", Some(disk("mv", "nfs-move")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{d}");
     let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    disk_created(&server, &disk_id).await;
     // A VM on the agent, never started, with the shared disk and no
     // host-path root.
     let vm_req = |name: &str, disks: Value| {
@@ -2514,6 +2527,7 @@ async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
     // A node-local disk can't go with its VM.
     let (s, d) = call(&server, "POST", "/disks", Some(disk("stuck", "local")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{d}");
+    disk_created(&server, d["disk"]["id"].as_str().unwrap()).await;
     let (s, v) = call(
         &server,
         "POST",
