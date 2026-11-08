@@ -1,7 +1,9 @@
 # GPU VMs
 
 Status: **design; GV1, GV2 and GV3 implemented; GV6 (AMD on gpu-dev2)
-implemented but for its reboot test** (§12 milestones, §14 notes). Builds on
+implemented; its reboot test failed on the boot binding (2026-11-08),
+and the fix, claiming the cards before `amdgpu` (G20), is built but not
+run on gpu-dev2 yet** (§12 milestones, §14 notes). Builds on
 [22-host-topology.md](22-host-topology.md) (HT0–HT5: topology, readiness,
 NUMA policy, device pools, SR-IOV), [04-hypervisors.md](04-hypervisors.md)
 (command lines) and [05-installer.md](05-installer.md).
@@ -123,8 +125,9 @@ What this host shows that prism1 doesn't, and what it can't:
 - **It can't show** `aligned` across NUMA nodes (GV1: one node, so the
   single-node path runs), system VMs or Fabric Manager (GV4, GV5:
   NVIDIA only). An AMD pool has no fabric, so its `nvlink` is `false`.
-- **Its memory is small.** Two GPU VMs share 30 GiB with the host, so
-  the pool's `per_device` is about 6 vCPUs and 10 GiB.
+- **Its memory is 247 GiB** (`MemTotal` 259175688 kB). Until 2026-11-08
+  this spec said 32 GiB, the size of an R9700's memory, and built G17's
+  explanation of the freeze on it (§12).
 
 ## 2a. Decisions
 
@@ -145,10 +148,11 @@ What this host shows that prism1 doesn't, and what it can't:
 | G13 | Room for large BARs | At launch, the hypervisor's 64-bit PCI window is sized from the VM's devices: the sum of their 64-bit BARs (sysfs `resource`), each rounded up to its own alignment, with 1 GiB to spare, as a power of two. QEMU takes it as `-global q35-pcihost.pci-hole64-size=` when it exceeds QEMU's 32 GiB default. Cloud Hypervisor and Pylon place 64-bit BARs above RAM within the host's physical address bits, split between PCI segments (v53's layout in §14). Glidex checks that each PCI segment's share holds its devices, and refuses the launch naming the device when it doesn't. | Two R9700s need 64 GiB, and a 4-GPU A100 VM 256 GiB. QEMU's default fits neither. |
 | G14 | Pylon and dedicated CPUs | A VM with `cpu_policy: dedicated` may be elastic on Pylon: pylond may park its vCPUs within `min_vcpus`..`max_vcpus`. Its cores stay in its placement while parked; glidex doesn't give them back to the shared pool. Nothing is built for this: no check refuses the combination today. | The user's call (Q9). A GPU VM's load comes and goes, and parking an idle vCPU keeps its pin. |
 | G15 | Guest image | Glidex ships no GPU image. The docs say how to build or import one: Ubuntu with the generic kernel (or `linux-modules-extra`) for `amdgpu`, and `linux-firmware` for the GPU; ROCm only to run work. | The user's call (Q8). The image follows the driver and ROCm releases, which the operator chooses. |
-| G16 | Binding before `amdgpu` | GV3's boot unit as built: it unbinds `amdgpu` and binds `vfio-pci`. Claiming the cards before `amdgpu` loads is built only if gpu-dev2's reboot test shows the unbind failing. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
-| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For devices with a resizable BAR, the sum of a VM's GPU windows stays below the host's memory. As the size is set when a device is prepared, before any VM picks it, glidex keeps the total of the host's prepared GPU windows below the host's memory: each gets the largest supported size that keeps the total under, given the GPUs prepared before it (on gpu-dev2, 30.5 GiB: the first R9700 16 GiB, a second 8 GiB). The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name a smaller size (`bar_mib`, G18, G19); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 checks (§12): a 32 GiB window on a 32 GiB host froze the host when the VM started; 256 MiB and 16 GiB ran. The total cap is the user's call for multi-GPU VMs, so two windows never add up to the size that froze. |
-| G18 | A pool's window size | A pool's `bar_mib` (MiB, a power of two) is a ceiling: each GPU window of the pool's devices gets the largest size the device supports that is at most `bar_mib` and keeps G17's total below the host's memory. A `bar_mib` smaller than any size the device supports refuses the prepare, naming the device. | The user's call (2026-11-07). The cap guards against the freeze at 32 GiB; `bar_mib` can only make a window smaller, so it never undoes that guard. |
+| G16 | Binding before `amdgpu` | GV3's boot unit unbound `amdgpu` and bound `vfio-pci`; claiming the cards before `amdgpu` loads was to be built only if gpu-dev2's reboot test showed the unbind failing. It did (2026-11-08, §12): the claim is G20. | The user's call (Q10). One mechanism while it works; `vfio-pci ids=` would take every R9700, even those kept on the host. |
+| G17 | GPU memory window | When glidex prepares a device (**Prepare**, a pool's `prepare: true`, the boot binding), it loads `vfio-pci` if needed. For devices with a resizable BAR, the sum of a VM's GPU windows stays below the host's memory. As the size is set when a device is prepared, before any VM picks it, glidex keeps the total of the host's prepared GPU windows below the host's memory: each gets the largest supported size that keeps the total under, given the GPUs prepared before it (on a host of 30.5 GiB: the first R9700 16 GiB, a second 8 GiB; on gpu-dev2, 247 GiB, both keep 32 GiB). The resize happens between unbinding the host driver and binding `vfio-pci`, as the kernel takes it only on a device with no driver. A pool can name a smaller size (`bar_mib`, G18, G19); release puts the size back. The guest's driver still reaches all of the GPU's memory through the smaller window. | The user's call, after the gpu-dev2 checks (§12): a 32 GiB window froze the host when the VM started; 256 MiB and 16 GiB ran. The total cap is the user's call for multi-GPU VMs. It was built on the belief that gpu-dev2 had 32 GiB of memory, so that the frozen window was as large as the host's memory; it has 247 GiB (found 2026-11-08), so that explanation doesn't hold and the freeze's cause is unknown. The cap doesn't shrink a window there; a pool's `bar_mib` (16384 on gpu-dev2) keeps it at a size that ran. |
+| G18 | A pool's window size | A pool's `bar_mib` (MiB, a power of two) is a ceiling: each GPU window of the pool's devices gets the largest size the device supports that is at most `bar_mib` and keeps G17's total below the host's memory. A `bar_mib` smaller than any size the device supports refuses the prepare, naming the device. | The user's call (2026-11-07). `bar_mib` can only make a window smaller, so it never undoes the cap. On gpu-dev2, where the cap allows 32 GiB (G17), it is what keeps the windows at a size that ran. |
 | G19 | Where `bar_mib` applies | When a node prepares a pool's devices: `prepare: true`, and the boot binding of a pool (`--vfio-devices <pool>` copies `bar_mib` into `vfio-devices.json`). A device prepared by hand (`gxctl node prepare-device`) gets the automatic size, and one already on `vfio-pci` keeps its size (a VM may hold it). When a device is in two pools with a `bar_mib`, the smaller applies. | The user's call (2026-11-07). The size belongs to the pool, as its `per_device` sizing does; prepare by hand stays one step. |
+| G20 | Claiming boot devices before their driver | `--vfio-devices` also writes `/etc/modprobe.d/glidex-vfio.conf`: for each host driver of the selected devices (the driver a device has, or else what its modalias loads, `modprobe -R`; never `vfio-pci`), `install <driver> /usr/local/bin/glidex-netd --claim-boot-devices; /sbin/modprobe --ignore-install <driver> $CMDLINE_OPTS`. The claim gives each selected device with no driver yet a `driver_override` of `vfio-pci`, and nothing more: no unbind, resize or bind, and it never fails the driver's load. A udev rule (`70-glidex-vfio-claim.rules`, before `80-drivers.rules`) does the same for a device added later. At boot the unit then finds each device with no driver, or on `vfio-pci` (which may probe it once claimed); it unbinds the latter, since nothing can hold it before netd, the control plane and other hypervisors start, and prepares both like any other, so their windows get G17 and G18's sizes. Outside boot (`--now`) a device on `vfio-pci` is still never touched. Release gives a claimed device back to the driver it was kept from. Selectors with `vf_of` need no hook: VFs appear only when the unit sets the VF counts. A host driver loaded from the initramfs isn't covered, as the hook isn't there; the installer says so when it finds the driver's module in it, and the boot unit then unbinds that driver as before. | The user's call (option A, 2026-11-08), after the reboot test: the unit's unbind of `03:00.0` failed while `amdgpu` was still initialising it. A hook on the driver's load runs before any device of that driver can bind, whatever order udev handles them in; a udev rule alone races the module load another device triggers. `vfio-pci ids=` would take every device with the ID (G16). |
 
 ## 3. The request
 
@@ -480,6 +484,14 @@ glidex-install --no-vfio-devices                    # remove what it wrote
   netd's prepare (`glidex_ovs::vfio`), plus `vfio-pci` in
   `/etc/modules-load.d/glidex.conf`. Not `driverctl`: one mechanism,
   ours, removed by uninstall.
+- **Claimed before the host driver** (G20). A modprobe `install` hook
+  for each host driver of the selected devices runs `glidex-netd
+  --claim-boot-devices` before that driver loads; it sets
+  `driver_override=vfio-pci` on each selected device with no driver. A
+  udev rule does the same for devices added later. At boot the unit
+  unbinds a selected device `vfio-pci` already probed, then sizes and
+  binds it like the others. Built after the reboot test (§12) showed the
+  unit's unbind of `amdgpu` failing while `amdgpu` initialised the card.
 - **VF counts.** `--sriov PF=N` is applied by the same unit before the
   binding, so the VFs exist to bind. Pools with `vf_of` and
   `prepare: true` then take them as today.
@@ -488,8 +500,9 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 - **NVSwitches** of a node with a fabric service VM are bound the same
   way, for the service VM.
 - **Saved and removed.** `install.conf` records `vfio_devices=` and
-  `sriov=`. Uninstall removes the unit and the module file, and leaves
-  devices on their drivers until reboot.
+  `sriov=`. Uninstall removes the unit, the module file, the modprobe
+  hooks and the claim's udev rule, and leaves devices on their drivers
+  until reboot.
 - **Refusals.** As netd's prepare: a device carrying host addresses or
   an OVS-DPDK uplink, and on prism1 the cordoned devices only if named
   explicitly.
@@ -517,7 +530,7 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 | **GV3** `--vfio-devices` and `--sriov` | the boot unit, install.conf, uninstall | Installer tests with a fake sysfs; prism1 reboot test (the user's OK: prism1 also runs OpenNebula). |
 | **GV4** System VMs | the system project, node-pinned VMs, boot ordering, vsock, `FabricReady` plumbing (no FM yet) | A test system VM that answers `status` over vsock. |
 | **GV5** Fabric Manager | the `glidex-fabric` crate (protocol, client, `FabricBackend`, `FakeFabric`) and `glidex-fabricd` (`libnvfm` loaded at run time) (§8.3); both managers (§8, §8.2) and `--fabric`; the fabric image; partitions in node status and `GET /nodes/{id}/fabric`; NVLink scheduling; activate, deactivate and `set_active` in the VM controller | Scheduler and controller tests against `FakeFabric`. On prism1 (moving the NVSwitches from the host FM to the service VM, with the user's OK and OpenNebula's owner): 2-GPU and 4-GPU VMs, guest `nvidia-smi nvlink -s` up, `nccl-tests` all-reduce at NVLink bandwidth. |
-| **GV6** AMD on gpu-dev2 (§2.3) | `LimitMEMLOCK` in the VM unit (G12); the 64-bit window sized from the devices (G13) for QEMU, Cloud Hypervisor and Pylon; `nvlink` resolved to `false` without a fabric (G11); dedicated CPUs left elastic on Pylon (G14); docs for an AMD pool and the guest image (G15); binding before `amdgpu` only if the reboot test needs it (G16); prepare loads `vfio-pci` and shrinks a GPU's window below the host's memory (G17) | Units for the window sizing, the unit file and the `nvlink` default. On gpu-dev2 (with the user's OK, taking the R9700s off `amdgpu`): a pool `r9700`; a 1-GPU VM on Cloud Hypervisor, Pylon and QEMU, guest `lspci` and `amdgpu` up (`rocminfo` with ROCm); 10 stops and starts (Q11); a window of 16 GiB, below the host's 32 GiB (Q12); a dedicated, elastic 1-GPU VM on Pylon parking and waking; a 2-GPU VM; `--vfio-devices r9700` and a reboot (GV3's reboot test). |
+| **GV6** AMD on gpu-dev2 (§2.3) | `LimitMEMLOCK` in the VM unit (G12); the 64-bit window sized from the devices (G13) for QEMU, Cloud Hypervisor and Pylon; `nvlink` resolved to `false` without a fabric (G11); dedicated CPUs left elastic on Pylon (G14); docs for an AMD pool and the guest image (G15); binding before `amdgpu`, which the reboot test showed is needed (G16, G20); prepare loads `vfio-pci` and shrinks a GPU's window below the host's memory (G17) | Units for the window sizing, the unit file and the `nvlink` default. On gpu-dev2 (with the user's OK, taking the R9700s off `amdgpu`): a pool `r9700`; a 1-GPU VM on Cloud Hypervisor, Pylon and QEMU, guest `lspci` and `amdgpu` up (`rocminfo` with ROCm); 10 stops and starts (Q11); a window of 16 GiB, below the host's 32 GiB (Q12); a dedicated, elastic 1-GPU VM on Pylon parking and waking; a 2-GPU VM; `--vfio-devices r9700` and a reboot (GV3's reboot test). |
 
 GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
 `fd36a90`), one R9700 (`03:00.0`), VM `ubuntu-26.04` (kernel
@@ -537,6 +550,26 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
 | 2026-10-29 | Control: the same load and build in a VM **without** a GPU (`load-ch`, `core_scheduling=off`), `scx_pylon` attached | **fail, kernel panic**: about a minute after attach, 6 × `sched.h:1758` in the VM's `vcpu0` during a host ext4 write, 3 more on an idle CPU, then `BUG: kernel NULL pointer dereference` in `pick_next_task`; kdump saved a dump and the host rebooted. So these failures are `scx_pylon`'s, not the GPU's: with `scx_pylon` off, the GPU runs above never warned or hung. Reported on pylon#16 |
 | 2026-10-29 | QEMU (`-machine q35`, `vfio-pci,host=0000:03:00.0`): a 1-GPU VM, 4 vCPUs and 4 GiB, BAR0 at 16 GiB, `scx_pylon` off; `linux-firmware` installed in the guest, then a guest reboot | **pass**: the guest's `amdgpu` reported `Detected VRAM RAM=32624M, BAR=16384M` and initialised, with `/dev/kfd` and `/dev/dri/renderD128`; no warning, AER or `vfio-pci` error on the host. QEMU's default 64-bit window (32 GiB) holds one 16 GiB BAR, so G13's sizing wasn't needed here |
 | 2026-10-29 | 2-GPU VM on Cloud Hypervisor: both R9700s (`03:00.0`, `43:00.0`) at 8 GiB each (G17's total cap, 16 GiB of 32), 6 vCPUs and 6 GiB, `scx_pylon` off; `43:00.0` needed `prepare-device` first for its `/dev/vfio/53` owner | **pass**: the guest's `amdgpu` initialised on both (`BAR=8192M`, `card0` and `card1`, `renderD128` and `renderD129`, `/dev/kfd`); no warning, AER or lockup on the host |
+
+The rows above say "the host's 32 GiB": gpu-dev2 has 247 GiB
+(`MemTotal` 259175688 kB, found 2026-11-08). The sizes the GPUs ran at
+stand; the explanation that the frozen 32 GiB window was as large as the
+host's memory doesn't.
+
+The reboot test (GV3's, on gpu-dev2), 2026-11-08, main at `1fae3d66`
+installed on all three servers one at a time; pool `r9700` with
+`bar_mib: 16384` and `prepare: false`, `--vfio-devices r9700`, both
+R9700s on `amdgpu` at 32 GiB before; the host's own GPU work stopped
+with its owner's agreement:
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-11-08 | `glidex-vfio-boot` at boot | **fail**: `43:00.0` bound to `vfio-pci` at 16384 MiB; `03:00.0` failed with `driver/unbind: Permission denied` at 12.76 s, while `amdgpu` was initialising it (from 12.23 s), and stayed on `amdgpu` at 32 GiB. Glidex and Raft came back (the leader moved to prism2) |
+| 2026-11-08 | `glidex-netd --boot-devices` by hand, after boot, `amdgpu` idle | **pass**: `03:00.0` unbound from `amdgpu`, resized to 16384 MiB and bound to `vfio-pci`. So the boot failure was the race with `amdgpu`'s start; G20 claims the cards before it |
+| 2026-11-08 | The node's VMs after the reboot (`on_host_boot: resume`) | `pylon-dev`, root disk on `local`: **pass**, relaunched. `v2`, root disk on hyperstor `hs-nvme`: **fail**, held at `DiskNotReady: disk v2-root is Missing` though hyperstor serves the volume; being investigated |
+
+Not run yet: G20 on gpu-dev2 (a reboot with the claim), and a GPU VM
+after a reboot.
 
 ## 13. Open questions
 
@@ -562,8 +595,9 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
 10. *Settled:* binding before `amdgpu` (G16).
 11. *Answered on gpu-dev2* (§12): FLR is enough to reset an R9700
     between VMs, over 10 hard and graceful stops and starts.
-12. *Answered on gpu-dev2* (§12): a 16 GiB window, below the host's
-    32 GiB, starts and restarts as safely as 256 MiB (G17).
+12. *Answered on gpu-dev2* (§12): a 16 GiB window starts and restarts
+    as safely as 256 MiB (G17). Why 32 GiB froze the host is not known:
+    the host has 247 GiB, not the 32 GiB assumed then.
 
 
 ## 14. Implementation notes
@@ -730,8 +764,27 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
     segment; two A100s on one guest NUMA node at 39 bits refused, one
     per node fitting, 46 bits fitting, bits capped at 46; RAM leaving
     no 4 GiB unit.
-  - **Not done:** the reboot test (asked again before
-    gpu-dev2 reboots).
+  - **The boot claim (G20).** `glidex_ovs::boot_devices`: `claim`
+    (`glidex-netd --claim-boot-devices`, the modprobe hook; handled
+    first in `main`, before netd's config, and never fails),
+    `host_driver` (the driver a device has, else `modprobe -R` of its
+    modalias), `claim_drivers`, `claim_modprobe_conf`,
+    `claim_udev_rules`, and `let_go_at_boot`, which netd's
+    `apply_boot_devices` calls only at boot, before `plan_devices`.
+    `vfio::prepare` records a claimed device's host driver as its
+    `previous_driver`, so release gives it back. The installer writes
+    and removes both files with the unit (`claim_files`), and says when
+    `lsinitramfs` shows a hooked driver in the running kernel's
+    initramfs. Unit tests: the claim marks only selected devices with
+    no driver and writes nothing else; at boot only the selected devices
+    on `vfio-pci` are unbound; a claimed GPU probed by `vfio-pci` is
+    resized to its pool's `bar_mib` and released to `amdgpu`; host
+    drivers from the driver link or the modalias; the installer hooks
+    each host driver once, none for VFs, and the udev rule per
+    selector; uninstall removes both files. The live path (`--now`)
+    is unchanged: `apply_live` never calls `let_go_at_boot`.
+  - **Not done:** the reboot test with G20 on gpu-dev2 (the user's OK
+    first), and a GPU VM after it.
   - **To finish GV6**, one PR each:
     1. `bar_mib` (G18, G19): `pci.pools[].bar_mib` (a power of two),
        netd's `prepare_device` taking `bar_mib`, `vfio::prepare`'s
@@ -745,5 +798,7 @@ GV6 checks on gpu-dev2, run by hand on the installed build (`main` at
        guide.
     3. G13's per-segment check for Cloud Hypervisor, after reading how
        v53 places 64-bit BARs between PCI segments.
-    4. The reboot test on gpu-dev2, when the user agrees. 16 GiB plus 8 GiB together hasn't
-    been run on gpu-dev2 (2 × 8 GiB has).
+    4. The reboot test on gpu-dev2: run 2026-11-08, **failed** for
+       `03:00.0` (§12); G20 is the fix. Then again with G20, when the
+       user agrees. 16 GiB plus 16 GiB together in one VM hasn't been
+       run on gpu-dev2 (2 × 8 GiB has).

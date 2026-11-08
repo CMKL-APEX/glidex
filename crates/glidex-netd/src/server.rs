@@ -504,15 +504,19 @@ impl Netd {
 
     /// spec/27-gpu-vms.md §10: apply the boot settings: VF counts first, then
     /// bind the selected devices that aren't on `vfio-pci` yet, recording
-    /// each like `prepare_device`. A device already on `vfio-pci` is left
-    /// alone; outside boot, a VF count whose PF has a VF on `vfio-pci` is
-    /// left too (a change would take it from its VM).
+    /// each like `prepare_device`. Outside boot, a device already on
+    /// `vfio-pci` is left alone, and so is a VF count whose PF has a VF on
+    /// `vfio-pci` (a change would take it from its VM). At boot, a device
+    /// `vfio-pci` probed after the claim (G20) is unbound first, so its
+    /// windows are sized like the others'.
     pub fn apply_boot_devices(
         &self,
         cfg: &glidex_ovs::boot_devices::BootDevices,
         at_boot: bool,
     ) -> BootReport {
-        use glidex_ovs::boot_devices::{Action, plan_devices, sriov_change_refusal};
+        use glidex_ovs::boot_devices::{
+            Action, let_go_at_boot, plan_devices, sriov_change_refusal,
+        };
         let mut report = BootReport::default();
         for s in &cfg.sriov {
             let pf = s.pf.to_ascii_lowercase();
@@ -528,6 +532,13 @@ impl Netd {
             match self.set_sriov_vfs(&pf, s.vfs) {
                 Ok(st) => report.sriov.push((pf, st.enabled)),
                 Err(e) => report.failed.push((pf, e.to_string())),
+            }
+        }
+        if at_boot {
+            for (address, r) in let_go_at_boot(self.ex(), cfg) {
+                if let Err(e) = r {
+                    report.failed.push((address, e));
+                }
             }
         }
         for (address, action) in plan_devices(self.ex(), cfg) {

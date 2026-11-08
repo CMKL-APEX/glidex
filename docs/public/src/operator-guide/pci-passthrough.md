@@ -96,28 +96,46 @@ settings exist) runs after the kernel modules load and before
 glidex-netd, the control plane and libvirt:
 
 1. It sets the VF counts.
-2. It binds each selected device not yet on `vfio-pci`, with the same
-   udev rule and refusals as **Prepare**, so **Release** works on it
+2. It binds each selected device to `vfio-pci`, with the same udev rule,
+   window size and refusals as **Prepare**, so **Release** works on it
    later.
 3. It prints what it bound, skipped and couldn't do
    (`journalctl -u glidex-vfio-boot`). A device that fails stays on its
    driver; the boot goes on.
 
-- **A device already on `vfio-pci` is never touched**, at boot or with
-  `--now`, so a running VM keeps its device.
+- **Claimed before the host driver.** The selected devices get
+  `vfio-pci` before their host driver loads, so that driver (`amdgpu`,
+  `nvidia`) never takes them. The installer writes
+  `/etc/modprobe.d/glidex-vfio.conf`, with a hook for each host driver of
+  the selected devices: before the driver loads, `glidex-netd
+  --claim-boot-devices` sets `driver_override` to `vfio-pci` on each
+  selected device with no driver yet. The driver then loads for its
+  other devices. A udev rule, `70-glidex-vfio-claim.rules`, does the
+  same for a device added later. VFs need neither: they appear when the
+  unit sets the VF counts.
+- **At boot, the unit sizes a claimed device's windows.** `vfio-pci` may
+  have bound it as soon as it was claimed; nothing can use it yet, so
+  the unit unbinds it, sets its windows (a pool's `bar_mib`) and binds it
+  again.
+- **With `--now`, a device already on `vfio-pci` is never touched**, so a
+  running VM keeps its device.
 - **With `--now`**, a VF count is left as it is when a VF of that PF is
   on `vfio-pci`, since changing the count would remove that VF from its
   VM. Asking for the count it already has is fine.
 - **Pools are copied as their `match`.** Re-run the installer after
   changing a pool's match. A pool needs `/etc/glidex/control-plane.json`
   on that host; addresses don't.
-- **Files:** the settings are in `/etc/glidex/vfio-devices.json`, and
-  `vfio-pci` is loaded from `/etc/modules-load.d/glidex-vfio.conf`.
-  Uninstall and `--no-vfio-devices` remove both and the unit; devices
-  stay where they are until the next boot.
-- **Host drivers:** for a GPU whose host driver loads first (`nvidia`,
-  `nouveau`), binding at boot takes it from that driver. Make sure
-  nothing on the host uses it.
+- **Files:** the settings are in `/etc/glidex/vfio-devices.json`,
+  `vfio-pci` is loaded from `/etc/modules-load.d/glidex-vfio.conf`, and
+  the claim is in `/etc/modprobe.d/glidex-vfio.conf` and
+  `/etc/udev/rules.d/70-glidex-vfio-claim.rules`. Uninstall and
+  `--no-vfio-devices` remove them and the unit; devices stay where they
+  are until the next boot.
+- **A host driver in the initramfs** loads before the claim's hook
+  exists, so it can still take a selected device; the installer says so
+  when it finds the driver's module there. The unit then unbinds the
+  device from it, which works once the driver has finished starting.
+  Make sure nothing on the host uses the device.
 - The boot devices are set up with the host networking: an install with
   `--no-networking` doesn't apply them.
 
@@ -382,16 +400,19 @@ for Radeon AI PRO R9700s, prepared by each node at start:
 
 - **The memory window.** With resizable BAR on, an R9700's window is as
   large as its memory (32 GiB). Preparing makes it smaller so that the
-  host's GPU windows add up to less than its memory: a window as large
-  as the host's memory froze a 32 GiB test host when its VM started.
-  `bar_mib` sets a smaller ceiling for the pool. The guest's `amdgpu`
+  host's GPU windows add up to less than its memory. On a host with much
+  more memory than that, the window stays at 32 GiB; on one test host
+  (247 GiB), a VM with a 32 GiB window froze the host when it started,
+  for a reason not yet known, while 16 GiB ran. Set `bar_mib` (16384)
+  to keep the pool's windows at most that. The guest's `amdgpu`
   still reaches all of the GPU's memory through it (`Detected VRAM
   RAM=32624M, BAR=16384M`). See
   [Prepare devices](host-resources.md#prepare-devices).
 - **Across reboots.** `glidex-install --vfio-devices r9700` binds the
-  pool's GPUs to `vfio-pci` at boot, taking them from `amdgpu`, before
-  Glidex and any VM start, with the pool's `bar_mib`. Without it,
-  `prepare: true` binds them when Glidex starts.
+  pool's GPUs to `vfio-pci` at boot, before Glidex and any VM start,
+  with the pool's `bar_mib`. They are claimed before `amdgpu` loads, so
+  `amdgpu` never takes them. Without it, `prepare: true` binds them when
+  Glidex starts, taking them from `amdgpu`.
 - **Locked memory.** A VM with a GPU locks its guest memory; the VM
   unit allows it (`LimitMEMLOCK=infinity`). A host installed before
   that setting gets it when `glidex-install` runs again. Until then the
@@ -487,7 +508,8 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | `conflict`: `PCI device … shares IOMMU group … with …` | Another VM holds a device in the same IOMMU group. Give the whole group to one VM, or move the card to a slot with its own group. |
 | `in use by qemu-kvm-one (pid …)` on a device, or `IOMMU group … is in use by …` from Release or a VF count | A VM has the group open: another hypervisor's (libvirt, OpenNebula), or for Release and VF counts also Glidex's. Being on `vfio-pci` doesn't mean it's free: check `virsh list` and `virsh dumpxml <vm>` (`<hostdev>`), and cordon the device in Glidex while the other VM keeps it. See [Devices another hypervisor holds](#devices-another-hypervisor-holds). |
 | `/dev/vfio/<n> can't be opened by this user` | The group device's owner, group and mode don't give `glidex` read and write. **Prepare** the device, or add the udev rule above; `ls -l /dev/vfio/`. |
-| After a reboot, devices are back on their host drivers, or VFs are gone | Keep them with the installer's `--vfio-devices` and `--sriov`. `journalctl -u glidex-vfio-boot` shows what the boot unit did. |
+| After a reboot, devices are back on their host drivers, or VFs are gone | Keep them with the installer's `--vfio-devices` and `--sriov`. `journalctl -u glidex-vfio-boot` shows what the boot unit did, and `journalctl -b \| grep 'glidex-netd: claim'` what the claim did. |
+| `glidex-vfio-boot`: `driver/unbind: Permission denied` for a GPU | The host driver was still starting on the card when the unit ran: a host installed before the claim. Run `glidex-install` again (it writes the claim), or run `glidex-netd --boot-devices` once the driver is idle. |
 | `… 64-bit BAR of … MiB doesn't fit PCI segment …'s window` (Cloud Hypervisor, Pylon) | The VM's GPUs on one NUMA node need more address space than the hypervisor gives that node's PCI segment: each large BAR is aligned to its own size. Give the VM fewer GPUs per NUMA node, shrink the GPUs' windows (a pool's `bar_mib`), or use QEMU. |
 | `pool …: 1 of 2 free`, `no device pool …` | See [Host resources](host-resources.md#troubleshooting). |
 | A VM stays **Waiting for a node** with `PCI device …` in a node's reason | `no PCI device …`: the node doesn't report it. `… is used by VM …` or `… shares IOMMU group …`: every node with it has it taken. The VM is placed once a device is free. |

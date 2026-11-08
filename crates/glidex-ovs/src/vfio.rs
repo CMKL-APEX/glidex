@@ -266,6 +266,17 @@ fn window_resizes(
     Ok(out)
 }
 
+/// The host driver a device with no driver was kept from: its
+/// `driver_override` is `vfio-pci`, set by the boot claim (G20).
+fn claimed_from(exec: &dyn Exec, bdf: &str) -> Option<String> {
+    let over = exec
+        .read_file(&dev_dir(bdf).join("driver_override"))
+        .unwrap_or_default();
+    (over.trim() == "vfio-pci")
+        .then(|| crate::boot_devices::host_driver(exec, bdf))
+        .flatten()
+}
+
 /// Set a BAR's size; the device must have no driver.
 fn write_bar_size(exec: &dyn Exec, bdf: &str, bar: u8, mib: u64) -> Result<(), OvsError> {
     exec.write_file(
@@ -332,6 +343,9 @@ pub fn prepare(
     let mut resized = Vec::new();
     for m in group_members(exec, &group, bdf) {
         let driver = nic::pci_driver(exec, &m)?;
+        // Claimed at boot before its host driver loaded (G20): release
+        // gives it back to that driver.
+        let claimed = driver.is_none().then(|| claimed_from(exec, &m)).flatten();
         // A device already on vfio-pci keeps its size: a VM may hold it.
         if driver.as_deref() != Some("vfio-pci") {
             let r = window_resizes(exec, &m, bar_mib)?;
@@ -344,7 +358,7 @@ pub fn prepare(
         }
         members.push(Member {
             address: m,
-            previous_driver: driver.filter(|d| d != "vfio-pci"),
+            previous_driver: driver.filter(|d| d != "vfio-pci").or(claimed),
         });
     }
     let rule = udev_rule_path(&group);
@@ -537,6 +551,48 @@ mod tests {
         let p = prepare(&exec, "0000:03:00.0", &[], "glidex", None).unwrap();
         assert!(p.resized.is_empty(), "a VM may hold it");
         assert!(written(&exec, "/sys/bus/pci/devices/0000:03:00.0/resource0_resize").is_empty());
+    }
+
+    #[test]
+    fn a_claimed_gpu_is_sized_at_boot_and_given_back_to_its_driver() {
+        use crate::boot_devices::{BootDevices, let_go_at_boot};
+        let exec = gpu_host();
+        let a = "/sys/bus/pci/devices/0000:03:00.0";
+        // The claim gave it vfio-pci before amdgpu loaded, and vfio-pci
+        // probed it at its full 32 GiB.
+        exec.file(&format!("{a}/vendor"), "0x1002\n");
+        exec.file(&format!("{a}/driver_override"), "vfio-pci\n");
+        exec.file(&format!("{a}/uevent"), "DRIVER=vfio-pci\n");
+        exec.link(&format!("{a}/driver"), "vfio-pci");
+        exec.file(&format!("{a}/modalias"), "pci:v00001002d00007551\n");
+        exec.on(
+            "modprobe -R pci:v00001002d00007551",
+            crate::exec::Output::ok("amdgpu\n"),
+        );
+        let cfg = BootDevices {
+            sriov: vec![],
+            select: vec![crate::boot_devices::Selector {
+                addresses: vec!["0000:03:00.0".into()],
+                bar_mib: Some(16384),
+                ..Default::default()
+            }],
+        };
+        let_go_at_boot(&exec, &cfg);
+        assert_eq!(
+            written(&exec, &format!("{a}/driver/unbind")),
+            ["0000:03:00.0"]
+        );
+        // Unbound now: the boot unit prepares it like any other.
+        exec.file(&format!("{a}/uevent"), "\n");
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(16384)).unwrap();
+        assert_eq!(p.resized[0].previous_mib, 32768);
+        assert_eq!(p.resized[0].mib, 16384);
+        assert_eq!(written(&exec, &format!("{a}/resource0_resize")), ["14"]);
+        assert_eq!(
+            p.members[0].previous_driver.as_deref(),
+            Some("amdgpu"),
+            "release gives it back to the driver the claim kept it from"
+        );
     }
 
     #[test]
