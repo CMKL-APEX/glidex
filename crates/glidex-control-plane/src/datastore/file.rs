@@ -86,8 +86,8 @@ impl StorageDriver for FileDriver {
         self.file(&self.path(disk), disk)
     }
 
-    fn exists(&self, disk: &Disk) -> bool {
-        self.path(disk).exists()
+    fn exists(&self, disk: &Disk) -> Result<bool, ImageError> {
+        Ok(self.path(disk).exists())
     }
 
     fn create_volume(
@@ -250,12 +250,12 @@ mod tests {
         // `prepare` saw a temporary, not the disk's own file.
         let seen = seen.unwrap();
         assert_ne!(seen.path(), drv.path(&d));
-        assert!(!drv.exists(&d));
+        assert!(!drv.exists(&d).unwrap());
         assert!(names(tmp.path()).is_empty());
 
         drv.create_volume(&d, 2 << 20, VolumeSource::Blank, &mut |_| Ok(()))
             .unwrap();
-        assert!(drv.exists(&d));
+        assert!(drv.exists(&d).unwrap());
         let mode = std::fs::metadata(drv.path(&d))
             .unwrap()
             .permissions()

@@ -584,7 +584,10 @@ not known to it, and lets go of nothing while its control plane is
 starting, so a restart doesn't take the disks of the VMs running there.
 And a VM starting on a node takes its disks from
 another node's `hyperstor-vhost` that still holds them, which cuts off
-only those volumes there; the node's other VMs carry on. A disk that a
+only those volumes there; the node's other VMs carry on. It takes them
+from its own node's `hyperstor-vhost` too when that service no longer
+has them attached: a hold left from before the host rebooted or the
+service restarted. A disk that a
 Glidex disk operation holds (`hyperstorctl`, on a server) is waited for:
 the VM shows `DiskBusy` until it ends. This needs hyperstor with
 per-volume fencing on every node; with an older `hyperstor-vhost`, a

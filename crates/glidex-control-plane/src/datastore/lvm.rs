@@ -187,12 +187,10 @@ impl StorageDriver for LvmDriver {
         self.block(&volume_name(disk))
     }
 
-    fn exists(&self, disk: &Disk) -> bool {
+    fn exists(&self, disk: &Disk) -> Result<bool, ImageError> {
         // An inactive volume has no device node: ask LVM.
         let name = volume_name(disk);
-        self.volumes()
-            .map(|v| v.iter().any(|v| v.name == name))
-            .unwrap_or(false)
+        Ok(self.volumes()?.iter().any(|v| v.name == name))
     }
 
     fn create_volume(

@@ -1379,7 +1379,12 @@ mod tests {
         );
 
         let meter = Meter::new_clustered(db(&dir, "c.db"), db(&dir, "l.db"), cfg).unwrap();
-        let open = crate::metering::now_ms() / 1000 / 3600 * 3600;
+        let now = crate::metering::now_ms() / 1000;
+        let open = now / 3600 * 3600;
+        // The open hour's slots so far, at most `n`: a slot after now isn't
+        // shown, and early in an hour there are fewer than three.
+        let so_far = |n: u64| ((now - open) / 300 + 1).min(n);
+        let bits = |n: u64| ((1u32 << n) - 1) as u16;
         let row = |subject: Subject, present: u16, metric: &str| SlotRow {
             subject: Some(subject),
             present,
@@ -1398,9 +1403,9 @@ mod tests {
                 (open - 7200, row(vm.clone(), 0xfff, "cpu.used")),
                 // The last closed hour, maybe not shipped yet: all 12.
                 (open - 3600, row(vm.clone(), 0xfff, "cpu.used")),
-                // The open hour, three slots so far.
-                (open, row(vm, 0b111, "cpu.used")),
-                (open, row(nic.clone(), 0b11, "net.rx_bytes")),
+                // The open hour, up to three slots so far.
+                (open, row(vm, bits(so_far(3)), "cpu.used")),
+                (open, row(nic.clone(), bits(so_far(2)), "net.rx_bytes")),
                 (open - 3600, row(nic, 0b1, "net.rx_bytes")),
                 (open, row(other, 0xfff, "net.rx_bytes")),
             ],
@@ -1419,11 +1424,13 @@ mod tests {
                 .map(|p| p.slot.as_option().unwrap().seconds - open as i64)
                 .collect::<Vec<_>>()
         };
+        let open_slots = |n: u64| (0..so_far(n) as i64).map(|i| i * 300);
         let mut want: Vec<i64> = (0..12).map(|i| i * 300 - 3600).collect();
-        want.extend([0, 300, 600]);
+        want.extend(open_slots(3));
         assert_eq!(slots(&h.compute), want);
         // Its own NIC only, the other VM's left out.
-        assert_eq!(slots(&h.bandwidth), [-3600, 0, 300]);
+        let want: Vec<i64> = [-3600].into_iter().chain(open_slots(2)).collect();
+        assert_eq!(slots(&h.bandwidth), want);
         assert!(h.io.is_empty());
     }
 }

@@ -125,7 +125,9 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     /// How `disk`'s volume is opened, whether or not it exists yet.
     fn binding(&self, disk: &Disk) -> VolumeBinding;
 
-    fn exists(&self, disk: &Disk) -> bool;
+    /// Whether `disk`'s volume is there. An error is "can't tell" (the
+    /// storage service down, or not reachable yet), never "gone".
+    fn exists(&self, disk: &Disk) -> Result<bool, ImageError>;
 
     /// Make `disk`'s volume of `size` bytes from `source`, run `prepare`
     /// on it, and only then make it the disk's. Nothing is left behind if
@@ -219,7 +221,7 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     /// `disk`'s volume, ready to be opened on this node.
     fn stage(&self, disk: &Disk) -> Result<VolumeBinding, ImageError> {
         let b = self.binding(disk);
-        if !self.exists(disk) {
+        if !self.exists(disk)? {
             return Err(ImageError::Io(format!(
                 "disk {} file is missing: {}",
                 disk.name,
