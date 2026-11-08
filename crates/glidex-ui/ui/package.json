@@ -19,19 +19,19 @@
     "@xterm/addon-fit": "^0.10.0",
     "@xterm/xterm": "^5.5.0",
     "ghostty-web": "0.4.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "react-router-dom": "^7.5.0"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
+    "react-router-dom": "^7.18.5"
   },
   "devDependencies": {
     "@bufbuild/protoc-gen-es": "^2.16.0",
-    "@types/react": "^19.1.2",
-    "@types/react-dom": "^19.1.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^4.4.1",
-    "autoprefixer": "^10.4.21",
-    "postcss": "^8.5.3",
+    "autoprefixer": "^10.6.2",
+    "postcss": "^8.5.32",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
-    "vite": "^6.3.2"
+    "vite": "^6.4.5"
   }
 }

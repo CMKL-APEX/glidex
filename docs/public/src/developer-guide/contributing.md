@@ -231,6 +231,7 @@ Two workflows run on every pull request to `main` and every push to
 |---|---|
 | `build` | `scripts/lint-store-writes.sh`; `cargo build`; `GLIDEX_CHECK_WRITE_SETS=1 cargo test`. Times out after 45 minutes. |
 | `fmt` | `cargo fmt --all --check` |
+| `audit` | `cargo audit`: `Cargo.lock` against the RustSec advisories. The ones accepted are in `.cargo/audit.toml`, each with its reason. A new advisory fails it on any pull request. |
 | `proto` | In `crates/glidex-api`: `buf lint`, `buf format --exit-code`; `buf generate` leaves `crates/glidex-ui/ui/src/gen` unchanged; `buf breaking` against `origin/main`. |
 
 [`docs.yml`](https://github.com/CMKL-APEX/glidex/blob/main/.github/workflows/docs.yml):
@@ -267,6 +268,7 @@ And when they apply:
 | A `.proto` | In `crates/glidex-api`: `buf lint`, `buf format --exit-code`, `buf generate` (commit the regenerated `crates/glidex-ui/ui/src/gen`), `buf breaking --against '../../.git#branch=main,subdir=crates/glidex-api'`. |
 | The web UI | `bun install` (after a package change) and `bun x tsc -b --noEmit` in `crates/glidex-ui/ui`; the UI e2e for the pages touched. |
 | Docs | `mdbook build docs/public` (and `docs/internal` for `spec/`). |
+| Dependencies (`Cargo.lock`, `bun.lock`) | `cargo audit` (install it with `cargo install --locked cargo-audit`) and `bun audit` in `crates/glidex-ui/ui`. Dependabot opens weekly update pull requests (`.github/dependabot.yml`). |
 | VM, disk, network or host paths | The `#[ignore]`d functional tests that cover them, on a host. |
 
 The cluster tests are timing-sensitive: a failed `build` job may be
