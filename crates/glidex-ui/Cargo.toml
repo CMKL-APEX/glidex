@@ -3,6 +3,9 @@ name = "glidex-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The glidex web UI server"
+# Installed by glidex-install, not from crates.io.
+publish = false
 
 [[bin]]
 name = "glidex-ui"

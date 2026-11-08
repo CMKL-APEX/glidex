@@ -3,6 +3,9 @@ name = "glidex-control-plane"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "The glidex control plane: VMs, networks, storage, directory and clustering, its API server and gxctl"
+# Installed by glidex-install, not from crates.io.
+publish = false
 
 [dependencies]
 glidex-topology = { path = "../glidex-topology" }

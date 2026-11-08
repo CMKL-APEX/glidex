@@ -3,6 +3,8 @@ name = "glidex-metad"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Installed by glidex-install, not from crates.io.
+publish = false
 description = "glidex's metadata endpoint for guests (spec/29-workload-identity.md W11)"
 
 [lib]

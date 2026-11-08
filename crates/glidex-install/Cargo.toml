@@ -3,6 +3,9 @@ name = "glidex-install"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Installs glidex and its dependencies on a host"
+# Installed by glidex-install, not from crates.io.
+publish = false
 
 [[bin]]
 name = "glidex-install"

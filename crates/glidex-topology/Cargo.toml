@@ -4,6 +4,8 @@ description = "A host's topology from sysfs: NUMA nodes and sockets, the PCIe tr
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 # Read by glidex's nodes and by hyperstor (its D204), so it depends on
 # nothing of glidex's.
