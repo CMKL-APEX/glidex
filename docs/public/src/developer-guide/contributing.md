@@ -635,7 +635,9 @@ To make a release:
    (`sed -i 's/"0.0.8-dev"/"0.0.8"/' Cargo.toml`), and commits the
    updated `Cargo.lock`.
 2. When it has merged, tag that commit `v<version>` (`v0.0.8`) and
-   publish the release notes.
+   publish the release notes. Then publish the library crates from that
+   tag (see [Publishing to crates.io](#publishing-to-cratesio); a crate's
+   first upload is by hand).
 3. Open a pull request that moves `main` to the next release, `-dev`
    again (`0.0.9-dev`), in the same places, with its `Cargo.lock`.
 
