@@ -1213,6 +1213,9 @@ pub async fn vm_compute(
 
 // ---- live rates (§9.4) ------------------------------------------------------------------
 
+/// How long a server relaying a VM's live stats waits for its host (D19).
+pub(crate) const STATS_RELAY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// `GET /vms/{id}/stats`: the latest rates of the VM, its NICs and its
 /// disks, from the last two samples (not stored).
 pub async fn vm_stats(
@@ -1229,14 +1232,17 @@ pub async fn vm_stats(
                 "no cluster",
             ));
         };
+        // Short: the page asks every 30 s, and its charts don't wait for
+        // this answer (§9.4, D19).
         let r = cluster
             .client
-            .request(
+            .request_timeout(
                 &addr,
                 axum::http::Method::GET,
                 &format!("/cluster/v1/vms/{}/stats", vm.id),
                 &[],
                 bytes::Bytes::new(),
+                STATS_RELAY_TIMEOUT,
             )
             .await
             .map_err(|e| {
@@ -1288,8 +1294,45 @@ pub(crate) fn live_vm_stats(meter: &Meter, vm_id: &str) -> pb::GetVmStatsRespons
         vm: vm_values,
         nics: pick(SubjectKind::Nic),
         disks: pick(SubjectKind::Disk),
+        open_hour: open_hour(meter, vm_id).into(),
         ..Default::default()
     }
+}
+
+/// The VM's points that only this host has yet (§9.4, D19): its open
+/// hour, and its last closed hour, which may not have shipped yet (the
+/// UI keeps only points later than a chart's last). `None` where rounds
+/// write the replicated ledger itself, as on a standalone host.
+fn open_hour(meter: &Meter, vm_id: &str) -> Option<pb::VmOpenHour> {
+    let local = meter.local_ledger()?;
+    let from = local
+        .complete_through()
+        .map_err(|e| tracing::warn!("metering: no closed-through mark: {e}"))
+        .ok()?
+        .saturating_sub(3600);
+    let to = crate::metering::now_ms() / 1000 + 1;
+    let points = |kind: SubjectKind, keep: &dyn Fn(&Subject) -> bool, skind: SeriesKind| {
+        let rows = match local.scan_slots(from, to, None, |s| s.kind == kind && keep(s)) {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!("metering: open hour of {vm_id}: {e}");
+                return Vec::new();
+            }
+        };
+        group_slots(&rows, from, to, &[GroupKey::Vm])
+            .values()
+            .next()
+            .map(|g| series_points(g, skind).into_iter().map(via_json).collect())
+            .unwrap_or_default()
+    };
+    let of_vm = |s: &Subject| s.vm_id.as_deref() == Some(vm_id);
+    Some(pb::VmOpenHour {
+        from: ts(from).into(),
+        compute: points(SubjectKind::Vm, &|s| s.id == vm_id, SeriesKind::Compute),
+        bandwidth: points(SubjectKind::Nic, &of_vm, SeriesKind::Network),
+        io: points(SubjectKind::Disk, &of_vm, SeriesKind::Disk),
+        ..Default::default()
+    })
 }
 
 /// `GET /networks/{id}/stats` (§9.4).
@@ -1309,4 +1352,78 @@ pub async fn network_stats(
             .unwrap_or_default(),
         ..Default::default()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metering::ledger::SLOTS_PER_HOUR;
+
+    fn db(dir: &tempfile::TempDir, name: &str) -> Arc<crate::store::Db> {
+        Arc::new(crate::store::Db::create(dir.path().join(name)).unwrap())
+    }
+
+    /// D19: a cluster host's live stats carry its open hour and last closed
+    /// hour, grouped as the series routes group them; a standalone host's
+    /// carry none (its series routes have them).
+    #[test]
+    fn live_stats_carry_the_hours_only_the_host_has() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let cfg = crate::config::MeteringConfig::default();
+        let standalone = Meter::new(db(&dir, "s.db"), cfg.clone()).unwrap();
+        assert!(
+            live_vm_stats(&standalone, "vm-1")
+                .open_hour
+                .as_option()
+                .is_none()
+        );
+
+        let meter = Meter::new_clustered(db(&dir, "c.db"), db(&dir, "l.db"), cfg).unwrap();
+        let open = crate::metering::now_ms() / 1000 / 3600 * 3600;
+        let row = |subject: Subject, present: u16, metric: &str| SlotRow {
+            subject: Some(subject),
+            present,
+            series: [(metric.to_string(), [1_000_000; SLOTS_PER_HOUR])].into(),
+            ..Default::default()
+        };
+        let vm = Subject::new(SubjectKind::Vm, "vm-1", "web", Some("p".into()));
+        let mut nic = Subject::new(SubjectKind::Nic, "vm-1/0", "web/0", Some("p".into()));
+        nic.vm_id = Some("vm-1".into());
+        let mut other = Subject::new(SubjectKind::Nic, "vm-2/0", "db/0", Some("p".into()));
+        other.vm_id = Some("vm-2".into());
+        meter.local_ledger().unwrap().put_slots_for_test(
+            open,
+            &[
+                // Shipped long ago: not the host's alone.
+                (open - 7200, row(vm.clone(), 0xfff, "cpu.used")),
+                // The last closed hour, maybe not shipped yet: all 12.
+                (open - 3600, row(vm.clone(), 0xfff, "cpu.used")),
+                // The open hour, three slots so far.
+                (open, row(vm, 0b111, "cpu.used")),
+                (open, row(nic.clone(), 0b11, "net.rx_bytes")),
+                (open - 3600, row(nic, 0b1, "net.rx_bytes")),
+                (open, row(other, 0xfff, "net.rx_bytes")),
+            ],
+        );
+
+        let h = live_vm_stats(&meter, "vm-1")
+            .open_hour
+            .into_option()
+            .expect("a cluster host's open hour");
+        assert_eq!(
+            h.from.as_option().map(|t| t.seconds),
+            Some(open as i64 - 3600)
+        );
+        let slots = |p: &[pb::RatePoint]| {
+            p.iter()
+                .map(|p| p.slot.as_option().unwrap().seconds - open as i64)
+                .collect::<Vec<_>>()
+        };
+        let mut want: Vec<i64> = (0..12).map(|i| i * 300 - 3600).collect();
+        want.extend([0, 300, 600]);
+        assert_eq!(slots(&h.compute), want);
+        // Its own NIC only, the other VM's left out.
+        assert_eq!(slots(&h.bandwidth), [-3600, 0, 300]);
+        assert!(h.io.is_empty());
+    }
 }

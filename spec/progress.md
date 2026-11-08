@@ -19,7 +19,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
-| Metering | [13-metering.md](13-metering.md) §15.8 M5 | `spec/metering-open-hour` | the current hour on a cluster VM's charts, from its host in the live stats (D19) |
+| Metering | [13-metering.md](13-metering.md) §15.8 M5 | #339 (spec), `feat/metering-open-hour` | the current hour on a cluster VM's charts, from its host in the live stats (D19) |
 | Host topology | [22-host-topology.md](22-host-topology.md) §3.5 | `feat/fabric-topology` | `glidex-topology` crate out of the control plane, with network ports, for hyperstor's networks (its HS19, D204) |
 
 ## Areas
