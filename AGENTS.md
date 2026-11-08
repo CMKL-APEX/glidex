@@ -94,9 +94,10 @@ And when they apply:
 | A `.proto` | In `crates/glidex-api`: `buf lint`, `buf format --exit-code`, `buf generate` (commit the regenerated `crates/glidex-ui/ui/src/gen`), `buf breaking --against '../../.git#branch=main,subdir=crates/glidex-api'`. Changes are additive; a proto comment's `<id>` must be in backquotes (rustdoc rejects it bare). |
 | The web UI | `bun install` (after a package change) and `bun x tsc -b --noEmit` in `crates/glidex-ui/ui`; the UI e2e for the pages touched (below). The project uses **bun, never npm**. |
 | Docs | `mdbook build docs/public` (and `docs/internal` for spec/). |
+| Dependencies (`Cargo.lock`, `bun.lock`) | `cargo audit` and, in `crates/glidex-ui/ui`, `bun audit`. Accepted Rust advisories go in `.cargo/audit.toml` with their reason. |
 | VM, disk, network or host paths | The `#[ignore]`d functional tests that cover them, on a host (contributing.md). |
 
-CI runs fmt, the proto checks, build and tests, the docs and CodeQL; it
+CI runs fmt, the proto checks, build and tests, `cargo audit`, the docs and CodeQL; it
 doesn't run clippy, so you do. The cluster tests are timing-sensitive:
 a failed `build` job may be rerun once; a second failure is real.
 
