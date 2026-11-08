@@ -17,6 +17,7 @@
 - [Direct kernel boot](23-kernel-boot.md)
 - [Images and disks](10-images.md)
 - [Datastores](24-storage.md)
+- [Ceph RBD datastores](31-ceph.md)
 - [Credentials](08-credentials.md)
 - [Console](02-console.md)
 - [Metering](13-metering.md)

@@ -26,6 +26,7 @@ or decision, such as `27-gpu-vms.md §10` or `19-tenancy.md D48`.
 | [06-rest-api.md](06-rest-api.md) | HTTP endpoints, payloads, error model, console WebSocket |
 | [04-hypervisors.md](04-hypervisors.md) | Hypervisor driver contract and per-backend command lines |
 | [30-pylon.md](30-pylon.md) | Pylon hypervisor (`CMKL-APEX/pylon`, `pylond`, `scx_pylon`) and generalized CPU elasticity (`min_vcpus`, `max_vcpus`, `cpu_weight`) with ACPI CPU hotplug fallback on Cloud Hypervisor and QEMU; milestones P0–P4 |
+| [31-ceph.md](31-ceph.md) | Ceph RBD datastores (design): the `rbd` driver over a pool or RADOS namespace of an operator's Ceph cluster, krbd maps through `glidex-stord`, clones of an image RBD for linked disks, RBD exclusive locks and client blocklisting as the fence; milestones R0–R4 |
 | [23-kernel-boot.md](23-kernel-boot.md) | Direct kernel boot on par with firmware boot (draft): kernel images (kernel + initramfs + cmdline) extracted from the cloud image by a short-lived extractor VM, from a URL or the host; initramfs for both backends; console device chosen by `console=`; generated seeds and credentials on kernel boot; milestones K0–K4 |
 | [10-images.md](10-images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [08-credentials.md](08-credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |

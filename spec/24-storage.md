@@ -874,7 +874,8 @@ stay right:
   - resize uses `lvextend`, and shrinking is refused.
 - **`shared-lvm` over a SAN** (iSCSI or FC LUN): the same LVs plus
   `lvmlockd`/`sanlock`. This is the Proxmox pattern.
-- **`rbd`:**
+- **`rbd`:** designed in [31-ceph.md](31-ceph.md), which settles the
+  points below (krbd through stord for both hypervisors, pending its Q1).
   - QEMU opens RBD natively (`driver: rbd`). That needs a QEMU built with
     librbd, which is probed.
   - Cloud Hypervisor needs a block device, so `krbd` map, or
