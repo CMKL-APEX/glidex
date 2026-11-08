@@ -20,6 +20,10 @@ host checks H8–H9 are open for the owner's review. Implemented:
 - S8, `hyperstor` datastores: volumes of a hyperstor cluster, served to
   VMs over vhost-user-blk (§11.2).
 
+S31 (this node's own stale hold) and S32 (a driver that can't tell
+whether a volume exists never reports it missing) are implemented, with
+unit tests; their reboot check is not run yet.
+
 S7 is still design. Decisions S25, S27 and S30 are open for review too. The milestones are S0–S8
 (§16). Decisions S13–S16 and the host checks in §19 settle the first
 draft's questions (§17). The edits this document needed in other specs
@@ -100,6 +104,8 @@ later milestones (§11, §12).
 | S28 | **An image volume's id is derived from the image and its datastore**, not the image alone: `glidex-image:<image>:on:<datastore id>`. A volume made before, under the image-only id and named for this datastore (S24), stays that datastore's, so its disks (clones of it) are untouched; another datastore makes its own. | hyperstor's volume ids are unique across its cluster, while the driver lists one pool's volumes. A second datastore on the same hyperstor cluster (`hs-cache`, pool 2, beside `hs`, pool 1, on the prism cluster) didn't see the first's image volume, was refused "exists" when making its own, took that for another worker making it, and retried for ever: its disk stayed `Creating`. The spec already said one image volume per image and datastore. |
 | S29 | **Deleting a VM, or a disk, while the disk's create runs is taken, not refused**: a disk delete records `deletion_requested_at`, and the disk controller deletes the disk once the running attempt ends instead of starting another; a VM delete is recorded, its disks start no new create attempt, and its deletion waits for the running one (`DiskBusy`, every 2 s), then deletes its owned root disk as before. Other operations (resize, move, extend) still refuse with `409`. | A create that keeps failing holds the disk's busy mark almost all the time (each attempt starts as the last ends), so every delete was refused with `busy (create)` and the VM and its disk could not be cancelled. Deleting under a running create would let its result write the disk back, so the deletion waits for the attempt, which is bounded. |
 | S30 | **A hyperstor datastore whose pool is full refuses new disks** (open for review): the servers' probe reads the pool's `fullness` (hyperstor D27) with its space; while it is `full`, the node's row is marked `full` with a warning, and disk creation is refused with `507 insufficient_storage`, overcommit or not. A create that hyperstor refuses for it all the same (`pool_full`, resource exhausted) is `insufficient_storage` too: the disk waits, `Ready` false with reason `DatastoreFull` and one warning event, and tries again each minute. `nearfull` is a warning only. Existing disks are untouched: hyperstor still takes overwrites, and holds a VM's new writes for a while (hyperstor D183). | A full pool refuses new volumes (hyperstor D182), so a disk sent there can only fail; refusing it up front says why, and waiting a minute between tries keeps a filling cluster from a stream of refused calls (each audited by hyperstor), as the pilot saw with S25. Overcommit is about glidex's own estimate of space, not about a pool that has none. |
+| S31 | **This node's own `hyperstor-vhost` hold is stale too when that service doesn't have the volume attached**, and is preempted as S26's are: a hold labelled `vhost:<this node>` refused at a VM's start, with the volume missing from `hyperstor-vhost`'s `list`, was left by the service before a reboot or a restart of it. When the list can't be read, the hold is waited for. | gpu-dev2's reboot (2026-11-08): VM `v2`'s disk was refused as held by `vhost:<gpu-dev2>`, its lease expired, and stayed `DiskBusy` for ever, as S26 took only another node's hold for stale. A hold this node's service still has belongs to a VM running here, so it isn't taken. |
+| S32 | **A driver that can't tell whether a volume exists says so; it never reports it missing.** `StorageDriver::exists` returns an error then (hyperstor or LVM unreachable, or hyperstor before the control plane has its key at start), and the disk controller asks again in 10 s, leaving the disk as it is. A disk found missing is looked for again every 30 s, and made ready when its volume is back. | At every control-plane start the controllers run before the hyperstor key is set, so the first look at each hyperstor disk failed and the disk was marked `Missing`, with no second look until a later resync; a VM starting then (after a reboot) waited on a disk that was there (`v2`, 2026-11-08). The same error made `materialize` and `move_volume` take a volume that was there for one to make. |
 
 ## 3. What changes, at a glance
 
@@ -490,7 +496,8 @@ linked disk in that datastore uses it. This extends 10-images.md §3's
   - orphan files are reported, never deleted;
   - a record whose file is missing is marked missing.
 - On a shared datastore, only the file's **worker** reports it missing.
-  A node that can't reach the datastore reports nothing about it.
+  A node that can't reach the datastore reports nothing about it, and a
+  driver that can't tell reports nothing either (S32).
 
 ## 5. Reachability and placement
 
@@ -1067,10 +1074,12 @@ node is lost reaches the same volume.
   "preempt"` for a VM placed again from a fenced node (S23); it answers
   with the socket the hypervisor opens. A volume held by a tool is
   `Busy`, so the VM waits; one held by another node's `hyperstor-vhost`
-  is preempted (S26). Each node's probe detaches what its
+  is preempted (S26), and so is one held by this node's own when that
+  service doesn't have it attached (S31). Each node's probe detaches what its
   `hyperstor-vhost` holds for VMs placed on another node, and nothing
   before it has loaded its VMs (S26). Tests:
-  `stale_holds_are_another_nodes_vhost_and_disks_placed_elsewhere`,
+  `stale_holds_are_another_nodes_vhost_and_disks_placed_elsewhere`
+  (with this node's own hold from before a restart, S31),
   `holds_name_a_node_only_for_a_loaded_vm_with_a_placement` (#322: a
   restart's probe kept the holds of VMs running here).
 - `VolumeBinding::VhostUserBlk { socket, volume, map }`. Cloud

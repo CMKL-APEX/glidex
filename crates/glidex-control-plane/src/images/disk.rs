@@ -325,7 +325,7 @@ impl ImageManager {
         let driver = self.driver(&disk)?;
         // Held while it is made: no other node touches it (S16).
         let _lock = driver.lock(&disk)?;
-        if driver.exists(&disk) {
+        if driver.exists(&disk)? {
             let made = driver.binding(&disk);
             disk.size_bytes = match driver.volume_size(&disk) {
                 Some(s) => s,
@@ -685,7 +685,7 @@ impl ImageManager {
             )));
         }
         let path = source.path().to_path_buf();
-        if to.exists(dst) {
+        if to.exists(dst)? {
             return Ok(());
         }
         let backing = match &src.origin {

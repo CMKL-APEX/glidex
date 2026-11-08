@@ -1239,7 +1239,10 @@ impl ImageManager {
         let disks: Vec<Disk> = self.disks.read().unwrap().values().cloned().collect();
         for d in &disks {
             let path = self.disk_path(d);
-            if !path.exists() {
+            // Only a file is looked for here: a hyperstor volume's path is
+            // no file, and an inactive LVM volume has no device node. The
+            // disk controller asks their drivers.
+            if self.on_files(d) && !path.exists() {
                 tracing::warn!(disk = %d.name, path = %path.display(), "disk file is missing");
             }
             known.insert(path);
@@ -1412,6 +1415,21 @@ impl ImageManager {
     /// The node this manager works for (cluster attach and detach).
     pub fn set_node_id(&self, id: &str) {
         self.node_id.store(Arc::new(id.to_string()));
+    }
+
+    /// Whether `d`'s volume is a file: on `local`, or a directory datastore.
+    fn on_files(&self, d: &Disk) -> bool {
+        use crate::datastore::record::DriverSpec;
+        d.datastore == crate::datastore::LOCAL
+            || crate::datastore::record::find(&self.db, &d.datastore)
+                .ok()
+                .flatten()
+                .is_some_and(|ds| {
+                    matches!(
+                        ds.driver,
+                        DriverSpec::Dir { .. } | DriverSpec::SharedDir { .. }
+                    )
+                })
     }
 
     /// Whether `d` is on a hyperstor datastore (spec/24-storage.md §11.2).
