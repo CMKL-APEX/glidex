@@ -312,6 +312,10 @@ selects TCP.
   for one made through the API ([19-tenancy.md](19-tenancy.md) §6).
   `state` binds the browser session; it is single-use and valid 10
   minutes.
+  `glidex-auth` keeps it in the process by default; an application that
+  runs several instances behind one name (hyperstor's mgmt) takes it
+  with `OidcState::begin`, keeps it where every instance reaches it, and
+  hands it back to `OidcState::finish`, which checks it the same way.
 - Identity key: `(issuer, sub)`. `email` / `name` are display only and
   never used for authorization.
 - Provisioning: `oidc.jit` (default `true`) creates the user on first

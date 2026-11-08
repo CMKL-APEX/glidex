@@ -13,10 +13,15 @@
 //! What a browser login is for (glidex: signing in, taking an invitation,
 //! adding a sign-in) is the application's type `A`: kept with the login
 //! state, never in a URL, and handed back by [`OidcState::callback`].
+//!
+//! [`OidcState::start`] keeps a login's state in this process. Several
+//! instances behind one name keep it where they all reach it instead:
+//! [`OidcState::begin`] hands the caller the [`Pending`] login and
+//! [`OidcState::finish`] takes it back, checked as `callback` checks it.
 
 use base64::Engine as _;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, jwk::JwkSet};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -123,14 +128,23 @@ impl ClientSecret {
     }
 }
 
-struct Pending<A> {
-    nonce: String,
-    verifier: String,
-    return_to: String,
-    browser: String,
-    created: u64,
+/// A browser login begun and not yet finished. Its fields are secrets
+/// until it is: whoever keeps it for [`OidcState::finish`] keeps them
+/// from other people, and uses it once.
+#[derive(Clone, Serialize, Deserialize)]
+pub struct Pending<A> {
+    /// The `state` the provider sends back.
+    pub state: String,
+    pub nonce: String,
+    /// PKCE's code verifier.
+    pub verifier: String,
+    pub return_to: String,
+    /// The browser-binding cookie's value ([`Start::browser`]).
+    pub browser: String,
+    /// When it began (seconds since the epoch); it lasts [`STATE_SECS`].
+    pub created: u64,
     /// What the login is for: kept here, never in a URL.
-    after: A,
+    pub after: A,
 }
 
 /// A failed callback, and what its login was for once the state was this
@@ -377,8 +391,27 @@ impl<A: Clone> OidcState<A> {
         reauth: bool,
         after: A,
     ) -> Result<Start, OidcError> {
+        let (start, pending) = self.begin(return_to, redirect_uri, reauth, after).await?;
+        let mut p = self.pending.lock().unwrap();
+        let t = now();
+        p.retain(|_, v| v.created + STATE_SECS > t);
+        p.insert(pending.state.clone(), pending);
+        Ok(start)
+    }
+
+    /// Begin a browser login as [`start`](Self::start) does, but leave its
+    /// state to the caller, who hands it to [`finish`](Self::finish) when
+    /// the provider sends the browser back with its `state`.
+    pub async fn begin(
+        &self,
+        return_to: Option<&str>,
+        redirect_uri: &str,
+        reauth: bool,
+        after: A,
+    ) -> Result<(Start, Pending<A>), OidcError> {
         let d = self.discovery().await?;
-        let (state, nonce, challenge, browser) = self.remember(return_to, after);
+        let (pending, challenge) = Self::fresh(return_to, after);
+        let (state, nonce) = (&pending.state, &pending.nonce);
         let mut url = reqwest::Url::parse(&d.authorization_endpoint)
             .map_err(|e| OidcError::Invalid(e.to_string()))?;
         {
@@ -387,8 +420,8 @@ impl<A: Clone> OidcState<A> {
                 .append_pair("client_id", &self.cfg.client_id)
                 .append_pair("redirect_uri", redirect_uri)
                 .append_pair("scope", &self.cfg.scopes.join(" "))
-                .append_pair("state", &state)
-                .append_pair("nonce", &nonce)
+                .append_pair("state", state)
+                .append_pair("nonce", nonce)
                 .append_pair("code_challenge", &challenge)
                 .append_pair("code_challenge_method", "S256");
             if reauth {
@@ -398,35 +431,48 @@ impl<A: Clone> OidcState<A> {
                 q.append_pair(k, v);
             }
         }
-        Ok(Start {
-            redirect: url.to_string(),
-            browser,
-        })
+        let browser = pending.browser.clone();
+        Ok((
+            Start {
+                redirect: url.to_string(),
+                browser,
+            },
+            pending,
+        ))
+    }
+
+    /// A new login's state, and its PKCE challenge.
+    fn fresh(return_to: Option<&str>, after: A) -> (Pending<A>, String) {
+        let verifier = random_token(48);
+        let challenge = b64url(&sha2::Sha256::digest_bytes(verifier.as_bytes()));
+        let pending = Pending {
+            state: random_token(24),
+            nonce: random_token(24),
+            verifier,
+            return_to: safe_return_to(return_to),
+            browser: random_token(24),
+            created: now(),
+            after,
+        };
+        (pending, challenge)
     }
 
     /// Keep a new login's state, forgetting expired ones. Returns its
     /// `state`, `nonce`, PKCE challenge and browser-binding value.
+    #[cfg(test)]
     fn remember(&self, return_to: Option<&str>, after: A) -> (String, String, String, String) {
-        let state = random_token(24);
-        let nonce = random_token(24);
-        let verifier = random_token(48);
-        let browser = random_token(24);
-        let challenge = b64url(&sha2::Sha256::digest_bytes(verifier.as_bytes()));
+        let (pending, challenge) = Self::fresh(return_to, after);
+        let out = (
+            pending.state.clone(),
+            pending.nonce.clone(),
+            challenge,
+            pending.browser.clone(),
+        );
         let mut p = self.pending.lock().unwrap();
         let t = now();
         p.retain(|_, v| v.created + STATE_SECS > t);
-        p.insert(
-            state.clone(),
-            Pending {
-                nonce: nonce.clone(),
-                verifier,
-                return_to: safe_return_to(return_to),
-                browser: browser.clone(),
-                created: t,
-                after,
-            },
-        );
-        (state, nonce, challenge, browser)
+        p.insert(pending.state.clone(), pending);
+        out
     }
 
     /// Take a login's state: once only, while fresh, from its browser.
@@ -437,6 +483,16 @@ impl<A: Clone> OidcState<A> {
             .unwrap()
             .remove(state)
             .ok_or_else(|| OidcError::Invalid("unknown or expired login state".into()))?;
+        Self::check(&pending, state, browser)?;
+        Ok(pending)
+    }
+
+    /// A login's state may finish: it is `state`'s, fresh, and from the
+    /// browser that began it.
+    fn check(pending: &Pending<A>, state: &str, browser: Option<&str>) -> Result<(), OidcError> {
+        if !constant_eq(state, &pending.state) {
+            return Err(OidcError::Invalid("unknown or expired login state".into()));
+        }
         if pending.created + STATE_SECS <= now() {
             return Err(OidcError::Invalid("login state expired".into()));
         }
@@ -445,7 +501,7 @@ impl<A: Clone> OidcState<A> {
                 "login state belongs to another browser".into(),
             ));
         }
-        Ok(pending)
+        Ok(())
     }
 
     /// Finish a browser login: check `state` against the browser cookie,
@@ -459,6 +515,32 @@ impl<A: Clone> OidcState<A> {
         redirect_uri: &str,
     ) -> Result<(OidcIdentity, String, A), CallbackError<A>> {
         let pending = self.take(state, browser)?;
+        self.redeem(code, pending, redirect_uri).await
+    }
+
+    /// Finish a browser login [`begin`](Self::begin) began: `pending` is
+    /// the state kept for the `state` the provider sent back, which the
+    /// caller has taken so that it can't be used again. Checked and
+    /// redeemed as [`callback`](Self::callback) does.
+    pub async fn finish(
+        &self,
+        code: &str,
+        state: &str,
+        pending: Pending<A>,
+        browser: Option<&str>,
+        redirect_uri: &str,
+    ) -> Result<(OidcIdentity, String, A), CallbackError<A>> {
+        Self::check(&pending, state, browser)?;
+        self.redeem(code, pending, redirect_uri).await
+    }
+
+    /// Redeem a checked login's code and verify its ID token.
+    async fn redeem(
+        &self,
+        code: &str,
+        pending: Pending<A>,
+        redirect_uri: &str,
+    ) -> Result<(OidcIdentity, String, A), CallbackError<A>> {
         // From here the login is this browser's: a failure says what it was for.
         let with = |e: OidcError| CallbackError {
             error: e,
@@ -807,6 +889,67 @@ mod tests {
         c.pending.lock().unwrap().get_mut(&old).unwrap().created = now() - STATE_SECS;
         c.remember(None, "login");
         assert!(!c.pending.lock().unwrap().contains_key(&old));
+    }
+
+    /// Why `finish` refused `p`, before asking the provider anything.
+    async fn refused(
+        c: &OidcState<String>,
+        state: &str,
+        p: Pending<String>,
+        browser: Option<&str>,
+    ) -> String {
+        let Err(e) = c
+            .finish(
+                "code",
+                state,
+                p,
+                browser,
+                "https://ui.example/auth/callback",
+            )
+            .await
+        else {
+            panic!("finished");
+        };
+        assert!(
+            e.started.is_none(),
+            "refused before the login is the browser's"
+        );
+        e.error.to_string()
+    }
+
+    #[tokio::test]
+    async fn a_login_kept_by_the_caller_is_checked_as_one_kept_here() {
+        let c =
+            OidcState::<String>::new(client(true).cfg, ClientSecret::new(|| Err("none".into())));
+        let (p, _) = OidcState::fresh(Some("/vms"), "login".to_string());
+        // It travels as the caller keeps it, and comes back the same.
+        let p: Pending<String> = serde_json::from_str(&serde_json::to_string(&p).unwrap()).unwrap();
+        let b = p.browser.clone();
+        assert!(
+            refused(&c, "other", p.clone(), Some(&b))
+                .await
+                .contains("unknown")
+        );
+        assert!(
+            refused(&c, &p.state, p.clone(), Some("someone else"))
+                .await
+                .contains("another browser")
+        );
+        assert!(
+            refused(&c, &p.state, p.clone(), None)
+                .await
+                .contains("another browser")
+        );
+        let old = Pending {
+            created: now() - STATE_SECS,
+            ..p.clone()
+        };
+        assert!(
+            refused(&c, &p.state, old, Some(&b))
+                .await
+                .contains("expired")
+        );
+        assert_eq!((p.return_to.as_str(), p.after.as_str()), ("/vms", "login"));
     }
 
     #[tokio::test]
