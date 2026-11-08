@@ -620,7 +620,9 @@ mdbook build docs/internal        # the specs -> target/docs/internal
 ## Versions and releases
 
 Every crate takes its version from `[workspace.package]` in the root
-`Cargo.toml`. On `main` it is the **next** release's version with `-dev`
+`Cargo.toml`; the workspace crates a published crate depends on are
+listed in `[workspace.dependencies]` with the same version, and move
+with it (a build fails while the two differ). On `main` it is the **next** release's version with `-dev`
 after it: `0.0.8-dev` leads to `v0.0.8`. Binaries report it
 (`--version`, `gxctl`'s check against the server, a node's
 `status.versions.glidex`), so a build from `main` says it isn't a
@@ -628,15 +630,50 @@ release, and which release it leads to.
 
 To make a release:
 
-1. Open a pull request that drops `-dev` from the workspace version
-   (`0.0.8-dev` → `0.0.8`) and commits the updated `Cargo.lock`.
+1. Open a pull request that drops `-dev` from the workspace version and
+   from `[workspace.dependencies]` (`0.0.8-dev` → `0.0.8`), and commits
+   the updated `Cargo.lock`.
 2. When it has merged, tag that commit `v<version>` (`v0.0.8`) and
    publish the release notes.
 3. Open a pull request that moves `main` to the next release, `-dev`
-   again (`0.0.9-dev`), with its `Cargo.lock`.
+   again (`0.0.9-dev`), in both places, with its `Cargo.lock`.
 
 Versions only inform: compatibility between nodes and helpers comes from
 feature levels and protocol numbers, never from comparing versions.
+
+## Publishing to crates.io
+
+The library crates are published to crates.io: `glidex-api`,
+`glidex-auth`, `glidex-hv-client`, `glidex-ovn`, `glidex-ovs`,
+`glidex-raftstore`, `glidex-tls` and `glidex-topology`. The daemons, the
+UI, the installer and the control plane have `publish = false`: they are
+installed by `glidex-install`, and the control plane depends on
+hyperstor's crates by git, which crates.io refuses.
+
+The `crates.io` workflow (`.github/workflows/publish.yml`) packages each
+publishable crate and builds it from its package, uploading nothing, on
+every pull request that changes a manifest or a crate. To check by hand:
+
+```bash
+cargo publish --workspace --dry-run
+```
+
+A version on crates.io can be yanked but never removed or uploaded
+again, so only a release is published, and only by hand: run the
+workflow from the release's tag (*Actions* → *crates.io* → *Run
+workflow*, the tag `v<version>`, `publish` checked). It refuses a `-dev`
+version or a tag that isn't the version's, waits for a reviewer of the
+`crates-io` environment, and signs in to crates.io with Trusted
+Publishing (the workflow's OIDC token; no crates.io token is stored).
+
+Trusted Publishing is set per crate on crates.io, so a crate's first
+upload is by hand, by an owner: `cargo login` (it reads the token from
+standard input; never pass it as an argument), then
+`cargo publish -p <crate>` for each crate, `glidex-ovs` before
+`glidex-ovn`. Then, for each crate, add the repository and
+`publish.yml` (environment `crates-io`) as a trusted publisher in its
+settings on crates.io, and add the other owners
+(`cargo owner --add github:CMKL-APEX:<team> <crate>`).
 
 Contributions are dual-licensed MIT OR Apache-2.0, as the [README](https://github.com/CMKL-APEX/glidex/blob/main/README.md#contribution)
 says.

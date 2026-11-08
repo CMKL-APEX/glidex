@@ -3,6 +3,9 @@ name = "glidex-tls"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "HTTPS for glidex: listeners on every address, self-signed certificates and the client trust shared by gxctl and the UI (spec/11-security.md §5.1)"
+repository.workspace = true
+homepage.workspace = true
 
 # HTTPS for the control plane, glidex-ui and hyperstor's management
 # service (spec/11-security.md §5.1): listeners on every address, self-signed

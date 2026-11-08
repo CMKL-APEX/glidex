@@ -3,6 +3,8 @@ name = "glidex-netd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Installed by glidex-install, not from crates.io.
+publish = false
 description = "Privileged glidex network helper (Open vSwitch, NAT, VM ports)"
 
 [lib]
