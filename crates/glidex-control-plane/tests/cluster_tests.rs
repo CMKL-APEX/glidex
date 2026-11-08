@@ -1377,6 +1377,78 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     std::fs::remove_dir_all(&paths.dir).unwrap();
 }
 
+/// A server relays a VM's live stats from its node, with the points only
+/// the node has yet (spec/13-metering.md §9.4, D19).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_server_relays_live_stats_with_the_nodes_open_hour() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
+    agent.manager.initialize().await.unwrap();
+    // The node's meter, with its own ledger; no rounds, so no samples.
+    let metering = glidex_control_plane::config::MeteringConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    agent.manager.start_metering(&metering).unwrap();
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("metered", "agent1")),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+
+    let (s, stats) = call(&server, "GET", &format!("/vms/{id}/stats"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{stats}");
+    assert!(
+        stats["open_hour"].is_object(),
+        "the node's open hour: {stats}"
+    );
+}
+
 /// spec/14-clustering.md §9.2.1–3: copies on chosen nodes, letting one go, a
 /// file a node already has adopted instead of copied, the rest reported and
 /// deleted on request, and images of another architecture kept off nodes.

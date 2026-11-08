@@ -991,6 +991,26 @@ impl Ledger {
         .collect()
     }
 
+    /// Slot rows at their hours (unix s), and the end of the last closed
+    /// hour, as rounds would leave them.
+    #[cfg(test)]
+    pub(crate) fn put_slots_for_test(&self, closed_through: u64, rows: &[(u64, SlotRow)]) {
+        let txn = self.db.begin(crate::store::Origin::Metering).unwrap();
+        {
+            let mut t = txn.open_table(RATE5).unwrap();
+            for (hour, row) in rows {
+                let k = slot_key(*hour, row.subject.as_ref().unwrap());
+                t.insert(k.as_str(), serde_json::to_vec(row).unwrap().as_slice())
+                    .unwrap();
+            }
+            txn.open_table(META)
+                .unwrap()
+                .insert(META_CLOSED_THROUGH, closed_through.to_string().as_bytes())
+                .unwrap();
+        }
+        txn.commit().unwrap();
+    }
+
     #[cfg(test)]
     pub(crate) fn set_started_at_for_test(&self, ms: u64) {
         let txn = self.db.begin(crate::store::Origin::Metering).unwrap();

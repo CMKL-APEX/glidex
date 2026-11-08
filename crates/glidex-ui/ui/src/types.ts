@@ -1460,6 +1460,14 @@ export interface VmStats {
   vm?: Record<string, number>;
   nics?: LiveEntry[];
   disks?: LiveEntry[];
+  /** In a cluster, the points only the VM's host has yet: its open hour
+   * and last closed hour (spec/13-metering.md §9.4, D19). */
+  open_hour?: {
+    from?: string;
+    compute?: SeriesPoint[];
+    bandwidth?: SeriesPoint[];
+    io?: SeriesPoint[];
+  };
 }
 
 // ---- the cluster, nodes, imports and departures (glidex.cluster.v1) -----------

@@ -5,8 +5,8 @@
 > and so do the KVM host acceptance runs on a deployed build (§15.4–§15.6,
 > *As built*). **M4** (CPU and memory rates, §8.7) is built, unit-tested
 > and passed its host acceptance run (2026-11-07, §15.7). **M5** (the
-> current hour on a cluster VM's charts, §15.8, D19) is specified, not
-> built. §15.9 lists what comes after.
+> current hour on a cluster VM's charts, §15.8, D19) is built and
+> tested; its host check is not run yet. §15.9 lists what comes after.
 >
 > Built differently from the first draft, with the reasons in the
 > sections named: the cgroup is found from the shim's
@@ -1192,7 +1192,7 @@ design:
 hour's slot rows to itself until the hour closes (§7.1), so the series
 routes (`/vms/{id}/compute`, `/bandwidth`, `/io`) end at the last
 closed hour. `GetVmStatsResponse` gains `open_hour`: the VM's 5-minute
-points from the end of the host's last closed hour up to now, read from
+points from the start of the host's last closed hour up to now, read from
 the host's own ledger with the same grouping as the series routes:
 
 - `compute`: the VM's points, as `/vms/{id}/compute`;
@@ -1932,11 +1932,26 @@ slot rows read once the hour had shipped):
   `open_hour` only the open hour's points, grouped as the series
   routes group them; a standalone meter gives no `open_hour`.
 - A cluster test: a server relaying `stats` for a VM on a node gets
-  the node's `open_hour`, and answers `502` within about 2 seconds when
-  the node doesn't answer.
+  the node's `open_hour`.
 - *(host)* On the prism cluster, a VM on a node other than the one the
   page reached shows the current hour's points minutes after they are
   sampled, not after the hour closes.
+
+**As built (M5).** `VmOpenHour` in `GetVmStatsResponse` (field 6);
+`service/usage.rs`'s `open_hour` reads the host's own ledger from the
+start of its last closed hour, not its end: an hour that closed but
+hasn't shipped (up to a minute, or longer while the leader is away) is
+in neither the replicated store nor the open hour otherwise, and the UI
+keeps only points later than a chart's last. The relay waits
+`STATS_RELAY_TIMEOUT` (2 s). The UI (`VmUsage.tsx`) fetches the live
+rates on their own and appends the points. Tests:
+`live_stats_carry_the_hours_only_the_host_has` (unit: both hours,
+grouped as the series routes; another VM's NIC left out; none on a
+standalone host) and `a_server_relays_live_stats_with_the_nodes_open_hour`
+(cluster_tests: the relayed answer carries the node's `open_hour`).
+Not tested: the 2-second limit against a host that doesn't answer (a
+test node can't be made to hang), and the UI's appending (no e2e runs
+a cluster). The host check is not run yet.
 
 ### 15.9 After M4
 
