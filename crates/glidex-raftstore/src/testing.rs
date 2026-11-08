@@ -354,6 +354,22 @@ impl TestCluster {
                 Err(e) => panic!("reopening n{id}'s store: {e}"),
             }
         };
+        // So does a log append or purge still running on a blocking thread
+        // when Raft shut down: its task holds the log's database until it
+        // ends. A restarted process never sees this (the kernel drops the
+        // old process's lock); only an in-process restart does.
+        let log = dir.join("raft").join("log.redb");
+        let mut tries = 0;
+        while log.exists() {
+            match redb::Database::open(&log) {
+                Ok(_) => break,
+                Err(redb::DatabaseError::DatabaseAlreadyOpen) if tries < 1500 => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("reopening n{id}'s log: {e}"),
+            }
+        }
         let node = ClusterNode::start(
             db.clone(),
             &dir.join("raft"),
