@@ -70,7 +70,7 @@ the fencing that 24-storage.md §10 point 4 left for later.
 | D17 | **krbd for both hypervisors** (Q1, owner, 2026-11-08): D7 as written. QEMU's librbd path and a `qemu-storage-daemon` export are not built. | One tested path for Cloud Hypervisor and QEMU, reusing S6's block binding and device access. |
 | D18 | **The keyring is the operator's, in `/etc/ceph` on each node** (Q2, owner, 2026-11-08): D4 as written. `datastore create` takes no key. | No Ceph secret in glidex's API, store or logs, and no new way for a secret to reach agents. |
 | D19 | **Host checks and ignored tests run against an existing site Ceph cluster** (Q3, owner, 2026-11-08), in a pool and client user made for glidex. Which cluster is still to be named; results name no accounts and quote no keys (20-idp-checks.md's rule). | The owner's choice; a real cluster also shows the multi-node lock behaviour (H1, H2) that a single-node one can't. |
-| D20 | **R1–R3 are planned for v0.0.8; R4 comes after** (Q4, owner, 2026-11-08). Until R4, moves onto and off `rbd` are refused, `disk.stored` is 0 for RBD disks, and a full pool is shown but doesn't refuse new disks. | Datastore, volumes, staging and fencing are the usable core; moves and metering can follow. |
+| D20 | **R1–R3 are planned for v0.0.9; R4 comes after** (Q4, owner, 2026-11-08; moved from v0.0.8 the same day). Until R4, moves onto and off `rbd` are refused, `disk.stored` is 0 for RBD disks, and a full pool is shown but doesn't refuse new disks. | Datastore, volumes, staging and fencing are the usable core; moves and metering can follow. |
 
 ## 3. Model
 
@@ -243,7 +243,7 @@ Settled by the owner on 2026-11-08:
   (D18).
 - **Q3. Test cluster:** an existing site cluster (D19); which one is to
   be named.
-- **Q4. First release:** R1–R3 in v0.0.8, R4 after (D20).
+- **Q4. First release:** R1–R3 in v0.0.9, R4 after (D20).
 
 Open: which site cluster, pool and client user the checks use.
 

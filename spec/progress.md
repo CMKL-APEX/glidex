@@ -20,7 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | CI | — | #347 | buf 1.75.0 in the `proto` job |
-| Ceph RBD datastores | R0 ([31-ceph.md](31-ceph.md)) | #379 (issue #378) | Spec; Q1–Q4 settled (D17–D20); R1–R3 planned for v0.0.8 |
+| Ceph RBD datastores | R0 ([31-ceph.md](31-ceph.md)) | #379 (issue #378) | Spec; Q1–Q4 settled (D17–D20); R1–R3 planned for v0.0.9 |
 
 ## Areas
 
