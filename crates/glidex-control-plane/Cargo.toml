@@ -9,7 +9,8 @@ publish = false
 
 [dependencies]
 glidex-topology = { path = "../glidex-topology" }
-# WebAuthn (spec/25-passkeys.md): already in the tree through jsonwebtoken.
+# WebAuthn (spec/25-passkeys.md) and the issuer's ES256 tokens
+# (directory/issuer.rs); jsonwebtoken uses aws-lc-rs, not these (#350).
 p256 = { version = "0.13", features = ["ecdsa"] }
 ed25519-dalek = "2"
 # rsa 0.9 takes sha2 0.10's digests, with their OIDs (`oid`) for PKCS#1 v1.5.
