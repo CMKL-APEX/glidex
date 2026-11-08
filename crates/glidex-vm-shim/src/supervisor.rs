@@ -21,7 +21,7 @@ use nix::sys::termios::{SetArg, cfmakeraw, tcgetattr, tcsetattr};
 use nix::unistd::{Pid, setsid};
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
@@ -522,7 +522,7 @@ impl Supervisor {
         let OpenptyResult { master, slave } = openpty(None, None).map_err(std::io::Error::from)?;
         // openpty's fds are inheritable: a hypervisor holding the master
         // itself would never see the hangup when the shim dies.
-        for fd in [master.as_raw_fd(), slave.as_raw_fd()] {
+        for fd in [master.as_fd(), slave.as_fd()] {
             nix::fcntl::fcntl(
                 fd,
                 nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),

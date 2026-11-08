@@ -1035,9 +1035,9 @@ dependencies = [
 
 [[package]]
 name = "dirs"
-version = "6.0.0"
+version = "7.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3e8aa94d75141228480295a7d0e7feb620b1a5ad9f12bc40be62411e38cce4e"
+checksum = "8d57d423b3c82e89b9a24ca3091fee61f456a26edbd28d26c65906f4bc1dcd8f"
 dependencies = [
  "dirs-sys",
 ]
@@ -1562,15 +1562,15 @@ name = "glidex-auth"
 version = "0.0.8-dev"
 dependencies = [
  "arc-swap",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cedar-policy",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "jsonwebtoken",
  "reqwest",
  "serde",
  "serde_json",
  "sha2 0.11.1",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "zeroize",
@@ -1582,11 +1582,11 @@ version = "0.0.8-dev"
 dependencies = [
  "libc",
  "libloading",
- "nix",
+ "nix 0.31.3",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
  "zeroize",
@@ -1599,7 +1599,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "buffa",
  "buffa-types",
  "bytes",
@@ -1613,7 +1613,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "futures-util",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "glidex-api",
  "glidex-auth",
  "glidex-authd",
@@ -1636,7 +1636,7 @@ dependencies = [
  "libc",
  "lzma-rs",
  "mime",
- "nix",
+ "nix 0.31.3",
  "openraft",
  "p256",
  "percent-encoding",
@@ -1658,7 +1658,7 @@ dependencies = [
  "tabled",
  "tar",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "time",
  "tokio",
  "tokio-rustls",
@@ -1679,7 +1679,7 @@ dependencies = [
 name = "glidex-e2e"
 version = "0.0.8-dev"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde_json",
  "uuid",
 ]
@@ -1691,7 +1691,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1732,12 +1732,12 @@ name = "glidex-netd"
 version = "0.0.8-dev"
 dependencies = [
  "glidex-ovs",
- "nix",
+ "nix 0.31.3",
  "redb",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1749,7 +1749,7 @@ dependencies = [
  "glidex-ovs",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1760,7 +1760,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -1768,15 +1768,15 @@ name = "glidex-raftstore"
 version = "0.0.8-dev"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
- "getrandom 0.3.4",
+ "base64 0.23.1",
+ "getrandom 0.4.3",
  "openraft",
  "redb",
  "serde",
  "serde_json",
  "smallvec",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1786,11 +1786,11 @@ dependencies = [
 name = "glidex-stord"
 version = "0.0.8-dev"
 dependencies = [
- "nix",
+ "nix 0.31.3",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
 ]
@@ -1805,7 +1805,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "libc",
- "nix",
+ "nix 0.31.3",
  "rcgen",
  "rustls-native-certs",
  "rustls-pki-types",
@@ -1824,7 +1824,7 @@ dependencies = [
 name = "glidex-topology"
 version = "0.0.8-dev"
 dependencies = [
- "nix",
+ "nix 0.31.3",
  "serde",
  "tempfile",
 ]
@@ -1856,11 +1856,11 @@ version = "0.0.8-dev"
 dependencies = [
  "glidex-hv-client",
  "libc",
- "nix",
+ "nix 0.31.3",
  "serde",
  "serde_json",
  "tempfile",
- "thiserror 1.0.69",
+ "thiserror 2.0.21",
 ]
 
 [[package]]
@@ -2706,6 +2706,18 @@ name = "nix"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "71e2746dc3a24dd78b3cfcb7be93368c6de9963d30f43a6a73998a9cf4b17b46"
+dependencies = [
+ "bitflags",
+ "cfg-if",
+ "cfg_aliases",
+ "libc",
+]
+
+[[package]]
+name = "nix"
+version = "0.31.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cf20d2fde8ff38632c426f1165ed7436270b44f199fc55284c38276f9db47c3d"
 dependencies = [
  "bitflags",
  "cfg-if",
@@ -3664,7 +3676,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
- "nix",
+ "nix 0.29.0",
  "radix_trie",
  "unicode-segmentation",
  "unicode-width 0.2.3",

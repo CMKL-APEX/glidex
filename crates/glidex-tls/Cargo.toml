@@ -21,7 +21,7 @@ arc-swap = "1"
 time = "0.3"
 sha2 = "0.11"
 socket2 = { version = "0.6", features = ["all"] }
-nix = { version = "0.29", features = ["net", "hostname", "user", "fs"] }
+nix = { version = "0.31", features = ["net", "hostname", "user", "fs"] }
 libc = "0.2"
 tokio = { workspace = true }
 tracing = { workspace = true }
