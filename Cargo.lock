@@ -1552,7 +1552,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-api"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "buffa",
  "buffa-types",
@@ -1566,7 +1566,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-auth"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "arc-swap",
  "base64 0.22.1",
@@ -1585,7 +1585,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-authd"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "libc",
  "libloading",
@@ -1601,7 +1601,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-control-plane"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1684,7 +1684,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-e2e"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "base64 0.22.1",
  "serde_json",
@@ -1693,7 +1693,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-hv-client"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -1703,7 +1703,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-install"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "anyhow",
  "colored",
@@ -1718,7 +1718,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-metad"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "bytes",
  "form_urlencoded",
@@ -1736,7 +1736,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-netd"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "glidex-ovs",
  "nix",
@@ -1751,7 +1751,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-ovn"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "glidex-ovs",
  "serde",
@@ -1761,7 +1761,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-ovs"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -1772,7 +1772,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-raftstore"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -1791,7 +1791,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-stord"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "nix",
  "serde",
@@ -1804,7 +1804,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-tls"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "arc-swap",
  "http",
@@ -1829,7 +1829,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-topology"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "nix",
  "serde",
@@ -1838,7 +1838,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-ui"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "axum",
  "glidex-tls",
@@ -1859,7 +1859,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-vm-shim"
-version = "0.1.0"
+version = "0.0.8-dev"
 dependencies = [
  "glidex-hv-client",
  "libc",

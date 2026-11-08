@@ -617,5 +617,26 @@ mdbook build docs/internal        # the specs -> target/docs/internal
    what is built, claimed and next; a pull request that starts or
    finishes a milestone updates it.
 
+## Versions and releases
+
+Every crate takes its version from `[workspace.package]` in the root
+`Cargo.toml`. On `main` it is the **next** release's version with `-dev`
+after it: `0.0.8-dev` leads to `v0.0.8`. Binaries report it
+(`--version`, `gxctl`'s check against the server, a node's
+`status.versions.glidex`), so a build from `main` says it isn't a
+release, and which release it leads to.
+
+To make a release:
+
+1. Open a pull request that drops `-dev` from the workspace version
+   (`0.0.8-dev` → `0.0.8`) and commits the updated `Cargo.lock`.
+2. When it has merged, tag that commit `v<version>` (`v0.0.8`) and
+   publish the release notes.
+3. Open a pull request that moves `main` to the next release, `-dev`
+   again (`0.0.9-dev`), with its `Cargo.lock`.
+
+Versions only inform: compatibility between nodes and helpers comes from
+feature levels and protocol numbers, never from comparing versions.
+
 Contributions are dual-licensed MIT OR Apache-2.0, as the [README](https://github.com/CMKL-APEX/glidex/blob/main/README.md#contribution)
 says.
