@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) designed, not built** (§15). §17 records
 where the implementation differs from the design. Extends
 [14-clustering.md](14-clustering.md) §9.1 (scheduler),
 [04-hypervisors.md](04-hypervisors.md) (command lines),
@@ -51,7 +51,7 @@ and pools for GPUs, DPUs and NICs.
 | H7 | Reserved CPUs | Never given to `dedicated` vCPUs, nor counted as shareable: the OS core OVS-DPDK reserves (`dpdk-lcore-mask`), PMD cores (09-networking.md §3), and CPUs kept for the host. By default, once a node holds any `dedicated` VM, the first physical core of each NUMA node is reserved for the host (the OVS-DPDK OS core counts as node 0's). `cluster.node_reserved.cpu_list` in the control-plane config overrides that default, including with an empty list. `isolcpus`/`nohz_full` CPUs are *preferred* for dedicated vCPUs, not reserved. |
 | H8 | Who allocates CPUs | The **scheduler** picks the node and NUMA node and writes the exact CPU set into `status.placement`. The node never chooses CPUs itself. The leader is the one writer, so two VMs can't take the same CPU. A standalone host runs the same code locally. |
 | H9 | Mechanism | Process-level CPU binding by the shim: it binds the hypervisor (every thread) before exec, and moves a running VM's threads on request (§7.1). Per-vCPU pinning on top: Cloud Hypervisor's `--cpus affinity=`, and for QEMU the shim pinning vCPU threads it reads from QMP `query-cpus-fast`. Memory comes from the hypervisor's own NUMA-bound memory (§7). (The design had systemd drop-ins; the control plane runs unprivileged and can't write them, §17.) |
-| H10 | Device classes | Requests by class (`gpu`, `nic`, `nvme`, `dpu`, `accelerator`) are matched against **pools** the operator defines, not raw PCI class codes. A pool names devices by vendor and device id, address or label, per node or cluster-wide (§9). Raw addresses keep working. |
+| H10 | Device classes | Requests by class (`gpu`, `nic`, `nvme`, `dpu`, `accelerator`) are matched against **pools** the operator defines (or, for GPUs and accelerators, discovers: H21), not raw PCI class codes. A pool names devices by vendor and device id, address or label, per node or cluster-wide (§9). Raw addresses keep working. |
 | H11 | Grants | Pools are what tenants and projects are granted (`pci.allow` gains `pool`). Today's address grants stay (19-tenancy.md D25). |
 | H12 | Preparation | Glidex reports whether each device is ready (§5) and can bind a device to `vfio-pci` through netd, reusing `glidex_ovs::nic::bind_driver`, on request by `net-admin` or for a pool with `prepare: true`. It never changes the kernel command line or firmware. |
 | H13 | Who sees topology | The full tree and every node's summary need a host role (`auditor`, `net-admin`, `system-admin`), the same as `/pci-devices`. A project sees only what its VMs hold (the device's class, model and NUMA node), and the pools it may request with their free counts per cluster, not per node. |
@@ -61,6 +61,10 @@ and pools for GPUs, DPUs and NICs.
 | H18 | Device health | Each node reports device errors (AER counters, link changes, reset failures, devices gone from the bus) and shows them on the device and on the VM holding it (§5.4). Reporting only: the scheduler does not refuse a device for its error history. An operator can cordon a device by hand. |
 | H19 | Hugepages | Hugepages are accounted as their own resource, per page size and NUMA node: what the node reserved, what OVS-DPDK takes, and what placed VMs hold. They are never overcommitted and don't count as ordinary memory. The scheduler, not the node at start, decides when a vhost-user VM gets hugepages implicitly (§8a). |
 | H14 | Refresh | A node reads its topology at start, on a udev `pci`/`vfio` event batch (debounced 5 s), on `gxctl node topology refresh`, and every ten minutes with the rest of node status. A status write happens only when the summary changes. |
+| H20 | Where pools live | Cluster pools and grants (`pci.allow`, by pool and by address) are a **replicated cluster setting** (`Meta` key `pci_settings`, §9.1), written through the API, gxctl and the UI, so every server answers a request the same way. A server's `control-plane.json` keeps only what concerns that host (H23). The leader copies a file's `pci.pools` and `pci.allow` into the setting once; after that, file pools and grants are ignored with a warning. | The user's call (2026-11-09). HT4 read pools and grants from each server's file, so a pool set up on one server was unknown when another server led (`gpus: no device pool r9700` on gpu-dev2 with prism2 leading, 27-gpu-vms.md §12). The same migration as the OVN setting (16-clustering-ui.md §8a). |
+| H21 | Discovered pools | Devices of class `gpu` or `accelerator` that no defined pool covers and no host excludes form a **discovered pool** per vendor and device id, across every node that has one, named `<vendor>-<device>` (`amd-7551`, `nvidia-2330`; §9.1b). Discovery only groups devices: it never binds a driver, and a device is ready as before (§5). NICs, NVMe and DPUs aren't discovered: they are mostly the host's own. | The user's call (2026-11-09): a GPU should be usable without writing config first. The slug is stable and unique, unlike a marketing name from `pci.ids`, which depends on the host's copy. |
+| H22 | Who uses a discovered pool | Only holders of a host role with `usePciPool` (`host.devices`) until an operator grants or adopts it. A tenant never sees or gets a device because a card was plugged in. | The user's call (2026-11-09). |
+| H23 | Host overrides | Each server's file may keep devices out of discovery and every pool on that host (`pci.exclude`), and set a pool's `bar_mib` and `prepare` for that host (`pci.overrides`). The node reports the outcome per device in its status (`excluded`, the effective `bar_mib`), so the leader never reads another server's file. | The user's call (2026-11-09): the file overrides discovery and availability. Per host because what it covers is: a card kept for host work, and G17's safe window, which depends on the host's memory. |
 
 ## 3. Model
 
@@ -701,9 +705,10 @@ change shows up within ten minutes or on `gxctl node topology refresh`.
 
 ### 9.1 Pools
 
-A pool is a named set of devices that can be requested by count. It is
-in the cluster config (`control-plane.json`, replicated with the rest of
-`cluster`):
+A pool is a named set of devices that can be requested by count. Pools
+and grants are the cluster setting `pci_settings`, in the replicated
+`Meta` table (H20), with `updated_by` and `updated_at` as for the OVN
+setting. Devices no pool covers may form discovered pools (§9.1b).
 
 ```json
 {
@@ -740,6 +745,20 @@ in the cluster config (`control-plane.json`, replicated with the rest of
   D80): VM requests and tenant pools (§9.1a) treat it as a grant to
   each, and the tenant's cap `devices.<pool>` bounds its share. `"*"`
   goes alone, on a pool.
+- `GET /cluster/pci` (`readCluster`) returns the setting; `PUT
+  /cluster/pci` (`manageCluster`) replaces it, checked as a file's pools
+  are (overlap, an empty `vf_of`) and refused (`409`) when it removes or
+  renames a pool that VMs' `devices` or `gpus` requests, or a tenant
+  pool's `from`, name, listing them. `gxctl pci pool
+  list|show|set|rm|adopt`, `gxctl pci grant …`; the Cluster page's
+  Devices card.
+- **Migration.** On the leader of a cluster with no `pci_settings`, the
+  file's `pci.pools` and `pci.allow` are written to the setting once
+  (`updated_by: "migrate:<node>"`). Once the setting exists, a server
+  whose file still has pools or grants that differ logs once that they
+  are ignored, naming H20. A standalone host has the setting too, in
+  its own store, so joining a cluster changes nothing about where pools
+  live.
 
 ### 9.1a Tenant pools
 
@@ -768,6 +787,66 @@ A tenant granted a cluster pool (by `pci.allow` with `pool` and
   cluster pool's free count, so projects see what they can get.
 - A tenant pool on a cluster pool the tenant loses its grant on stays,
   holds nothing new, and shows `ungranted`.
+
+### 9.1b Discovered pools and host overrides
+
+A cluster with GPUs and no pools set up still has pools to request
+from (H21). Every server works them out the same way from the
+replicated node summaries, so they need no write:
+
+- **Members.** Each summary device of class `gpu` or `accelerator`
+  (§3.3) that no defined pool's match covers on its node, and that its
+  node doesn't exclude, joins the discovered pool of its vendor and
+  device id. VFs don't (they belong to the PF's pool, `vf_of`).
+- **Name.** `<vendor>-<device>`: the vendor is `nvidia` (`0x10de`),
+  `amd` (`0x1002`), `intel` (`0x8086`), else its four hex digits; the
+  device is its four hex digits (`amd-7551`, `15b3-a2dc`). When a
+  defined pool already has that name, no discovered pool is formed: the
+  defined pool's match decides what is in it.
+- **Behaviour.** `class` from the devices; no `per_device`, so a `gpus`
+  request on one gives its own vCPUs and memory; `prepare: false`
+  always, so a device on its host driver is listed as not ready and is
+  never taken from the host; `bar_mib` automatic (G17) unless the host
+  overrides it.
+- **Who sees it.** `GET /pci-pools` lists it with `discovered: true`.
+  `?project=` lists it only to a caller `usePciPool` allows, which for a
+  discovered pool is a host role (H22).
+- **Adoption.** `gxctl pci pool adopt amd-7551 [--name r9700]` (the
+  Devices card's Adopt) writes a pool matching its vendor and device id
+  to the setting, under the slug or a new name, then edited as any
+  pool. Renaming is refused (`409`) while VMs request the slug, listing
+  them. Granting a discovered pool adopts it under its slug first.
+
+A server's own file says what only that host decides (H23):
+
+```json
+{
+  "pci": {
+    "exclude": [
+      { "addresses": ["0000:43:00.0"] },
+      { "vendor_id": "0x1a03" }
+    ],
+    "overrides": {
+      "r9700": { "bar_mib": 16384 },
+      "amd-7551": { "prepare": true }
+    }
+  }
+}
+```
+
+- `exclude` entries are `match`es (§9.1). An excluded device is in no
+  pool, defined or discovered, and a VM naming its address isn't placed
+  on that node: the host keeps it. It stays in the summary with
+  `excluded: true`, so operators see why.
+- `overrides` set `bar_mib` and `prepare` for the named pool's devices
+  on this host; the setting's values are the default elsewhere. G19's
+  rule (the smaller `bar_mib` of two pools) still applies after it.
+- The node writes the outcome into each summary device: `pool` (the
+  pool it is in on this node), `excluded`, and the effective `bar_mib`.
+  The leader reads those, not the file. The node's own `prepare: true`
+  pass and the installer's `--vfio-devices <pool>` (through the local
+  control plane, a discovered slug included) use the same values.
+- An override naming no pool is logged once, as a typo would be.
 
 ### 9.2 Classes
 
@@ -894,6 +973,7 @@ is a device of class `dpu`:
 | **HT4** Pools | §9: cluster pools, `devices` requests, `same_switch`, grants and quotas by pool, `device.alloc` metering, UI | Scheduler tests for pools across nodes and switches; quota refusal; metering ledger rows per pool. |
 | **HT4b** Tenant pools | §9.1a: tenant pools over cluster pools, their API, CLI and UI | Admission tests: a tenant pool's `max`, membership, and the tenant's own cap all apply. |
 | **HT5** SR-IOV VFs | §10.1 VF enumeration, `sriov_numvfs` through netd, VF pools | Host test with an SR-IOV NIC: enable VFs, a pool of VFs, two VMs each with one, NUMA-aligned. |
+| **HT6** Replicated and discovered pools | H20–H23: `pci_settings` with its API, gxctl and Cluster page card; the file's migration; discovered pools; `exclude` and `overrides` and their summary fields; the installer's `--vfio-devices` through the setting | Unit tests: the migration writes once and a differing file is ignored; every server resolves the same pools from the same summaries; a defined pool, an exclude and a slug clash each remove a device from discovery; a tenant can't see or request a discovered pool, a host role can; a rename with VMs requesting the pool is refused. Cluster test: a pool set on the leader is requested through a follower and after a leader change. On gpu-dev2 in the three-server cluster: `amd-7551` discovered with both R9700s, adopted as `r9700`, a 1-GPU VM created while prism2 leads. |
 
 HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
