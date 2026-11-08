@@ -785,18 +785,18 @@ after a reboot.
     is unchanged: `apply_live` never calls `let_go_at_boot`.
   - **Not done:** the reboot test with G20 on gpu-dev2 (the user's OK
     first), and a GPU VM after it.
-  - **To finish GV6**, one PR each:
-    1. `bar_mib` (G18, G19): `pci.pools[].bar_mib` (a power of two),
+  - **To finish GV6**, one PR each (1–3 done: #330, #331, #333):
+    1. Done (#330). `bar_mib` (G18, G19): `pci.pools[].bar_mib` (a power of two),
        netd's `prepare_device` taking `bar_mib`, `vfio::prepare`'s
        ceiling, the control plane passing a `prepare: true` pool's
        value, and the installer copying it into `vfio-devices.json`.
        *Accept:* unit tests on a gpu-dev2-shaped sysfs (a ceiling below
        the cap, above it, below every supported size, a device already
        on `vfio-pci`); config and installer tests.
-    2. Docs: an AMD pool (`r9700`, `prepare: true`, `bar_mib`) and the
+    2. Done (#331). Docs: an AMD pool (`r9700`, `prepare: true`, `bar_mib`) and the
        guest image (G15) in the operator guide; the TODO in the VMs
        guide.
-    3. G13's per-segment check for Cloud Hypervisor, after reading how
+    3. Done (#333). G13's per-segment check for Cloud Hypervisor, after reading how
        v53 places 64-bit BARs between PCI segments.
     4. The reboot test on gpu-dev2: run 2026-11-08, **failed** for
        `03:00.0` (§12); G20 is the fix. Then again with G20, when the

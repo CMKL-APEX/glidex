@@ -1,7 +1,8 @@
 # Reconciliation: desired state, control loops and detached VMs
 
-> Status: **implemented through M3** (2026-10-03); §18 notes where the
-> build differs from this design. Host facts the design depends on were
+> Status: **implemented through M5** (renaming a VM, 2026-11-07); M4's
+> checks passed on a KVM host on 2026-11-07. §18 notes where the build
+> differs from this design. Host facts the design depends on were
 > verified on the pinned versions (§4). It changes the
 > contracts in [00-architecture.md](00-architecture.md),
 > [03-data-model.md](03-data-model.md), [04-hypervisors.md](04-hypervisors.md),

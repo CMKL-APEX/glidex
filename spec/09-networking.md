@@ -496,7 +496,7 @@ per connection. The first message must be `hello`.
 
 ```json
 {"id": 1, "op": "hello", "args": {"protocol": 1}}
-{"id": 1, "ok": {"protocol": 1, "netd_version": "0.1.0"}}
+{"id": 1, "ok": {"protocol": 1, "netd_version": "0.0.8"}}
 
 {"id": 2, "op": "attach_vm_port", "args": {"bridge": "gxbr-nat", "vm_id": "…", "nic_index": 0, "kind": "tap", "mac": "02:5a:1c:9e:44:00", "queue_pairs": 1}}
 {"id": 2, "ok": {"binding": {"tap": {"ifname": "gx1a2b3c4d-0"}}, "ipv4": "10.88.0.2"}}
