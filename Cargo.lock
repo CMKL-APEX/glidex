@@ -1551,6 +1551,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex"
+version = "0.0.8-dev"
+dependencies = [
+ "glidex-api",
+ "glidex-auth",
+ "glidex-hv-client",
+ "glidex-ovn",
+ "glidex-ovs",
+ "glidex-raftstore",
+ "glidex-tls",
+ "glidex-topology",
+]
+
+[[package]]
 name = "glidex-api"
 version = "0.0.8-dev"
 dependencies = [

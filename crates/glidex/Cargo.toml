@@ -1,0 +1,41 @@
+[package]
+name = "glidex"
+description = "Glidex, a control plane for KVM virtual machines: its libraries (RPC API and clients, authentication, the replicated store, host networking and topology) under one name"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["kvm", "virtualization", "cloud-hypervisor", "qemu", "control-plane"]
+categories = ["virtualization", "api-bindings"]
+
+# Re-exports glidex's library crates, each behind a feature. The server,
+# its helpers and the UI are installed by glidex-install, not from here.
+[dependencies]
+glidex-api = { workspace = true, optional = true }
+glidex-auth = { workspace = true, optional = true }
+glidex-hv-client = { workspace = true, optional = true }
+glidex-ovn = { workspace = true, optional = true }
+glidex-ovs = { workspace = true, optional = true }
+glidex-raftstore = { workspace = true, optional = true }
+glidex-tls = { workspace = true, optional = true }
+glidex-topology = { workspace = true, optional = true }
+
+[features]
+default = ["api"]
+# The RPC API's messages and service traits.
+api = ["dep:glidex-api"]
+# The RPC API's generated clients and their HTTP transports.
+client = ["api", "glidex-api/client"]
+auth = ["dep:glidex-auth"]
+hv-client = ["dep:glidex-hv-client"]
+ovn = ["dep:glidex-ovn"]
+ovs = ["dep:glidex-ovs"]
+raftstore = ["dep:glidex-raftstore"]
+tls = ["dep:glidex-tls"]
+topology = ["dep:glidex-topology"]
+full = ["client", "auth", "hv-client", "ovn", "ovs", "raftstore", "tls", "topology"]
+
+[package.metadata.docs.rs]
+all-features = true

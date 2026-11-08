@@ -301,6 +301,7 @@ crates/
   glidex-raftstore/       replicated ReDB store on Raft (shared with hyperstor)
   glidex-auth/            sessions, tokens, Cedar engine, OIDC login (shared with hyperstor)
   glidex-install/         installer and uninstaller
+  glidex/                 the crates.io umbrella: re-exports the library crates
   glidex-ui/              serves the web UI and proxies the API
   glidex-ui/ui/           web UI (Vite + React)
   glidex-ui/kit/          @glidex/ui-kit: shared sign-in and session pieces
