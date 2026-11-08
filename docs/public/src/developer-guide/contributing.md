@@ -620,9 +620,9 @@ mdbook build docs/internal        # the specs -> target/docs/internal
 ## Versions and releases
 
 Every crate takes its version from `[workspace.package]` in the root
-`Cargo.toml`; the workspace crates a published crate depends on are
-listed in `[workspace.dependencies]` with the same version, and move
-with it (a build fails while the two differ). On `main` it is the **next** release's version with `-dev`
+`Cargo.toml`; the published workspace crates are also listed in
+`[workspace.dependencies]` with the same version, for the crates that
+depend on them, and move with it (a build fails while they differ). On `main` it is the **next** release's version with `-dev`
 after it: `0.0.8-dev` leads to `v0.0.8`. Binaries report it
 (`--version`, `gxctl`'s check against the server, a node's
 `status.versions.glidex`), so a build from `main` says it isn't a
@@ -630,13 +630,14 @@ release, and which release it leads to.
 
 To make a release:
 
-1. Open a pull request that drops `-dev` from the workspace version and
-   from `[workspace.dependencies]` (`0.0.8-dev` → `0.0.8`), and commits
-   the updated `Cargo.lock`.
+1. Open a pull request that drops `-dev` from every version in the root
+   `Cargo.toml`, the workspace's and those in `[workspace.dependencies]`
+   (`sed -i 's/"0.0.8-dev"/"0.0.8"/' Cargo.toml`), and commits the
+   updated `Cargo.lock`.
 2. When it has merged, tag that commit `v<version>` (`v0.0.8`) and
    publish the release notes.
 3. Open a pull request that moves `main` to the next release, `-dev`
-   again (`0.0.9-dev`), in both places, with its `Cargo.lock`.
+   again (`0.0.9-dev`), in the same places, with its `Cargo.lock`.
 
 Versions only inform: compatibility between nodes and helpers comes from
 feature levels and protocol numbers, never from comparing versions.
@@ -645,7 +646,8 @@ feature levels and protocol numbers, never from comparing versions.
 
 The library crates are published to crates.io: `glidex-api`,
 `glidex-auth`, `glidex-hv-client`, `glidex-ovn`, `glidex-ovs`,
-`glidex-raftstore`, `glidex-tls` and `glidex-topology`. The daemons, the
+`glidex-raftstore`, `glidex-tls` and `glidex-topology`, and `glidex`,
+which re-exports them, each behind a feature of its name. The daemons, the
 UI, the installer and the control plane have `publish = false`: they are
 installed by `glidex-install`, and the control plane depends on
 hyperstor's crates by git, which crates.io refuses.
@@ -670,7 +672,8 @@ Trusted Publishing is set per crate on crates.io, so a crate's first
 upload is by hand, by an owner: `cargo login` (it reads the token from
 standard input; never pass it as an argument), then
 `cargo publish -p <crate>` for each crate, `glidex-ovs` before
-`glidex-ovn`. Then, for each crate, add the repository and
+`glidex-ovn` and `glidex` last (or `cargo publish --workspace`, which
+takes them in that order). Then, for each crate, add the repository and
 `publish.yml` (environment `crates-io`) as a trusted publisher in its
 settings on crates.io, and add the other owners
 (`cargo owner --add github:CMKL-APEX:<team> <crate>`).

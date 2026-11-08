@@ -17,6 +17,7 @@ members = [
     "crates/glidex-auth",
     "crates/glidex-metad",
     "crates/glidex-topology",
+    "crates/glidex",
 ]
 resolver = "2"
 
@@ -30,7 +31,14 @@ homepage = "https://cmkl-apex.github.io/glidex/docs/"
 [workspace.dependencies]
 # Workspace crates a published crate depends on: crates.io needs a
 # version beside the path. It moves with `[workspace.package]` version.
+glidex-api = { path = "crates/glidex-api", version = "0.0.8-dev" }
+glidex-auth = { path = "crates/glidex-auth", version = "0.0.8-dev" }
+glidex-hv-client = { path = "crates/glidex-hv-client", version = "0.0.8-dev" }
+glidex-ovn = { path = "crates/glidex-ovn", version = "0.0.8-dev" }
 glidex-ovs = { path = "crates/glidex-ovs", version = "0.0.8-dev" }
+glidex-raftstore = { path = "crates/glidex-raftstore", version = "0.0.8-dev" }
+glidex-tls = { path = "crates/glidex-tls", version = "0.0.8-dev" }
+glidex-topology = { path = "crates/glidex-topology", version = "0.0.8-dev" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }
