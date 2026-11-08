@@ -1562,7 +1562,7 @@ name = "glidex-auth"
 version = "0.0.8-dev"
 dependencies = [
  "arc-swap",
- "base64 0.22.1",
+ "base64 0.23.1",
  "cedar-policy",
  "getrandom 0.4.3",
  "jsonwebtoken",
@@ -1599,7 +1599,7 @@ dependencies = [
  "arc-swap",
  "async-trait",
  "axum",
- "base64 0.22.1",
+ "base64 0.23.1",
  "buffa",
  "buffa-types",
  "bytes",
@@ -1679,7 +1679,7 @@ dependencies = [
 name = "glidex-e2e"
 version = "0.0.8-dev"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "serde_json",
  "uuid",
 ]
@@ -1768,7 +1768,7 @@ name = "glidex-raftstore"
 version = "0.0.8-dev"
 dependencies = [
  "async-trait",
- "base64 0.22.1",
+ "base64 0.23.1",
  "getrandom 0.4.3",
  "openraft",
  "redb",

@@ -61,7 +61,7 @@ cedar-policy = "4.13"
 arc-swap = "1"
 zeroize = { version = "1", features = ["serde"] }
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
-base64 = "0.22"
+base64 = "0.23"
 glidex-authd = { path = "../glidex-authd" }
 glidex-tls = { path = "../glidex-tls" }
 glidex-raftstore = { path = "../glidex-raftstore" }
