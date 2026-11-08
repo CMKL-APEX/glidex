@@ -100,6 +100,8 @@ Non-goals for this revision (each in §18):
 | D28 | **A slot row reaches the store only when it changed**, checked on both sides: a node ships a closed hour's slot row once and again only after a late sample changes it, and the leader's merge skips a row equal to the one it holds. | Nodes re-sent three hours of slot rows every minute and the leader rewrote them all (§6.7). The node side saves the traffic; the leader side keeps a resend after a lost acknowledgement from becoming a write. |
 | D29 | **A write that changes nothing makes no Raft entry.** The store records no `put` whose value equals the stored one, as it already records no `delete` of an absent key; a write left with no operations commits nothing. A node with no new ledger rows, whose closed hour and start time are unchanged, doesn't ship; and the leader's `ledger_inbox` cursor for a node holds only what it reads (its closed hour and start time), so it changes only when they do. | The ledger merge rewrote each node's cursor (with the time of the merge, which nothing reads) and the completeness rows every minute: about 4,300 entries a day for three nodes, nearly half of §6.7's 9,000, outside D28. Checking at the store catches every write of an unchanged value, the merge's slot rows (D28's leader side) included, in one place; a follower already holds the same bytes, and a watch has nothing to report. |
 | D30 | **A server says when its log stops.** Each server watches its own Raft view. The log is *stalled* when nothing has been applied for 10 election timeouts (60 s with the defaults, as long as a write waits for its commit) and, in that time, entries waited to be applied, no leader was known, or the term changed. The server then logs a warning, again every 5 minutes while it lasts and once when it ends; `cluster status` carries `raft.stalled_since`, which `gxctl cluster status` and the UI's Raft card show (§6.2a). | On 2026-11-03 nothing committed on prism from 06:29 to 08:39, and nobody knew until the web UI stopped answering, though `cluster status` had the numbers all along (troubleshooting has them compared by hand). A stall that lasts longer than a write's wait means every write is failing. Each server judges alone, so a server cut off from the others says so too. Applied entries are the measure, not commits: a follower knows what it applied, and an idle cluster with a leader is not stalled. Sending the alert elsewhere (mail, a webhook) needs a notification channel glidex doesn't have; the journal line is what host monitoring picks up. |
+| D31 | **A member may apply entries without flushing them, and flushes the state at checkpoints instead** (always on in the control plane, with no configuration key: `GLIDEX_RAFT_DURABLE_APPLIES=1` in its environment turns it off. In `glidex-raftstore` it is the field `RaftSettings::checkpointed_applies`, which each application sets in its own code; hyperstor's map service keeps durable applies until it sets it). Applies commit with redb's `Durability::None`. A checkpoint, a durable commit that persists everything before it, comes every 100 entries or 1 s, whichever is first, when a snapshot position is reported, at a clean shutdown and before the store leaves cluster mode. Standalone writes, the agents' mirror, local rows, snapshot installs and the Raft log stay durable (§6.2b). | Every entry is durable in a majority's logs before it is applied, so the state's own flush repeats one the log made: each member flushed twice per entry. A crash loses only applies after the last checkpoint, and openraft re-applies them from the log at startup. Measured with redb 4.5 at the prism servers' sizes: an apply takes 35 µs instead of 354 µs (p50), and a member applies about 9,700 a second instead of 2,900. No configuration key, so a rollback to an older build is never stopped by a key it doesn't know (`RaftConfig` refuses unknown keys); an older build ignores the variable. Owner's decisions, 2026-11-09. |
+| D32 | **The entries openraft hands over together are applied in one transaction**, durable or not as D31 says; `last_applied` is the batch's last entry, and subscribers hear each entry's revision in order after the commit. | Under a burst it is one commit per batch instead of one per entry. It changes no durability rule, and helps whether D31 is on or off. Only the Raft apply path batches: standalone writes commit one at a time. Owner's decision, 2026-11-09. |
 
 ## 4. Topology
 
@@ -651,15 +653,87 @@ exactly that.
 |---|---|
 | Library | `openraft`, version pinned in `Cargo.toml`, upgrades reviewed like the CH/OVS pins |
 | Log store | `raft/log.redb` (separate file, so purging the log never touches the state machine) |
-| State machine | `glidex.db`. Each entry is applied in **one** ReDB transaction together with the `raft_meta` table (`last_applied`, `last_membership`) |
+| State machine | `glidex.db`. Each batch of entries is applied in **one** ReDB transaction together with the `raft_meta` table (`last_applied`, `last_membership`) (D32) |
 | Entry size | ≤ 4 MiB; larger write sets are refused with `StoreError::TooLarge` (none exist today: images and disks are files, not values) |
 | Transport | HTTPS on :8842, mTLS, server certificates only; `POST /raft/{append,vote,snapshot}` |
 | Timeouts | heartbeat 1 s, election 3–6 s (D24); `cluster.raft.*` settings |
-| Snapshots | **built on demand, never periodically**: the state machine is already durable in ReDB, so a snapshot is a stream of one ReDB read transaction (with `last_applied` read in the same transaction) when a follower is too far behind or a learner joins. The log keeps the last 10 000 entries (`raft.log_keep_entries`) after every voter has applied them. A periodic full copy of a database of tens of GB (§4.1) would cost more than it saves. How this maps onto openraft's snapshot builder is checked in C2 **(verify)** |
-| fsync | log entries are fsynced before an ack; state-machine applies are durable through ReDB's commit |
+| Snapshots | **built on demand, never periodically**: the state machine is already in ReDB, durable up to its last checkpoint (§6.2b), so a snapshot is a stream of one ReDB read transaction (with `last_applied` read in the same transaction) when a follower is too far behind or a learner joins. The log keeps the last 10 000 entries (`raft.log_keep_entries`) after every voter has applied them. A periodic full copy of a database of tens of GB (§4.1) would cost more than it saves. How this maps onto openraft's snapshot builder is checked in C2 **(verify)** |
+| fsync | log entries are fsynced before an ack; state-machine applies are durable through ReDB's commit, or at checkpoints (D31, §6.2b) |
 
 Because applying an entry and advancing `last_applied` are one
-transaction, a crash never applies an entry twice or skips one.
+transaction, a crash never applies an entry twice or skips one. With
+checkpointed applies, a crash rolls the state and `last_applied` back
+together to the last checkpoint, and the entries after it are applied
+again from the log (§6.2b): still once each in the state that remains.
+
+### 6.2b Checkpointed applies (D31, D32)
+
+**What is flushed when.** With `RaftSettings::checkpointed_applies`
+set (the control plane sets it unless `GLIDEX_RAFT_DURABLE_APPLIES=1`
+is in its environment), `StateMachine::apply` commits each batch (D32) with redb's
+`Durability::None`: the rows are written and every reader sees them
+at once, but nothing is flushed. A **checkpoint** is a commit with
+`Durability::Immediate`, which makes it and every commit before it
+durable. It comes:
+
+- with the batch that reaches 100 entries, or 1 s, since the last
+  checkpoint (a batch that crosses the mark is itself the checkpoint);
+- in `snapshot_now`, before it reports a position (invariant I4 below);
+- at a clean shutdown of the store;
+- before the store leaves cluster mode (`leave`, `forget`, `dissolve`).
+
+A timer makes the 1 s checkpoint when no batch comes to carry it.
+
+**What stays durable, whatever the setting:** standalone writes
+(`Tx::commit` in `Local` mode: there is no log behind them); the agents'
+mirror (`Submitted::Queued` writes exist nowhere else until the leader
+takes them); `put_local` and `delete_local`; `install_dump`; and the
+Raft log, whose appends, vote and committed index stay flushed before
+openraft is told.
+
+**Why nothing committed is lost.** Four invariants:
+
+| | Invariant | Holds by |
+|---|---|---|
+| I1 | An entry is durable in a majority's logs before any member applies it | Raft; `append` flushes before `log_io_completed` |
+| I2 | The state file rolls back as a whole: rows and `last_applied` are one transaction | `apply` writes both in the batch's transaction |
+| I3 | At startup, (`last_applied`, committed] is applied again from the log before the member serves | openraft's `get_initial_state` (`reapply_committed`, openraft 0.9.25), with `read_committed` from the log store |
+| I4 | The durable `last_applied` is never behind the log's purged index | openraft purges only what a snapshot covers, and `snapshot_now` checkpoints before it reports one; `log_keep_entries` is at least 100 |
+
+I1–I3 held before D31. I4 is new, and the code must keep it: a member
+whose durable state fell behind its purged index could not re-apply at
+startup, and would wait for a snapshot from the leader.
+
+**Failures:**
+
+- **A checkpoint fails** (disk full, I/O error): `apply` returns the
+  error, and openraft stops the state machine, as for any apply error
+  today. A failed checkpoint is never logged and skipped: the state would
+  then stay behind while the log goes on purging (I4).
+- **A crash between checkpoints** (process, kernel or power, one member
+  or all): each member rolls back to its own last checkpoint and
+  re-applies from its own log at startup (I3). A client answered before
+  the crash was answered after its entry reached a majority's logs (I1).
+- **Effects already taken on an entry that was rolled back**: the entry
+  comes back at the same index with the same operations (in cluster mode
+  the revision is the log index), so a controller sees the same desired
+  state again. Controllers act on state, not on single events
+  ([12-reconciliation.md](12-reconciliation.md)), so this is harmless.
+- **A copy of `glidex.db` taken while the member runs** holds the state
+  of the last checkpoint: up to 100 entries or 1 s older than the
+  member. A copy restored on its own (without the log) loses that. A
+  backup takes a checkpoint first, or comes from the API.
+- **Rolling back to a build without D31:** the file format doesn't
+  change, and the older build commits durably. Nothing in the
+  configuration names D31, so the older build starts as it is; it
+  ignores `GLIDEX_RAFT_DURABLE_APPLIES`.
+- **Other applications of `glidex-raftstore`** (hyperstor's map
+  service): `RaftSettings` gains the field, so an application whose code
+  builds `RaftSettings` field by field doesn't compile until it chooses
+  a value. Nothing changes for it until then.
+
+**Needs** redb 4.4 or later: redb 4.4 fixed non-durable commits being
+lost on a clean close after a panic it caught.
 
 ### 6.2a Stall watch (D30)
 
@@ -1768,8 +1842,9 @@ passing in CI. C0 and C1 change nothing for standalone users.
 | **C7** Operations and membership | node phases (§5.3), drain, remove, forget, purge, rejoin with D18; CA on every server and rotation (§12.5); rolling upgrades with feature-level gating, certificate renewal, `cluster status` port checks, Cluster page in the UI, runbook (recovery of both Raft groups) | §15 upgrade, membership and CA rotation tests; §15 scale run with figures recorded in §4.1; certificate renewal under load; documented recovery exercised on the test cluster. |
 | **C9** Store diet (D26–D29) | slot rows shipped and merged only when they changed (§13.1, D28); no Raft entry for a write that changes nothing, and no ship with nothing new (D29); VM bookkeeping (`conditions`, `last_reconciled_at`) written with a change that is acted on or at most every 10 minutes (D27), and what changes in the other VM writes found; the measurement of §6.7 as a repeatable check | §6.7's measurement repeated on the test cluster: `rate_5m` writes per hour within 2× of one per subject and closed hour, no write in any table equal to the row before it, and no ledger write from a node with nothing new; an idle VM's record written at most every 10 minutes (the C0 test extended to conditions); Raft write volume at least 80% lower than §6.7's. |
 | **C8** Detach and import | departure bundle, two-phase detach with receipt, offline detach and `forget --departed`, import plans with checks and mappings, approval, staged commit, `move_vm_port`, `leave_ovn`, `cluster dissolve` | §15 detach, import and round-trip tests, all with running VMs. |
+| **C10** Apply durability (D31, D32) | One transaction per apply batch; `RaftSettings::checkpointed_applies` in `glidex-raftstore`, set by the control plane unless `GLIDEX_RAFT_DURABLE_APPLIES=1`; checkpoints every 100 entries or 1 s, in `snapshot_now`, at shutdown and before leaving cluster mode; a checkpoint failure stops the state machine (§6.2b) | A member's state after a crash between checkpoints is its last checkpoint, and after startup equals the other members' (dump compare); `snapshot_now` leaves the durable `last_applied` at or past what it reports; standalone and mirror writes survive a crash right after them; subscribers see each revision of a batch in order; a cluster test kills a follower and the leader under writes and compares dumps; on a test cluster, end-to-end write latency before and after |
 
-C9 needs C3 and comes before the history tier (§18).
+C9 needs C3 and comes before the history tier (§18). C10 needs C2 and redb 4.4 or later.
 
 Dependencies: C0 → C1 → C2 → C3 → C4. C5 needs C3 (node role) and
 C1 (scope). C6 needs C5. C7 needs C2–C5. C8 needs C7; its parts without
@@ -2157,6 +2232,15 @@ Why 86 node writes changed only `status.ui_url` (before C9): a restarted server 
 Not yet:
 
 - A cluster network's slot rows have no node in their key, so the leader's merge keeps the last node's row and drops the others' share of the network's 5-minute rates (the hourly rows are kept per node). Not fixed yet.
+
+### C10: apply durability
+
+Not built. Decisions D31 and D32 (owner, 2026-11-09). Measured, before
+the design (redb 4.5, prism2's disk, the prism servers' sizes: a 160 MB
+state database and a 70,000-entry log): applying a write set takes
+354 µs durable and 35 µs with `Durability::None` and a durable commit
+every 100 (p50); about 2,900 and 9,700 a second. End-to-end write
+latency on a cluster is not measured yet.
 
 ### Validation against real OVN and conntrack (after C8)
 
