@@ -2,8 +2,10 @@
 
 Status: **design; GV1, GV2 and GV3 implemented; GV6 (AMD on gpu-dev2)
 implemented; its reboot test failed on the boot binding (2026-11-08),
-and the fix, claiming the cards before `amdgpu` (G20), is built but not
-run on gpu-dev2 yet** (§12 milestones, §14 notes). Builds on
+and passed with the fix, claiming the cards before `amdgpu` (G20), on
+2026-11-09; a GPU VM after the reboot not run yet, since the pool is
+known only to gpu-dev2's file (22-host-topology.md HT6)** (§12
+milestones, §14 notes). Builds on
 [22-host-topology.md](22-host-topology.md) (HT0–HT5: topology, readiness,
 NUMA policy, device pools, SR-IOV), [04-hypervisors.md](04-hypervisors.md)
 (command lines) and [05-installer.md](05-installer.md).
@@ -568,8 +570,20 @@ with its owner's agreement:
 | 2026-11-08 | `glidex-netd --boot-devices` by hand, after boot, `amdgpu` idle | **pass**: `03:00.0` unbound from `amdgpu`, resized to 16384 MiB and bound to `vfio-pci`. So the boot failure was the race with `amdgpu`'s start; G20 claims the cards before it |
 | 2026-11-08 | The node's VMs after the reboot (`on_host_boot: resume`) | `pylon-dev`, root disk on `local`: **pass**, relaunched. `v2`, root disk on hyperstor `hs-nvme`: **fail**, held at `DiskNotReady: disk v2-root is Missing` though hyperstor serves the volume; being investigated |
 
-Not run yet: G20 on gpu-dev2 (a reboot with the claim), and a GPU VM
-after a reboot.
+The reboot again with G20, 2026-11-09 (22:30 UTC on 2026-11-08), main
+at `8471dc4` installed on all three servers, prism2 leading; both
+R9700s on `vfio-pci` at 16 GiB before, except `43:00.0`, which the
+host's other GPU user had moved back to `amdgpu`; their work stopped
+with their agreement:
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-11-09 | G20's claim at boot | **pass**: host back in 305 s; the udev hook logged `glidex-netd: claimed 0000:03:00.0 for vfio-pci` and the same for `43:00.0` at 22:32:55, before `amdgpu` started; `glidex-vfio-boot` then reported both bound, none skipped or failed. Both on `vfio-pci` with BAR0 at 16 GiB; `amdgpu` loaded, holding nothing |
+| 2026-11-09 | The node's VMs after the reboot (`on_host_boot: resume`) | **pass**: `pylon-dev` (disk on `local`) and `v2` (disk on hyperstor `hs-nvme`) both relaunched by themselves (S31, S32) |
+| 2026-11-09 | A 1-GPU VM (`gxctl create`, GPUs `1:r9700`) | **not run**: refused with `gpus: no device pool r9700`. Pools are read from each server's own `control-plane.json`, and only gpu-dev2's has `r9700`; with prism2 leading, the request was checked against prism2's. Pools and grants become a replicated setting in 22-host-topology.md HT6 (H20) |
+
+Not run yet: a GPU VM after a reboot (waits for HT6, or the pool in
+every server's file).
 
 ## 13. Open questions
 
