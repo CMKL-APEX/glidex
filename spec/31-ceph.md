@@ -1,7 +1,7 @@
 # Ceph RBD datastores
 
-Status: **design** (§11 milestones). Open questions Q1–Q4 (§10) need
-the owner's answer before code. Extends [24-storage.md](24-storage.md)
+Status: **design** (§11 milestones). Q1–Q4 are settled (§10, D17–D20);
+which site Ceph cluster the checks use is still to be named. Extends [24-storage.md](24-storage.md)
 (datastores, the driver trait §7, `glidex-stord` §11.1, exclusive
 access §10), and touches [04-hypervisors.md](04-hypervisors.md) (block
 disks), [05-installer.md](05-installer.md) (stord's allow-list) and
@@ -48,17 +48,16 @@ the fencing that 24-storage.md §10 point 4 left for later.
 
 ## 2. Decisions
 
-Proposed. D4, D7 and the test host wait on Q1–Q3.
 
 | # | Decision | Why |
 |---|---|---|
 | D1 | **`rbd` is a shared datastore over one pool, optionally one RADOS namespace in it** (`DriverSpec::Rbd {cluster, user, pool, namespace}`). Every node that reaches the Ceph cluster reaches the datastore. | A pool is Ceph's unit of placement, replication and quota. A namespace lets several glidex clusters, or a glidex cluster and OpenStack, share one pool without seeing each other's images, and the operator can limit the client user's caps to it. |
 | D2 | **Glidex uses a Ceph cluster the operator runs; it never creates pools, users or caps.** It needs Ceph Reef (18) or later, with clone format 2. The operator makes the pool (`ceph osd pool create glidex; rbd pool init glidex`) and the user (`ceph auth get-or-create client.glidex mon 'profile rbd' osd 'profile rbd pool=glidex'`). | The same line as `shared-dir` (glidex never mounts) and `lvm` (glidex never touches physical volumes, S19): storage administration stays with the operator. Reef's clone v2 lets an image snapshot with clones be removed without protect/unprotect. Ubuntu 24.04 ships Squid (19). |
 | D3 | **Glidex drives Ceph through the `rbd` and `rados` command-line tools with `--format json`**, not by linking librbd. | No C library in the build: the workspace still builds and tests on a machine without Ceph, and tests use a stand-in tool, as the hyperstor driver does with `hyperstorctl`. The `lvm` driver works the same way. Each call costs a process and a monitor connection (tens of ms), which is small next to a disk operation. |
-| D4 | **Each node finds the cluster in `/etc/ceph/<cluster>.conf` and `/etc/ceph/<cluster>.client.<user>.keyring`, which the operator installs** (keyring `root:glidex 0640`). No Ceph secret passes through glidex's API, store or logs. *(Pending Q2.)* | It is how every Ceph client is set up, and a node needs the key to map a disk, while agents don't hold glidex's secrets key (19-tenancy.md §13). A key in the API would have to be sent to each agent, which is a new secret-distribution path. Rotation is Ceph's (`ceph auth` and new files), and a node can have a user of its own. |
+| D4 | **Each node finds the cluster in `/etc/ceph/<cluster>.conf` and `/etc/ceph/<cluster>.client.<user>.keyring`, which the operator installs** (keyring `root:glidex 0640`). No Ceph secret passes through glidex's API, store or logs. (D18) | It is how every Ceph client is set up, and a node needs the key to map a disk, while agents don't hold glidex's secrets key (19-tenancy.md §13). A key in the API would have to be sent to each agent, which is a new secret-distribution path. Rotation is Ceph's (`ceph auth` and new files), and a node can have a user of its own. |
 | D5 | **A node reaches an `rbd` datastore only when it finds the datastore's marker**: a RADOS object `glidex-datastore` in the pool and namespace, holding the datastore and cluster ids. Claiming creates it with an exclusive create; a pool or namespace with RBD images and no marker is refused unless `adopt: true` (its images are reported as orphans, never imported). | The same rule as S5: a typo in the pool name, or two glidex clusters given one pool, must fail at creation, not write disks where another system keeps its own. An exclusive create is atomic in RADOS. |
 | D6 | **Images are named `gx-d-<disk uuid>` for disks and `gx-i-<image id>` for images**, and built aside under `<name>.new`, then renamed (`rbd mv`). | RBD names are unique per pool and namespace, so the datastore scopes them; hyperstor's cluster-wide ids (24-storage.md S28) don't apply. A rename makes a complete image appear under the disk's name, as the file and `lvm` drivers do; a crash leaves only a `.new` image, which the next attempt removes. |
-| D7 | **A VM's RBD disk is mapped by the kernel client (krbd) through `glidex-stord`, and handed to the hypervisor as a block device** (`VolumeBinding::Block`), for Cloud Hypervisor and QEMU alike. *(Pending Q1.)* | Cloud Hypervisor has no RBD support, so it needs a block device anyway; one path for both hypervisors reuses S6's block binding, `DeviceAllow` drop-ins and hypervisor arguments, which are tested. Mapping needs root, which stord is for (S12). |
+| D7 | **A VM's RBD disk is mapped by the kernel client (krbd) through `glidex-stord`, and handed to the hypervisor as a block device** (`VolumeBinding::Block`), for Cloud Hypervisor and QEMU alike. (D17) | Cloud Hypervisor has no RBD support, so it needs a block device anyway; one path for both hypervisors reuses S6's block binding, `DeviceAllow` drop-ins and hypervisor arguments, which are tested. Mapping needs root, which stord is for (S12). |
 | D8 | **stord maps only images in pools and namespaces listed in `/etc/glidex/stord.json` (`allowed_rbd_pools`), and only names of D6's form.** It makes the device `glidex:glidex 0600` and adds it to the VM's `DeviceAllow` drop-in. | S17's rule for LVM: a compromised control plane can map glidex's own images, not the host's or another tenant system's in the same cluster. |
 | D9 | **Every disk image has the `exclusive-lock` feature, and is mapped with `-o exclusive`**: the mapping node takes the lock and doesn't give it up while mapped. A map on a second node is refused, and that VM waits (`DiskBusy`), as for a held hyperstor volume. | A lock in Ceph itself holds across nodes even when glidex's own records are wrong, which neither placement nor the volume lock file can promise (24-storage.md §10). With `-o exclusive`, krbd won't hand the lock to another client that asks for it, so a running VM's disk is never written from two places. |
 | D10 | **A VM placed again after its node was forgotten as fenced takes its disks' locks over: the new node breaks the old lock, which blocklists the old client** (`takeover_disks`, as S23). Every other refused map waits. A lock whose owner is gone (a node that rebooted) is taken without a takeover, as Ceph does for a dead owner *(verify, H2)*. | Ceph's blocklist is a fence: a partitioned node that comes back can't write the disk again, which is what D8 of 14-clustering.md has lacked. Breaking a live owner's lock only on the operator's `--fenced` keeps D8's rule that nothing moves on its own. |
@@ -68,6 +67,10 @@ Proposed. D4, D7 and the test host wait on Q1–Q3.
 | D14 | **Space and fullness come from the pool**: `ceph df` for its `max_avail` and stored bytes, and the pool's `full` and `nearfull` flags and quota. A full pool refuses new disks (`507`, as S30). `overcommit: false` is checked against `max_avail`. *(`ceph df` under `profile rbd`: verify, H5; without it, sizes are 0, as on hyperstor's agents.)* | `max_avail` is after replication or erasure coding, which is what a disk takes. A full Ceph pool blocks writes cluster-wide, so refusing a new disk up front is the cheap part. |
 | D15 | **Moves onto and off `rbd` are flattened and raw** (S6c's rule): onto, `qemu-img convert -O raw` and `rbd import`; off, `rbd export` (or the mapped device) into the destination. | A raw RBD has no backing file. The mover (24-storage.md §8.3) needs the keyring, which every node has. |
 | D16 | **`disk.stored` is `rbd du`'s used bytes** for the disk (with `fast-diff`, the image's object map makes it cheap), sampled by the worker. | 24-storage.md §13: a shared datastore is counted once. |
+| D17 | **krbd for both hypervisors** (Q1, owner, 2026-11-08): D7 as written. QEMU's librbd path and a `qemu-storage-daemon` export are not built. | One tested path for Cloud Hypervisor and QEMU, reusing S6's block binding and device access. |
+| D18 | **The keyring is the operator's, in `/etc/ceph` on each node** (Q2, owner, 2026-11-08): D4 as written. `datastore create` takes no key. | No Ceph secret in glidex's API, store or logs, and no new way for a secret to reach agents. |
+| D19 | **Host checks and ignored tests run against an existing site Ceph cluster** (Q3, owner, 2026-11-08), in a pool and client user made for glidex. Which cluster is still to be named; results name no accounts and quote no keys (20-idp-checks.md's rule). | The owner's choice; a real cluster also shows the multi-node lock behaviour (H1, H2) that a single-node one can't. |
+| D20 | **R1–R3 are planned for v0.0.8; R4 comes after** (Q4, owner, 2026-11-08). Until R4, moves onto and off `rbd` are refused, `disk.stored` is 0 for RBD disks, and a full pool is shown but doesn't refuse new disks. | Datastore, volumes, staging and fencing are the usable core; moves and metering can follow. |
 
 ## 3. Model
 
@@ -234,31 +237,21 @@ On a test Ceph cluster (Q3), recorded here with date, build and result:
 
 ## 10. Questions
 
-Open, for the owner:
+Settled by the owner on 2026-11-08:
+- **Q1. Data path:** krbd for both hypervisors (D17).
+- **Q2. Where the Ceph key lives:** the operator's `/etc/ceph` files
+  (D18).
+- **Q3. Test cluster:** an existing site cluster (D19); which one is to
+  be named.
+- **Q4. First release:** R1–R3 in v0.0.8, R4 after (D20).
 
-- **Q1. Data path for QEMU.** Recommended: krbd for both hypervisors
-  (D7), one tested path. The alternative gives QEMU librbd
-  (`driver: rbd`): no root and no kernel module for QEMU VMs, newer RBD
-  features, but a second path, a QEMU with the RBD block module
-  (`qemu-block-extra` on Ubuntu) and the keyring readable by each VM's
-  unit. A third, `qemu-storage-daemon` exporting RBD over vhost-user-blk
-  for both, reuses hyperstor's binding but adds a process per VM.
-- **Q2. Where the Ceph key lives.** Recommended: keyring files the
-  operator installs on each node (D4). The alternative takes the key in
-  `datastore create` (write-only, `--keyring-file`), seals it, and sends
-  it to each node's stord; one place to rotate, but a new way for a
-  secret to reach agents.
-- **Q3. Test cluster.** Which Ceph cluster the host checks and ignored
-  tests run against: a single-node MicroCeph on a dev host (three loop
-  OSDs), or a cluster the site already has.
-- **Q4. Scope of the first release.** Recommended: R1–R3 in v0.0.8 if
-  it fits, R4 after; or the whole of §11 in one release.
+Open: which site cluster, pool and client user the checks use.
 
 ## 11. Milestones
 
 | # | Content | Depends on |
 |---|---|---|
-| R0 | This spec, Q1–Q4 settled and recorded as decisions | — |
+| R0 | This spec, Q1–Q4 settled and recorded as decisions (D17–D20). **Done** when this PR merges. | — |
 | R1 | The record, API, gxctl, UI form, claim and marker, probe and space (no disks yet); the `rbd`/`rados` wrapper and its stand-in | R0 |
 | R2 | stord's RBD ops and allow-list, installer flag; volumes (§5) and staging (§6); boot tests on both hypervisors | R1 |
 | R3 | Exclusive lock, takeover after `--fenced`, the probe's unmapping of stale maps; host checks H1–H3 | R2 |
@@ -270,4 +263,4 @@ Open, for the owner:
 |---|---|
 | Spec \| Code | Spec draft; no code |
 | Tests | None yet |
-| Not yet | Everything; Q1–Q4 open |
+| Not yet | R1–R4; the site cluster for the checks is to be named |
