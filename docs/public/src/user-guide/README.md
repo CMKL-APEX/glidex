@@ -19,7 +19,9 @@ Everything in this guide can be done in at least one of these:
   (VMs, Images, Disks, Credentials, Networking, Projects, Tokens, Usage,
   and Audit for project owners), an indicator of work in progress, and
   your name, which opens your account menu. Pages follow changes as they
-  happen, without reloading.
+  happen, without reloading. The footer names the build you are using:
+  its release (`v0.0.8`, or `v0.0.8+12` for 12 commits after it), branch
+  and commit, linked to GitHub. Quote it when you report a problem.
 - **`gxctl`**, the command-line client. Run `gxctl` for an interactive
   shell (`gxctl>` prompt, Tab completion, `help` lists every command), or
   `gxctl <command>` to run one command and exit:
