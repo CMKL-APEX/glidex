@@ -19,7 +19,7 @@ getrandom = "0.4"
 base64 = "0.23"
 zeroize = "1"
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
-reqwest = { version = "0.13", features = ["json"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]
