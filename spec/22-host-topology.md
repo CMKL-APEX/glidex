@@ -1190,5 +1190,11 @@ Where HT2 differs from the design above, and why:
   is `nic`, and a VF whose PF is a NIC joins `<PF slug>-vf`, matching
   `vf_of` (`glidex_topology::pci::{pool_vf_slug, pool_vf_slug_ids}`);
   gxctl's and the card's Adopt, and the installer's `--vfio-devices`,
-  read a `-vf` name as that `vf_of`. Not done yet: the acceptance run
-  on gpu-dev2 (#397).
+  read a `-vf` name as that `vf_of`. The card's **Grants…** (per pool,
+  discovered ones too): projects and tenants ticked from the directory
+  (`ListProjects`, `ListTenants`), or every admitted tenant (`"*"`, the
+  tenant list then disabled); saving replaces the pool's grants with
+  one and, for a discovered pool, adopts it under its slug in the same
+  write. Device (`bdf`) grants stay with the JSON editor and gxctl. The
+  pool and grant reference is in the PCI passthrough guide. Not done
+  yet: the acceptance run on gpu-dev2 (#397).
