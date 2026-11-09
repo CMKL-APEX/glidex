@@ -183,12 +183,12 @@ function AdoptDialog({
   const [name, setName] = useState(slug);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const ids = api.discoveredIds(slug);
+  const match = api.discoveredMatch(slug);
   const go = async () => {
-    if (!ids) return;
+    if (!match) return;
     setBusy(true);
     try {
-      await onAdopt({ name: name.trim(), class: pool?.class, match: { vendor_id: ids[0], device_id: ids[1] } });
+      await onAdopt({ name: name.trim(), class: pool?.class, match });
     } catch (e) {
       setError(errorMessage(e));
     } finally {
@@ -210,7 +210,7 @@ function AdoptDialog({
         <button className={secondaryButton} onClick={onClose}>
           Cancel
         </button>
-        <button className={primaryButton} disabled={busy || !ids || !name.trim()} onClick={go}>
+        <button className={primaryButton} disabled={busy || !match || !name.trim()} onClick={go}>
           Adopt
         </button>
       </div>

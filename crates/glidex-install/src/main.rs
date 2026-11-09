@@ -2829,7 +2829,7 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
 /// are, pools as their `match` (spec/22-host-topology.md §9.1b). A pool is
 /// looked up in the cluster's setting (`cluster`, from the running control
 /// plane), else in this host's file, else read as a discovered pool's name
-/// (`amd-7551`). The host's `pci.overrides` set its `bar_mib`, and its
+/// (`amd-7551`, or `15b3-1021-vf` for the VFs of a card). The host's `pci.overrides` set its `bar_mib`, and its
 /// `pci.exclude` is never bound. `None`: nothing set.
 fn boot_devices_config(
     devices: &[String],
@@ -2864,6 +2864,11 @@ fn boot_devices_config(
             .or_else(|| {
                 glidex_topology::pci::pool_slug_ids(d).map(|(v, dev)| {
                     serde_json::json!({ "name": d, "match": { "vendor_id": v, "device_id": dev } })
+                })
+            })
+            .or_else(|| {
+                glidex_topology::pci::pool_vf_slug_ids(d).map(|(v, dev)| {
+                    serde_json::json!({ "name": d, "match": { "vf_of": { "vendor_id": v, "device_id": dev } } })
                 })
             })
             .with_context(|| {
@@ -4350,6 +4355,16 @@ mod tests {
                 c.select[0].device_id.as_deref()
             ),
             (Some("0x1002"), Some("0x7551"))
+        );
+        // A discovered VF pool's, for the VFs of its PF's model.
+        let c = boot_devices_config(&["15b3-1021-vf".into()], &[], None, None)
+            .unwrap()
+            .unwrap();
+        assert!(c.select[0].vendor_id.is_none());
+        let of = c.select[0].vf_of.as_deref().unwrap();
+        assert_eq!(
+            (of.vendor_id.as_deref(), of.device_id.as_deref()),
+            (Some("0x15b3"), Some("0x1021"))
         );
     }
 

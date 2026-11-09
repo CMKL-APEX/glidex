@@ -250,20 +250,26 @@ async fn listed_pools(client: &ApiClient) -> Result<Vec<PciPool>, String> {
 }
 
 /// A defined pool named `name` matching discovered pool `found`'s vendor
-/// and device id (§9.1b).
+/// and device id, or for a VF pool its PF's (§9.1b).
 fn adopted(found: &PciPool, name: &str) -> Result<PciPoolSpec, String> {
-    let Some((vendor_id, device_id)) = glidex_topology::pci::pool_slug_ids(&found.name) else {
-        return Err(format!("{} is not a discovered pool's name", found.name));
+    use glidex_topology::pci::{pool_slug_ids, pool_vf_slug_ids};
+    let ids = |(vendor_id, device_id): (String, String)| PciPoolMatch {
+        vendor_id: Some(vendor_id),
+        device_id: Some(device_id),
+        ..Default::default()
+    };
+    let r#match = match (pool_slug_ids(&found.name), pool_vf_slug_ids(&found.name)) {
+        (Some(m), _) => ids(m),
+        (None, Some(pf)) => PciPoolMatch {
+            vf_of: ids(pf).into(),
+            ..Default::default()
+        },
+        (None, None) => return Err(format!("{} is not a discovered pool's name", found.name)),
     };
     Ok(PciPoolSpec {
         name: name.to_string(),
         class: found.class.clone(),
-        r#match: PciPoolMatch {
-            vendor_id: Some(vendor_id),
-            device_id: Some(device_id),
-            ..Default::default()
-        }
-        .into(),
+        r#match: r#match.into(),
         ..Default::default()
     })
 }
@@ -1407,6 +1413,17 @@ mod tests {
         assert_eq!(p.class.as_deref(), Some("gpu"));
         assert_eq!(p.r#match.vendor_id.as_deref(), Some("0x1002"));
         assert_eq!(p.r#match.device_id.as_deref(), Some("0x7551"));
+        let vfs = PciPool {
+            name: "15b3-1021-vf".into(),
+            class: Some("nic".into()),
+            discovered: Some(true),
+            ..Default::default()
+        };
+        let p = adopted(&vfs, "cx7-vfs").unwrap();
+        assert!(p.r#match.vendor_id.is_none());
+        let of = p.r#match.vf_of.as_option().unwrap();
+        assert_eq!(of.vendor_id.as_deref(), Some("0x15b3"));
+        assert_eq!(of.device_id.as_deref(), Some("0x1021"));
         let bad = PciPool {
             name: "r9700".into(),
             ..Default::default()

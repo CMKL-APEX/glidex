@@ -1,4 +1,4 @@
-// The Cluster page's Device pools card (spec/22-host-topology.md H20, H21):
+// The Cluster page's Device pools card (spec/22-host-topology.md H20, H21, H24):
 // defined and discovered pools from mocked answers, adopting a discovered
 // pool, and the request each action sends. Any host will do.
 import { expect, rpcRoute, test, waitForRpc } from "../fixtures";
@@ -41,6 +41,13 @@ test.beforeEach(async ({ page }) => {
             },
           ],
         },
+        {
+          name: "15b3-1021-vf",
+          class: "nic",
+          free: 1,
+          discovered: true,
+          nodes: [{ node: "n1", node_name: "gpu-01", free: 1, devices: [{ address: "0000:41:00.2", ready: true }] }],
+        },
       ],
     },
   }));
@@ -75,6 +82,22 @@ test("adopting a discovered pool adds a pool matching its model and keeps the re
   await expect(dialog).toBeHidden();
   expect(sent.pools).toEqual([t4, { name: "r9700", class: "gpu", match: { vendor_id: "0x1002", device_id: "0x7551" } }]);
   expect(sent.allow).toEqual([grant]);
+});
+
+test("adopting a discovered pool of VFs matches them by their card", async ({ page }) => {
+  let sent: any = null;
+  await rpcRoute(page, `${CLUSTER_SVC}/PutPciSettings`, (req) => {
+    sent = req;
+    return { message: { source: "PCI_SETTINGS_SOURCE_CLUSTER", settings: req } };
+  });
+  await page.goto("/cluster");
+  await page.getByRole("row").filter({ hasText: "15b3-1021-vf" }).getByRole("button", { name: "Adopt…" }).click();
+  const dialog = page.getByRole("dialog", { name: "Adopt 15b3-1021-vf" });
+  await dialog.getByLabel("Name").fill("cx7-vfs");
+  const put = waitForRpc(page, `${CLUSTER_SVC}/PutPciSettings`);
+  await dialog.getByRole("button", { name: "Adopt" }).click();
+  await put;
+  expect(sent.pools[1]).toEqual({ name: "cx7-vfs", class: "nic", match: { vf_of: { vendor_id: "0x15b3", device_id: "0x1021" } } });
 });
 
 test("removing a pool takes its grants with it", async ({ page }) => {
