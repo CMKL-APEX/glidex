@@ -18,7 +18,7 @@ walk-through of adding an API operation, and the pull request flow.
 
 ```bash
 cargo build                      # every crate
-cargo build -p glidex-control-plane --bin gxctl
+cargo build -p gxctl
 ```
 
 On a host where the installer runs Glidex as services, stop them first:
@@ -520,7 +520,7 @@ that each RPC's REST twin is registered with the same action.
 
 ### 8. gxctl
 
-Add the command in the area's file under `src/bin/gxctl/`, here
+Add the command in the area's file under `crates/gxctl/src/`, here
 `storage.rs` (`disk move <disk> --datastore D [--node N] [--flatten]`),
 calling the generated client:
 
@@ -651,7 +651,8 @@ feature levels and protocol numbers, never from comparing versions.
 The library crates are published to crates.io: `glidex-api`,
 `glidex-auth`, `glidex-hv-client`, `glidex-ovn`, `glidex-ovs`,
 `glidex-raftstore`, `glidex-tls` and `glidex-topology`, and `glidex`,
-which re-exports them, each behind a feature of its name. The daemons, the
+which re-exports them, each behind a feature of its name; and `gxctl`,
+the CLI, so that `cargo install gxctl` installs it on any machine. The daemons, the
 UI, the installer and the control plane have `publish = false`: they are
 installed by `glidex-install`, and the control plane depends on
 hyperstor's crates by git, which crates.io refuses.
@@ -676,7 +677,7 @@ Trusted Publishing is set per crate on crates.io, so a crate's first
 upload is by hand, by an owner: `cargo login` (it reads the token from
 standard input; never pass it as an argument), then
 `cargo publish -p <crate>` for each crate, `glidex-ovs` before
-`glidex-ovn` and `glidex` last (or `cargo publish --workspace`, which
+`glidex-ovn`, and `glidex` and `gxctl` last (or `cargo publish --workspace`, which
 takes them in that order). Then, for each crate, add the repository and
 `publish.yml` (environment `crates-io`) as a trusted publisher in its
 settings on crates.io, and add the other owners

@@ -236,25 +236,6 @@ pub fn cpus_of_mask(mask: &str) -> Vec<u32> {
     out
 }
 
-/// `0-3,8,10-11` for a set of CPUs.
-pub fn cpu_list(cpus: &[u32]) -> String {
-    let set: BTreeSet<u32> = cpus.iter().copied().collect();
-    let mut parts = Vec::new();
-    let mut it = set.into_iter().peekable();
-    while let Some(start) = it.next() {
-        let mut end = start;
-        while it.peek() == Some(&(end + 1)) {
-            end = it.next().unwrap_or(end);
-        }
-        parts.push(if start == end {
-            start.to_string()
-        } else {
-            format!("{start}-{end}")
-        });
-    }
-    parts.join(",")
-}
-
 /// PCI classes of devices a VM could be given (§3.3): display, network,
 /// NVMe, processing accelerators, coprocessors.
 fn assignable_class(class: &str) -> bool {
@@ -776,8 +757,6 @@ mod tests {
             vec![0, 136]
         );
         assert!(cpus_of_mask("zz").is_empty());
-        assert_eq!(cpu_list(&[3, 0, 1, 2, 8, 10, 11]), "0-3,8,10-11");
-        assert_eq!(cpu_list(&[]), "");
     }
 
     /// On a real host: `cargo test -p glidex-control-plane --lib
@@ -792,7 +771,7 @@ mod tests {
                 "node {}: {} cores, cpus {}, {} MiB, hugepages {:?}",
                 n.id,
                 n.cores.len(),
-                cpu_list(&cpus),
+                glidex_topology::numa::format_list(&cpus),
                 n.memory_mib,
                 n.hugepages
             );

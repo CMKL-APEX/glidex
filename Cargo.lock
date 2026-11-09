@@ -1539,8 +1539,6 @@ dependencies = [
  "buffa-types",
  "bytes",
  "cedar-policy",
- "clap",
- "colored",
  "connectrpc",
  "connectrpc-health",
  "connectrpc-reflection",
@@ -1580,13 +1578,11 @@ dependencies = [
  "ring",
  "rustls-native-certs",
  "rustls-pki-types",
- "rustyline",
  "serde",
  "serde_json",
  "sha-crypt",
  "sha2 0.11.1",
  "smallvec",
- "tabled",
  "tar",
  "tempfile",
  "thiserror 2.0.21",
@@ -1792,6 +1788,40 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "gxctl"
+version = "0.0.8-dev"
+dependencies = [
+ "base64 0.23.1",
+ "buffa",
+ "buffa-types",
+ "clap",
+ "colored",
+ "connectrpc",
+ "dirs",
+ "futures-util",
+ "glidex-api",
+ "glidex-control-plane",
+ "glidex-tls",
+ "glidex-topology",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "libc",
+ "nix 0.31.3",
+ "percent-encoding",
+ "rustls-pki-types",
+ "rustyline",
+ "serde",
+ "serde_json",
+ "tabled",
+ "tempfile",
+ "tokio",
+ "tokio-rustls",
+ "tower",
+ "zeroize",
 ]
 
 [[package]]

@@ -229,6 +229,13 @@ https://<server>:8841 …`, which runs on the agent itself).
 
 ## gxctl from another machine
 
+On a machine without Glidex, install `gxctl` from crates.io (it needs a
+Rust toolchain, [rustup.rs](https://rustup.rs)):
+
+```bash
+cargo install gxctl
+```
+
 `gxctl auth login` connects to a control plane over HTTPS, checks its
 certificate, gets you a token and saves the lot as a named *login
 profile* in `~/.config/glidex/config.json` (mode 0600). Later commands

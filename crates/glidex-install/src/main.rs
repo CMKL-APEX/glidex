@@ -2408,6 +2408,8 @@ fn build_args(opts: &Options) -> Vec<&'static str> {
         "-p",
         "glidex-control-plane",
         "-p",
+        "gxctl",
+        "-p",
         "glidex-netd",
         "-p",
         "glidex-ui",
@@ -5298,6 +5300,12 @@ mod tests {
                 .any(|w| w == ["-p", "glidex-authd"])
         );
         assert!(!build_args(&no_services).contains(&"glidex-authd"));
+        // Each binary installed is built, gxctl from its own package.
+        assert!(
+            build_args(&Options::default())
+                .windows(2)
+                .any(|w| w == ["-p", "gxctl"])
+        );
     }
 
     #[test]

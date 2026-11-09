@@ -757,7 +757,7 @@ pub(crate) fn topology_lines(
                 "numa".bold(),
                 n.id,
                 n.cores.len(),
-                glidex_control_plane::topology::cpu_list(&cpus),
+                glidex_topology::numa::format_list(&cpus),
                 n.memory_mib,
                 if hp.is_empty() {
                     String::new()
@@ -791,7 +791,7 @@ pub(crate) fn topology_lines(
             let cpus: Vec<u32> = reserved.iter().map(|(c, _)| *c).collect();
             out.push(format!(
                 "reserved cpus {}",
-                glidex_control_plane::topology::cpu_list(&cpus)
+                glidex_topology::numa::format_list(&cpus)
             ));
         }
     }
