@@ -92,15 +92,36 @@ pub(crate) fn clear_cond(conds: &mut Vec<Condition>, kind: &str) {
 }
 
 /// How long the shim waits for a hypervisor's socket (spec/12-reconciliation.md
-/// D22): `base`, and for each passthrough device 2 s per GiB of guest memory,
-/// up to 15 minutes. Cloud Hypervisor maps the whole of a VM's memory for its
-/// VFIO devices before its API answers: 8 GiB and a ConnectX-6 took 6 s, and
-/// 16 GiB with an A100 and a ConnectX-6 more than 30.
-fn ready_timeout_secs(base: u64, mem_size_mib: u32, vfio_devices: usize) -> u64 {
-    const PER_GIB_PER_DEVICE: u64 = 2;
+/// D22): `base`, plus, with passthrough devices, 1 s per GiB of guest memory
+/// and 1 s per 2 GiB of the devices' memory BARs, up to 15 minutes. Before its
+/// API answers, Cloud Hypervisor maps the VM's memory into the IOMMU once and
+/// each device's BARs after it, 4 KiB at a time on a 6.8 host: on prism2, 4 GiB
+/// took 3.6 s and an A100's 64 GiB BAR 27 s.
+fn ready_timeout_secs(base: u64, mem_size_mib: u32, bar_mib: &[u64]) -> u64 {
     const MAX: u64 = 15 * 60;
-    let gib = u64::from(mem_size_mib).div_ceil(1024);
-    (base + gib * PER_GIB_PER_DEVICE * vfio_devices as u64).min(MAX.max(base))
+    if bar_mib.is_empty() {
+        return base;
+    }
+    let mem = u64::from(mem_size_mib).div_ceil(1024);
+    let bars = bar_mib.iter().sum::<u64>().div_ceil(2048);
+    (base + mem + bars).min(MAX.max(base))
+}
+
+/// The MiB of memory BARs 0–5 in a device's sysfs `resource` file (one
+/// `start end flags` line per resource; the ROM and SR-IOV BARs follow).
+fn mem_bar_mib(resource: &str) -> u64 {
+    const IORESOURCE_MEM: u64 = 0x200;
+    let hex = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0);
+    let bytes: u64 = resource
+        .lines()
+        .take(6)
+        .filter_map(|l| {
+            let mut f = l.split_whitespace().map(hex);
+            let (start, end, flags) = (f.next()?, f.next()?, f.next()?);
+            (end > start && flags & IORESOURCE_MEM != 0).then(|| end - start + 1)
+        })
+        .sum();
+    bytes.div_ceil(1 << 20)
 }
 
 fn crash_delay(restarts: u32) -> u64 {
@@ -1360,11 +1381,23 @@ impl VmManager {
                 .map_err(before_intent)?
         };
         let settings = self.settings();
-        let ready_timeout = ready_timeout_secs(
-            settings.ready_timeout_secs,
-            config.mem_size_mib,
-            config.vfio_devices.len(),
-        );
+        let bar_mib = {
+            let devices = config.vfio_devices.clone();
+            blocking(move || {
+                devices
+                    .iter()
+                    .map(|d| {
+                        mem_bar_mib(
+                            &std::fs::read_to_string(format!("{d}/resource")).unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .map_err(before_intent)?
+        };
+        let ready_timeout =
+            ready_timeout_secs(settings.ready_timeout_secs, config.mem_size_mib, &bar_mib);
         // Shared disks' locks: the shim takes them before the hypervisor
         // starts (spec/24-storage.md S16).
         let volume_locks = config
@@ -2355,13 +2388,39 @@ mod tests {
 
     #[test]
     fn passthrough_gives_the_hypervisor_longer_to_answer() {
-        assert_eq!(ready_timeout_secs(30, 16384, 0), 30, "no devices: the base");
-        assert_eq!(ready_timeout_secs(30, 8192, 1), 46);
-        assert_eq!(ready_timeout_secs(30, 16384, 2), 94);
+        assert_eq!(
+            ready_timeout_secs(30, 16384, &[]),
+            30,
+            "no devices: the base"
+        );
+        // prism2's ch1k: 4 GiB, a ConnectX-6 (one 32 MiB BAR) and an A100
+        // (16 MiB, 64 GiB, 32 MiB). It answered after 31 s.
+        assert_eq!(ready_timeout_secs(30, 4096, &[32, 65_584]), 30 + 4 + 33);
         // A part GiB counts whole.
-        assert_eq!(ready_timeout_secs(30, 1536, 1), 34);
-        // Eight GPUs and 1 TiB: capped.
-        assert_eq!(ready_timeout_secs(30, 1 << 20, 8), 900);
+        assert_eq!(ready_timeout_secs(30, 1536, &[32]), 30 + 2 + 1);
+        // Eight A100s and 1 TiB: capped.
+        assert_eq!(ready_timeout_secs(30, 1 << 20, &[65_584; 8]), 900);
+    }
+
+    #[test]
+    fn memory_bars_are_read_from_sysfs() {
+        // An A100: BARs 0, 1 and 3, an expansion ROM, and an empty SR-IOV BAR.
+        let a100 = "\
+0x00000000f3000000 0x00000000f3ffffff 0x0000000000040200
+0x0000022000000000 0x0000022fffffffff 0x000000000014220c
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x0000023420000000 0x0000023421ffffff 0x000000000014220c
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x000000000000e000 0x000000000000e07f 0x0000000000040101
+0x00000000f2000000 0x00000000f207ffff 0x0000000000046200
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+";
+        assert_eq!(
+            mem_bar_mib(a100),
+            16 + 65_536 + 32,
+            "I/O ports and the ROM don't count"
+        );
+        assert_eq!(mem_bar_mib(""), 0);
     }
 
     /// spec/14-clustering.md §4.1 / C0: an idle VM causes no store write across
