@@ -205,7 +205,8 @@ the tree.
 - **`net`:** every netdev on a PCI function (bonds, bridges and USB
   devices such as a BMC's have none): link layer (`type` 1 Ethernet, 32
   InfiniBand), `operstate`, `speed`, `mtu`, the bond or bridge it is in
-  (`master`), its addresses or its master's (`getifaddrs`), and its RDMA
+  (`master`), its addresses and those of each master up its chain, port →
+  bond → bridge (`getifaddrs`), and its RDMA
   port from `/sys/class/infiniband/<dev>/ports/<n>`: `link_layer`,
   `state`, `rate`, and for InfiniBand the subnet prefix (the first 64 bits
   of `gids/0`) and `sm_lid`, which together name the fabric. A RoCE
