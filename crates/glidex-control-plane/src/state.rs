@@ -3520,6 +3520,14 @@ impl VmManager {
             "SpecChanged",
             "spec updated",
         ));
+        // A NIC added to a placed VM needs its address now, as at create:
+        // without one the leader leaves its OVN port out. Placement makes
+        // them for a VM placed later.
+        let reserve_ips = if vm.status.placement.is_some() {
+            self.cluster_nics(&vm)
+        } else {
+            Vec::new()
+        };
         self.store.commit(Commit {
             put_vm: Some(&vm),
             put_disks: disk_writes.iter().collect(),
@@ -3527,6 +3535,7 @@ impl VmManager {
                 .into_iter()
                 .map(|ev| (event_key("vm", &vm.id), ev))
                 .collect(),
+            reserve_ips,
             ..Default::default()
         })?;
         for d in &disk_writes {

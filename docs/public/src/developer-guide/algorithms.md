@@ -1007,9 +1007,12 @@ reserve(network, mac):
     else lowest free address in the pool; none -> PoolFull
 ```
 
-- Reservations are made at placement, in the same commit as the placement.
+- Reservations are made at placement, in the same commit as the placement,
+  and when a change adds a NIC to a placed VM, in the same commit as the
+  change.
 - They are freed when the VM or NIC is gone, by the leader's OVN
-  reconciler (`controller/ovn.rs` `gc_reservations()`).
+  reconciler (`controller/ovn.rs` `gc_reservations()`). It also makes any
+  a placed VM's NIC lacks: without one, the NIC gets no OVN port.
 - Each reservation becomes the port's `addresses` and `port_security` in
   OVN. Addresses reach guests through OVN's native DHCP.
 - Router external addresses come from `allocate_external()`: the requested

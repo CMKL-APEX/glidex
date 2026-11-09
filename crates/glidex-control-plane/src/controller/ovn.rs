@@ -337,12 +337,22 @@ impl VmManager {
 
     /// A reservation lives as long as the NIC it was made for (the `vm.ipam`
     /// finalizer of the plan, done as garbage collection): free any whose VM
-    /// or NIC is gone.
+    /// or NIC is gone. Also make any a placed VM's NIC lacks: without one the
+    /// NIC gets no port, and NICs added to a placed VM used to get none.
     async fn gc_reservations(&self) {
         let Ok(res) = crate::ipam::list_reservations(&self.store.database()) else {
             return;
         };
         let vms = self.vms.read().await;
+        let missing: Vec<_> = vms
+            .values()
+            .filter(|vm| vm.status.placement.is_some() && vm.deletion_requested_at.is_none())
+            .flat_map(|vm| self.cluster_nics(vm))
+            .filter(|(network, mac, _, _)| {
+                !res.iter()
+                    .any(|r| &r.network == network && r.mac.eq_ignore_ascii_case(mac))
+            })
+            .collect();
         let stale: Vec<_> = res
             .into_iter()
             .filter(|r| {
@@ -358,6 +368,22 @@ impl VmManager {
             })
             .collect();
         drop(vms);
+        // Each on its own, so that one full pool doesn't hold up the others.
+        for (network, mac, vm_id, nic) in &missing {
+            match self.store.database().write(
+                crate::store::Origin::Network,
+                |tx| -> Result<_, crate::ipam::IpamError> {
+                    crate::ipam::reserve(tx, network, mac, vm_id, *nic)
+                },
+            ) {
+                Ok(r) => {
+                    tracing::info!(vm = %vm_id, nic, %network, ip = %r.ip, "reserved a missing address")
+                }
+                Err(e) => {
+                    tracing::warn!(vm = %vm_id, nic, %network, "reserving a missing address: {}", e)
+                }
+            }
+        }
         if stale.is_empty() {
             return;
         }

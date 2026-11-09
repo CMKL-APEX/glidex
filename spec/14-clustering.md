@@ -1390,8 +1390,10 @@ New netd ops, all on the full socket under the existing policy (§7.2 of
   overlap; init refuses overlapping settings). Gateway `.1`, pool
   `.2–.254`. Same rules as 09-networking.md decision 8.
 - Reservations: allocated for each VM NIC at **placement** (§9.1 step
-  3), never at launch, so a VM keeps its address across stops,
-  restarts and, later, live migration. Freed by a new cluster finalizer
+  3), and for a NIC added to a placed VM when it is added, never at
+  launch, so a VM keeps its address across stops, restarts and, later,
+  live migration. The leader also makes any a placed VM's NIC lacks: a
+  NIC without one gets no logical port. Freed by a new cluster finalizer
   `vm.ipam` when the VM is deleted.
 - Each reservation becomes the logical port's `addresses = "<mac>
   <ip>"` and `port_security = "<mac> <ip>"`. This is the port security
@@ -2098,8 +2100,9 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
 - **IPAM** (`ipam`, tables `ipam_subnets`, `ipam_reservations`): a /24 from
   `ovn.nat_supernet` (default 10.89.0.0/16, never overlapping the node NAT
   range), or the requested subnet; reservations are made in the same write as
-  the VM's placement (create, or the scheduler's) and live as long as the NIC
-  (garbage-collected by the leader: the plan's `vm.ipam` finalizer).
+  the VM's placement (create, or the scheduler's) or as a change that adds a
+  NIC to a placed VM, and live as long as the NIC (garbage-collected by the
+  leader: the plan's `vm.ipam` finalizer, which also makes missing ones).
 - **Networks** have `scope: cluster` (default when `cluster.ovn.enabled`):
   `bridge: br-int`, MTU = underlay − 58, no per-node controller. NAT needs
   `cluster.ovn.edge`. No cluster network is created automatically (§11.7).
