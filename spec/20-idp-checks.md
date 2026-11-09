@@ -185,6 +185,29 @@ On a cluster with a Google Workspace connector:
 5. A second lab past the per-user limit is refused, as is going past
    the cap.
 
+## Token paths on aws-lc-rs (#349, #353)
+
+#349 moved jsonwebtoken to its `aws_lc_rs` backend, and #353 moved the
+issuer's ES256 signing and WebAuthn's ES256 and RS256 checks there too.
+The unit tests cover issuing and checking tokens, key rotation, a key
+stored before #353, and passkey assertions; these steps show the real
+paths, on a cluster running a build with both.
+
+1. Sign in through an OIDC connector in a browser (Google's ID tokens are
+   RS256; an ES256 provider too, where one is configured).
+2. The cluster's own tokens: open a second server's web UI directly (not
+   through the load balancer) while signed in at another, and sign in
+   with the directory there (the issuer's ES256 tokens). With gxctl,
+   `auth login --directory` on a profile for one server, then a command
+   against another server with that profile.
+3. A trusted login (another organization's directory, D69: a profile
+   `--via` it) and a token exchange; skip when no second organization
+   is set up, and say so.
+4. A passkey sign-in on a key made before the install (ES256), and on a
+   Windows Hello key (RS256) where one is at hand.
+5. Google Directory sync's service-account assertion (RS256 signing):
+   only with a test directory (T4 is deferred by the operator).
+
 ## Results
 
 | Date | Build | Check | Result |

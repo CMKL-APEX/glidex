@@ -4,6 +4,10 @@
 //! (P1). CBOR is decoded here, strictly and only as far as WebAuthn needs:
 //! definite lengths, no tags, no floats.
 
+use aws_lc_rs::signature::{
+    ECDSA_P256_SHA256_ASN1, ParsedPublicKey, RSA_PKCS1_2048_8192_SHA256, RsaPublicKeyComponents,
+    UnparsedPublicKey,
+};
 use base64::Engine as _;
 use serde_json::Value;
 use sha2::Digest as _;
@@ -188,12 +192,18 @@ pub fn cbor(b: &[u8]) -> Result<Cbor, String> {
 
 // ---- keys -----------------------------------------------------------------
 
-/// A credential's public key, from its COSE encoding.
+/// A credential's public key, from its COSE encoding. ES256 and RS256
+/// keep the key's bytes, checked when parsed; aws-lc-rs verifies with them.
 #[derive(Debug, Clone, PartialEq)]
 pub enum PublicKey {
-    Es256(p256::ecdsa::VerifyingKey),
+    /// The uncompressed SEC1 point: 0x04, x, y.
+    Es256(Vec<u8>),
     EdDsa(ed25519_dalek::VerifyingKey),
-    Rs256(rsa::RsaPublicKey),
+    /// The modulus and exponent, big-endian without leading zeros.
+    Rs256 {
+        n: Vec<u8>,
+        e: Vec<u8>,
+    },
 }
 
 impl PublicKey {
@@ -219,8 +229,8 @@ impl PublicKey {
                 let mut sec1 = vec![4u8];
                 sec1.extend_from_slice(x);
                 sec1.extend_from_slice(y);
-                p256::ecdsa::VerifyingKey::from_sec1_bytes(&sec1)
-                    .map(PublicKey::Es256)
+                ParsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, &sec1)
+                    .map(|_| PublicKey::Es256(sec1))
                     .map_err(|_| "bad P-256 point".into())
             }
             (EDDSA, 1) => {
@@ -236,13 +246,19 @@ impl PublicKey {
                     .map_err(|_| "bad Ed25519 key".into())
             }
             (RS256, 3) => {
-                let n = rsa::BigUint::from_bytes_be(b(-1).ok_or("no n")?);
-                let e = rsa::BigUint::from_bytes_be(b(-2).ok_or("no e")?);
-                let key = rsa::RsaPublicKey::new(n, e).map_err(|_| "bad RSA key")?;
-                if rsa::traits::PublicKeyParts::size(&key) < 256 {
+                let unpadded = |v: &[u8]| {
+                    let zeros = v.iter().take_while(|&&c| c == 0).count();
+                    v[zeros..].to_vec()
+                };
+                let n = unpadded(b(-1).ok_or("no n")?);
+                let e = unpadded(b(-2).ok_or("no e")?);
+                if n.len() < 256 {
                     return Err("RSA keys are at least 2048 bits".into());
                 }
-                Ok(PublicKey::Rs256(key))
+                RsaPublicKeyComponents { n: &n, e: &e }
+                    .to_parsed_public_key(&RSA_PKCS1_2048_8192_SHA256)
+                    .map_err(|_| "bad RSA key")?;
+                Ok(PublicKey::Rs256 { n, e })
             }
             _ => Err(format!("algorithm {alg} isn't accepted")),
         }
@@ -252,37 +268,23 @@ impl PublicKey {
         match self {
             PublicKey::Es256(_) => ES256,
             PublicKey::EdDsa(_) => EDDSA,
-            PublicKey::Rs256(_) => RS256,
+            PublicKey::Rs256 { .. } => RS256,
         }
     }
 
     /// Whether `sig` signs `msg`.
     pub fn verify(&self, msg: &[u8], sig: &[u8]) -> bool {
         match self {
-            PublicKey::Es256(k) => {
-                use p256::ecdsa::signature::Verifier as _;
-                p256::ecdsa::Signature::from_der(sig).is_ok_and(|s| k.verify(msg, &s).is_ok())
-            }
+            // WebAuthn's ES256 signatures are DER (ASN.1), not r ‖ s.
+            PublicKey::Es256(point) => UnparsedPublicKey::new(&ECDSA_P256_SHA256_ASN1, point)
+                .verify(msg, sig)
+                .is_ok(),
             PublicKey::EdDsa(k) => ed25519_dalek::Signature::from_slice(sig)
                 .is_ok_and(|s| k.verify_strict(msg, &s).is_ok()),
-            PublicKey::Rs256(k) => {
-                let digest = sha2_10::Sha256::digest_of(msg);
-                k.verify(rsa::Pkcs1v15Sign::new::<sha2_10::Sha256>(), &digest, sig)
-                    .is_ok()
-            }
+            PublicKey::Rs256 { n, e } => RsaPublicKeyComponents { n, e }
+                .verify(&RSA_PKCS1_2048_8192_SHA256, msg, sig)
+                .is_ok(),
         }
-    }
-}
-
-/// `sha2` 0.10's SHA-256, which `rsa` 0.9 takes.
-trait DigestOf {
-    fn digest_of(msg: &[u8]) -> Vec<u8>;
-}
-
-impl DigestOf for sha2_10::Sha256 {
-    fn digest_of(msg: &[u8]) -> Vec<u8> {
-        use sha2_10::Digest as _;
-        sha2_10::Sha256::digest(msg).to_vec()
     }
 }
 
@@ -512,8 +514,10 @@ pub fn encode(v: &Cbor) -> Vec<u8> {
 pub mod soft {
     use super::*;
 
+    use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair as _};
+
     pub struct Authenticator {
-        pub key: p256::ecdsa::SigningKey,
+        pub key: EcdsaKeyPair,
         pub id: Vec<u8>,
         pub counter: u32,
         pub flags: u8,
@@ -522,17 +526,12 @@ pub mod soft {
     impl Default for Authenticator {
         fn default() -> Self {
             Authenticator {
-                key: p256::ecdsa::SigningKey::random(&mut rand_core_06()),
+                key: EcdsaKeyPair::generate(&ECDSA_P256_SHA256_ASN1_SIGNING).unwrap(),
                 id: crate::auth::random_bytes(16),
                 counter: 0,
                 flags: FLAG_UP | FLAG_UV,
             }
         }
-    }
-
-    /// `p256` 0.13 takes `rand_core` 0.6's RNG.
-    fn rand_core_06() -> p256::elliptic_curve::rand_core::OsRng {
-        p256::elliptic_curve::rand_core::OsRng
     }
 
     pub fn client_data(kind: &str, challenge: &[u8], origin: &str) -> Vec<u8> {
@@ -544,13 +543,13 @@ pub mod soft {
 
     impl Authenticator {
         pub fn cose(&self) -> Cbor {
-            let p = self.key.verifying_key().to_encoded_point(false);
+            let p = self.key.public_key().as_ref();
             Cbor::Map(vec![
                 (Cbor::Int(1), Cbor::Int(2)),
                 (Cbor::Int(3), Cbor::Int(ES256)),
                 (Cbor::Int(-1), Cbor::Int(1)),
-                (Cbor::Int(-2), Cbor::Bytes(p.x().unwrap().to_vec())),
-                (Cbor::Int(-3), Cbor::Bytes(p.y().unwrap().to_vec())),
+                (Cbor::Int(-2), Cbor::Bytes(p[1..33].to_vec())),
+                (Cbor::Int(-3), Cbor::Bytes(p[33..65].to_vec())),
             ])
         }
 
@@ -593,14 +592,14 @@ pub mod soft {
             challenge: &[u8],
             origin: &str,
         ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
-            use p256::ecdsa::signature::Signer as _;
             self.counter += 1;
             let cd = client_data("webauthn.get", challenge, origin);
             let ad = self.auth_data(rp_id, false);
             let mut msg = ad.clone();
             msg.extend(sha256(&cd));
-            let sig: p256::ecdsa::Signature = self.key.sign(&msg);
-            (cd, ad, sig.to_der().as_bytes().to_vec())
+            let rng = aws_lc_rs::rand::SystemRandom::new();
+            let sig = self.key.sign(&rng, &msg).unwrap();
+            (cd, ad, sig.as_ref().to_vec())
         }
     }
 }
@@ -716,6 +715,44 @@ mod tests {
         use ed25519_dalek::Signer as _;
         assert!(k.verify(b"hi", &ed.sign(b"hi").to_bytes()));
         assert!(!k.verify(b"ho", &ed.sign(b"hi").to_bytes()));
+        // RS256 (Windows Hello's): a 2048-bit key, PKCS#1 v1.5 with SHA-256.
+        use aws_lc_rs::signature::KeyPair as _;
+        let rsa = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+        let public = rsa.public_key();
+        let cose = Cbor::Map(vec![
+            (Cbor::Int(1), Cbor::Int(3)),
+            (Cbor::Int(3), Cbor::Int(RS256)),
+            (
+                Cbor::Int(-1),
+                Cbor::Bytes(public.modulus().big_endian_without_leading_zero().to_vec()),
+            ),
+            (
+                Cbor::Int(-2),
+                Cbor::Bytes(public.exponent().big_endian_without_leading_zero().to_vec()),
+            ),
+        ]);
+        let k = PublicKey::from_cose(&cose).unwrap();
+        assert_eq!(k.alg(), RS256);
+        let mut sig = vec![0u8; rsa.public_modulus_len()];
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        rsa.sign(
+            &aws_lc_rs::signature::RSA_PKCS1_SHA256,
+            &rng,
+            b"hi",
+            &mut sig,
+        )
+        .unwrap();
+        assert!(k.verify(b"hi", &sig));
+        assert!(!k.verify(b"ho", &sig));
+        // A P-256 point that isn't on the curve.
+        let off = Cbor::Map(vec![
+            (Cbor::Int(1), Cbor::Int(2)),
+            (Cbor::Int(3), Cbor::Int(ES256)),
+            (Cbor::Int(-1), Cbor::Int(1)),
+            (Cbor::Int(-2), Cbor::Bytes(vec![1; 32])),
+            (Cbor::Int(-3), Cbor::Bytes(vec![2; 32])),
+        ]);
+        assert!(PublicKey::from_cose(&off).is_err());
         // An unknown algorithm, and a small RSA key.
         let bad = Cbor::Map(vec![
             (Cbor::Int(1), Cbor::Int(2)),
