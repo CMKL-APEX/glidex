@@ -216,11 +216,18 @@ impl Supervisor {
             (Some(c), None) if c != 0 => format!(" (status {})", c),
             _ => String::new(),
         };
+        // A failed launch says why on the console too: the hypervisor's own
+        // output doesn't when the shim stopped it.
+        let why = match (cause, message.as_deref().and_then(|m| m.lines().next())) {
+            (ExitCause::LaunchFailed, Some(l)) if !l.is_empty() => format!(": {l}"),
+            _ => String::new(),
+        };
         self.note(format!(
-            "\r\n--- glidex: instance {} exited: {}{} ---\r\n",
+            "\r\n--- glidex: instance {} exited: {}{}{} ---\r\n",
             self.instance.instance_id,
             cause.as_str(),
-            detail
+            detail,
+            why
         ));
         self.poll_stop.store(true, Ordering::SeqCst);
         let usage = self.exit_usage();

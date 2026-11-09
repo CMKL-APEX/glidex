@@ -671,6 +671,8 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | The VM fails to start: VFIO group not viable | Another device in the IOMMU group is still on a host driver. Bind all of them to `vfio-pci`, or move the card to another slot. |
 | The VM fails to start: permission denied on `/dev/vfio/<n>` | The udev rule above; `ls -l /dev/vfio/`. |
 | No IOMMU group in `gxctl pci` | The IOMMU is off: firmware setting and kernel command line. |
+| The VM relaunches over and over; the console ends each try with `exited: launch_failed (signal 9): cloud-hypervisor API socket not ready after N s` | The hypervisor was still setting up when Glidex stopped it. Cloud Hypervisor maps all of the VM's memory for its passthrough devices before it answers, which takes seconds per GiB. Glidex waits 30 s, plus 2 s per GiB of memory for each passthrough device, up to 15 minutes. If a VM still runs out, give it less memory or use QEMU, whose socket answers before that work. |
+| A VM with a ConnectX card prints nothing for a minute or more before its kernel starts | The guest's UEFI firmware spends that time on the card, on both hypervisors (70–95 s seen with a ConnectX-6 in InfiniBand mode, 2026-11-09). The VM then boots normally. The card's own boot ROM (FlexBoot) is the likely cause; disabling it on the card (`mlxconfig … EXP_ROM_UEFI_x86_ENABLE=0`) should avoid it, but that isn't confirmed yet. |
 | `forbidden` | The project has no grant for the device in `pci.allow`, and you are not `net-admin`. |
 | `PCI device … is cordoned` | An administrator cordoned it: `gxctl node uncordon-device`. |
 | The VM shows `DeviceHealthy=False` | The device fell off the bus or had PCIe errors: `gxctl node topology <node> --devices`, the host's `dmesg`. |

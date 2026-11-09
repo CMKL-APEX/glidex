@@ -299,7 +299,9 @@ talk to it).
 
 Done by the shim for both backends
 ([12-reconciliation.md §8.3](12-reconciliation.md#83-shim-process) step 3):
-it waits up to `ready_timeout_secs` (30) for the API socket to answer
+it waits up to `ready_timeout_secs` (30 s, plus 2 s per GiB of guest
+memory for each passthrough device, up to 15 minutes;
+12-reconciliation.md D22) for the API socket to answer
 (CH `GET /vmm.ping`, QEMU's QMP greeting), watching for early exit. If
 the hypervisor exits first (after the QEMU fallback, if any), the shim
 records exit cause `launch_failed` with the hypervisor's captured
