@@ -90,7 +90,7 @@ pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPoo
                     let devices: Vec<pb::PciPoolDevice> = t
                         .devices
                         .iter()
-                        .filter(|d| p.matches.matches_device(d))
+                        .filter(|d| !d.excluded && p.matches.matches_device(d))
                         .map(|d| pb::PciPoolDevice {
                             address: d.address.clone(),
                             numa_node: d.numa_node,

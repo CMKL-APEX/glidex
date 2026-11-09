@@ -386,6 +386,24 @@ standalone host, copies its file's pools and grants into the setting
 once. After that, those file keys are ignored, and a server whose file
 still differs logs a warning saying so.
 
+What only one host decides stays in that host's `control-plane.json`:
+
+```json
+{ "pci": {
+    "exclude": [ { "addresses": ["0000:43:00.0"] } ],
+    "overrides": { "r9700": { "bar_mib": 16384 } } } }
+```
+
+- `exclude` takes pool matches. A device it matches is kept by the
+  host: it is in no pool, Glidex never prepares it, and a VM that names
+  its address isn't placed on this host. `gxctl pci pools` leaves it
+  out.
+- `overrides` set a pool's `bar_mib` and `prepare` on this host only.
+  Use it when hosts differ in memory, since the safe GPU window size
+  depends on it.
+
+Restart the control plane after changing either.
+
 The picked devices are claimed and passed through like devices named by
 address. For GPUs, `"gpus": {"count": 4}` also places and sizes the VM
 from the pool's `per_device`. Pools, their grants, quotas, tenant

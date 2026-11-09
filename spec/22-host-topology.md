@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API and its migration** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API, its migration and host overrides** (§15). §17 records
 where the implementation differs from the design. Extends
 [14-clustering.md](14-clustering.md) §9.1 (scheduler),
 [04-hypervisors.md](04-hypervisors.md) (command lines),
@@ -64,7 +64,7 @@ and pools for GPUs, DPUs and NICs.
 | H20 | Where pools live | Cluster pools and grants (`pci.allow`, by pool and by address) are a **replicated cluster setting** (`Meta` key `pci_settings`, §9.1), written through the API, gxctl and the UI, so every server answers a request the same way. A server's `control-plane.json` keeps only what concerns that host (H23). The leader copies a file's `pci.pools` and `pci.allow` into the setting once; after that, file pools and grants are ignored with a warning. | The user's call (2026-11-09). HT4 read pools and grants from each server's file, so a pool set up on one server was unknown when another server led (`gpus: no device pool r9700` on gpu-dev2 with prism2 leading, 27-gpu-vms.md §12). The same migration as the OVN setting (16-clustering-ui.md §8a). |
 | H21 | Discovered pools | Devices of class `gpu` or `accelerator` that no defined pool covers and no host excludes form a **discovered pool** per vendor and device id, across every node that has one, named `<vendor>-<device>` (`amd-7551`, `nvidia-2330`; §9.1b). Discovery only groups devices: it never binds a driver, and a device is ready as before (§5). NICs, NVMe and DPUs aren't discovered: they are mostly the host's own. | The user's call (2026-11-09): a GPU should be usable without writing config first. The slug is stable and unique, unlike a marketing name from `pci.ids`, which depends on the host's copy. |
 | H22 | Who uses a discovered pool | Only holders of a host role with `usePciPool` (`host.devices`) until an operator grants or adopts it. A tenant never sees or gets a device because a card was plugged in. | The user's call (2026-11-09). |
-| H23 | Host overrides | Each server's file may keep devices out of discovery and every pool on that host (`pci.exclude`), and set a pool's `bar_mib` and `prepare` for that host (`pci.overrides`). The node reports the outcome per device in its status (`excluded`, the effective `bar_mib`), so the leader never reads another server's file. | The user's call (2026-11-09): the file overrides discovery and availability. Per host because what it covers is: a card kept for host work, and G17's safe window, which depends on the host's memory. |
+| H23 | Host overrides | Each server's file may keep devices out of discovery and every pool on that host (`pci.exclude`), and set a pool's `bar_mib` and `prepare` for that host (`pci.overrides`). The node marks the devices it keeps `excluded` in its status, so the leader never reads another server's file. | The user's call (2026-11-09): the file overrides discovery and availability. Per host because what it covers is: a card kept for host work, and G17's safe window, which depends on the host's memory. |
 
 ## 3. Model
 
@@ -844,11 +844,11 @@ A server's own file says what only that host decides (H23):
 - `overrides` set `bar_mib` and `prepare` for the named pool's devices
   on this host; the setting's values are the default elsewhere. G19's
   rule (the smaller `bar_mib` of two pools) still applies after it.
-- The node writes the outcome into each summary device: `pool` (the
-  pool it is in on this node), `excluded`, and the effective `bar_mib`.
-  The leader reads those, not the file. The node's own `prepare: true`
-  pass and the installer's `--vfio-devices <pool>` (through the local
-  control plane, a discovered slug included) use the same values.
+- The node marks each summary device it keeps `excluded`; the leader
+  reads that, not the file, and never needs a host's `bar_mib` (only the
+  node prepares devices). The node's own `prepare: true` pass and the
+  installer's `--vfio-devices <pool>` (through the local control plane,
+  a discovered slug included) apply the overrides.
 - An override naming no pool is logged once, as a typo would be.
 
 ### 9.2 Classes
@@ -1148,6 +1148,14 @@ Where HT2 differs from the design above, and why:
   logs once that it is ignored. A standalone host migrates the same way.
   `GET/PUT /cluster/settings/pci` (`GetPciSettings`, `PutPciSettings`)
   as §9.1 says; gxctl has `pci settings [set <file.json>]` until the
-  pool commands come. Not done yet: `gxctl pci pool …` and `pci grant`,
-  host overrides, discovered pools, the UI card and the installer
-  (#397).
+  pool commands come. Host overrides (H23, §9.1b): `pci.exclude` and
+  `pci.overrides` stay in `PciConfig` but are read from this host's
+  file only, never from the setting; a summary device the host keeps is
+  `excluded`, skipped by the scheduler's pool picks, the pool listing
+  and the node's `prepare: true` pass, and a VM naming its address is
+  refused on that node ("kept by its host"). `prepare` applies the
+  host's `bar_mib` and `prepare` to the named pool; an override naming
+  no pool is logged when the pools change. A changed file takes a
+  control-plane restart, as other file keys do. Not done yet: `gxctl
+  pci pool …` and `pci grant`, discovered pools, the UI card and the
+  installer (#397).

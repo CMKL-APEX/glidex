@@ -37,6 +37,7 @@ impl PciSettings {
         PciConfig {
             pools: self.pools.clone(),
             allow: self.allow.clone(),
+            ..Default::default()
         }
     }
 
@@ -94,6 +95,7 @@ mod tests {
                 tenants: vec!["*".into()],
                 node: None,
             }],
+            ..Default::default()
         }
     }
 
