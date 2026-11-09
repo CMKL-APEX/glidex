@@ -115,6 +115,22 @@ The VM is created stopped; start it with `start web-1`. `gxctl create`
 doesn't ask for a node, a restart policy or a host-boot policy: they
 take their defaults (use the web UI or the API to set them).
 
+To create a VM from a script, give the name and flags instead; nothing
+is asked, and what you leave out takes the default the prompt would
+offer. The same VM as above, started at once:
+
+```bash
+gxctl create web-1 --image ubuntu-26.04 --disk-size 20 --vcpus 2 --memory 2048 --start
+```
+
+Give exactly one boot disk: `--image`, `--root-disk` (an existing disk)
+or `--rootfs` (a host path). Other flags are `--network` (repeatable;
+`none` for no NIC), `--credential`, `--data-disk`, `--firmware`
+(`none` for kernel boot), `--kernel`, `--gpus`, `--node` and more:
+`gxctl help create` lists them, and [gxctl](../reference/gxctl.md) says
+what each does. An unknown flag is refused, and the command exits 1 when
+the VM can't be created.
+
 ### API
 
 ```bash

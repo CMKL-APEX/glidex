@@ -598,6 +598,10 @@ fn help_text() -> String {
         "create".cyan()
     );
     line!(
+        "  {} - Create a VM without prompts; what isn't given takes the prompt's default. Exits 1 on failure",
+        "create <name> (--image I [--disk-size GiB] | --root-disk D | --rootfs PATH) [--vcpus N] [--memory MiB|NG] [--hypervisor ch|qemu|pylon] [--firmware F|PATH|none] [--kernel K|PATH] [--initrd PATH] [--follow-kernel] [--kernel-args A] [--network N|none]... [--credential C|none] [--data-disk D]... [--cloud-init PATH] [--gpus N[:pool][:nvlink]] [--devices pool[:n],...] [--vfio PATH]... [--min-vcpus N] [--max-vcpus N] [--cpu-weight N] [--service-account SA] [--node N] [--start]".cyan()
+    );
+    line!(
         "  {}  - Start a VM (waits until it runs; --no-wait returns at once)",
         "start <name|id>".cyan()
     );
@@ -1580,7 +1584,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "list" | "ls" => vm::list(client).await,
         "get" => vm::get(client, &parts[1..]).await,
-        "create" => vm::create(client).await,
+        "create" => vm::create(client, &parts[1..]).await,
         "start" => vm::start(client, &parts[1..]).await,
         "stop" => vm::stop(client, &parts[1..]).await,
         "place" => vm::place(client, &parts[1..]).await,
@@ -1774,6 +1778,9 @@ async fn main() {
 
     if !cli.command.is_empty() {
         handle_words(&cli.command, &client).await;
+        if tenancy::failed() {
+            std::process::exit(1);
+        }
         return;
     }
 

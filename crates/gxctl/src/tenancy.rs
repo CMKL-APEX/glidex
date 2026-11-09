@@ -12,6 +12,19 @@ pub(crate) fn err(e: impl std::fmt::Display) {
     println!("{} {}", "Error:".red(), e);
 }
 
+static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// An error a one-shot run exits 1 for, so a script can tell (`create`
+/// without prompts).
+pub(crate) fn fail(e: impl std::fmt::Display) {
+    err(e);
+    FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn failed() -> bool {
+    FAILED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 pub(crate) fn usage(u: &str) {
     println!("{}", u.yellow());
 }

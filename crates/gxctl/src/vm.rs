@@ -3,7 +3,7 @@
 //! (spec/18-grpc.md §9.1). The live console is the `Console` bidi RPC (`console.rs`).
 
 use crate::client::{ApiClient, RpcTransport};
-use crate::tenancy::{err, rpc_err, usage};
+use crate::tenancy::{err, fail, rpc_err, usage};
 use crate::{
     credential_choice, flag_value, format_unix_time, has_flag, project_names, prompt,
     prompt_optional, prompt_path, prompt_path_optional, signed_in_name, storage,
@@ -656,7 +656,6 @@ pub async fn device(client: &ApiClient, attach: bool, args: &[&str]) {
     }
 }
 
-/// `create` (interactive).
 /// `a100:2, cx7` → pool requests (count 1 by default; `:switch` after the
 /// count keeps them under one PCIe switch, spec/22-host-topology.md §9).
 pub(crate) fn parse_device_requests(s: &str) -> Vec<DeviceRequest> {
@@ -705,7 +704,11 @@ pub(crate) fn parse_gpus(s: &str) -> Result<Option<GpuRequest>, String> {
     Ok(Some(g))
 }
 
-pub async fn create(client: &ApiClient) {
+/// `create`: interactive; `create <name> [flags]`: without prompts.
+pub async fn create(client: &ApiClient, args: &[&str]) {
+    if !args.is_empty() {
+        return create_unprompted(client, args).await;
+    }
     println!("{}", "Create new VM".bold());
     println!("{}", "-".repeat(40));
 
@@ -750,22 +753,17 @@ pub async fn create(client: &ApiClient) {
 
     let hypervisor =
         match prompt("Hypervisor [cloudhypervisor/qemu/pylon] (default: cloudhypervisor): ")
-            .to_lowercase()
             .as_str()
         {
-            "" | "cloudhypervisor" | "cloud-hypervisor" | "ch" => {
-                Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
-            }
-            "qemu" | "q" => Hypervisor::HYPERVISOR_QEMU,
-            "pylon" | "p" => Hypervisor::HYPERVISOR_PYLON,
-            other => {
+            "" => Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR,
+            word => hypervisor_word(word).unwrap_or_else(|| {
                 println!(
                     "{} Unknown hypervisor '{}', using cloudhypervisor",
                     "Warning:".yellow(),
-                    other
+                    word
                 );
                 Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR
-            }
+            }),
         };
 
     let (min_vcpus, max_vcpus, cpu_weight, vcpu_count) = {
@@ -802,36 +800,7 @@ pub async fn create(client: &ApiClient) {
     // A disk image boots through UEFI firmware: a firmware image built for
     // the hypervisor (spec 10-images.md §7), or a host path (admins only).
     let (firmware, firmware_path) = {
-        let ty = match hypervisor {
-            Hypervisor::HYPERVISOR_QEMU => "qemu",
-            Hypervisor::HYPERVISOR_PYLON => "pylon",
-            _ => "cloudhypervisor",
-        };
-        let ready: Vec<String> = storage::list_images(client)
-            .await
-            .unwrap_or_default()
-            .into_iter()
-            .rev() // newest first
-            .filter(|i| {
-                let matches_hv = storage::hypervisor_name(&i.hypervisor) == ty
-                    || (ty == "pylon"
-                        && storage::hypervisor_name(&i.hypervisor) == "cloudhypervisor");
-                storage::is_firmware(i)
-                    && matches_hv
-                    && storage::is_ready(i)
-                    && i.deleting != Some(true)
-            })
-            .map(|i| i.name)
-            .collect();
-        if ready.is_empty() {
-            let key = if ty == "qemu" { "ovmf" } else { "cloudhv-edk2" };
-            println!(
-                "{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot",
-                "Note:".yellow(),
-                ty,
-                key
-            );
-        }
+        let ready = ready_firmware(client, hypervisor).await;
         let default = ready.first().cloned().unwrap_or_else(|| "none".to_string());
         let options = if ready.is_empty() {
             String::new()
@@ -932,33 +901,8 @@ pub async fn create(client: &ApiClient) {
         let chosen = image
             .as_deref()
             .and_then(|k| all_images.iter().find(|i| i.name == k || i.id == k));
-        let mut kernels: Vec<&Image> = all_images
-            .iter()
-            .filter(|i| storage::is_kernel(i) && storage::is_ready(i) && i.deleting != Some(true))
-            .collect();
-        kernels.sort_by_key(|k| k.for_image.as_deref() != chosen.map(|c| c.id.as_str()));
-        if let Some(c) = chosen
-            && !kernels
-                .iter()
-                .any(|k| k.for_image.as_deref() == Some(c.id.as_str()))
-        {
-            println!(
-                "{} no kernel from {} yet; extract one with 'image extract-kernel {}'",
-                "Note:".yellow(),
-                c.name,
-                c.name
-            );
-        }
+        let (kernels, default) = kernel_choices(&all_images, chosen);
         let names: Vec<&str> = kernels.iter().map(|k| k.name.as_str()).collect();
-        // Another image's kernel is never the default: its initramfs looks
-        // for that image's root, and its modules aren't on this disk.
-        let default = match chosen {
-            Some(c) => kernels
-                .iter()
-                .find(|k| k.for_image.as_deref() == Some(c.id.as_str()))
-                .map_or("", |k| k.name.as_str()),
-            None => names.first().copied().unwrap_or(""),
-        };
         let answer = prompt_path(&format!(
             "Kernel [{}a host path] [{}]: ",
             if names.is_empty() {
@@ -982,20 +926,7 @@ pub async fn create(client: &ApiClient) {
             initrd_path = prompt_path_optional("Initramfs path (optional): ");
         } else {
             let picked = kernels.iter().find(|k| k.name == answer || k.id == answer);
-            if let (Some(c), Some(k)) = (chosen, picked)
-                && let Some(other) = k.for_image.as_deref().filter(|f| *f != c.id)
-            {
-                let from = all_images
-                    .iter()
-                    .find(|i| i.id == other)
-                    .map_or(other, |i| i.name.as_str());
-                println!(
-                    "{} {} was taken from {from}; {} may not boot with it",
-                    "Warning:".yellow(),
-                    k.name,
-                    c.name
-                );
-            }
+            warn_foreign_kernel(&all_images, chosen, picked.copied());
             kernel_cmdline = picked
                 .and_then(|k| k.kernel.as_option())
                 .and_then(|k| k.cmdline.clone());
@@ -1153,10 +1084,13 @@ pub async fn create(client: &ApiClient) {
         devices,
         ..Default::default()
     };
+    send_create(client, request).await;
+}
 
+async fn send_create(client: &ApiClient, request: CreateVmRequest) {
     let svc = match rpc(client).await {
         Ok(s) => s,
-        Err(e) => return err(e),
+        Err(e) => return fail(e),
     };
     match svc.create_vm(request).await {
         Ok(r) => {
@@ -1167,8 +1101,462 @@ pub async fn create(client: &ApiClient) {
             println!("  State: {}", state_word(&vm));
             println!("  Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
         }
-        Err(e) => err(rpc_err(e)),
+        Err(e) => fail(rpc_err(e)),
     }
+}
+
+/// `ch`, `qemu`, `pylon` and their longer names.
+fn hypervisor_word(s: &str) -> Option<Hypervisor> {
+    match s.to_lowercase().as_str() {
+        "cloudhypervisor" | "cloud-hypervisor" | "ch" => {
+            Some(Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR)
+        }
+        "qemu" | "q" => Some(Hypervisor::HYPERVISOR_QEMU),
+        "pylon" | "p" => Some(Hypervisor::HYPERVISOR_PYLON),
+        _ => None,
+    }
+}
+
+/// The ready firmware images `hypervisor` can boot through, newest first;
+/// none is said, with how to pull one.
+async fn ready_firmware(client: &ApiClient, hypervisor: Hypervisor) -> Vec<String> {
+    let ty = match hypervisor {
+        Hypervisor::HYPERVISOR_QEMU => "qemu",
+        Hypervisor::HYPERVISOR_PYLON => "pylon",
+        _ => "cloudhypervisor",
+    };
+    let ready: Vec<String> = storage::list_images(client)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .rev() // newest first
+        .filter(|i| {
+            let matches_hv = storage::hypervisor_name(&i.hypervisor) == ty
+                || (ty == "pylon" && storage::hypervisor_name(&i.hypervisor) == "cloudhypervisor");
+            storage::is_firmware(i)
+                && matches_hv
+                && storage::is_ready(i)
+                && i.deleting != Some(true)
+        })
+        .map(|i| i.name)
+        .collect();
+    if ready.is_empty() {
+        let key = if ty == "qemu" { "ovmf" } else { "cloudhv-edk2" };
+        println!(
+            "{} no firmware image for {}; pull one with 'image pull --firmware {}' for firmware boot",
+            "Note:".yellow(),
+            ty,
+            key
+        );
+    }
+    ready
+}
+
+/// The ready kernel images, those taken from `chosen` first, and the
+/// default: `chosen`'s own kernel, or without an image the first.
+fn kernel_choices<'a>(all: &'a [Image], chosen: Option<&Image>) -> (Vec<&'a Image>, &'a str) {
+    let mut kernels: Vec<&Image> = all
+        .iter()
+        .filter(|i| storage::is_kernel(i) && storage::is_ready(i) && i.deleting != Some(true))
+        .collect();
+    kernels.sort_by_key(|k| k.for_image.as_deref() != chosen.map(|c| c.id.as_str()));
+    if let Some(c) = chosen
+        && !kernels
+            .iter()
+            .any(|k| k.for_image.as_deref() == Some(c.id.as_str()))
+    {
+        println!(
+            "{} no kernel from {} yet; extract one with 'image extract-kernel {}'",
+            "Note:".yellow(),
+            c.name,
+            c.name
+        );
+    }
+    // Another image's kernel is never the default: its initramfs looks
+    // for that image's root, and its modules aren't on this disk.
+    let default = match chosen {
+        Some(c) => kernels
+            .iter()
+            .find(|k| k.for_image.as_deref() == Some(c.id.as_str()))
+            .map_or("", |k| k.name.as_str()),
+        None => kernels.first().map_or("", |k| k.name.as_str()),
+    };
+    (kernels, default)
+}
+
+fn warn_foreign_kernel(all: &[Image], chosen: Option<&Image>, picked: Option<&Image>) {
+    if let (Some(c), Some(k)) = (chosen, picked)
+        && let Some(other) = k.for_image.as_deref().filter(|f| *f != c.id)
+    {
+        let from = all
+            .iter()
+            .find(|i| i.id == other)
+            .map_or(other, |i| i.name.as_str());
+        println!(
+            "{} {} was taken from {from}; {} may not boot with it",
+            "Warning:".yellow(),
+            k.name,
+            c.name
+        );
+    }
+}
+
+/// Where a VM made without prompts boots from.
+#[derive(Debug, PartialEq)]
+enum BootDisk {
+    Image(String),
+    Disk(String),
+    Path(String),
+}
+
+/// `create <name> [flags]`, read before the defaults the prompts would
+/// offer are filled in (those need the server).
+#[derive(Debug)]
+struct CreateFlags {
+    name: String,
+    boot: BootDisk,
+    disk_size_gib: Option<u32>,
+    vcpus: Option<u32>,
+    memory_mib: Option<u32>,
+    hypervisor: Option<Hypervisor>,
+    gpus: Option<GpuRequest>,
+    min_vcpus: Option<u32>,
+    max_vcpus: Option<u32>,
+    cpu_weight: Option<u32>,
+    /// A firmware image, a host path, or `none`/`kernel` for kernel boot.
+    firmware: Option<String>,
+    kernel: Option<String>,
+    initrd: Option<String>,
+    follow_kernel: bool,
+    kernel_args: Option<String>,
+    /// `Some(empty)`: `--network none`.
+    networks: Option<Vec<String>>,
+    credential: Option<String>,
+    data_disks: Vec<String>,
+    cloud_init: Option<String>,
+    devices: Vec<DeviceRequest>,
+    vfio: Vec<String>,
+    service_account: Option<String>,
+    node: Option<String>,
+    start: bool,
+}
+
+const CREATE_USAGE: &str = "Usage: create <name> (--image I [--disk-size GiB] | --root-disk D | --rootfs PATH) [--vcpus N] [--memory MiB|NG] [--hypervisor ch|qemu|pylon] [--firmware F|PATH|none] [--kernel K|PATH] [--initrd PATH] [--follow-kernel] [--kernel-args A] [--network N|none]... [--credential C|none] [--data-disk D]... [--cloud-init PATH] [--gpus N[:pool][:nvlink]] [--devices pool[:n],...] [--vfio PATH]... [--min-vcpus N] [--max-vcpus N] [--cpu-weight N] [--service-account SA] [--node N] [--start]";
+
+const CREATE_VALUE_FLAGS: &[&str] = &[
+    "--image",
+    "--disk-size",
+    "--root-disk",
+    "--rootfs",
+    "--vcpus",
+    "--memory",
+    "--hypervisor",
+    "--firmware",
+    "--kernel",
+    "--initrd",
+    "--kernel-args",
+    "--network",
+    "--credential",
+    "--data-disk",
+    "--cloud-init",
+    "--gpus",
+    "--devices",
+    "--vfio",
+    "--min-vcpus",
+    "--max-vcpus",
+    "--cpu-weight",
+    "--service-account",
+    "--node",
+];
+
+/// `a, b,,c` → `[a, b, c]`.
+fn list_words(s: &str) -> impl Iterator<Item = String> + '_ {
+    s.split(',')
+        .map(str::trim)
+        .filter(|x| !x.is_empty())
+        .map(String::from)
+}
+
+/// Reads `create`'s arguments: the name, then flags. An unknown flag is
+/// refused, so a typo doesn't quietly give a VM other than the one asked.
+fn parse_create(args: &[&str]) -> Result<CreateFlags, String> {
+    let (name, rest) = match args.split_first() {
+        Some((n, rest)) if !n.starts_with('-') => (n.to_string(), rest),
+        _ => return Err("give the VM's name first".into()),
+    };
+    let mut boot = Vec::new();
+    let mut f = CreateFlags {
+        name,
+        boot: BootDisk::Path(String::new()),
+        disk_size_gib: None,
+        vcpus: None,
+        memory_mib: None,
+        hypervisor: None,
+        gpus: None,
+        min_vcpus: None,
+        max_vcpus: None,
+        cpu_weight: None,
+        firmware: None,
+        kernel: None,
+        initrd: None,
+        follow_kernel: false,
+        kernel_args: None,
+        networks: None,
+        credential: None,
+        data_disks: Vec::new(),
+        cloud_init: None,
+        devices: Vec::new(),
+        vfio: Vec::new(),
+        service_account: None,
+        node: None,
+        start: false,
+    };
+    let mut i = 0;
+    while i < rest.len() {
+        let flag = rest[i];
+        match flag {
+            "--start" => {
+                f.start = true;
+                i += 1;
+                continue;
+            }
+            "--follow-kernel" => {
+                f.follow_kernel = true;
+                i += 1;
+                continue;
+            }
+            _ if !CREATE_VALUE_FLAGS.contains(&flag) => {
+                return Err(format!("unknown option '{flag}'"));
+            }
+            _ => {}
+        }
+        let Some(v) = rest.get(i + 1).map(|v| v.to_string()) else {
+            return Err(format!("{flag} needs a value"));
+        };
+        i += 2;
+        let num = |v: &str| {
+            v.parse::<u32>()
+                .map_err(|_| format!("{flag}: '{v}' is not a whole number"))
+        };
+        match flag {
+            "--image" => boot.push(BootDisk::Image(v)),
+            "--root-disk" => boot.push(BootDisk::Disk(v)),
+            "--rootfs" => boot.push(BootDisk::Path(v)),
+            "--disk-size" => f.disk_size_gib = Some(num(&v)?),
+            "--vcpus" => f.vcpus = Some(num(&v)?),
+            "--memory" => f.memory_mib = Some(parse_mib(&v)?),
+            "--hypervisor" => {
+                f.hypervisor = Some(
+                    hypervisor_word(&v)
+                        .ok_or_else(|| format!("unknown hypervisor '{v}' (ch, qemu or pylon)"))?,
+                )
+            }
+            "--firmware" => f.firmware = Some(v),
+            "--kernel" => f.kernel = Some(v),
+            "--initrd" => f.initrd = Some(v),
+            "--kernel-args" => f.kernel_args = Some(v),
+            "--network" => f.networks.get_or_insert_default().extend(list_words(&v)),
+            "--credential" => f.credential = Some(v),
+            "--data-disk" => f.data_disks.extend(list_words(&v)),
+            "--cloud-init" => f.cloud_init = Some(v),
+            "--gpus" => f.gpus = parse_gpus(&v)?,
+            "--devices" => f.devices.extend(parse_device_requests(&v)),
+            "--vfio" => f.vfio.extend(list_words(&v)),
+            "--min-vcpus" => f.min_vcpus = Some(num(&v)?),
+            "--max-vcpus" => f.max_vcpus = Some(num(&v)?),
+            "--cpu-weight" => f.cpu_weight = Some(num(&v)?),
+            "--service-account" => f.service_account = Some(v),
+            "--node" => f.node = Some(v),
+            _ => unreachable!("listed in CREATE_VALUE_FLAGS"),
+        }
+    }
+    f.boot = match boot.len() {
+        0 => return Err("give the boot disk: --image, --root-disk or --rootfs".into()),
+        1 => boot.remove(0),
+        _ => return Err("give only one of --image, --root-disk and --rootfs".into()),
+    };
+    if f.disk_size_gib.is_some() && !matches!(f.boot, BootDisk::Image(_)) {
+        return Err("--disk-size goes with --image".into());
+    }
+    if let Some(n) = &f.networks
+        && n.iter().any(|n| n == "none")
+    {
+        if n.len() > 1 {
+            return Err("--network none goes alone".into());
+        }
+        f.networks = Some(Vec::new());
+    }
+    let kernel_path = f.kernel.as_deref().is_some_and(|k| k.starts_with('/'));
+    if f.initrd.is_some() && !kernel_path {
+        return Err("--initrd goes with a --kernel given as a host path".into());
+    }
+    if f.follow_kernel && (kernel_path || matches!(f.boot, BootDisk::Path(_))) {
+        return Err(
+            "--follow-kernel needs a kernel image and a disk (--image or --root-disk)".into(),
+        );
+    }
+    Ok(f)
+}
+
+/// `create <name> [flags]`: the VM the prompts would make, without them.
+/// What isn't given takes the default the prompt offers.
+async fn create_unprompted(client: &ApiClient, args: &[&str]) {
+    let f = match parse_create(args) {
+        Ok(f) => f,
+        Err(e) => {
+            fail(e);
+            return usage(CREATE_USAGE);
+        }
+    };
+    let hypervisor = f
+        .hypervisor
+        .unwrap_or(Hypervisor::HYPERVISOR_CLOUD_HYPERVISOR);
+    let is_pylon = hypervisor == Hypervisor::HYPERVISOR_PYLON;
+    // With GPUs, sizes default to the pool's per-device sizing (0).
+    let sized = |v: Option<u32>, plain: u32| v.unwrap_or(if f.gpus.is_some() { 0 } else { plain });
+    let mut vcpu_count = sized(f.vcpus, 1);
+    let mem_size_mib = sized(f.memory_mib, 512);
+    // Elastic CPU: on for Pylon, or when any of its settings is given.
+    let (min_vcpus, max_vcpus, cpu_weight) =
+        if is_pylon || f.min_vcpus.is_some() || f.max_vcpus.is_some() || f.cpu_weight.is_some() {
+            let max = f.max_vcpus.unwrap_or(vcpu_count.max(4));
+            if is_pylon {
+                vcpu_count = max;
+            }
+            (
+                Some(f.min_vcpus.unwrap_or(1)),
+                Some(max),
+                Some(f.cpu_weight.unwrap_or(100)),
+            )
+        } else {
+            (None, None, None)
+        };
+
+    let (firmware, firmware_path) = match f.firmware.as_deref() {
+        Some("none" | "kernel") => (None, None),
+        Some(p) if p.starts_with('/') => (None, Some(p.to_string())),
+        Some(n) => (Some(n.to_string()), None),
+        // Without --kernel, the newest firmware for the hypervisor, as the prompt.
+        None if f.kernel.is_none() => (
+            ready_firmware(client, hypervisor).await.into_iter().next(),
+            None,
+        ),
+        None => (None, None),
+    };
+    let firmware_boot = firmware.is_some() || firmware_path.is_some();
+    if firmware_boot && (f.kernel.is_some() || f.kernel_args.is_some()) {
+        fail("--kernel and --kernel-args are for kernel boot: add --firmware none");
+        return;
+    }
+
+    let (mut rootfs_path, mut image, mut root_disk) = (String::new(), None, None);
+    match &f.boot {
+        BootDisk::Image(i) => image = Some(i.clone()),
+        BootDisk::Disk(d) => root_disk = Some(d.clone()),
+        BootDisk::Path(p) => rootfs_path = p.clone(),
+    }
+
+    let (mut kernel, mut kernel_image_path, mut kernel_from_disk) = (None, String::new(), None);
+    let mut initrd_path = None;
+    if !firmware_boot {
+        let all_images = storage::list_images(client).await.unwrap_or_default();
+        let chosen = image
+            .as_deref()
+            .and_then(|k| all_images.iter().find(|i| i.name == k || i.id == k));
+        let (kernels, default) = kernel_choices(&all_images, chosen);
+        let k = f.kernel.clone().unwrap_or_else(|| default.to_string());
+        if k.is_empty() {
+            fail("kernel boot needs a kernel: give --kernel, or --firmware for firmware boot");
+            return;
+        }
+        if k.starts_with('/') {
+            kernel_image_path = k;
+            initrd_path = f.initrd.clone();
+        } else {
+            let picked = kernels.iter().find(|i| i.name == k || i.id == k).copied();
+            warn_foreign_kernel(&all_images, chosen, picked);
+            kernel = Some(k);
+            kernel_from_disk = f.follow_kernel.then_some(true);
+        }
+    }
+
+    // The generated seed (and so a credential) comes with firmware boot, a
+    // kernel image or a managed root disk (spec 23-kernel-boot.md K4).
+    let seeded = firmware_boot || kernel.is_some() || !matches!(f.boot, BootDisk::Path(_));
+    if !seeded && (f.cloud_init.is_some() || f.credential.is_some()) {
+        fail(
+            "--cloud-init and --credential need firmware boot, a kernel image, or --image or --root-disk",
+        );
+        return;
+    }
+    let credential = if seeded && f.cloud_init.is_none() {
+        match f.credential.as_deref() {
+            Some(c) => credential_choice(c, None),
+            // The signed-in user's own credential, if the project has one.
+            None => {
+                let names: Vec<String> = storage::list_credentials(client)
+                    .await
+                    .map(|cs| cs.into_iter().map(|c| c.username).collect())
+                    .unwrap_or_default();
+                signed_in_name(client).await.filter(|n| names.contains(n))
+            }
+        }
+    } else {
+        None
+    };
+
+    let networks = match f.networks {
+        Some(n) => n,
+        None => crate::network::names(client)
+            .await
+            .into_iter()
+            .filter(|n| n == "default")
+            .collect(),
+    };
+
+    let request = CreateVmRequest {
+        gpus: f.gpus.into(),
+        name: f.name,
+        project: client.project(),
+        vcpu_count,
+        min_vcpus,
+        max_vcpus,
+        cpu_weight,
+        mem_size_mib,
+        kernel_image_path,
+        initrd_path,
+        kernel,
+        kernel_from_disk,
+        firmware,
+        firmware_path,
+        cloud_init_path: f.cloud_init,
+        credential,
+        service_account: f.service_account,
+        rootfs_path,
+        image,
+        root_disk_size_gib: f.disk_size_gib,
+        root_disk,
+        data_disks: f.data_disks,
+        kernel_args: f.kernel_args,
+        hypervisor: hypervisor.into(),
+        vfio_devices: f.vfio,
+        networks: networks
+            .into_iter()
+            .map(|network| NetworkAttachment {
+                network,
+                ..Default::default()
+            })
+            .collect(),
+        devices: f.devices,
+        node: f.node,
+        power: if f.start {
+            PowerState::POWER_STATE_RUNNING.into()
+        } else {
+            Default::default()
+        },
+        ..Default::default()
+    };
+    send_create(client, request).await;
 }
 
 /// `kernel <name|id> [--set <image>] [--follow on|off] [--extract]`: a
@@ -1853,6 +2241,83 @@ mod tests {
         assert!(parse_mib("1.5G").is_err());
         assert!(parse_mib("lots").is_err());
         assert!(parse_mib("5000000G").is_err());
+    }
+
+    #[test]
+    fn create_flags() {
+        let f = parse_create(&[
+            "web",
+            "--image",
+            "noble",
+            "--disk-size",
+            "20",
+            "--vcpus",
+            "4",
+            "--memory",
+            "8G",
+            "--hypervisor",
+            "qemu",
+            "--network",
+            "a,b",
+            "--network",
+            "c",
+            "--data-disk",
+            "d1",
+            "--gpus",
+            "2:a100",
+            "--start",
+        ])
+        .unwrap();
+        assert_eq!(f.name, "web");
+        assert_eq!(f.boot, BootDisk::Image("noble".into()));
+        assert_eq!(
+            (f.disk_size_gib, f.vcpus, f.memory_mib),
+            (Some(20), Some(4), Some(8192))
+        );
+        assert_eq!(f.hypervisor, Some(Hypervisor::HYPERVISOR_QEMU));
+        assert_eq!(
+            f.networks.as_deref(),
+            Some(&["a", "b", "c"].map(String::from)[..])
+        );
+        assert_eq!(f.data_disks, ["d1"]);
+        assert_eq!(f.gpus.map(|g| g.count), Some(2));
+        assert!(f.start);
+        // Defaults are left to the server's answers.
+        let f = parse_create(&["web", "--rootfs", "/srv/root.img"]).unwrap();
+        assert_eq!((f.vcpus, f.networks, f.firmware), (None, None, None));
+        let f = parse_create(&["web", "--root-disk", "d", "--network", "none"]).unwrap();
+        assert_eq!(f.networks, Some(Vec::new()));
+        let f = parse_create(&[
+            "k",
+            "--rootfs",
+            "/r",
+            "--kernel",
+            "/boot/vmlinuz",
+            "--initrd",
+            "/boot/initrd",
+        ])
+        .unwrap();
+        assert_eq!(f.initrd.as_deref(), Some("/boot/initrd"));
+    }
+
+    #[test]
+    fn create_flags_refused() {
+        let refused = |args: &[&str]| parse_create(args).unwrap_err();
+        assert!(refused(&[]).contains("name"));
+        assert!(refused(&["--image", "x"]).contains("name"));
+        assert!(refused(&["web"]).contains("boot disk"));
+        assert!(refused(&["web", "--image", "a", "--rootfs", "/b"]).contains("only one"));
+        assert!(
+            refused(&["web", "--image", "a", "--vcpu", "2"]).contains("unknown option '--vcpu'")
+        );
+        assert!(refused(&["web", "--image", "a", "--vcpus"]).contains("needs a value"));
+        assert!(refused(&["web", "--image", "a", "--vcpus", "two"]).contains("whole number"));
+        assert!(refused(&["web", "--image", "a", "--memory", "lots"]).contains("memory"));
+        assert!(refused(&["web", "--image", "a", "--hypervisor", "xen"]).contains("hypervisor"));
+        assert!(refused(&["web", "--root-disk", "d", "--disk-size", "9"]).contains("--disk-size"));
+        assert!(refused(&["web", "--image", "a", "--network", "none,b"]).contains("alone"));
+        assert!(refused(&["web", "--image", "a", "--initrd", "/i"]).contains("--initrd"));
+        assert!(refused(&["web", "--rootfs", "/r", "--follow-kernel"]).contains("--follow-kernel"));
     }
 
     #[test]
