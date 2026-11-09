@@ -93,7 +93,7 @@ time = "0.3"
 
 [dev-dependencies]
 # The console WebSocket's tests (the browser's console).
-tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 glidex-api = { path = "../glidex-api", features = ["client"] }
 mime = "0.3"
 
