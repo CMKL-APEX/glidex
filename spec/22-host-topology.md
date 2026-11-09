@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API, its migration, host overrides, discovered pools, the installer and the UI card; the acceptance run on gpu-dev2 passed (2026-11-09)** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools, with discovered NICs, H24) implemented, its acceptance run on gpu-dev2 passed (2026-11-09)** (§15). §17 records
 where the implementation differs from the design. Extends
 [14-clustering.md](14-clustering.md) §9.1 (scheduler),
 [04-hypervisors.md](04-hypervisors.md) (command lines),
@@ -986,7 +986,7 @@ HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
 and HT4 are the user-visible parts.
 
-Done: **HT0** (#63), **HT0b** (#76), **HT1** (#78), **HT1b** (#67), **HT2** (#71), **HT3**, with the part of HT1 it
+Done: **HT0** (#63), **HT0b** (#76), **HT1** (#78), **HT1b** (#67), **HT2** (#71), **HT6** (#399–#420, H24 in #418; the acceptance run below), **HT3**, with the part of HT1 it
 needs: the topology summary in node status (§3.1, in the reduced shape
 of §17). HT2's acceptance test (`numa_placement_e2e`,
 `qemu_numa_placement_e2e`) passes on a two-socket host with eight NUMA
@@ -1205,5 +1205,5 @@ Where HT2 differs from the design above, and why:
   tenant list then disabled); saving replaces the pool's grants with
   one and, for a discovered pool, adopts it under its slug in the same
   write. Device (`bdf`) grants stay with the JSON editor and gxctl. The
-  pool and grant reference is in the PCI passthrough guide. Not done
-  yet: the acceptance run on gpu-dev2 (#397).
+  pool and grant reference is in the PCI passthrough guide. The
+  acceptance run on gpu-dev2 passed on 2026-11-09 (§15).
