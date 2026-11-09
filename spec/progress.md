@@ -20,7 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Security (`glidex-auth`) | OIDC login state kept by the caller | `feat/oidc-detached-login` | `OidcState::begin`/`finish`, for hyperstor's mgmt behind one name on several hosts ([11-security.md](11-security.md) §5.4) |
-| Host topology | HT6 replicated and discovered pools ([22-host-topology.md](22-host-topology.md) H20–H23, §9.1b; #397) | PRNUM | In: the setting, its API and migration (#399), host overrides (#401), discovered pools (#403), the installer's `--vfio-devices` through the setting (#407), the Cluster page's Device pools card (#408); this PR, `gxctl pci pool show\|set\|rm` and `pci grant`. Next: the acceptance run on gpu-dev2 |
+| Host topology | HT6 replicated and discovered pools ([22-host-topology.md](22-host-topology.md) H20–H23, §9.1b; #397) | #415 | In: the setting, its API and migration (#399), host overrides (#401), discovered pools (#403), the installer's `--vfio-devices` through the setting (#407), the Cluster page's Device pools card (#408); this PR, `gxctl pci pool show\|set\|rm` and `pci grant`. Next: the acceptance run on gpu-dev2 |
 
 ## Areas
 
