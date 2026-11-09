@@ -1,13 +1,6 @@
 # cargo audit's settings (CI's `audit` job). Each ignored advisory says why
 # it is accepted and what removes it; drop the entry when that lands.
 [advisories]
-ignore = [
-    # rsa: the Marvin timing attack, with no fixed release. It needs a
-    # private-key operation an attacker can time; we use rsa only to verify
-    # WebAuthn RS256 signatures with public keys (auth/webauthn.rs).
-    "RUSTSEC-2023-0071",
-    # crypto-bigint 0.5 (via p256 0.13): operations meant to be constant-time
-    # are not. The issuer signs ES256 tokens with p256, so this does reach a
-    # private key; moving to p256 0.14 (crypto-bigint 0.7) removes it.
-    "RUSTSEC-2026-0387",
-]
+# None accepted now: RUSTSEC-2023-0071 (rsa) and RUSTSEC-2026-0387
+# (crypto-bigint 0.5 via p256 0.13) went with those crates (#353).
+ignore = []
