@@ -2250,8 +2250,13 @@ Measured, before
 the design (redb 4.5, prism2's disk, the prism servers' sizes: a 160 MB
 state database and a 70,000-entry log): applying a write set takes
 354 µs durable and 35 µs with `Durability::None` and a durable commit
-every 100 (p50); about 2,900 and 9,700 a second. End-to-end write
-latency on a cluster is not measured yet.
+every 100 (p50); about 2,900 and 9,700 a second. End to end, on a
+3-member in-process cluster on prism2's disk with 80 MB of state
+(sequential writes through the leader, timed until applied; #409):
+`main` made 580–680 writes a second at a p50 of 1.4–1.7 ms, and C10
+730–870 at 1.1–1.3 ms, p90 about 30 % lower, p99 unchanged. D32 alone
+changed nothing there: sequential writes come one entry per batch. Over
+a real network: not measured yet.
 
 ### Validation against real OVN and conntrack (after C8)
 
