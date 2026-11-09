@@ -222,8 +222,8 @@ async fn systemd_runner_launches_adopts_and_stops() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED, "{vm}");
-    assert_eq!(vm["state"], "running", "{vm}");
-    let id = vm["id"].as_str().unwrap().to_string();
+    assert_eq!(vm["vm"]["state"], "VM_STATE_RUNNING", "{vm}");
+    let id = vm["vm"]["id"].as_str().unwrap().to_string();
     let unit = format!("glidex-vm@{id}.service");
     assert_eq!(systemctl(&["is-active", &unit]), "active");
     let inst = manager.get_vm(&id).await.unwrap().status.instance.unwrap();
@@ -243,7 +243,7 @@ async fn systemd_runner_launches_adopts_and_stops() {
     // A requested stop: the unit goes away with the instance.
     let (status, body) = request(&app, "POST", &format!("/vms/{id}/stop?wait=60"), None).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body["state"], "stopped");
+    assert_eq!(body["vm"]["state"], "VM_STATE_STOPPED", "{body}");
     assert_ne!(systemctl(&["is-active", &unit]), "active");
     let vm = manager.get_vm(&id).await.unwrap();
     assert_eq!(vm.status.last_exit.unwrap().cause, ExitCause::Requested);
