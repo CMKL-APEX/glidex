@@ -1180,7 +1180,8 @@ Where HT2 differs from the design above, and why:
   node, sizing, `bar_mib` and grants from the setting, discovered ones
   marked; with `configurePciPools`, Adopt (a pool matching the slug's
   ids, under its name or another), Remove (with its grants) and the
-  whole setting as JSON. Not done yet: the other `gxctl pci pool`
-  commands and `pci grant` (the setting's `pci settings set`, and the
-  card's editor, cover them), and the acceptance run on gpu-dev2
-  (#397).
+  whole setting as JSON. `gxctl pci pool show|set|rm|list` and `pci
+  grant [rm]` edit one pool or grant: each reads the setting, changes
+  it and writes it back whole; granting a discovered pool adopts it
+  under its slug in the same write. Not done yet: the acceptance run on
+  gpu-dev2 (#397).

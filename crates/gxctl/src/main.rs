@@ -689,8 +689,20 @@ fn help_text() -> String {
         "pci settings [set <file.json>]".cyan()
     );
     line!(
+        "  {} - One pool of the setting: its JSON and grants; add or replace one from a file; remove one with its grants",
+        "pci pool <show <pool>|set <pool.json>|rm <pool>>".cyan()
+    );
+    line!(
         "  {} - Make a discovered pool a defined one, under its name or N",
         "pci pool adopt <pool> [--name N]".cyan()
+    );
+    line!(
+        "  {} - List grants, or let projects and tenants use a pool or a device",
+        "pci grant [<pool|address> [--node N] [--projects a,b] [--tenants t,u]]".cyan()
+    );
+    line!(
+        "  {} - Take projects and tenants off a grant; without them, the grant",
+        "pci grant rm <pool|address> [--node N] [--projects a,b] [--tenants t,u]".cyan()
     );
     line!(
         "  {} - Attach PCI device to VM",
@@ -2611,6 +2623,53 @@ mod tests {
 
     /// `connector` drives ConnectorService the same way; a secret goes in
     /// and only its status comes back.
+    #[tokio::test]
+    async fn pci_pool_and_grant_commands_edit_the_setting() {
+        use glidex_api::proto::glidex::cluster::v1::GetPciSettingsRequest;
+        let (dir, sock, stop) = serve_temp().await;
+        let client = ApiClient::unix(sock);
+        let pool = dir.path().join("r9700.json");
+        std::fs::write(
+            &pool,
+            r#"{"name": "r9700", "class": "gpu",
+                "match": {"vendor_id": "0x1002", "device_id": "0x7551"}, "bar_mib": 16384}"#,
+        )
+        .unwrap();
+        let pool = pool.to_str().unwrap();
+        host::pci(&client, &["pool", "set", pool]).await;
+        host::pci(&client, &["grant", "r9700", "--projects", "lab,ml"]).await;
+        host::pci(&client, &["grant", "rm", "r9700", "--projects", "ml"]).await;
+        let settings = || async {
+            cluster::rpc(&client)
+                .await
+                .unwrap()
+                .get_pci_settings(GetPciSettingsRequest::default())
+                .await
+                .unwrap()
+                .into_owned()
+                .settings
+                .as_option()
+                .cloned()
+                .unwrap_or_default()
+        };
+        let s = settings().await;
+        assert_eq!(s.pools.len(), 1, "{s:?}");
+        assert_eq!(s.pools[0].bar_mib, Some(16384));
+        assert_eq!(s.allow.len(), 1);
+        assert_eq!(s.allow[0].pool.as_deref(), Some("r9700"));
+        assert_eq!(s.allow[0].projects, vec!["lab".to_string()]);
+
+        // A grant on a pool that is neither defined nor discovered changes
+        // nothing.
+        host::pci(&client, &["grant", "nope", "--projects", "lab"]).await;
+        assert_eq!(settings().await.allow.len(), 1);
+
+        host::pci(&client, &["pool", "rm", "r9700"]).await;
+        let s = settings().await;
+        assert!(s.pools.is_empty() && s.allow.is_empty(), "{s:?}");
+        let _ = stop.send(true);
+    }
+
     #[tokio::test]
     async fn connector_client_over_the_unix_socket() {
         use glidex_api::proto::glidex::directory::v1::*;
