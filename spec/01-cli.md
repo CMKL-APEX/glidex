@@ -102,6 +102,7 @@ name (ids when `/projects` isn't readable).
 | `list` / `ls` | `GET /vms` + table; `STATE` shows `state → desired_state` while they differ |
 | `get <name\|id>` | `GET /vms/{id}` with VM-name resolution; also prints the `Ready` reason while not converged (`Waiting:`) and `last_exit` |
 | `create` | Interactive prompts → `POST /vms` |
+| `create <name> (--image I [--disk-size GiB] \| --root-disk D \| --rootfs PATH) [flags]` | The same request without prompts (§`create` without prompts) |
 | `start <name\|id> [--no-wait]` | `POST /vms/{id}/start?wait=60` |
 | `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/24-storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
@@ -347,6 +348,26 @@ Interactive `handle_create` asks, in order:
 
 The request is `POST /vms`. Tilde in paths is expanded server-side
 (see [03-data-model.md](03-data-model.md)); the CLI does not do it itself.
+
+### `create` without prompts
+
+`create <name> [flags]` (any argument after `create`) builds the same
+request from flags, for scripts. Each prompt has a flag; what isn't given
+takes the prompt's default, looked up the same way (newest firmware image
+for the hypervisor, the boot image's own kernel, the signed-in user's
+credential, the `default` network). Rules:
+
+- Exactly one boot disk: `--image` (with optional `--disk-size`),
+  `--root-disk` or `--rootfs`. There is no default image: a script says
+  which.
+- An unknown flag, a flag without its value, a malformed number or size,
+  or flags that don't go together (`--initrd` without a kernel path,
+  `--follow-kernel` with a host path, `--kernel` with firmware boot,
+  `--network none` with other networks) are refused before any request.
+- `--start` sends `power: running`; without it the VM is created
+  stopped, as with the prompts.
+- A one-shot run (`gxctl create …`) exits 1 when the create fails, so a
+  script can tell; other commands still exit 0 after printing an error.
 
 
 ### `connect` loop
