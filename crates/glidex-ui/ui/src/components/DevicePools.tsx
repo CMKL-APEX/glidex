@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import * as api from "../api";
 import type { PciGrantJson, PciPoolJson, PciPoolSpecJson } from "../gen/glidex/cluster/v1/cluster_pb";
-import { formatTimestamp } from "../types";
+import { formatTimestamp, type ProjectView, type Tenant } from "../types";
 import { useSession } from "../session";
 import ConfirmDialog from "./ConfirmDialog";
 import Modal from "./Modal";
@@ -31,6 +31,7 @@ export default function DevicePools() {
   const [error, setError] = useState<string | null>(null);
   const [adopting, setAdopting] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [granting, setGranting] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
 
   const load = useCallback(() => {
@@ -108,6 +109,11 @@ export default function DevicePools() {
                   </td>
                   <td>{p.discovered ? "host roles only" : grantees(allow, p.name ?? "")}</td>
                   <td className="text-right whitespace-nowrap">
+                    {canWrite && (
+                      <button className={`${secondaryButton} mr-2`} onClick={() => setGranting(p.name ?? "")}>
+                        Grants…
+                      </button>
+                    )}
                     {canWrite && p.discovered && (
                       <button className={secondaryButton} onClick={() => setAdopting(p.name ?? "")}>
                         Adopt…
@@ -133,6 +139,24 @@ export default function DevicePools() {
           onAdopt={async (spec) => {
             await save({ pools: [...defined, spec], allow });
             setAdopting(null);
+          }}
+        />
+      )}
+      {granting && (
+        <GrantsDialog
+          pool={granting}
+          discovered={pools.find((p) => p.name === granting)?.discovered === true}
+          allow={allow}
+          onClose={() => setGranting(null)}
+          onSave={async (grant) => {
+            // A grant names a pool of the setting: a discovered pool is
+            // adopted under its name in the same write (§9.1b).
+            const found = pools.find((p) => p.name === granting);
+            const match = found?.discovered ? api.discoveredMatch(granting) : null;
+            const nextPools = match && !spec(granting) ? [...defined, { name: granting, class: found?.class, match }] : defined;
+            const rest = allow.filter((g) => g.pool !== granting || g.bdf);
+            await save({ pools: nextPools, allow: grant ? [...rest, grant] : rest });
+            setGranting(null);
           }}
         />
       )}
@@ -165,6 +189,107 @@ export default function DevicePools() {
         />
       )}
     </Card>
+  );
+}
+
+/** Who may use one pool: projects and tenants picked from the directory,
+ * or every admitted tenant (`"*"`, which goes alone). Saving replaces the
+ * pool's grants with one; names the directory doesn't list stay as they
+ * were unless unticked. */
+function GrantsDialog({
+  pool,
+  discovered,
+  allow,
+  onClose,
+  onSave,
+}: {
+  pool: string;
+  discovered: boolean;
+  allow: PciGrantJson[];
+  onClose: () => void;
+  onSave: (grant: PciGrantJson | null) => Promise<void>;
+}) {
+  const current = allow.filter((g) => g.pool === pool && !g.bdf);
+  const [projects, setProjects] = useState<Set<string>>(new Set(current.flatMap((g) => g.projects ?? [])));
+  const [tenants, setTenants] = useState<Set<string>>(new Set(current.flatMap((g) => g.tenants ?? []).filter((t) => t !== "*")));
+  const [everyTenant, setEveryTenant] = useState(current.some((g) => (g.tenants ?? []).includes("*")));
+  const [known, setKnown] = useState<{ projects: ProjectView[]; tenants: Tenant[] } | null>(null);
+  const [filter, setFilter] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    Promise.all([api.listProjects(), api.listTenants()])
+      .then(([p, t]) => setKnown({ projects: p, tenants: t }))
+      .catch((e) => setError(errorMessage(e)));
+  }, []);
+
+  const toggle = (set: Set<string>, update: (s: Set<string>) => void, name: string) => {
+    const next = new Set(set);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    update(next);
+  };
+  // What the directory lists, by the name a grant keeps (a project's name,
+  // a tenant's slug), with granted names it doesn't list kept on the list.
+  const projectNames = [...new Set([...(known?.projects ?? []).map((p) => p.name), ...projects])].sort();
+  const tenantNames = [...new Set([...(known?.tenants ?? []).map((t) => t.slug), ...tenants])].sort();
+  const shown = (n: string) => n.toLowerCase().includes(filter.trim().toLowerCase());
+
+  const go = async () => {
+    const p = [...projects].sort();
+    const t = everyTenant ? ["*"] : [...tenants].sort();
+    setBusy(true);
+    try {
+      await onSave(p.length || t.length ? { pool, ...(p.length ? { projects: p } : {}), ...(t.length ? { tenants: t } : {}) } : null);
+    } catch (e) {
+      setError(errorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const list = (label: string, names: string[], set: Set<string>, update: (s: Set<string>) => void, disabled = false) => (
+    <fieldset className="mb-3" disabled={disabled}>
+      <legend className="text-sm font-medium text-gray-700 mb-1">{label}</legend>
+      <div className="max-h-40 overflow-y-auto border border-gray-200 rounded p-2">
+        {names.filter(shown).length === 0 ? (
+          <p className="text-sm text-gray-500">{known ? "None" : "Loading…"}</p>
+        ) : (
+          names.filter(shown).map((n) => (
+            <label key={n} className="flex items-center gap-2 text-sm text-gray-700">
+              <input type="checkbox" checked={set.has(n)} onChange={() => toggle(set, update, n)} />
+              {n}
+            </label>
+          ))
+        )}
+      </div>
+    </fieldset>
+  );
+
+  return (
+    <Modal title={`Grants for ${pool}`} onClose={onClose}>
+      <ErrorBanner error={error} onDismiss={() => setError(null)} />
+      <p className="text-sm text-gray-600 mb-3">
+        Who may ask for this pool's devices. Quotas (<code>devices.{pool}</code>) and tenant pools still apply.
+        {discovered && ` Saving a grant adopts ${pool} into the cluster setting under this name.`}
+      </p>
+      <input className={`${inputClass} mb-3`} placeholder="Filter" aria-label="Filter" value={filter} onChange={(e) => setFilter(e.target.value)} />
+      {list("Projects", projectNames, projects, setProjects)}
+      <label className="flex items-start gap-2 text-sm text-gray-700 mb-2">
+        <input type="checkbox" className="mt-1" checked={everyTenant} onChange={(e) => setEveryTenant(e.target.checked)} />
+        <span>Every tenant admitted on this cluster (an open pool)</span>
+      </label>
+      {list("Tenants", tenantNames, tenants, setTenants, everyTenant)}
+      <div className="flex justify-end gap-2 mt-4">
+        <button className={secondaryButton} onClick={onClose}>
+          Cancel
+        </button>
+        <button className={primaryButton} disabled={busy || !known} onClick={go}>
+          Save
+        </button>
+      </div>
+    </Modal>
   );
 }
 

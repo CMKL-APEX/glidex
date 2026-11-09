@@ -100,6 +100,57 @@ test("adopting a discovered pool of VFs matches them by their card", async ({ pa
   expect(sent.pools[1]).toEqual({ name: "cx7-vfs", class: "nic", match: { vf_of: { vendor_id: "0x15b3", device_id: "0x1021" } } });
 });
 
+test.describe("the grants dialog", () => {
+  test.beforeEach(async ({ page }) => {
+    await rpcRoute(page, "glidex.access.v1.ProjectService/ListProjects", () => ({
+      message: { projects: [{ id: "p1", name: "lab" }, { id: "p2", name: "ml" }] },
+    }));
+    await rpcRoute(page, "glidex.tenancy.v1.TenantService/ListTenants", () => ({
+      message: { tenants: [{ id: "t1", slug: "acme", display_name: "Acme" }] },
+    }));
+  });
+
+  test("adds projects and tenants to a pool's grant", async ({ page }) => {
+    let sent: any = null;
+    await rpcRoute(page, `${CLUSTER_SVC}/PutPciSettings`, (req) => {
+      sent = req;
+      return { message: { source: "PCI_SETTINGS_SOURCE_CLUSTER", settings: req } };
+    });
+    await page.goto("/cluster");
+    await page.getByRole("row").filter({ hasText: "t4" }).getByRole("button", { name: "Grants…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Grants for t4" });
+    // What the pool is granted to is ticked already.
+    await expect(dialog.getByRole("checkbox", { name: "lab", exact: true })).toBeChecked();
+    await dialog.getByRole("checkbox", { name: "ml", exact: true }).check();
+    await dialog.getByRole("checkbox", { name: "acme", exact: true }).check();
+    const put = waitForRpc(page, `${CLUSTER_SVC}/PutPciSettings`);
+    await dialog.getByRole("button", { name: "Save" }).click();
+    await put;
+    await expect(dialog).toBeHidden();
+    expect(sent.pools).toEqual([t4]);
+    expect(sent.allow).toEqual([{ pool: "t4", projects: ["lab", "ml"], tenants: ["acme"] }]);
+  });
+
+  test("opening a discovered pool to every tenant adopts it in the same write", async ({ page }) => {
+    let sent: any = null;
+    await rpcRoute(page, `${CLUSTER_SVC}/PutPciSettings`, (req) => {
+      sent = req;
+      return { message: { source: "PCI_SETTINGS_SOURCE_CLUSTER", settings: req } };
+    });
+    await page.goto("/cluster");
+    await page.getByRole("row").filter({ hasText: "amd-7551" }).getByRole("button", { name: "Grants…" }).click();
+    const dialog = page.getByRole("dialog", { name: "Grants for amd-7551" });
+    await dialog.getByRole("checkbox", { name: /Every tenant/ }).check();
+    // "*" goes alone: the tenant list can't be ticked with it.
+    await expect(dialog.getByRole("checkbox", { name: "acme", exact: true })).toBeDisabled();
+    const put = waitForRpc(page, `${CLUSTER_SVC}/PutPciSettings`);
+    await dialog.getByRole("button", { name: "Save" }).click();
+    await put;
+    expect(sent.pools).toEqual([t4, { name: "amd-7551", class: "gpu", match: { vendor_id: "0x1002", device_id: "0x7551" } }]);
+    expect(sent.allow).toEqual([grant, { pool: "amd-7551", tenants: ["*"] }]);
+  });
+});
+
 test("removing a pool takes its grants with it", async ({ page }) => {
   const put = waitForRpc(page, `${CLUSTER_SVC}/PutPciSettings`);
   await rpcRoute(page, `${CLUSTER_SVC}/PutPciSettings`, () => ({ message: { source: "PCI_SETTINGS_SOURCE_CLUSTER", settings: {} } }));

@@ -397,7 +397,10 @@ The Cluster page's **Device pools** card shows the same, standalone or
 clustered. It lists each pool, defined or discovered, with its free
 devices per node, its sizing and who it's granted to. A system admin can
 also adopt a discovered pool, remove a pool (its grants go with it), or
-edit the pools and grants as JSON there.
+edit the pools and grants as JSON there. **Grants…** on a pool picks
+the projects and tenants that may use it from the directory, or every
+admitted tenant; saving a grant on a discovered pool adopts it under
+its name.
 
 The call is `PUT /cluster/settings/pci` and needs `system-admin`. It's
 refused while a VM or a tenant pool still asks for a pool it removes or
@@ -406,6 +409,82 @@ renames. Until the setting is written, a server uses `pci.pools` and
 standalone host, copies its file's pools and grants into the setting
 once. After that, those file keys are ignored, and a server whose file
 still differs logs a warning saying so.
+
+### Pool and grant reference
+
+The setting is `{"pools": [...], "allow": [...]}`, the same as a
+configuration file's `pci` section. Unknown fields are refused.
+
+```json
+{
+  "pools": [
+    { "name": "r9700", "class": "gpu",
+      "match": { "vendor_id": "0x1002", "device_id": "0x7551" },
+      "bar_mib": 16384,
+      "per_device": { "vcpus": 8, "memory_mib": 32768 } },
+    { "name": "cx7-vfs", "class": "nic", "prepare": true,
+      "match": { "vf_of": { "vendor_id": "0x15b3", "device_id": "0x1021" } },
+      "nodes": ["prism1"] }
+  ],
+  "allow": [
+    { "pool": "r9700", "projects": ["lab"], "tenants": ["acme"] },
+    { "pool": "cx7-vfs", "tenants": ["*"] },
+    { "bdf": "0000:41:00.0", "node": "prism2", "projects": ["ml"] }
+  ]
+}
+```
+
+A pool (`pools[]`):
+
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | string, required | Unique. Requests and grants name it. A pool named like a discovered one (`amd-7551`) replaces it. |
+| `class` | string | `gpu`, `nic`, `nvme`, `dpu` or `accelerator`: a label for people and metering. A `gpus` request takes a pool of class `gpu`. |
+| `match` | object, required | Which devices are the pool's (below). |
+| `nodes` | string array | Node ids or names the pool is on. Empty: every node. |
+| `prepare` | bool, default `false` | Each node binds the pool's devices to `vfio-pci` when its control plane starts (new VFs also right after `node sriov`). With `false`, a device on its host driver is listed as not ready. |
+| `per_device` | object | What a `gpus` request gets per device unless the VM sizes itself: `vcpus` and `memory_mib` (required), `hugepages` (bool) and `cpu_policy` (`"shared"` or `"dedicated"`). Without it, a VM asking `gpus` gives its own `vcpu_count` and `mem_size_mib`. |
+| `bar_mib` | integer | The largest GPU memory window, in MiB, a power of two (`16384`). Without it, the window is sized against the host's memory ([AMD GPUs](#amd-gpus)). |
+
+A match (`match`) holds keys that must all match:
+
+| Key | Matches |
+|---|---|
+| `vendor_id`, `device_id` | Hex ids, `"0x10de"`; case and the `0x` don't matter |
+| `class_code` | A PCI class code or its start, `"0x0302"` |
+| `addresses` | PCI addresses, `"0000:41:00.0"` |
+| `vf_of` | A match of physical functions: the pool takes their SR-IOV VFs, and the other keys then match the VF ([SR-IOV virtual functions](#sr-iov-virtual-functions)) |
+
+A grant (`allow[]`) names one pool or one device:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `pool` | string | A pool of `pools`. To grant a discovered pool, adopt it first; `gxctl pci grant` and the card's **Grants…** do that for you. |
+| `bdf` | string | Instead of `pool`: one device's PCI address. |
+| `node` | string | With `bdf`: the node (id or name) whose device it is. Without it, the device at that address on every node. |
+| `projects` | string array | Project ids or names that may use it. |
+| `tenants` | string array | Tenant ids or slugs: every project of theirs may use it. `["*"]` on a pool: every tenant admitted on the cluster (an open pool). |
+
+The setting is refused when:
+
+- a pool has no name or the name of another pool;
+- a pool's `match` is empty (it would match every device), or its
+  `vf_of` is;
+- `bar_mib` isn't a power of two;
+- two pools have the same `match` on nodes they share: a device belongs
+  to at most one pool;
+- a grant names both `bdf` and `pool`, or neither, or a pool that isn't
+  in `pools`;
+- `"*"` is with other tenants, or on a `bdf` grant;
+- it removes or renames a pool that a VM's `devices` or `gpus`, or a
+  tenant pool's `from`, still asks for (`409`, listing them).
+
+A grant isn't the only limit: the tenant's cap on the pool
+(`devices.<pool>` in its admission, [Who may use a
+pool](host-resources.md#who-may-use-a-pool)) and tenant pools, which
+share a tenant's grant among its projects, still apply. `net-admin` and
+`system-admin` may use any pool without a grant. What only one host decides, `pci.exclude` and `pci.overrides`,
+stays in that host's file ([Per-host settings](#per-host-settings)).
 
 ### Discovered pools
 
