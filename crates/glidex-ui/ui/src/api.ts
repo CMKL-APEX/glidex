@@ -119,6 +119,7 @@ import {
   type GetPciSettingsResponseJson,
   type PciGrantJson,
   type PciPoolJson,
+  type PciPoolMatchJson,
   type PciPoolSpecJson,
   type PutOvnSettingsRequestJson,
 } from "./gen/glidex/cluster/v1/cluster_pb";
@@ -1328,12 +1329,13 @@ export const getPciSettings = () => rpc(ClusterService.method.getPciSettings).th
 /** Replaces the device pools and grants for every server. */
 export const putPciSettings = (s: { pools: PciPoolSpecJson[]; allow: PciGrantJson[] }) =>
   rpc(ClusterService.method.putPciSettings, s).then((r) => r as PciSettingsView);
-/** The vendor and device ids a discovered pool's name stands for (`amd-7551`; spec/22-host-topology.md §9.1b). */
-export function discoveredIds(name: string): [string, string] | null {
-  const m = /^(nvidia|amd|intel|[0-9a-f]{4})-([0-9a-f]{4})$/.exec(name);
+/** The match a discovered pool's name stands for: its model (`amd-7551`), or for `-vf` the VFs of cards of that model (`15b3-1021-vf`; spec/22-host-topology.md §9.1b). */
+export function discoveredMatch(name: string): PciPoolMatchJson | null {
+  const m = /^(nvidia|amd|intel|[0-9a-f]{4})-([0-9a-f]{4})(-vf)?$/.exec(name);
   if (!m) return null;
   const vendor = ({ nvidia: "10de", amd: "1002", intel: "8086" } as Record<string, string>)[m[1]] ?? m[1];
-  return [`0x${vendor}`, `0x${m[2]}`];
+  const ids = { vendor_id: `0x${vendor}`, device_id: `0x${m[2]}` };
+  return m[3] ? { vf_of: ids } : ids;
 }
 /** Bind a device's IOMMU group to vfio-pci on its node, or put it back (spec/22-host-topology.md §5.3). */
 export const prepareDevice = (id: string, address: string) => rpc(NodeService.method.prepareDevice, { id, address });

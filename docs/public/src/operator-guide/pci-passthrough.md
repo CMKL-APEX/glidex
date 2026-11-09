@@ -409,12 +409,19 @@ still differs logs a warning saying so.
 
 ### Discovered pools
 
-GPUs and accelerators that no pool covers form a pool per model with no
-setup, named `<vendor>-<device>`: `amd-7551`, `nvidia-2330`, or the
-vendor's hex id for other vendors (`15b3-a2dc`). `gxctl pci pools` marks
-them `discovered`. A server's BMC console (ASPEED or Matrox display)
-is left out. Discovery never binds a driver, so a card still on
-its host driver shows as not ready until you prepare it.
+GPUs, accelerators and network cards that no pool covers form a pool
+per model with no setup, named `<vendor>-<device>`: `amd-7551`,
+`nvidia-2330`, or the vendor's hex id for other vendors (`15b3-1021`, a
+ConnectX-7). A network card's SR-IOV VFs form a pool of their own,
+named after the card with `-vf` (`15b3-1021-vf`). `gxctl pci pools`
+marks them `discovered`. A server's BMC console (ASPEED or Matrox
+display) is left out.
+
+Discovery never binds a driver, so a device still on its host driver
+shows as not ready until you prepare it. That includes the host's own
+network ports, which are listed but never taken, and a card whose VFs
+are enabled (pass the VFs through instead). To keep a port off the list
+entirely, exclude it on its host (below).
 
 Only users with `net-admin` (or `system-admin`) may use a discovered
 pool, and projects don't see it. To size it or grant it, adopt it,
@@ -422,12 +429,15 @@ optionally under a name of your own:
 
 ```bash
 gxctl pci pool adopt amd-7551 --name r9700
+gxctl pci pool adopt 15b3-1021-vf --name cx7-vfs   # a pool of VFs: matches them by their card (vf_of)
 ```
 
 This writes a pool matching the model to the cluster setting, where you
 edit it as any other pool. A rename is refused while VMs still ask for
-the discovered name. `gxctl pci grant amd-7551 …` adopts it under its own name
-first.
+the discovered name. `gxctl pci grant amd-7551 …` adopts it under its
+own name first. To have Glidex bind an adopted pool's devices to
+`vfio-pci` (new VFs come up on the card's driver), set `"prepare": true`
+on it with `gxctl pci pool set`.
 
 ### Per-host settings
 
