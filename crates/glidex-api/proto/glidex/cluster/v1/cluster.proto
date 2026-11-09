@@ -989,6 +989,10 @@ message PciPool {
   // What a VM gets per device asked of it with `gpus` (spec/27-gpu-vms.md §6).
   optional uint32 per_device_vcpus = 8 [json_name = "per_device_vcpus"];
   optional uint32 per_device_memory_mib = 9 [json_name = "per_device_memory_mib"];
+  // Formed from GPUs or accelerators no defined pool covers
+  // (spec/22-host-topology.md H21); only host roles may use it until it is
+  // adopted or granted.
+  optional bool discovered = 10;
 }
 message PciPoolNode {
   string node = 1;

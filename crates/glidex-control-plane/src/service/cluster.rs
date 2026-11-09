@@ -760,7 +760,7 @@ fn pci_view(c: &Caller) -> Value {
         None => (
             "file",
             crate::pci_settings::PciSettings {
-                pools: m.pci_pools().to_vec(),
+                pools: m.defined_pools().to_vec(),
                 allow: m.pci_grants().to_vec(),
                 ..Default::default()
             },
@@ -862,7 +862,12 @@ pub async fn put_pci_settings(
     c.set_target("cluster:pci".to_string());
     c.audit_always();
     let m = c.manager();
-    let kept = |name: &str| next.pools.iter().any(|p| p.name == name);
+    // A pool still in force afterwards: defined, or discovered over the
+    // nodes once these pools apply (spec/22-host-topology.md H21).
+    let still = crate::pci_discovery::discover(&next.pools, &m.nodes().list().unwrap_or_default());
+    let kept = |name: &str| {
+        next.pools.iter().any(|p| p.name == name) || still.iter().any(|p| p.name == name)
+    };
     let mut users: Vec<String> = m
         .list_vms()
         .await

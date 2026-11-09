@@ -689,6 +689,10 @@ fn help_text() -> String {
         "pci settings [set <file.json>]".cyan()
     );
     line!(
+        "  {} - Make a discovered pool a defined one, under its name or N",
+        "pci pool adopt <pool> [--name N]".cyan()
+    );
+    line!(
         "  {} - Attach PCI device to VM",
         "attach-device <name|id> <path>".cyan()
     );

@@ -5653,7 +5653,7 @@ async fn file_pools_move_to_the_setting_once() {
     server.manager.migrate_pci_settings();
     let names: Vec<String> = server
         .manager
-        .pci_pools()
+        .defined_pools()
         .iter()
         .map(|p| p.name.clone())
         .collect();
