@@ -75,7 +75,8 @@ at every boot, before glidex, glidex-netd or any other hypervisor
 starts:
 
 ```bash
-cargo run -p glidex-install -- --vfio-devices a100     # a pool from control-plane.json
+cargo run -p glidex-install -- --vfio-devices a100     # a pool
+cargo run -p glidex-install -- --vfio-devices amd-7551 # a discovered pool
 cargo run -p glidex-install -- --vfio-devices 0000:41:00.0,0000:42:00.0
 cargo run -p glidex-install -- --sriov 0000:61:00.0=8 --vfio-devices cx7-vfs
 cargo run -p glidex-install -- --no-vfio-devices       # stop doing it
@@ -83,7 +84,7 @@ cargo run -p glidex-install -- --no-vfio-devices       # stop doing it
 
 | Flag | What it does |
 | --- | --- |
-| `--vfio-devices LIST` | Pools of `control-plane.json` or PCI addresses, comma-separated. Each device and the rest of its IOMMU group go to `vfio-pci`. A new list replaces the old one. |
+| `--vfio-devices LIST` | Pools or PCI addresses, comma-separated. A pool comes from the cluster's setting (asked of the running control plane), else this host's `control-plane.json`, else a discovered pool's name. Each device and the rest of its IOMMU group go to `vfio-pci`, except what this host's `pci.exclude` keeps; its `pci.overrides` set the window size. A new list replaces the old one. |
 | `--sriov PF=N` | `N` VFs on physical function `PF`, set before the binding so its VFs can be bound (by a pool with `match.vf_of`). Repeatable, or comma-separated; the last count for a PF wins. |
 | `--no-vfio-devices` | Forget both. What is bound now stays so until the next boot. |
 | `--now` | Apply them now as well. Not saved. |

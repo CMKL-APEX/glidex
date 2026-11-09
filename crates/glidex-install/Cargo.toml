@@ -15,6 +15,7 @@ path = "src/main.rs"
 glidex-ovs = { path = "../glidex-ovs" }
 glidex-netd = { path = "../glidex-netd" }
 glidex-tls = { path = "../glidex-tls" }
+glidex-topology = { path = "../glidex-topology" }
 serde_json = { workspace = true }
 anyhow = "1"
 colored = "3"
