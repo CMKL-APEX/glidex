@@ -115,8 +115,10 @@ the `https://` URL.
   with the UI's self-signed certificate, which `glidex-ui --dev`
   generates if needed and passes to Vite).
 - **React 19** with **react-router-dom 7** for client-side routing.
-- **TypeScript 5** (strict).
-- **Tailwind CSS 3** for styling; config in `ui/tailwind.config.js`.
+- **TypeScript 7** (strict).
+- **Tailwind CSS 4** for styling, configured in CSS: `ui/src/index.css`
+  (`@import "tailwindcss"`, `@source` for the kit), through
+  `@tailwindcss/postcss`.
 - **ghostty-web** (default) and **@xterm/xterm + @xterm/addon-fit** for
   the VM console page, each loaded only when chosen.
 - **bun** is the package manager (the lockfile is `bun.lock`).

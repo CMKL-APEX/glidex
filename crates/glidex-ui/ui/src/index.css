@@ -1,29 +1,45 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
 
-@layer components {
-  .btn {
-    @apply px-4 py-2 rounded-lg font-medium transition-colors duration-200;
+@source '../../kit/src/**/*.{js,ts,jsx,tsx}';
+
+@layer base {
+  /* A border with no color of its own: gray-200, as in Tailwind 3, not
+     4's currentcolor (near-black on most text). */
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
   }
 
-  .btn-primary {
-    @apply bg-sky-600 text-white hover:bg-sky-700;
+  /* Tailwind 4 gives buttons the default cursor; keep the pointer. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
   }
+}
 
-  .btn-secondary {
-    @apply bg-gray-200 text-gray-800 hover:bg-gray-300;
-  }
+@utility btn {
+  @apply px-4 py-2 rounded-lg font-medium transition-colors duration-200;
+}
 
-  .btn-danger {
-    @apply bg-red-600 text-white hover:bg-red-700;
-  }
+@utility btn-primary {
+  @apply bg-sky-600 text-white hover:bg-sky-700;
+}
 
-  .card {
-    @apply bg-white rounded-xl shadow-md p-6 border border-gray-100;
-  }
+@utility btn-secondary {
+  @apply bg-gray-200 text-gray-800 hover:bg-gray-300;
+}
 
-  .input {
-    @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent;
-  }
+@utility btn-danger {
+  @apply bg-red-600 text-white hover:bg-red-700;
+}
+
+@utility card {
+  @apply bg-white rounded-xl shadow-md p-6 border border-gray-100;
+}
+
+@utility input {
+  @apply w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent;
 }

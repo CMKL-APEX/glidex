@@ -417,7 +417,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-700">
           <input
             type="checkbox"
-            className="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+            className="rounded-sm border-gray-300 text-sky-600 focus:ring-sky-500"
             checked={isElastic}
             onChange={(e) => {
               setIsElastic(e.target.checked);
@@ -437,7 +437,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               <label className="block text-xs font-medium text-gray-600">Min vCPUs</label>
               <input
                 type="number"
-                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded-sm focus:ring-2 focus:ring-sky-500 bg-white"
                 min={hypervisor === "pylon" ? 0 : 1}
                 max={hypervisor === "pylon" ? (typeof maxVcpus === "number" ? maxVcpus : 64) : vcpuCount}
                 value={minVcpus}
@@ -448,7 +448,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               <label className="block text-xs font-medium text-gray-600">Max vCPUs</label>
               <input
                 type="number"
-                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded-sm focus:ring-2 focus:ring-sky-500 bg-white"
                 min={hypervisor === "pylon" ? (typeof minVcpus === "number" ? minVcpus : 1) : vcpuCount}
                 max={hypervisor === "pylon" ? 64 : 255}
                 value={maxVcpus}
@@ -465,7 +465,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               <label className="block text-xs font-medium text-gray-600">Weight (1–10000)</label>
               <input
                 type="number"
-                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded-sm focus:ring-2 focus:ring-sky-500 bg-white"
                 min="1"
                 max="10000"
                 placeholder="100"

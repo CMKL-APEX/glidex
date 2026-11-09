@@ -188,7 +188,7 @@ export function DangerZone({ status, onDone }: { status: ClusterStatus; onDone: 
   const canLeave = host.leaveCluster && self?.status.phase === "NODE_PHASE_REMOVED";
   if (!canDissolve && !canLeave) return null;
   return (
-    <details className="mb-6 bg-white rounded-xl shadow-sm border border-red-200 p-5">
+    <details className="mb-6 bg-white rounded-xl shadow-xs border border-red-200 p-5">
       <summary className="cursor-pointer text-lg font-semibold text-red-700">Danger zone</summary>
       <div className="mt-4 space-y-3 text-sm">
         {canLeave && (

@@ -116,7 +116,7 @@ export default function Audit() {
   return (
     <div>
       <PageHeader title="Audit log" subtitle="Writes, logins and denied requests, newest first unless sorted by a column." />
-      <form onSubmit={submit} className="mb-4 flex flex-wrap items-end gap-3 bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+      <form onSubmit={submit} className="mb-4 flex flex-wrap items-end gap-3 bg-white rounded-xl shadow-xs border border-gray-200 p-4">
         <div>
           <label htmlFor="audit-project" className="block text-xs text-gray-500">
             Project
@@ -166,9 +166,9 @@ export default function Audit() {
       {entries === null ? (
         <LoadingCard />
       ) : entries.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">No entries.</div>
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">No entries.</div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">

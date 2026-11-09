@@ -323,7 +323,7 @@ export default function Usage() {
       {!data && !error ? (
         <LoadingCard />
       ) : data ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-x-auto">
           <div className="px-3 py-2 text-xs text-gray-500 border-b border-gray-100">{status}</div>
           {(data.rows ?? []).length === 0 ? (
             <p className="p-6 text-sm text-gray-500">Nothing recorded for this month.</p>
