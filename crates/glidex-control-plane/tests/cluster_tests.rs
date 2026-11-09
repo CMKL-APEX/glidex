@@ -3350,6 +3350,56 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
         && p.ip.is_some()));
     assert!(d.edge.is_some() && !d.node_addresses.is_empty());
 
+    // A NIC added to a placed VM gets its address, and so its port, at once.
+    let b_id = vm_of(&b)["id"].as_str().unwrap().to_string();
+    server
+        .manager
+        .attach_network(
+            &b_id,
+            glidex_control_plane::models::NetworkAttachment {
+                network: "lab".into(),
+                mac: None,
+                queue_pairs: None,
+            },
+        )
+        .await
+        .unwrap();
+    let lab = glidex_control_plane::ipam::list_reservations(&server.manager.database())
+        .unwrap()
+        .into_iter()
+        .find(|r| r.vm_id == b_id && r.nic == 1)
+        .expect("the added NIC's address");
+    assert!(lab.ip.to_string().starts_with("10.89.200."), "{}", lab.ip);
+    let ports = || async {
+        server
+            .manager
+            .__desired_ovn_for_tests()
+            .await
+            .unwrap()
+            .ports
+            .len()
+    };
+    assert_eq!(ports().await, 3);
+
+    // One missing (a NIC added before changes reserved addresses) is made
+    // by the leader's next pass.
+    server
+        .manager
+        .database()
+        .write(glidex_control_plane::store::Origin::Network, |tx| {
+            glidex_control_plane::ipam::release(tx, &lab.network, &lab.mac)
+        })
+        .unwrap();
+    assert_eq!(ports().await, 2);
+    server.manager.clone().reconcile_ovn().await;
+    let res = glidex_control_plane::ipam::list_reservations(&server.manager.database()).unwrap();
+    assert!(
+        res.iter()
+            .any(|r| r.vm_id == b_id && r.nic == 1 && r.ip == lab.ip),
+        "{res:?}"
+    );
+    assert_eq!(ports().await, 3);
+
     // A network in use can't go; a VM that goes frees its address.
     let (s, _) = call(&server, "DELETE", "/networks/web", None, &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
@@ -3367,7 +3417,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
         glidex_control_plane::ipam::list_reservations(&server.manager.database())
             .unwrap()
             .len(),
-        1
+        2
     );
 }
 
