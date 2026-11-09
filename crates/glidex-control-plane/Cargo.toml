@@ -49,7 +49,7 @@ lzma-rs = "0.3"
 # arm64 kernels wrapped in EFI zboot or gzip (spec/23-kernel-boot.md K8):
 # already in the tree through connectrpc.
 flate2 = { version = "1", default-features = false, features = ["zlib-rs"] }
-zstd = "0.13"
+zstd = "0.14"
 tempfile = "3"
 cedar-policy = "4.13"
 arc-swap = "1"
