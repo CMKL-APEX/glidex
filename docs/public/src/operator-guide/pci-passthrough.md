@@ -386,6 +386,29 @@ standalone host, copies its file's pools and grants into the setting
 once. After that, those file keys are ignored, and a server whose file
 still differs logs a warning saying so.
 
+### Discovered pools
+
+GPUs and accelerators that no pool covers form a pool per model with no
+setup, named `<vendor>-<device>`: `amd-7551`, `nvidia-2330`, or the
+vendor's hex id for other vendors (`15b3-a2dc`). `gxctl pci pools` marks
+them `discovered`. A server's BMC console (ASPEED or Matrox display)
+is left out. Discovery never binds a driver, so a card still on
+its host driver shows as not ready until you prepare it.
+
+Only users with `net-admin` (or `system-admin`) may use a discovered
+pool, and projects don't see it. To size it or grant it, adopt it,
+optionally under a name of your own:
+
+```bash
+gxctl pci pool adopt amd-7551 --name r9700
+```
+
+This writes a pool matching the model to the cluster setting, where you
+edit it as any other pool. A rename is refused while VMs still ask for
+the discovered name.
+
+### Per-host settings
+
 What only one host decides stays in that host's `control-plane.json`:
 
 ```json

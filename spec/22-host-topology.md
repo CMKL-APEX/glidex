@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API, its migration and host overrides** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API, its migration, host overrides and discovered pools** (§15). §17 records
 where the implementation differs from the design. Extends
 [14-clustering.md](14-clustering.md) §9.1 (scheduler),
 [04-hypervisors.md](04-hypervisors.md) (command lines),
@@ -62,7 +62,7 @@ and pools for GPUs, DPUs and NICs.
 | H19 | Hugepages | Hugepages are accounted as their own resource, per page size and NUMA node: what the node reserved, what OVS-DPDK takes, and what placed VMs hold. They are never overcommitted and don't count as ordinary memory. The scheduler, not the node at start, decides when a vhost-user VM gets hugepages implicitly (§8a). |
 | H14 | Refresh | A node reads its topology at start, on a udev `pci`/`vfio` event batch (debounced 5 s), on `gxctl node topology refresh`, and every ten minutes with the rest of node status. A status write happens only when the summary changes. |
 | H20 | Where pools live | Cluster pools and grants (`pci.allow`, by pool and by address) are a **replicated cluster setting** (`Meta` key `pci_settings`, §9.1), written through the API, gxctl and the UI, so every server answers a request the same way. A server's `control-plane.json` keeps only what concerns that host (H23). The leader copies a file's `pci.pools` and `pci.allow` into the setting once; after that, file pools and grants are ignored with a warning. | The user's call (2026-11-09). HT4 read pools and grants from each server's file, so a pool set up on one server was unknown when another server led (`gpus: no device pool r9700` on gpu-dev2 with prism2 leading, 27-gpu-vms.md §12). The same migration as the OVN setting (16-clustering-ui.md §8a). |
-| H21 | Discovered pools | Devices of class `gpu` or `accelerator` that no defined pool covers and no host excludes form a **discovered pool** per vendor and device id, across every node that has one, named `<vendor>-<device>` (`amd-7551`, `nvidia-2330`; §9.1b). Discovery only groups devices: it never binds a driver, and a device is ready as before (§5). NICs, NVMe and DPUs aren't discovered: they are mostly the host's own. | The user's call (2026-11-09): a GPU should be usable without writing config first. The slug is stable and unique, unlike a marketing name from `pci.ids`, which depends on the host's copy. |
+| H21 | Discovered pools | Devices of class `gpu` or `accelerator` that no defined pool covers and no host excludes form a **discovered pool** per vendor and device id, across every node that has one, named `<vendor>-<device>` (`amd-7551`, `nvidia-2330`; §9.1b). Discovery only groups devices: it never binds a driver, and a device is ready as before (§5). NICs, NVMe and DPUs aren't discovered: they are mostly the host's own. Nor are BMCs' display controllers (ASPEED `0x1a03`, Matrox `0x102b`): the server's console. | The user's call (2026-11-09): a GPU should be usable without writing config first. The slug is stable and unique, unlike a marketing name from `pci.ids`, which depends on the host's copy. |
 | H22 | Who uses a discovered pool | Only holders of a host role with `usePciPool` (`host.devices`) until an operator grants or adopts it. A tenant never sees or gets a device because a card was plugged in. | The user's call (2026-11-09). |
 | H23 | Host overrides | Each server's file may keep devices out of discovery and every pool on that host (`pci.exclude`), and set a pool's `bar_mib` and `prepare` for that host (`pci.overrides`). The node marks the devices it keeps `excluded` in its status, so the leader never reads another server's file. | The user's call (2026-11-09): the file overrides discovery and availability. Per host because what it covers is: a card kept for host work, and G17's safe window, which depends on the host's memory. |
 
@@ -800,7 +800,8 @@ replicated node summaries, so they need no write:
 - **Members.** Each summary device of class `gpu` or `accelerator`
   (§3.3) that no defined pool's match covers on its node, and that its
   node doesn't exclude, joins the discovered pool of its vendor and
-  device id. VFs don't (they belong to the PF's pool, `vf_of`).
+  device id. VFs don't (they belong to the PF's pool, `vf_of`), nor
+  do BMCs' display controllers (ASPEED `0x1a03`, Matrox `0x102b`).
 - **Name.** `<vendor>-<device>`: the vendor is `nvidia` (`0x10de`),
   `amd` (`0x1002`), `intel` (`0x8086`), else its four hex digits; the
   device is its four hex digits (`amd-7551`, `15b3-a2dc`). When a
@@ -1156,6 +1157,16 @@ Where HT2 differs from the design above, and why:
   refused on that node ("kept by its host"). `prepare` applies the
   host's `bar_mib` and `prepare` to the named pool; an override naming
   no pool is logged when the pools change. A changed file takes a
-  control-plane restart, as other file keys do. Not done yet: `gxctl
-  pci pool …` and `pci grant`, discovered pools, the UI card and the
-  installer (#397).
+  control-plane restart, as other file keys do. Discovered pools (H21,
+  H22, `pci_discovery.rs`): `VmManager::pci_pools()` is the defined
+  pools and the discovered ones, recomputed when the setting is applied
+  and when a node record changes; `defined_pools()` is the setting's
+  (or file's) alone. A discovered pool's `nodes` are those with a
+  device of the model no defined pool covers there. It has no grants,
+  so only `host.devices` (net-admins, system admins) passes
+  `usePciPool`. `GET /pci-pools` marks it `discovered`; the PUT counts a
+  pool still discovered under the new pools as kept. `gxctl pci pool
+  adopt <slug> [--name N]` appends a pool matching the slug's ids to
+  the setting. Not done yet: the other `gxctl pci pool` commands and
+  `pci grant` (the setting's `pci settings set` covers them), the UI
+  card and the installer (#397).

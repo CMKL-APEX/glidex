@@ -380,6 +380,9 @@ pub struct VmManager {
     /// The device pools and grants in force: the cluster setting if
     /// written, else this host's file (spec/22-host-topology.md H20).
     pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
+    /// `pci_pools` and the discovered pools over the nodes' summaries
+    /// (spec/22-host-topology.md H21): what requests resolve against.
+    pools_in_force: ArcSwap<Vec<crate::config::PciPool>>,
     pci_grants: ArcSwap<Vec<crate::config::PciGrant>>,
     /// `pci` as this host's file has it.
     pci_file: ArcSwap<crate::config::PciConfig>,
@@ -582,6 +585,7 @@ impl VmManager {
             reserved: ArcSwap::from_pointee(Default::default()),
             ui_url: ArcSwap::from_pointee(None),
             pci_pools: ArcSwap::from_pointee(Vec::new()),
+            pools_in_force: ArcSwap::from_pointee(Vec::new()),
             pci_grants: ArcSwap::from_pointee(Vec::new()),
             pci_file: ArcSwap::from_pointee(Default::default()),
             pci_file_warned: std::sync::atomic::AtomicBool::new(false),
@@ -656,6 +660,20 @@ impl VmManager {
         }
         if **self.pci_grants.load() != next.allow {
             self.pci_grants.store(Arc::new(next.allow));
+        }
+        self.refresh_pools();
+    }
+
+    /// Recompute the pools in force: the defined ones and those discovered
+    /// over the nodes' summaries (at start, when the setting changes, and
+    /// when a node's record does).
+    pub fn refresh_pools(&self) {
+        let defined = self.pci_pools.load_full();
+        let nodes = self.nodes.list().unwrap_or_default();
+        let mut all = (*defined).clone();
+        all.extend(crate::pci_discovery::discover(&defined, &nodes));
+        if **self.pools_in_force.load() != all {
+            self.pools_in_force.store(Arc::new(all));
         }
     }
 
@@ -799,8 +817,14 @@ impl VmManager {
             .or(Some(2048))
     }
 
-    /// The device pools in force (spec/22-host-topology.md §9, H20).
+    /// The device pools in force: defined and discovered
+    /// (spec/22-host-topology.md §9, H20, H21).
     pub fn pci_pools(&self) -> Arc<Vec<crate::config::PciPool>> {
+        self.pools_in_force.load_full()
+    }
+
+    /// The defined pools only: the setting's, else this host's file.
+    pub fn defined_pools(&self) -> Arc<Vec<crate::config::PciPool>> {
         self.pci_pools.load_full()
     }
 
@@ -1071,7 +1095,7 @@ impl VmManager {
             vfio: c.vfio_devices.clone(),
             device_nodes: None,
             pools: {
-                let defs = self.pci_pools.load();
+                let defs = self.pools_in_force.load();
                 c.devices
                     .iter()
                     .filter_map(|r| {
@@ -1800,6 +1824,8 @@ impl VmManager {
                         .any(|(t, k)| crate::pci_settings::is_key(*t, k))
                     {
                         self.apply_pci_settings();
+                    } else if a.tables.contains(&crate::store::TableId::Nodes) {
+                        self.refresh_pools();
                     }
                     if a.tables.contains(&crate::store::TableId::Vms) {
                         let keys: Vec<String> = a
