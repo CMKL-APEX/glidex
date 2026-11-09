@@ -91,6 +91,18 @@ pub(crate) fn clear_cond(conds: &mut Vec<Condition>, kind: &str) {
     conds.retain(|c| c.kind != kind);
 }
 
+/// How long the shim waits for a hypervisor's socket (spec/12-reconciliation.md
+/// D22): `base`, and for each passthrough device 2 s per GiB of guest memory,
+/// up to 15 minutes. Cloud Hypervisor maps the whole of a VM's memory for its
+/// VFIO devices before its API answers: 8 GiB and a ConnectX-6 took 6 s, and
+/// 16 GiB with an A100 and a ConnectX-6 more than 30.
+fn ready_timeout_secs(base: u64, mem_size_mib: u32, vfio_devices: usize) -> u64 {
+    const PER_GIB_PER_DEVICE: u64 = 2;
+    const MAX: u64 = 15 * 60;
+    let gib = u64::from(mem_size_mib).div_ceil(1024);
+    (base + gib * PER_GIB_PER_DEVICE * vfio_devices as u64).min(MAX.max(base))
+}
+
 fn crash_delay(restarts: u32) -> u64 {
     let n = restarts.saturating_sub(1).min(16);
     (CRASH_BACKOFF_BASE << n).min(CRASH_BACKOFF_MAX)
@@ -710,7 +722,16 @@ impl VmManager {
             "controller",
             kind,
             "InstanceExited",
-            format!("instance {} ended: {}", inst.instance_id, cause.as_str()),
+            match (cause, message.as_deref().and_then(|m| m.lines().next())) {
+                // Why a launch failed, as the shim recorded it.
+                (ExitCause::LaunchFailed, Some(why)) if !why.is_empty() => format!(
+                    "instance {} ended: {}: {}",
+                    inst.instance_id,
+                    cause.as_str(),
+                    why
+                ),
+                _ => format!("instance {} ended: {}", inst.instance_id, cause.as_str()),
+            },
         ));
         match cause {
             ExitCause::Requested => {}
@@ -1339,6 +1360,11 @@ impl VmManager {
                 .map_err(before_intent)?
         };
         let settings = self.settings();
+        let ready_timeout = ready_timeout_secs(
+            settings.ready_timeout_secs,
+            config.mem_size_mib,
+            config.vfio_devices.len(),
+        );
         // Shared disks' locks: the shim takes them before the hypervisor
         // starts (spec/24-storage.md S16).
         let volume_locks = config
@@ -1360,7 +1386,7 @@ impl VmManager {
             shim_socket: paths.shim_socket.clone(),
             log_path: paths.log.clone(),
             log_max_bytes: settings.log_max_bytes,
-            ready_timeout_secs: settings.ready_timeout_secs,
+            ready_timeout_secs: ready_timeout,
             host_shutdown_grace_secs: settings.host_shutdown_grace_secs,
             spec: serde_json::json!({ "generation": vm.generation, "spec": vm.spec }),
             meter_poll_secs: settings.meter_poll_secs,
@@ -1446,8 +1472,7 @@ impl VmManager {
                 ),
                 intent: true,
             })?;
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(settings.ready_timeout_secs + 5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(ready_timeout + 5);
         loop {
             match InstanceFile::read(&paths.instance) {
                 Ok(Some(f)) if f.instance_id == instance_id && f.phase != Phase::Launching => {
@@ -2326,6 +2351,17 @@ mod tests {
             [1, 2, 3, 5, 6, 30].map(crash_delay),
             [10, 20, 40, 160, 300, 300]
         );
+    }
+
+    #[test]
+    fn passthrough_gives_the_hypervisor_longer_to_answer() {
+        assert_eq!(ready_timeout_secs(30, 16384, 0), 30, "no devices: the base");
+        assert_eq!(ready_timeout_secs(30, 8192, 1), 46);
+        assert_eq!(ready_timeout_secs(30, 16384, 2), 94);
+        // A part GiB counts whole.
+        assert_eq!(ready_timeout_secs(30, 1536, 1), 34);
+        // Eight GPUs and 1 TiB: capped.
+        assert_eq!(ready_timeout_secs(30, 1 << 20, 8), 900);
     }
 
     /// spec/14-clustering.md §4.1 / C0: an idle VM causes no store write across

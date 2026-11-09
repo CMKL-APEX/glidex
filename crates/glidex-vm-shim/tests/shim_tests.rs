@@ -326,6 +326,45 @@ fn a_failed_launch_reports_the_hypervisors_output() {
     );
 }
 
+/// A hypervisor whose socket never answers is stopped at the deadline, and
+/// the console says why (spec/12-reconciliation.md D22).
+#[test]
+fn a_hypervisor_that_never_answers_is_stopped_and_the_console_says_why() {
+    if !Path::new(PYTHON).exists() {
+        return;
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let mut launch = launch_file(
+        dir.path(),
+        vec![
+            PYTHON.into(),
+            "-c".into(),
+            "import time; time.sleep(30)".into(),
+        ],
+    );
+    launch.ready_timeout_secs = 1;
+    let mut shim = start_shim(dir.path(), &launch);
+    let inst = wait_exited(dir.path());
+    let exit = inst.exit.unwrap();
+    assert_eq!(exit.cause, ExitCause::LaunchFailed);
+    let why = format!("{PYTHON} API socket not ready after 1 s.");
+    assert!(
+        exit.message.as_deref().unwrap_or("").starts_with(&why),
+        "{:?}",
+        exit.message
+    );
+    ShimClient::connect(&dir.path().join("shim.sock"))
+        .unwrap()
+        .release()
+        .unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
+    let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
+    assert!(
+        log.contains(&format!("exited: launch_failed (signal 9): {why} ---")),
+        "{log}"
+    );
+}
+
 /// A fake QEMU: `vcpus` idle threads standing in for vCPUs and a QMP
 /// monitor that answers `query-cpus-fast` with their thread ids. Runs
 /// without KVM, so the placement tests run everywhere.

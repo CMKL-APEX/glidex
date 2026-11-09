@@ -96,6 +96,7 @@ Non-goals:
 | D19 | One-shot actions (extend-root, image retry) are spec counters (`seq`) the controller compares with the last applied value in status. | Actions stay level-triggered and idempotent. |
 | D20 | `?wait` returns the same error envelopes as today's synchronous calls when the reconcile fails. | gxctl and the UI keep their error behaviour. |
 | D21 | A VM can be **renamed** in any state (§7.7). A rename changes `meta.name`, not `spec`: it bumps `resource_version` but not `generation`, queues no reconcile and never sets `RestartRequired`. A root disk the VM owns is renamed with it. Names keep today's rules: not empty, unique in the project. | Everything on the host and in the network is keyed by the VM id, so a name is a label. The guest's hostname is regenerated at each launch and follows at the next start. The owned root disk carries the VM's name only because the VM made it. |
+| D22 | The launch deadline (`ready_timeout_secs`) is per launch: 30 s, plus 2 s per GiB of guest memory for each passthrough device, up to 15 minutes. A launch that runs out says why on the console and in the `InstanceExited` event, not only `signal 9`. | Cloud Hypervisor maps the whole of a VM's memory for its VFIO devices before its API answers. With a fixed 30 s, a 16 GiB VM with an A100 and a ConnectX-6 on prism2 was killed at every launch and relaunched in a loop (2026-11-09); 8 GiB and one card took 6 s. The deadline only bounds a launch that hangs, so a generous one costs nothing when the hypervisor answers. |
 
 ## 4. Verified host facts
 
@@ -657,11 +658,14 @@ Lifecycle:
    SIGKILL` for binaries without file capabilities (F7). Record
    `hypervisor_pid` and its starttime. The environment is cleared to
    `LC_ALL=C` and a fixed `PATH`.
-3. Wait up to `ready_timeout_secs` for `api_socket` to accept and answer
+3. Wait up to `ready_timeout_secs` (D22: 30 s, more with passthrough
+   devices) for `api_socket` to accept and answer
    (CH: `GET /vmm.ping`; QEMU: QMP greeting), watching for early exit
    (and running `fallback` once, §8.1). Then `phase: running` — or, if
-   the hypervisor exited, write the exit with cause `LaunchFailed` and
-   the captured output as `message`, `phase: exited`.
+   the hypervisor exited or the deadline passed (the shim kills it), write
+   the exit with cause `LaunchFailed` and the captured output, or "API
+   socket not ready after N s", as `message`, its first line also on the
+   console's exit line, `phase: exited`.
 4. Bind `shim.sock`; send `READY=1` (systemd runner). READY is sent in
    both outcomes of step 3, so the unit start job completes and the
    console and log stay inspectable either way.
