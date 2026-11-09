@@ -377,8 +377,14 @@ pub struct VmManager {
     /// This host's web UI address, as a server publishes it
     /// (spec/28-host-page.md W3).
     ui_url: ArcSwap<Option<String>>,
-    /// `pci.pools` of the control-plane config (spec/22-host-topology.md §9).
+    /// The device pools and grants in force: the cluster setting if
+    /// written, else this host's file (spec/22-host-topology.md H20).
     pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
+    pci_grants: ArcSwap<Vec<crate::config::PciGrant>>,
+    /// `pci` as this host's file has it.
+    pci_file: ArcSwap<crate::config::PciConfig>,
+    /// The file's pools and grants were reported as ignored.
+    pci_file_warned: std::sync::atomic::AtomicBool,
     /// What this host runs OVN with: the cluster setting (if written) over
     /// the file's per-host part (spec/16-clustering-ui.md §8a).
     pub(crate) ovn: ArcSwap<crate::cluster::config::OvnConfig>,
@@ -576,6 +582,9 @@ impl VmManager {
             reserved: ArcSwap::from_pointee(Default::default()),
             ui_url: ArcSwap::from_pointee(None),
             pci_pools: ArcSwap::from_pointee(Vec::new()),
+            pci_grants: ArcSwap::from_pointee(Vec::new()),
+            pci_file: ArcSwap::from_pointee(Default::default()),
+            pci_file_warned: std::sync::atomic::AtomicBool::new(false),
             ovn: ArcSwap::from_pointee(Default::default()),
             ovn_file: ArcSwap::from_pointee(Default::default()),
             ovn_file_warned: std::sync::atomic::AtomicBool::new(false),
@@ -608,9 +617,69 @@ impl VmManager {
         self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
         self.reserved
             .store(Arc::new(cfg.cluster.node_reserved.clone()));
-        self.pci_pools.store(Arc::new(cfg.pci.pools.clone()));
+        self.pci_file.store(Arc::new(cfg.pci.clone()));
         self.ovn_file.store(Arc::new(cfg.cluster.ovn.clone()));
         self.apply_ovn_settings();
+        self.apply_pci_settings();
+    }
+
+    /// Recompute the pools and grants in force from the cluster setting and
+    /// the file (at start, and whenever the setting changes).
+    pub fn apply_pci_settings(&self) {
+        let file = self.pci_file.load_full();
+        let next = match self.pci_settings() {
+            Some(s) => {
+                let file_says_something = !file.pools.is_empty() || !file.allow.is_empty();
+                if file_says_something
+                    && !s.same_as(&file)
+                    && !self
+                        .pci_file_warned
+                        .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    tracing::warn!(
+                        "control-plane.json's pci.pools and pci.allow are ignored: the cluster's device setting decides (spec/22-host-topology.md H20)"
+                    );
+                }
+                s.config()
+            }
+            None => (*file).clone(),
+        };
+        if **self.pci_pools.load() != next.pools {
+            self.pci_pools.store(Arc::new(next.pools));
+        }
+        if **self.pci_grants.load() != next.allow {
+            self.pci_grants.store(Arc::new(next.allow));
+        }
+    }
+
+    /// The cluster's device pools and grants, if a setting was written.
+    pub fn pci_settings(&self) -> Option<crate::pci_settings::PciSettings> {
+        crate::pci_settings::read(&self.store.database())
+    }
+
+    /// On the leader (or a standalone host) whose pools are in the file,
+    /// write the setting from the file once, so every server resolves the
+    /// same pools and joining a cluster changes nothing about where they
+    /// live.
+    pub fn migrate_pci_settings(&self) {
+        if !self.store.database().can_write() || self.pci_settings().is_some() {
+            return;
+        }
+        let file = self.pci_file.load_full();
+        if file.pools.is_empty() && file.allow.is_empty() {
+            return;
+        }
+        let by = format!("migrate:{}", self.local_node_id());
+        let s = crate::pci_settings::PciSettings::from_file(&file, &by, crate::auth::store::now());
+        match crate::pci_settings::write(&self.store.database(), &s) {
+            Ok(()) => {
+                tracing::info!(
+                    "wrote the cluster's device pools and grants from this server's control-plane.json"
+                );
+                self.apply_pci_settings();
+            }
+            Err(e) => tracing::warn!("writing the cluster's device setting: {}", e),
+        }
     }
 
     /// Recompute the OVN configuration from the cluster setting and the
@@ -723,9 +792,14 @@ impl VmManager {
             .or(Some(2048))
     }
 
-    /// The configured device pools (spec/22-host-topology.md §9).
+    /// The device pools in force (spec/22-host-topology.md §9, H20).
     pub fn pci_pools(&self) -> Arc<Vec<crate::config::PciPool>> {
         self.pci_pools.load_full()
+    }
+
+    /// The device grants in force (`pci.allow`; spec/22-host-topology.md H20).
+    pub fn pci_grants(&self) -> Arc<Vec<crate::config::PciGrant>> {
+        self.pci_grants.load_full()
     }
 
     /// Every node with what is placed on it, for the pool listing.
@@ -1615,6 +1689,7 @@ impl VmManager {
                 // A cache re-list replaces everything: no keys to say which.
                 Ok(a) if a.keys.is_empty() => {
                     self.apply_ovn_settings();
+                    self.apply_pci_settings();
                     self.reload_vms().await
                 }
                 // One write set may hold several tables (a VM is created with
@@ -1709,6 +1784,12 @@ impl VmManager {
                     {
                         self.apply_ovn_settings();
                     }
+                    if a.keys
+                        .iter()
+                        .any(|(t, k)| crate::pci_settings::is_key(*t, k))
+                    {
+                        self.apply_pci_settings();
+                    }
                     if a.tables.contains(&crate::store::TableId::Vms) {
                         let keys: Vec<String> = a
                             .keys
@@ -1721,6 +1802,7 @@ impl VmManager {
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     self.apply_ovn_settings();
+                    self.apply_pci_settings();
                     self.reload_vms().await
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,

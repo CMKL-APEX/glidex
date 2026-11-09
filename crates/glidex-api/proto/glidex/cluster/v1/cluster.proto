@@ -116,6 +116,25 @@ service ClusterService {
       rest: "PUT /cluster/settings/ovn"
     };
   }
+  // The cluster's device pools and grants (spec/22-host-topology.md H20,
+  // §9.1): the replicated setting, or this server's file until one is
+  // written.
+  rpc GetPciSettings(GetPciSettingsRequest) returns (GetPciSettingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readCluster"
+      kind: KIND_READ
+      rest: "GET /cluster/settings/pci"
+    };
+  }
+  // Replace the device pools and grants; every server follows without a
+  // restart.
+  rpc PutPciSettings(PutPciSettingsRequest) returns (PutPciSettingsResponse) {
+    option (glidex.api.v1.op) = {
+      action: "configurePciPools"
+      kind: KIND_WRITE
+      rest: "PUT /cluster/settings/pci"
+    };
+  }
   // A suggested shared edge for this cluster.
   rpc GetEdgeDefaults(GetEdgeDefaultsRequest) returns (GetEdgeDefaultsResponse) {
     option (glidex.api.v1.op) = {
@@ -485,6 +504,82 @@ message PutOvnSettingsResponse {
   OvnSettings settings = 6;
   repeated OvnNode nodes = 7;
   repeated ClusterNetworkRef cluster_networks = 8 [json_name = "cluster_networks"];
+}
+
+// Which devices are a pool's: every key given must match.
+message PciPoolMatch {
+  optional string vendor_id = 1 [json_name = "vendor_id"];
+  optional string device_id = 2 [json_name = "device_id"];
+  // A PCI class code or its start (`0x0302`).
+  optional string class_code = 3 [json_name = "class_code"];
+  repeated string addresses = 4;
+  // Virtual functions of the physical functions this matches; the other
+  // keys then match the VF.
+  PciPoolMatch vf_of = 5 [json_name = "vf_of"];
+}
+
+// What a VM gets per device it asks of a pool with `gpus`.
+message PciPerDevice {
+  uint32 vcpus = 1;
+  uint32 memory_mib = 2 [json_name = "memory_mib"];
+  optional bool hugepages = 3;
+  // `shared` or `dedicated`.
+  optional string cpu_policy = 4 [json_name = "cpu_policy"];
+}
+
+// A pool as the setting defines it (`PciPool` is a pool as listed).
+message PciPoolSpec {
+  string name = 1;
+  // `gpu`, `nic`, `nvme`, `dpu`, `accelerator`.
+  optional string class = 2;
+  PciPoolMatch match = 3;
+  // Node ids or names; empty: every node.
+  repeated string nodes = 4;
+  // Each node binds its devices of the pool to `vfio-pci` at start.
+  bool prepare = 5;
+  PciPerDevice per_device = 6 [json_name = "per_device"];
+  // The largest GPU window, in MiB, a power of two.
+  optional uint32 bar_mib = 7 [json_name = "bar_mib"];
+}
+
+// A grant: one device (`bdf`, on every node or on `node`) or one pool, to
+// projects and tenants. `tenants: ["*"]` on a pool: every admitted tenant.
+message PciGrant {
+  optional string bdf = 1;
+  optional string pool = 2;
+  repeated string projects = 3;
+  repeated string tenants = 4;
+  optional string node = 5;
+}
+
+message PciSettings {
+  repeated PciPoolSpec pools = 1;
+  repeated PciGrant allow = 2;
+  string updated_by = 3 [json_name = "updated_by"];
+  google.protobuf.Timestamp updated_at = 4 [json_name = "updated_at"];
+}
+
+enum PciSettingsSource {
+  PCI_SETTINGS_SOURCE_UNSPECIFIED = 0;
+  // The replicated setting.
+  PCI_SETTINGS_SOURCE_CLUSTER = 1;
+  // This server's control-plane.json, until a setting is written.
+  PCI_SETTINGS_SOURCE_FILE = 2;
+}
+
+message GetPciSettingsRequest {}
+message GetPciSettingsResponse {
+  PciSettingsSource source = 1;
+  PciSettings settings = 2;
+}
+
+message PutPciSettingsRequest {
+  repeated PciPoolSpec pools = 1;
+  repeated PciGrant allow = 2;
+}
+message PutPciSettingsResponse {
+  PciSettingsSource source = 1;
+  PciSettings settings = 2;
 }
 
 message GetEdgeDefaultsRequest {}

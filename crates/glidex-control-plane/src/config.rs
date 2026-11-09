@@ -374,25 +374,25 @@ pub struct PciConfig {
     pub pools: Vec<PciPool>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PciGrant {
     /// The device's address; or `pool`, a pool's name.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bdf: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
     /// Project ids or names.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projects: Vec<String>,
     /// Tenant ids or slugs: every project of theirs may use the device
     /// (spec/19-tenancy.md D25). `["*"]` with `pool`: every tenant
     /// admitted on this cluster, an open pool (D80).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tenants: Vec<String>,
     /// The node (id or name) whose device this is; absent: the device at
     /// that address on every node (spec/22-host-topology.md §8.5).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
 }
 

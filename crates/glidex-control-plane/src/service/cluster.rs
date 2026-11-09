@@ -747,6 +747,170 @@ pub async fn put_ovn_settings(
     proto_of(ovn_view(c), OVN_VIEW)
 }
 
+const PCI_VIEW: &[(&str, Rule)] = &[
+    ("source", Rule::Enum("PCI_SETTINGS_SOURCE")),
+    ("settings.updated_at", Rule::Secs),
+];
+
+/// The pools and grants in force and where they come from.
+fn pci_view(c: &Caller) -> Value {
+    let m = c.manager();
+    let (source, settings) = match m.pci_settings() {
+        Some(s) => ("cluster", s),
+        None => (
+            "file",
+            crate::pci_settings::PciSettings {
+                pools: m.pci_pools().to_vec(),
+                allow: m.pci_grants().to_vec(),
+                ..Default::default()
+            },
+        ),
+    };
+    let mut shown = serde_json::to_value(&settings).unwrap_or_default();
+    if settings.updated_at == 0 {
+        shown.as_object_mut().map(|o| o.remove("updated_at"));
+    }
+    json!({ "source": source, "settings": shown })
+}
+
+/// `GET /cluster/settings/pci` (`readCluster`): the device pools and grants
+/// (spec/22-host-topology.md H20).
+pub fn get_pci_settings(
+    call: &Call,
+    _req: pb::GetPciSettingsRequest,
+) -> ServiceResult<pb::GetPciSettingsResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    proto_of(pci_view(call), PCI_VIEW)
+}
+
+fn pool_match_of(m: &pb::PciPoolMatch) -> crate::config::PoolMatch {
+    crate::config::PoolMatch {
+        vendor_id: m.vendor_id.clone(),
+        device_id: m.device_id.clone(),
+        class_code: m.class_code.clone(),
+        addresses: m.addresses.clone(),
+        vf_of: m.vf_of.as_option().map(|v| Box::new(pool_match_of(v))),
+    }
+}
+
+fn pool_of(p: &pb::PciPoolSpec) -> ServiceResult<crate::config::PciPool> {
+    let per_device = p
+        .per_device
+        .as_option()
+        .map(|d| {
+            let cpu_policy = match d.cpu_policy.as_deref() {
+                None | Some("") => None,
+                Some("shared") => Some(crate::models::CpuPolicy::Shared),
+                Some("dedicated") => Some(crate::models::CpuPolicy::Dedicated),
+                Some(o) => {
+                    return Err(invalid(format!(
+                        "pool {}: per_device.cpu_policy {o:?} is shared or dedicated",
+                        p.name
+                    )));
+                }
+            };
+            Ok(crate::config::PerDevice {
+                vcpus: d.vcpus,
+                memory_mib: d.memory_mib,
+                hugepages: d.hugepages,
+                cpu_policy,
+            })
+        })
+        .transpose()?;
+    Ok(crate::config::PciPool {
+        name: p.name.trim().to_string(),
+        class: p.class.clone().filter(|c| !c.trim().is_empty()),
+        matches: p.r#match.as_option().map(pool_match_of).unwrap_or_default(),
+        nodes: p.nodes.clone(),
+        prepare: p.prepare,
+        per_device,
+        bar_mib: p.bar_mib.map(u64::from),
+    })
+}
+
+/// `PUT /cluster/settings/pci` (`configurePciPools`): replace the device
+/// pools and grants. Every server follows without a restart. A pool VMs
+/// or tenant pools still name can't go.
+pub async fn put_pci_settings(
+    call: &Call,
+    b: pb::PutPciSettingsRequest,
+) -> ServiceResult<pb::PutPciSettingsResponse> {
+    let c = call;
+    let pools = b
+        .pools
+        .iter()
+        .map(pool_of)
+        .collect::<ServiceResult<Vec<_>>>()?;
+    let allow: Vec<crate::config::PciGrant> = b
+        .allow
+        .iter()
+        .map(|g| crate::config::PciGrant {
+            bdf: g.bdf.clone().filter(|s| !s.trim().is_empty()),
+            pool: g.pool.clone().filter(|s| !s.trim().is_empty()),
+            projects: g.projects.clone(),
+            tenants: g.tenants.clone(),
+            node: g.node.clone().filter(|s| !s.trim().is_empty()),
+        })
+        .collect();
+    let next = crate::config::PciConfig { pools, allow };
+    next.check().map_err(invalid)?;
+    c.require(Ent::Cluster, EntitySet::new())?;
+    c.set_target("cluster:pci".to_string());
+    c.audit_always();
+    let m = c.manager();
+    let kept = |name: &str| next.pools.iter().any(|p| p.name == name);
+    let mut users: Vec<String> = m
+        .list_vms()
+        .await
+        .iter()
+        .filter_map(|vm| {
+            let cfg = vm.config();
+            let gone = cfg
+                .devices
+                .iter()
+                .map(|d| d.pool.as_str())
+                .chain(cfg.gpus.as_ref().map(|g| g.pool.as_str()))
+                .find(|p| !kept(p))?;
+            Some(format!("VM {} ({gone})", vm.name))
+        })
+        .collect();
+    users.extend(
+        c.auth()
+            .tenants
+            .all_device_pools()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|t| !kept(&t.from))
+            .map(|t| format!("tenant pool {} ({})", t.name, t.from)),
+    );
+    if !users.is_empty() {
+        users.sort();
+        return Err(err(
+            StatusCode::CONFLICT,
+            "pool_in_use",
+            format!(
+                "these still ask for a pool this removes or renames: {}",
+                users.join(", ")
+            ),
+        ));
+    }
+    let s = crate::pci_settings::PciSettings {
+        pools: next.pools,
+        allow: next.allow,
+        updated_by: c.actor(),
+        updated_at: crate::tenancy::now(),
+    };
+    crate::pci_settings::write(&m.database(), &s).map_err(|e| {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "persistence_error",
+            e.to_string(),
+        )
+    })?;
+    m.apply_pci_settings();
+    proto_of(pci_view(c), PCI_VIEW)
+}
+
 /// `GET /cluster/settings/ovn/edge-defaults` (spec/16-clustering-ui.md §8a): a
 /// shared edge that should work for this cluster, from what the nodes
 /// report, and notes on what couldn't be worked out. Nothing is written.

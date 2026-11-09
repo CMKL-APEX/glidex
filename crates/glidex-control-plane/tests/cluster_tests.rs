@@ -5591,6 +5591,80 @@ async fn a_file_enabled_cluster_moves_to_the_setting() {
     assert_eq!(v["settings"]["updated_by"], "file", "{v}");
 }
 
+/// spec/22-host-topology.md H20: a cluster whose pools and grants are in
+/// the leader's file moves them to the replicated setting once; after that a
+/// server's file no longer decides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn file_pools_move_to_the_setting_once() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let _one = serial().await;
+    let pool = |name: &str, device: &str| PciPool {
+        name: name.into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some("0x1002".into()),
+            device_id: Some(device.into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+        per_device: None,
+        bar_mib: Some(16384),
+    };
+    let mut cfg = test_config();
+    cfg.pci.pools = vec![pool("r9700", "0x7551")];
+    cfg.pci.allow = vec![PciGrant {
+        bdf: None,
+        pool: Some("r9700".into()),
+        projects: vec![],
+        tenants: vec!["*".into()],
+        node: None,
+    }];
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    assert!(server.manager.pci_settings().is_none());
+    server.manager.migrate_pci_settings();
+    let s = server
+        .manager
+        .pci_settings()
+        .expect("the setting is written");
+    assert_eq!(s.pools, cfg.pci.pools);
+    assert_eq!(s.allow, cfg.pci.allow);
+    let me = server.manager.local_node_id();
+    assert_eq!(s.updated_by, format!("migrate:{me}"));
+
+    // A file that changes afterwards is ignored, and migration doesn't run again.
+    let mut later = cfg.clone();
+    later.pci.pools = vec![pool("other", "0x7550")];
+    later.pci.allow.clear();
+    server.manager.configure(&later);
+    server.manager.migrate_pci_settings();
+    let names: Vec<String> = server
+        .manager
+        .pci_pools()
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    assert_eq!(names, ["r9700"]);
+    assert_eq!(server.manager.pci_grants().len(), 1);
+    assert_eq!(
+        server.manager.pci_settings().unwrap().updated_at,
+        s.updated_at
+    );
+}
+
 /// spec/14-clustering.md §11.6, §13.2: a node's br-int datapath is a setting;
 /// gateway nodes must map the edge's physical network and run br-int on the
 /// kernel datapath, and the API says which step is missing.

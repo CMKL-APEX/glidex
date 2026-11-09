@@ -146,6 +146,22 @@ impl ClusterService for Svc {
         op_async!(self, ctx, req, svc::put_ovn_settings)
     }
 
+    async fn get_pci_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetPciSettingsRequest>,
+    ) -> ServiceResult<GetPciSettingsResponse> {
+        op!(self, ctx, req, svc::get_pci_settings)
+    }
+
+    async fn put_pci_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, PutPciSettingsRequest>,
+    ) -> ServiceResult<PutPciSettingsResponse> {
+        op_async!(self, ctx, req, svc::put_pci_settings)
+    }
+
     async fn get_edge_defaults(
         &self,
         ctx: RequestContext,

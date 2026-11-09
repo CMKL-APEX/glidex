@@ -681,6 +681,14 @@ fn help_text() -> String {
         "pci <address>".cyan()
     );
     line!(
+        "  {} - Device pools: devices per node, holders, free counts",
+        "pci pools [--project P]".cyan()
+    );
+    line!(
+        "  {} - The cluster's device pools and grants; replace them from a JSON file",
+        "pci settings [set <file.json>]".cyan()
+    );
+    line!(
         "  {} - Attach PCI device to VM",
         "attach-device <name|id> <path>".cyan()
     );

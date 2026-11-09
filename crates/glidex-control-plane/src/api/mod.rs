@@ -662,6 +662,18 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     )
     .add(
         "GET",
+        "/cluster/settings/pci",
+        "readCluster",
+        get(cluster::get_pci_settings),
+    )
+    .add(
+        "PUT",
+        "/cluster/settings/pci",
+        "configurePciPools",
+        axum::routing::put(cluster::put_pci_settings),
+    )
+    .add(
+        "GET",
         "/cluster/settings/ovn/edge-defaults",
         "readCluster",
         get(cluster::edge_defaults),
