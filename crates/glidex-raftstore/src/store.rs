@@ -862,6 +862,18 @@ impl<S: Schema> Db<S> {
         Ok(())
     }
 
+    /// For tests: copy the database file to `to` as a crash of the process
+    /// now would leave it. No commit lands during the copy (it holds the
+    /// write transaction), and what wasn't flushed is in the copy only as
+    /// the process's page cache had it, which redb rolls back on opening.
+    #[doc(hidden)]
+    pub fn crash_image(&self, path: &Path, to: &Path) -> Result<(), StoreError> {
+        let txn = self.inner.begin_write()?;
+        std::fs::copy(path, to)?;
+        txn.abort()?;
+        Ok(())
+    }
+
     /// Applies committed without a flush since the last checkpoint.
     pub fn unflushed(&self) -> u64 {
         self.checkpoints.lock().unwrap().pending
@@ -1469,6 +1481,95 @@ mod tests {
         }
         assert_eq!(db.unflushed(), 5);
         std::process::abort();
+    }
+
+    /// A mirror whose leader is out of reach: every write is queued, and
+    /// applied to the cache at once.
+    struct Unreachable;
+
+    impl Mirror<Test> for Unreachable {
+        fn submit(&self, _ws: &WriteSet<Test>) -> Result<Submitted, StoreError> {
+            Ok(Submitted::Queued)
+        }
+    }
+
+    /// The child of the test below: a standalone write, a local row and a
+    /// mirror's queued write, each right before the process dies.
+    #[test]
+    fn write_durably_in_a_child_and_die() {
+        let Some(path) = std::env::var_os("GLIDEX_RAFTSTORE_DURABLE_CHILD") else {
+            return;
+        };
+        let db = Db::<Test>::create(Path::new(&path)).unwrap();
+        // Unflushed applies first: the writes below must not depend on them.
+        db.apply_checkpointed(vec![entry(1)], |_| Ok(())).unwrap();
+        let die = |what: &str| {
+            if std::env::var("GLIDEX_RAFTSTORE_DIE_AFTER").as_deref() == Ok(what) {
+                std::process::abort();
+            }
+        };
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Data, "standalone", b"1");
+            Ok(())
+        })
+        .unwrap();
+        die("standalone");
+        db.put_local("local", b"1").unwrap();
+        die("local");
+        db.set_mirror(Arc::new(Unreachable));
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Other, "mirrored", b"1");
+            Ok(())
+        })
+        .unwrap();
+        die("mirror");
+    }
+
+    /// Standalone writes, local rows and a mirror's queued writes stay
+    /// durable whatever the apply setting: a crash right after one keeps it
+    /// (spec/14-clustering.md §6.2b). Nothing else holds them.
+    #[test]
+    fn writes_with_no_log_behind_them_survive_a_crash() {
+        for (what, want) in [
+            ("standalone", vec!["standalone"]),
+            ("local", vec!["standalone", "local"]),
+            ("mirror", vec!["standalone", "local", "mirrored"]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "store::tests::write_durably_in_a_child_and_die",
+                    "--test-threads=1",
+                ])
+                .env("GLIDEX_RAFTSTORE_DURABLE_CHILD", &path)
+                .env("GLIDEX_RAFTSTORE_DIE_AFTER", what)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(!status.success(), "the child didn't die after {what}");
+            let db = Db::<Test>::create(&path).unwrap();
+            let txn = db.begin_read().unwrap();
+            let has = |t: TestTable, k: &str| {
+                txn.open_table(definition::<Test>(t))
+                    .unwrap()
+                    .get(k)
+                    .unwrap()
+                    .is_some()
+            };
+            let found: Vec<&str> = [
+                (TestTable::Data, "standalone"),
+                (Test::LOCAL, "local"),
+                (TestTable::Other, "mirrored"),
+            ]
+            .into_iter()
+            .filter(|(t, k)| has(*t, k))
+            .map(|(_, k)| k)
+            .collect();
+            assert_eq!(found, want, "after a crash right after the {what} write");
+        }
     }
 
     /// What a crash between checkpoints leaves: the state of the last one.
