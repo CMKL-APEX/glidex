@@ -72,6 +72,8 @@ const HOST_ACTION_RESOURCE = {
   listDirectories: "Cluster",
   manageDirectories: "Cluster",
   configureOvn: "Cluster",
+  // Device pools and grants as a cluster setting (spec/22-host-topology.md H20).
+  configurePciPools: "Cluster",
   // Tenants, admissions and login connectors (spec/19-tenancy.md §14); the
   // per-tenant actions are checked on each tenant by its page.
   listTenants: "Directory",
