@@ -3,7 +3,7 @@ name = "glidex-control-plane"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "The glidex control plane: VMs, networks, storage, directory and clustering, its API server and gxctl"
+description = "The glidex control plane: VMs, networks, storage, directory and clustering, and its API server"
 # Installed by glidex-install, not from crates.io.
 publish = false
 
@@ -20,7 +20,7 @@ glidex-netd = { path = "../glidex-netd" }
 glidex-stord = { path = "../glidex-stord" }
 glidex-hv-client = { path = "../glidex-hv-client" }
 glidex-vm-shim = { path = "../glidex-vm-shim" }
-zbus = { version = "5", default-features = false, features = ["tokio"] }
+zbus = { version = "6", default-features = false, features = ["tokio", "proxy"] }
 axum = { version = "0.8", features = ["ws"] }
 tokio = { version = "1.54", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
@@ -32,10 +32,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 tower-http = { version = "0.6", features = ["trace"] }
-clap = { version = "4", features = ["derive", "env"] }
-rustyline = "15"
-colored = "3"
-tabled = "0.22"
 nix = { version = "0.31", features = ["term", "fs", "process"] }
 libc = "0.2"
 redb = "4.5"
@@ -100,10 +96,6 @@ time = "0.3"
 tokio-tungstenite = { version = "0.28", default-features = false, features = ["handshake"] }
 glidex-api = { path = "../glidex-api", features = ["client"] }
 mime = "0.3"
-
-[[bin]]
-name = "gxctl"
-path = "src/bin/gxctl/main.rs"
 
 [[bin]]
 name = "glidex-control-plane"

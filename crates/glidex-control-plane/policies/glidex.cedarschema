@@ -337,6 +337,9 @@ namespace Glidex {
   // OVN as a cluster setting (spec/16-clustering-ui.md §8a).
   action configureOvn in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  // Device pools and grants as a cluster setting (spec/22-host-topology.md H20).
+  action configurePciPools in ["host.cluster.critical", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 
   // ---- nodes (spec/14-clustering.md §7) -------------------------------------
   action listImports, readImport in ["host.read", "host-scoped"]

@@ -58,7 +58,8 @@ const NETD_UNIT: &str = "/etc/systemd/system/glidex-netd.service";
 const VFIO_BOOT_UNIT: &str = "/etc/systemd/system/glidex-vfio-boot.service";
 /// Loads vfio-pci at boot for it.
 pub(crate) const VFIO_MODULES: &str = "/etc/modules-load.d/glidex-vfio.conf";
-/// Where pools are defined (`pci.pools`).
+/// This host's control-plane config: its `pci.pools` until the cluster
+/// setting is written, and always its `pci.exclude` and `pci.overrides`.
 const CP_CONFIG: &str = "/etc/glidex/control-plane.json";
 const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
@@ -832,8 +833,9 @@ struct Options {
     /// in, added to stord.json (spec/24-storage.md §11.1). Never saved: the
     /// file keeps them.
     stord_allow_vgs: Vec<String>,
-    /// `--vfio-devices a100,0000:87:00.0`: pools (control-plane.json) or PCI
-    /// addresses bound to vfio-pci at boot (spec/27-gpu-vms.md §10).
+    /// `--vfio-devices a100,0000:87:00.0`: pools (the cluster's setting,
+    /// control-plane.json, or a discovered pool's name) or PCI addresses
+    /// bound to vfio-pci at boot (spec/27-gpu-vms.md §10).
     vfio_devices: Vec<String>,
     /// `--sriov PF=N`: VF counts set at boot, before the binding.
     sriov: Vec<(String, u32)>,
@@ -1166,7 +1168,9 @@ fn print_help() {
          \x20                            (added to /etc/glidex/stord.json; the VG and its thin\n\
          \x20                            pool are yours to make: spec/24-storage.md §11.1)\n\
          \x20     --vfio-devices LIST    bind these to vfio-pci at every boot, before any VM starts:\n\
-         \x20                            pools of control-plane.json or PCI addresses, comma-separated\n\
+         \x20                            pools (the cluster's, this host's control-plane.json, or a\n\
+         \x20                            discovered one: amd-7551) or PCI addresses, comma-separated;\n\
+         \x20                            never what pci.exclude keeps\n\
          \x20     --sriov PF=N           give physical function PF N SR-IOV VFs at every boot\n\
          \x20     --no-vfio-devices      stop doing both at boot\n\
          \x20     --now                  also apply them now (never touches a device on vfio-pci)\n\
@@ -2408,6 +2412,8 @@ fn build_args(opts: &Options) -> Vec<&'static str> {
         "-p",
         "glidex-control-plane",
         "-p",
+        "gxctl",
+        "-p",
         "glidex-netd",
         "-p",
         "glidex-ui",
@@ -2820,16 +2826,31 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
 // --- Boot devices (spec/27-gpu-vms.md §10) ---
 
 /// The boot settings for `--vfio-devices` and `--sriov`: addresses as they
-/// are, pools as their `match` in control-plane.json. `None`: nothing set.
+/// are, pools as their `match` (spec/22-host-topology.md §9.1b). A pool is
+/// looked up in the cluster's setting (`cluster`, from the running control
+/// plane), else in this host's file, else read as a discovered pool's name
+/// (`amd-7551`). The host's `pci.overrides` set its `bar_mib`, and its
+/// `pci.exclude` is never bound. `None`: nothing set.
 fn boot_devices_config(
     devices: &[String],
     sriov: &[(String, u32)],
     cp_config: Option<&str>,
+    cluster: Option<&serde_json::Value>,
 ) -> Result<Option<glidex_ovs::boot_devices::BootDevices>> {
     use glidex_ovs::boot_devices::{BootDevices, Selector, SriovSetting};
     if devices.is_empty() && sriov.is_empty() {
         return Ok(None);
     }
+    let cp: serde_json::Value = match cp_config {
+        Some(t) => serde_json::from_str(t).with_context(|| format!("{CP_CONFIG}: not JSON"))?,
+        None => serde_json::Value::Null,
+    };
+    let named = |pools: &serde_json::Value, d: &str| {
+        pools
+            .as_array()
+            .and_then(|ps| ps.iter().find(|p| p["name"] == d))
+            .cloned()
+    };
     let mut addresses = Vec::new();
     let mut select = Vec::new();
     for d in devices {
@@ -2837,21 +2858,24 @@ fn boot_devices_config(
             addresses.push(d.to_ascii_lowercase());
             continue;
         }
-        let cp: serde_json::Value = match cp_config {
-            Some(t) => serde_json::from_str(t).with_context(|| format!("{CP_CONFIG}: not JSON"))?,
-            None => bail!(
-                "--vfio-devices {d}: no {CP_CONFIG} to find pool {d} in; name PCI addresses (0000:87:00.0) instead"
-            ),
-        };
-        let pool = cp["pci"]["pools"]
-            .as_array()
-            .and_then(|ps| ps.iter().find(|p| p["name"] == d.as_str()))
+        let pool = cluster
+            .and_then(|c| named(&c["settings"]["pools"], d))
+            .or_else(|| named(&cp["pci"]["pools"], d))
+            .or_else(|| {
+                glidex_topology::pci::pool_slug_ids(d).map(|(v, dev)| {
+                    serde_json::json!({ "name": d, "match": { "vendor_id": v, "device_id": dev } })
+                })
+            })
             .with_context(|| {
-                format!("--vfio-devices {d}: not a PCI address, and {CP_CONFIG} has no pool {d}")
+                format!(
+                    "--vfio-devices {d}: not a PCI address, a pool of the cluster or {CP_CONFIG}, or a discovered pool's name"
+                )
             })?;
         let mut m: Selector = serde_json::from_value(pool["match"].clone())
             .with_context(|| format!("pool {d}: its match isn't one glidex-netd can apply"))?;
-        m.bar_mib = pool["bar_mib"].as_u64();
+        m.bar_mib = cp["pci"]["overrides"][d.as_str()]["bar_mib"]
+            .as_u64()
+            .or(pool["bar_mib"].as_u64());
         select.push(m);
     }
     if !addresses.is_empty() {
@@ -2860,6 +2884,11 @@ fn boot_devices_config(
             ..Default::default()
         });
     }
+    let exclude: Vec<Selector> = match &cp["pci"]["exclude"] {
+        serde_json::Value::Null => Vec::new(),
+        e => serde_json::from_value(e.clone())
+            .with_context(|| format!("{CP_CONFIG}: pci.exclude isn't a list of matches"))?,
+    };
     Ok(Some(BootDevices {
         sriov: sriov
             .iter()
@@ -2869,7 +2898,18 @@ fn boot_devices_config(
             })
             .collect(),
         select,
+        exclude,
     }))
+}
+
+/// The cluster's device pools as the running control plane has them
+/// (`gxctl pci settings`), or `None` when it can't say (not running yet).
+fn cluster_pci_settings() -> Option<serde_json::Value> {
+    let out = Command::new(format!("{}/gxctl", BIN_DIR))
+        .args(["pci", "settings"])
+        .output()
+        .ok()?;
+    serde_json::from_slice(&out.stdout).ok()
 }
 
 /// Write the boot settings and enable the unit that applies them, or take
@@ -2880,7 +2920,18 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
         Action, BOOT_DEVICES_FILE, CLAIM_MODPROBE_FILE, CLAIM_UDEV_FILE, plan_devices,
     };
     let cp = fs::read_to_string(CP_CONFIG).ok();
-    let Some(cfg) = boot_devices_config(&opts.vfio_devices, &opts.sriov, cp.as_deref())? else {
+    let cluster = if opts.vfio_devices.is_empty() {
+        None
+    } else {
+        cluster_pci_settings()
+    };
+    let Some(cfg) = boot_devices_config(
+        &opts.vfio_devices,
+        &opts.sriov,
+        cp.as_deref(),
+        cluster.as_ref(),
+    )?
+    else {
         if Path::new(BOOT_DEVICES_FILE).exists() || Path::new(VFIO_BOOT_UNIT).exists() {
             if unit_enabled("glidex-vfio-boot.service") {
                 sudo(&argv(&["systemctl", "disable", "glidex-vfio-boot.service"]))?;
@@ -4214,7 +4265,7 @@ mod tests {
             {"name":"cx7-vfs","match":{"vf_of":{"vendor_id":"0x15b3","device_id":"0xa2dc"}},"prepare":true}
         ]}}"#;
         assert_eq!(
-            boot_devices_config(&[], &[], Some(cp)).unwrap(),
+            boot_devices_config(&[], &[], Some(cp), None).unwrap(),
             None,
             "nothing set"
         );
@@ -4227,6 +4278,7 @@ mod tests {
             ],
             &[("0000:61:00.0".into(), 8)],
             Some(cp),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -4244,19 +4296,60 @@ mod tests {
             (c.sriov[0].pf.as_str(), c.sriov[0].vfs),
             ("0000:61:00.0", 8)
         );
-        let e = boot_devices_config(&["h100".into()], &[], Some(cp))
+        let e = boot_devices_config(&["h100".into()], &[], Some(cp), None)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("no pool h100"), "{e}");
-        let e = boot_devices_config(&["a100".into()], &[], None)
+        assert!(e.contains("a pool of the cluster"), "{e}");
+        let e = boot_devices_config(&["a100".into()], &[], None, None)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("PCI addresses"), "{e}");
+        assert!(e.contains("not a PCI address"), "{e}");
         // Addresses need no control-plane.json.
         assert!(
-            boot_devices_config(&["0000:87:00.0".into()], &[], None)
+            boot_devices_config(&["0000:87:00.0".into()], &[], None, None)
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    /// spec/22-host-topology.md §9.1b, H23: a pool comes from the cluster's
+    /// setting before this host's file, or from a discovered pool's name;
+    /// the host's overrides size it and its excludes are never bound.
+    #[test]
+    fn boot_pools_come_from_the_cluster_then_the_file_then_discovery() {
+        let cp = r#"{"pci":{
+            "pools":[{"name":"r9700","match":{"vendor_id":"0x1002","device_id":"0x7550"}}],
+            "exclude":[{"addresses":["0000:43:00.0"]}],
+            "overrides":{"r9700":{"bar_mib":8192}}
+        }}"#;
+        let cluster = serde_json::json!({ "source": "PCI_SETTINGS_SOURCE_CLUSTER",
+            "settings": { "pools": [{ "name": "r9700", "bar_mib": 16384,
+                "match": { "vendor_id": "0x1002", "device_id": "0x7551" } }] } });
+        let c = boot_devices_config(&["r9700".into()], &[], Some(cp), Some(&cluster))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c.select[0].device_id.as_deref(),
+            Some("0x7551"),
+            "the cluster's"
+        );
+        assert_eq!(c.select[0].bar_mib, Some(8192), "the host's override");
+        assert_eq!(c.exclude[0].addresses, ["0000:43:00.0"]);
+        // Without the cluster (a fresh install): the file's.
+        let c = boot_devices_config(&["r9700".into()], &[], Some(cp), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.select[0].device_id.as_deref(), Some("0x7550"));
+        // A discovered pool's name stands for its model.
+        let c = boot_devices_config(&["amd-7551".into()], &[], None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                c.select[0].vendor_id.as_deref(),
+                c.select[0].device_id.as_deref()
+            ),
+            (Some("0x1002"), Some("0x7551"))
         );
     }
 
@@ -4291,6 +4384,7 @@ mod tests {
             &["r9700".into(), "cx7-vfs".into(), "0000:09:00.0".into()],
             &[],
             Some(cp),
+            None,
         )
         .unwrap()
         .unwrap();
@@ -4316,7 +4410,7 @@ mod tests {
             ]
         );
         // Only VFs: nothing to hook before.
-        let vfs = boot_devices_config(&["cx7-vfs".into()], &[], Some(cp))
+        let vfs = boot_devices_config(&["cx7-vfs".into()], &[], Some(cp), None)
             .unwrap()
             .unwrap();
         assert_eq!(claim_files(&exec, &vfs).modprobe, None);
@@ -5298,6 +5392,12 @@ mod tests {
                 .any(|w| w == ["-p", "glidex-authd"])
         );
         assert!(!build_args(&no_services).contains(&"glidex-authd"));
+        // Each binary installed is built, gxctl from its own package.
+        assert!(
+            build_args(&Options::default())
+                .windows(2)
+                .any(|w| w == ["-p", "gxctl"])
+        );
     }
 
     #[test]

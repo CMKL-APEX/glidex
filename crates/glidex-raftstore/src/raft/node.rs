@@ -19,6 +19,11 @@ pub struct RaftSettings {
     pub heartbeat_ms: u64,
     pub election_ms: (u64, u64),
     pub log_keep_entries: u64,
+    /// Apply entries without a flush, and flush the state at checkpoints
+    /// (glidex spec/14-clustering.md D31, §6.2b). Every entry is durable in
+    /// the log before it is applied, and a crash re-applies from the log
+    /// what the last checkpoint missed.
+    pub checkpointed_applies: bool,
 }
 
 impl Default for RaftSettings {
@@ -27,6 +32,7 @@ impl Default for RaftSettings {
             heartbeat_ms: 250,
             election_ms: (1000, 2000),
             log_keep_entries: 70_000,
+            checkpointed_applies: false,
         }
     }
 }
@@ -50,6 +56,27 @@ async fn trim_log<S: Schema>(raft: Raft<S>, keep: u64) {
     let upto = snapshot.index.saturating_sub(keep);
     if upto > m.purged.map(|l| l.index).unwrap_or(0) {
         let _ = raft.trigger().purge_log(upto).await;
+    }
+}
+
+/// The 1 s checkpoint when no batch comes to carry it (D31), until Raft
+/// stops. Holds the database only while it checks, so a member restarted
+/// in the same process can open it again.
+async fn checkpoint_timer<S: Schema>(raft: Raft<S>, db: std::sync::Weak<Db<S>>) {
+    let rx = raft.metrics();
+    drop(raft);
+    let mut tick = tokio::time::interval(crate::store::CHECKPOINT_INTERVAL);
+    loop {
+        tick.tick().await;
+        if rx.has_changed().is_err() {
+            return;
+        }
+        let Some(db) = db.upgrade() else { return };
+        // A failure here leaves the checkpoint due: the next apply makes
+        // it, and fails if it can't.
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || db.checkpoint_if_due()).await {
+            tracing::warn!("the state's checkpoint failed: {e}");
+        }
     }
 }
 
@@ -217,7 +244,11 @@ impl<S: Schema> ClusterNode<S> {
         std::fs::create_dir_all(dir)?;
         let log = LogStore::open(&dir.join("log.redb"))
             .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
-        let sm = StateMachine::new(db.clone(), dir.join("snapshots"));
+        let sm = StateMachine::new(
+            db.clone(),
+            dir.join("snapshots"),
+            settings.checkpointed_applies,
+        );
         let cfg = Config {
             heartbeat_interval: settings.heartbeat_ms,
             election_timeout_min: settings.election_ms.0,
@@ -248,6 +279,9 @@ impl<S: Schema> ClusterNode<S> {
             .await
             .map_err(|e| StoreError::Io(std::io::Error::other(e.to_string())))?;
         tokio::spawn(trim_log(raft.clone(), settings.log_keep_entries));
+        if settings.checkpointed_applies {
+            tokio::spawn(checkpoint_timer(raft.clone(), Arc::downgrade(&db)));
+        }
         let stalled = Arc::new(Mutex::new(None));
         tokio::spawn(watch_stalls(
             raft.clone(),
@@ -440,6 +474,12 @@ impl<S: Schema> ClusterNode<S> {
     pub async fn shutdown(&self) {
         let _ = self.raft.shutdown().await;
         self.db.set_stopped();
+        // Nothing applies any more: flush what was applied (D31), so a
+        // restart, or the store going back to standalone, starts there.
+        let db = self.db.clone();
+        if let Ok(Err(e)) = tokio::task::spawn_blocking(move || db.checkpoint()).await {
+            tracing::warn!("the state's checkpoint at shutdown failed: {e}");
+        }
     }
 
     fn not_leader(&self) -> StoreError {

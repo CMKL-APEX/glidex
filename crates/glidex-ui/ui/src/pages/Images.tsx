@@ -37,8 +37,8 @@ function StatusBadge({ image }: { image: ImageInfo }) {
           <div className="text-xs text-sky-700">
             Downloading {pct !== null ? `${pct}%` : formatBytes(s.received_bytes)}
           </div>
-          <div className="mt-1 h-1.5 bg-gray-200 rounded">
-            <div className="h-1.5 bg-sky-500 rounded" style={{ width: `${pct ?? 5}%` }} />
+          <div className="mt-1 h-1.5 bg-gray-200 rounded-sm">
+            <div className="h-1.5 bg-sky-500 rounded-sm" style={{ width: `${pct ?? 5}%` }} />
           </div>
         </div>
       );
@@ -159,7 +159,7 @@ function PullUrlForm({ onDone, onCancel }: { onDone: () => void; onCancel: () =>
   );
 }
 
-const cardClass = "bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex items-center justify-between gap-3";
+const cardClass = "bg-white rounded-xl shadow-xs border border-gray-200 p-4 flex items-center justify-between gap-3";
 const pullClass = "px-3 py-1 text-xs font-medium text-sky-700 bg-sky-50 hover:bg-sky-100 rounded-lg disabled:opacity-50 whitespace-nowrap";
 
 /** Where an image came from, for the tables. */
@@ -208,7 +208,7 @@ function ImageTable({ images, kind, onRetry, onRemove, canRemove, clustered, onC
   const firmware = kind === "firmware";
   const boot = kind !== "disk";
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+    <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-x-auto">
       <table className="w-full text-sm" data-testid={`${kind}-images`}>
         <thead className="bg-gray-50 text-gray-600 text-left">
           <tr>
@@ -710,7 +710,7 @@ export default function Images() {
       {images === null ? (
         <LoadingCard />
       ) : diskImages.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">
           No images yet. Pull one from the catalog above.
         </div>
       ) : (
@@ -732,7 +732,7 @@ export default function Images() {
       {images === null ? (
         <LoadingCard />
       ) : firmwareImages.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">
           No firmware yet. VMs booting cloud images need one: pull it from the firmware catalog above.
         </div>
       ) : (

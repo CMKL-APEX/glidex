@@ -75,7 +75,8 @@ at every boot, before glidex, glidex-netd or any other hypervisor
 starts:
 
 ```bash
-cargo run -p glidex-install -- --vfio-devices a100     # a pool from control-plane.json
+cargo run -p glidex-install -- --vfio-devices a100     # a pool
+cargo run -p glidex-install -- --vfio-devices amd-7551 # a discovered pool
 cargo run -p glidex-install -- --vfio-devices 0000:41:00.0,0000:42:00.0
 cargo run -p glidex-install -- --sriov 0000:61:00.0=8 --vfio-devices cx7-vfs
 cargo run -p glidex-install -- --no-vfio-devices       # stop doing it
@@ -83,7 +84,7 @@ cargo run -p glidex-install -- --no-vfio-devices       # stop doing it
 
 | Flag | What it does |
 | --- | --- |
-| `--vfio-devices LIST` | Pools of `control-plane.json` or PCI addresses, comma-separated. Each device and the rest of its IOMMU group go to `vfio-pci`. A new list replaces the old one. |
+| `--vfio-devices LIST` | Pools or PCI addresses, comma-separated. A pool comes from the cluster's setting (asked of the running control plane), else this host's `control-plane.json`, else a discovered pool's name. Each device and the rest of its IOMMU group go to `vfio-pci`, except what this host's `pci.exclude` keeps; its `pci.overrides` set the window size. A new list replaces the old one. |
 | `--sriov PF=N` | `N` VFs on physical function `PF`, set before the binding so its VFs can be bound (by a pool with `match.vf_of`). Repeatable, or comma-separated; the last count for a PF wins. |
 | `--no-vfio-devices` | Forget both. What is bound now stays so until the next boot. |
 | `--now` | Apply them now as well. Not saved. |
@@ -361,12 +362,77 @@ one NUMA node and PCI root per host node. See
 Instead of naming devices by address, a VM can ask for a number of
 devices from a pool (`devices: [{"pool": "a100", "count": 2}]`), and
 Glidex picks ready, uncordoned devices no other VM holds, near each
-other and the VM's memory. Pools are defined in `pci.pools` and granted
-with `pci.allow` entries that name a `pool`:
+other and the VM's memory. Pools are defined in `pools` and granted
+with `allow` entries that name a `pool`:
 
 ```json
 { "pool": "a100", "tenants": ["research"] }
 ```
+
+Pools and grants are a cluster setting: every server reads the same
+ones, whichever leads. Show them, or replace them from a JSON file with
+the same `pools` and `allow` arrays as a configuration file's `pci`
+section:
+
+```bash
+gxctl pci settings
+gxctl pci settings set pci.json
+```
+
+The Cluster page's **Device pools** card shows the same, standalone or
+clustered. It lists each pool, defined or discovered, with its free
+devices per node, its sizing and who it's granted to. A system admin can
+also adopt a discovered pool, remove a pool (its grants go with it), or
+edit the pools and grants as JSON there.
+
+The call is `PUT /cluster/settings/pci` and needs `system-admin`. It's
+refused while a VM or a tenant pool still asks for a pool it removes or
+renames. Until the setting is written, a server uses `pci.pools` and
+`pci.allow` from its own `control-plane.json`. The leader, or a
+standalone host, copies its file's pools and grants into the setting
+once. After that, those file keys are ignored, and a server whose file
+still differs logs a warning saying so.
+
+### Discovered pools
+
+GPUs and accelerators that no pool covers form a pool per model with no
+setup, named `<vendor>-<device>`: `amd-7551`, `nvidia-2330`, or the
+vendor's hex id for other vendors (`15b3-a2dc`). `gxctl pci pools` marks
+them `discovered`. A server's BMC console (ASPEED or Matrox display)
+is left out. Discovery never binds a driver, so a card still on
+its host driver shows as not ready until you prepare it.
+
+Only users with `net-admin` (or `system-admin`) may use a discovered
+pool, and projects don't see it. To size it or grant it, adopt it,
+optionally under a name of your own:
+
+```bash
+gxctl pci pool adopt amd-7551 --name r9700
+```
+
+This writes a pool matching the model to the cluster setting, where you
+edit it as any other pool. A rename is refused while VMs still ask for
+the discovered name.
+
+### Per-host settings
+
+What only one host decides stays in that host's `control-plane.json`:
+
+```json
+{ "pci": {
+    "exclude": [ { "addresses": ["0000:43:00.0"] } ],
+    "overrides": { "r9700": { "bar_mib": 16384 } } } }
+```
+
+- `exclude` takes pool matches. A device it matches is kept by the
+  host: it is in no pool, Glidex never prepares it, and a VM that names
+  its address isn't placed on this host. `gxctl pci pools` leaves it
+  out.
+- `overrides` set a pool's `bar_mib` and `prepare` on this host only.
+  Use it when hosts differ in memory, since the safe GPU window size
+  depends on it.
+
+Restart the control plane after changing either.
 
 The picked devices are claimed and passed through like devices named by
 address. For GPUs, `"gpus": {"count": 4}` also places and sizes the VM

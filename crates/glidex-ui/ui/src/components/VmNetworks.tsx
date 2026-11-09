@@ -88,7 +88,7 @@ export default function VmNetworks({
           </label>
           <select
             id="attach-network"
-            className="px-2 py-1 border border-gray-300 rounded text-sm bg-white"
+            className="px-2 py-1 border border-gray-300 rounded-sm text-sm bg-white"
             value={picked}
             onChange={(e) => setPicked(e.target.value)}
             disabled={busy !== null}

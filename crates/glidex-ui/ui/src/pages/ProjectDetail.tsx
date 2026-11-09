@@ -347,7 +347,7 @@ export default function ProjectDetail() {
           <h1 className="text-2xl font-bold text-gray-900">{project.name}</h1>
           {project.description && <p className="text-gray-500 mt-1">{project.description}</p>}
           <p className="mt-1 text-xs text-gray-500">
-            Project id <code className="font-mono bg-gray-100 px-1 rounded select-all">{project.id}</code> · created{" "}
+            Project id <code className="font-mono bg-gray-100 px-1 rounded-sm select-all">{project.id}</code> · created{" "}
             {formatTimestamp(project.created_at)}
           </p>
         </div>

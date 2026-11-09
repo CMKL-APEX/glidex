@@ -445,3 +445,99 @@ async fn the_log_is_trimmed_across_restarts() {
         }
     }
 }
+
+/// Members crashed between checkpoints (D31), under writes: a follower,
+/// then the leader. Each comes back at its last checkpoint, applies the
+/// rest again from its log, and ends with the same data as the others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_crashed_between_checkpoints_catch_up() {
+    let mut c = TestCluster::new(3).await;
+    // Writes all along, through whichever member leads. Weak: a crashed
+    // member's database goes, and the writer carries on with the others.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dbs: Vec<_> = c
+        .ids()
+        .iter()
+        .map(|id| std::sync::Arc::downgrade(&c.by_id(*id).db))
+        .collect();
+    let writer = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut n = 0u64;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                for db in &dbs {
+                    let Some(db) = db.upgrade() else { continue };
+                    let _ = db.write(TestOrigin::Api, |t| -> Result<(), StoreError> {
+                        t.open_table(definition::<Test>(TestTable::Data))?
+                            .insert(&format!("w{n}"), b"v")?;
+                        Ok(())
+                    });
+                }
+                n += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    let leader = c.leader(&c.ids()).await;
+    let follower = c.ids().into_iter().find(|i| *i != leader).unwrap();
+    for (role, id) in [("follower", follower), ("leader", leader)] {
+        // A crash rolls back only what came since the last checkpoint: up
+        // to a second's writes. Crash again until one did.
+        let mut rolled_back = false;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let (applied, durable) = c.crash(id).await;
+            if durable < Some(applied) {
+                rolled_back = true;
+                break;
+            }
+        }
+        assert!(rolled_back, "no crash of the {role} lost an apply");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    tokio::task::spawn_blocking(move || writer.join().unwrap())
+        .await
+        .unwrap();
+    let now = c.leader(&c.ids()).await;
+    // One more write commits in the current term, so every member learns
+    // everything before it is committed.
+    tokio::task::block_in_place(|| write_returns_within(&c, now, "last", 30)).unwrap();
+    c.converge(&c.ids(), now).await;
+    assert!(c.same_data(&c.ids()), "the members' data differ");
+}
+
+/// `snapshot_now` makes the state durable as far as the position it
+/// reports, which openraft may purge the log to (§6.2b, I4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reported_snapshot_position_is_durable() {
+    let c = TestCluster::new(1).await;
+    let n = c.by_id(1);
+    let mut i = 0;
+    while n.db.unflushed() == 0 {
+        assert!(i < 50, "every write was flushed");
+        c.put(1, &format!("k{i}"), "v").unwrap();
+        i += 1;
+    }
+    let applied = n.db.revision();
+    n.node.raft.trigger().snapshot().await.unwrap();
+    let m = n
+        .node
+        .raft
+        .wait(Some(Duration::from_secs(10)))
+        .metrics(
+            |m| m.snapshot.is_some_and(|s| s.index >= applied),
+            "the snapshot",
+        )
+        .await
+        .unwrap();
+    let reported = m.snapshot.unwrap().index;
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("crash.db");
+    n.db.crash_image(&n.dir.join("store.db"), &image).unwrap();
+    let durable = glidex_raftstore::testing::durable_applied(&image).unwrap();
+    assert!(
+        durable >= reported,
+        "reported {reported}, durable only to {durable}"
+    );
+}

@@ -145,7 +145,7 @@ export function TimeChart({
         </span>
       </figcaption>
       {table ? (
-        <div className="max-h-56 overflow-auto border border-gray-200 rounded">
+        <div className="max-h-56 overflow-auto border border-gray-200 rounded-sm">
           <table className="w-full text-xs">
             <thead className="bg-gray-50 text-gray-600">
               <tr>
@@ -174,7 +174,7 @@ export function TimeChart({
       ) : (
         <div ref={box} className="relative">
           {points.length === 0 ? (
-            <div className="text-sm text-gray-500 py-8 text-center border border-dashed border-gray-200 rounded">
+            <div className="text-sm text-gray-500 py-8 text-center border border-dashed border-gray-200 rounded-sm">
               No samples in this range yet.
             </div>
           ) : (
@@ -275,7 +275,7 @@ export function TimeChart({
           )}
           {hp && (
             <div
-              className="absolute pointer-events-none bg-white border border-gray-200 shadow-sm rounded px-2 py-1 text-xs text-gray-800"
+              className="absolute pointer-events-none bg-white border border-gray-200 shadow-xs rounded-sm px-2 py-1 text-xs text-gray-800"
               style={{
                 left: Math.min(geo.x(hp.t + SLOT_MS / 2) + 10, width - 170),
                 top: PAD.top,
@@ -284,7 +284,7 @@ export function TimeChart({
               <div className="text-gray-500">{new Date(hp.t).toLocaleString()}</div>
               {series.map((s) => (
                 <div key={s.key} className="flex items-center gap-1 tabular-nums">
-                  <span className="inline-block w-2 h-2 rounded-sm" style={{ background: s.color }} aria-hidden />
+                  <span className="inline-block w-2 h-2 rounded-xs" style={{ background: s.color }} aria-hidden />
                   {s.label}: {hp.values[s.key] === undefined ? "—" : `${fmt(hp.values[s.key]!)} ${unit}`}
                 </div>
               ))}

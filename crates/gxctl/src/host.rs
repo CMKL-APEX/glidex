@@ -137,19 +137,24 @@ async fn pci_pools(client: &ApiClient, project: Option<&str>) {
     if r.pools.is_empty() {
         let none = match project {
             Some(p) => format!("No device pools project {p} may use"),
-            None => "No device pools (pci.pools in control-plane.json)".into(),
+            None => "No device pools (gxctl pci settings)".into(),
         };
         println!("{}", none.yellow());
     }
     for p in &r.pools {
         println!(
-            "{} {}{}: {} free",
+            "{} {}{}{}: {} free",
             "pool".bold(),
             p.name,
             p.class
                 .as_deref()
                 .map(|c| format!(" ({c})"))
                 .unwrap_or_default(),
+            if p.discovered == Some(true) {
+                " [discovered: host roles only until adopted]"
+            } else {
+                ""
+            },
             p.free
         );
         for n in &p.nodes {
@@ -174,10 +179,114 @@ async fn pci_pools(client: &ApiClient, project: Option<&str>) {
     }
 }
 
-/// `pci`, `pci <address>`, `pci pools [--project P]`
+/// `pci settings [set <file.json>]`: the cluster's device pools and grants
+/// (spec/22-host-topology.md H20), shown or replaced from a file holding
+/// `{"pools": [...], "allow": [...]}` as `control-plane.json`'s `pci` has them.
+async fn pci_settings(client: &ApiClient, args: &[&str]) {
+    use glidex_api::proto::glidex::cluster::v1::{GetPciSettingsRequest, PutPciSettingsRequest};
+    let s = match crate::cluster::rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let shown = match args {
+        [] => s
+            .get_pci_settings(GetPciSettingsRequest::default())
+            .await
+            .map(|r| serde_json::to_value(r.into_owned())),
+        ["set", path] => {
+            let req: PutPciSettingsRequest = match std::fs::read(path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+            {
+                Ok(r) => r,
+                Err(e) => return err(format!("{path}: {e}")),
+            };
+            s.put_pci_settings(req)
+                .await
+                .map(|r| serde_json::to_value(r.into_owned()))
+        }
+        _ => return err("usage: pci settings [set <file.json>]".to_string()),
+    };
+    match shown {
+        Ok(Ok(v)) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+        Ok(Err(e)) => err(e.to_string()),
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
+/// `pci pool adopt <slug> [--name N]`: write discovered pool `slug` to the
+/// cluster's setting, under its slug or `N` (spec/22-host-topology.md
+/// §9.1b), then edit it as any pool.
+async fn pci_pool(client: &ApiClient, args: &[&str]) {
+    use glidex_api::proto::glidex::cluster::v1::{
+        GetPciSettingsRequest, ListPciPoolsRequest, PciPoolMatch, PciPoolSpec,
+        PutPciSettingsRequest,
+    };
+    let ["adopt", slug, ..] = args else {
+        return err("usage: pci pool adopt <discovered pool> [--name N]".to_string());
+    };
+    let s = match crate::cluster::rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let nodes = match crate::cluster::node_rpc(client).await {
+        Ok(n) => n,
+        Err(e) => return err(e),
+    };
+    let listed = match nodes.list_pci_pools(ListPciPoolsRequest::default()).await {
+        Ok(r) => r.into_owned(),
+        Err(e) => return err(rpc_err(e)),
+    };
+    let Some(found) = listed
+        .pools
+        .iter()
+        .find(|p| p.name == *slug && p.discovered == Some(true))
+    else {
+        return err(format!("no discovered pool {slug} (see 'pci pools')"));
+    };
+    let Some((vendor_id, device_id)) = glidex_topology::pci::pool_slug_ids(slug) else {
+        return err(format!("{slug} is not a discovered pool's name"));
+    };
+    let current = match s.get_pci_settings(GetPciSettingsRequest::default()).await {
+        Ok(r) => r.into_owned(),
+        Err(e) => return err(rpc_err(e)),
+    };
+    let settings = current.settings.as_option().cloned().unwrap_or_default();
+    let name = flag_value(args, "--name").unwrap_or(slug).to_string();
+    let mut pools = settings.pools.clone();
+    pools.push(PciPoolSpec {
+        name: name.clone(),
+        class: found.class.clone(),
+        r#match: PciPoolMatch {
+            vendor_id: Some(vendor_id),
+            device_id: Some(device_id),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    });
+    let req = PutPciSettingsRequest {
+        pools,
+        allow: settings.allow.clone(),
+        ..Default::default()
+    };
+    match s.put_pci_settings(req).await {
+        Ok(_) => println!("{} pool {name} adopted from {slug}", "OK".green()),
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
+/// `pci`, `pci <address>`, `pci pools [--project P]`, `pci settings …`,
+/// `pci pool adopt …`
 pub async fn pci(client: &ApiClient, args: &[&str]) {
     if args.first() == Some(&"pools") {
         return pci_pools(client, flag_value(args, "--project")).await;
+    }
+    if args.first() == Some(&"settings") {
+        return pci_settings(client, &args[1..]).await;
+    }
+    if args.first() == Some(&"pool") {
+        return pci_pool(client, &args[1..]).await;
     }
     let devices = match list_pci_devices(client).await {
         Ok(d) => d,

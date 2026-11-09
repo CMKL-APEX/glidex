@@ -76,6 +76,7 @@ pub async fn get_node_topology(
 pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPool> {
     let loads = m.loads_by_node().await;
     let configured = m.pci_pools();
+    let defined = m.defined_pools();
     configured
         .iter()
         .map(|p| {
@@ -90,7 +91,7 @@ pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPoo
                     let devices: Vec<pb::PciPoolDevice> = t
                         .devices
                         .iter()
-                        .filter(|d| p.matches.matches_device(d))
+                        .filter(|d| !d.excluded && p.matches.matches_device(d))
                         .map(|d| pb::PciPoolDevice {
                             address: d.address.clone(),
                             numa_node: d.numa_node,
@@ -133,6 +134,7 @@ pub(crate) async fn cluster_pools(m: &crate::state::VmManager) -> Vec<pb::PciPoo
                 nodes,
                 per_device_vcpus: p.per_device.as_ref().map(|d| d.vcpus),
                 per_device_memory_mib: p.per_device.as_ref().map(|d| d.memory_mib),
+                discovered: (!defined.iter().any(|d| d.name == p.name)).then_some(true),
                 ..Default::default()
             }
         })

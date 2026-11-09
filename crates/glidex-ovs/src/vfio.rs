@@ -570,6 +570,7 @@ mod tests {
             crate::exec::Output::ok("amdgpu\n"),
         );
         let cfg = BootDevices {
+            exclude: vec![],
             sriov: vec![],
             select: vec![crate::boot_devices::Selector {
                 addresses: vec!["0000:03:00.0".into()],

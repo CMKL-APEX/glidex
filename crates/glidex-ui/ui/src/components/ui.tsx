@@ -47,7 +47,7 @@ export function PageHeader({ title, subtitle, children }: { title: string; subti
 
 export function Card({ title, actions, children }: { title?: string; actions?: ReactNode; children: ReactNode }) {
   return (
-    <section className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 mb-6">
+    <section className="bg-white rounded-xl shadow-xs border border-gray-200 p-5 mb-6">
       {(title || actions) && (
         <div className="flex items-center justify-between mb-4 gap-4">
           {title && <h2 className="text-lg font-semibold text-gray-900">{title}</h2>}
@@ -162,7 +162,7 @@ export function SignInMethods({
   return (
     <span className="ml-2 inline-flex flex-wrap gap-1 align-middle" data-testid="sign-in-methods">
       {labels.map((l) => (
-        <span key={l} className="px-1.5 py-0.5 rounded bg-gray-100 text-gray-600 text-xs">
+        <span key={l} className="px-1.5 py-0.5 rounded-sm bg-gray-100 text-gray-600 text-xs">
           {l}
         </span>
       ))}

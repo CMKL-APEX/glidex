@@ -2,6 +2,7 @@
 members = [
     "crates/glidex-api",
     "crates/glidex-control-plane",
+    "crates/gxctl",
     "crates/glidex-ovs",
     "crates/glidex-ovn",
     "crates/glidex-install",

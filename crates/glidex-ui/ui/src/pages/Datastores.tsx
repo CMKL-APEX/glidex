@@ -371,7 +371,7 @@ export default function Datastores() {
       {all === null ? (
         <LoadingCard />
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-600 text-left">
               <tr>

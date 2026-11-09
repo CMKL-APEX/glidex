@@ -170,7 +170,7 @@ function History({ id, onRestore }: { id: string; onRestore: (v: SitePolicyVersi
               </button>
             )}
           </div>
-          {!v.deleted && <pre className="mt-2 text-xs font-mono bg-gray-50 p-2 rounded overflow-x-auto">{v.text}</pre>}
+          {!v.deleted && <pre className="mt-2 text-xs font-mono bg-gray-50 p-2 rounded-sm overflow-x-auto">{v.text}</pre>}
         </div>
       ))}
     </div>
@@ -350,7 +350,7 @@ export default function Policies() {
         <Loading />
       ) : (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 lg:col-span-1">
+          <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-4 lg:col-span-1">
             <div className="flex flex-wrap gap-2 mb-3">
               {SOURCES.map((s) => (
                 <label key={s} className="inline-flex items-center gap-1 text-sm">
@@ -494,7 +494,7 @@ export default function Policies() {
                 )}
               </Card>
             ) : (
-              <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+              <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">
                 Choose a policy to view it{host.writePolicy ? ", or create a site policy" : ""}.
               </div>
             )}

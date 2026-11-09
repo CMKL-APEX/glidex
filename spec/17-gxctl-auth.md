@@ -9,7 +9,7 @@ not-yet-built row there carries a *(draft)* tag, so the implemented
 behaviour stays describable without this file.
 
 `gxctl` today keeps one credential in one file
-(`~/.config/glidex/token`, `crates/glidex-control-plane/src/bin/gxctl/client.rs:59-62`)
+(`~/.config/glidex/token`, `crates/gxctl/src/client.rs`)
 and takes its target and overrides from `--url`, `GLIDEX_TOKEN` and
 `GLIDEX_CA_CERT` per invocation. That works for one server you also
 physically own, and fails for the two cases this document covers:

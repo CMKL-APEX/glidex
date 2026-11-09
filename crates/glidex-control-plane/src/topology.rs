@@ -55,6 +55,10 @@ pub struct SummaryDevice {
     /// A physical function: its VFs, as counts (§4.1, §10.1).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sriov: Option<Sriov>,
+    /// Its host keeps it (`pci.exclude`, H23): in no pool, and no VM gets
+    /// it there.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub excluded: bool,
 }
 
 /// A VF's physical function, as pools match it (`match.vf_of`).
@@ -68,9 +72,14 @@ pub struct PhysFn {
 
 impl TopologyTree {
     /// Devices of `pools` that binding to `vfio-pci` would make ready:
-    /// not ready, in an IOMMU group, and not an OVS-DPDK uplink; each with
+    /// not ready, in an IOMMU group, not an OVS-DPDK uplink, and not one
+    /// the host keeps (`exclude`, spec/22-host-topology.md H23); each with
     /// the smallest `bar_mib` of its pools (spec/27-gpu-vms.md G19).
-    pub fn to_prepare(&self, pools: &[crate::config::PciPool]) -> Vec<(String, Option<u64>)> {
+    pub fn to_prepare(
+        &self,
+        pools: &[crate::config::PciPool],
+        exclude: &[crate::config::PoolMatch],
+    ) -> Vec<(String, Option<u64>)> {
         self.devices
             .iter()
             .filter(|d| d.assignable && !d.ready)
@@ -83,6 +92,9 @@ impl TopologyTree {
             })
             .filter_map(|d| {
                 let s = self.summary_of(d);
+                if exclude.iter().any(|m| m.matches_device(&s)) {
+                    return None;
+                }
                 let of: Vec<_> = pools
                     .iter()
                     .filter(|p| p.matches.matches_device(&s))
@@ -113,6 +125,7 @@ impl TopologyTree {
                 }
             }),
             sriov: d.sriov.clone(),
+            excluded: false,
         }
     }
 
@@ -234,25 +247,6 @@ pub fn cpus_of_mask(mask: &str) -> Vec<u32> {
         }
     }
     out
-}
-
-/// `0-3,8,10-11` for a set of CPUs.
-pub fn cpu_list(cpus: &[u32]) -> String {
-    let set: BTreeSet<u32> = cpus.iter().copied().collect();
-    let mut parts = Vec::new();
-    let mut it = set.into_iter().peekable();
-    while let Some(start) = it.next() {
-        let mut end = start;
-        while it.peek() == Some(&(end + 1)) {
-            end = it.next().unwrap_or(end);
-        }
-        parts.push(if start == end {
-            start.to_string()
-        } else {
-            format!("{start}-{end}")
-        });
-    }
-    parts.join(",")
 }
 
 /// PCI classes of devices a VM could be given (§3.3): display, network,
@@ -776,8 +770,6 @@ mod tests {
             vec![0, 136]
         );
         assert!(cpus_of_mask("zz").is_empty());
-        assert_eq!(cpu_list(&[3, 0, 1, 2, 8, 10, 11]), "0-3,8,10-11");
-        assert_eq!(cpu_list(&[]), "");
     }
 
     /// On a real host: `cargo test -p glidex-control-plane --lib
@@ -792,7 +784,7 @@ mod tests {
                 "node {}: {} cores, cpus {}, {} MiB, hugepages {:?}",
                 n.id,
                 n.cores.len(),
-                cpu_list(&cpus),
+                glidex_topology::numa::format_list(&cpus),
                 n.memory_mib,
                 n.hugepages
             );
@@ -1054,7 +1046,7 @@ mod tests {
             bar_mib: None,
         };
         assert_eq!(
-            t.to_prepare(std::slice::from_ref(&pool)),
+            t.to_prepare(std::slice::from_ref(&pool), &[]),
             [("0000:61:00.3".to_string(), None)]
         );
     }
@@ -1155,7 +1147,7 @@ mod tests {
         };
         // 87:00.0 is ready; the NIC isn't the pool's.
         assert_eq!(
-            t.to_prepare(std::slice::from_ref(&gpus)),
+            t.to_prepare(std::slice::from_ref(&gpus), &[]),
             [
                 ("0000:07:00.0".to_string(), None),
                 ("0000:09:00.0".to_string(), None)
@@ -1169,17 +1161,26 @@ mod tests {
             ..gpus.clone()
         };
         assert_eq!(
-            t.to_prepare(&[sized("big", 16384), sized("small", 8192)])[0],
+            t.to_prepare(&[sized("big", 16384), sized("small", 8192)], &[])[0],
             ("0000:07:00.0".to_string(), Some(8192))
         );
-        assert!(t.to_prepare(&[]).is_empty());
+        assert!(t.to_prepare(&[], &[]).is_empty());
+        // A device the host keeps isn't prepared (spec/22-host-topology.md H23).
+        let keep = crate::config::PoolMatch {
+            addresses: vec!["0000:07:00.0".into()],
+            ..Default::default()
+        };
+        assert_eq!(
+            t.to_prepare(std::slice::from_ref(&gpus), std::slice::from_ref(&keep)),
+            [("0000:09:00.0".to_string(), None)]
+        );
         // Without an IOMMU there is nothing binding can fix.
         let mut off = t.clone();
         for d in &mut off.devices {
             d.not_ready = vec!["no IOMMU group (the IOMMU is off)".into()];
             d.ready = false;
         }
-        assert!(off.to_prepare(std::slice::from_ref(&gpus)).is_empty());
+        assert!(off.to_prepare(std::slice::from_ref(&gpus), &[]).is_empty());
     }
 
     #[test]

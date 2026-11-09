@@ -201,9 +201,18 @@ impl ClusterConfig {
             heartbeat_ms: self.raft.heartbeat_ms,
             election_ms: self.raft.election_ms,
             log_keep_entries: self.raft.log_keep_entries,
+            // Always, with no key in the configuration (D31): an older build
+            // refuses keys it doesn't know, and a rollback must start.
+            checkpointed_applies: std::env::var_os(DURABLE_APPLIES_ENV).is_none_or(|v| v != "1"),
         }
     }
 }
+
+/// `GLIDEX_RAFT_DURABLE_APPLIES=1` in the control plane's environment
+/// flushes every Raft apply, as builds before D31 did
+/// (spec/14-clustering.md §6.2b): the way out, should checkpointed applies
+/// misbehave.
+pub const DURABLE_APPLIES_ENV: &str = "GLIDEX_RAFT_DURABLE_APPLIES";
 
 /// `https://host[:port]` (a trailing `/` allowed) as an origin; `None`
 /// for anything else.

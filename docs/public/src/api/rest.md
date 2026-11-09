@@ -464,7 +464,7 @@ UI's Host pages send it.
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/commit` | Keep a migrated host address (otherwise it is rolled back at the deadline) |
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/reapply` | Set up again an uplink that was rolled back at start |
 | `GET` | `/pci-devices` | List the host's PCI devices, with `numa_node`, `ready` and, when not ready, `not_ready` (the reasons) |
-| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts, and `per_device_vcpus` / `per_device_memory_mib` when the pool sizes VMs per device; `?project=` the pools that project may use, free counts only |
+| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts, and `per_device_vcpus` / `per_device_memory_mib` when the pool sizes VMs per device; `?project=` the pools that project may use, free counts only; `discovered: true` on a pool formed from GPUs or accelerators no defined pool covers |
 | `GET` | `/host/topology` | The host's NUMA nodes and PCIe tree, with device readiness and warnings |
 
 ### Usage and metrics
@@ -761,6 +761,8 @@ id or its name.
 | `GET` | `/cluster/snapshot` | Download a snapshot of the replicated store (store it like the database) |
 | `GET` | `/cluster/settings/ovn` | Whether cluster networks use OVN, and its settings |
 | `PUT` | `/cluster/settings/ovn` | Turn OVN on or off and set the shared edge |
+| `GET` | `/cluster/settings/pci` | The device pools and grants, and whether they come from the cluster setting or this server's file |
+| `PUT` | `/cluster/settings/pci` | Replace the device pools and grants (`system-admin`) |
 | `GET` | `/cluster/settings/ovn/edge-defaults` | A suggested shared edge from what the nodes report |
 | `GET` | `/cluster/ovn` | OVN as it is now: databases, chassis, gateways |
 | `GET` | `/cluster/ovn/tunnels` | Each node's Geneve tunnels and their state |

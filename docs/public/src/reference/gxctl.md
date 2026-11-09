@@ -193,6 +193,8 @@ Routers have no `gxctl` command yet: use the web UI or the
 | `uplink-rm <bridge> <name>` | Remove an uplink, restoring the NIC |
 | `pci`, `pci-devices` | List the host's PCI devices, with their NUMA node and whether each is ready for passthrough |
 | `pci pools [--project P]` | The device pools: their devices per node, holders, and how many are free; with `--project`, the pools that project may use and how many are free |
+| `pci pool adopt <pool> [--name N]` | Make a discovered pool (`amd-7551`) a defined one in the cluster setting, under its name or `N` |
+| `pci settings [set <file.json>]` | The cluster's device pools and grants; `set` replaces them from a file holding `{"pools": [...], "allow": [...]}` |
 | `pci <address>` | One device in detail |
 
 See [Host networking](../operator-guide/host-networking.md) and

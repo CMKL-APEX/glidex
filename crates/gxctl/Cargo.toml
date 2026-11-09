@@ -1,0 +1,49 @@
+[package]
+name = "gxctl"
+description = "The glidex CLI: VMs, networks, storage, directory, tenancy and clusters over a glidex control plane's API"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme = "README.md"
+keywords = ["glidex", "kvm", "virtual-machines", "cli"]
+categories = ["command-line-utilities", "virtualization"]
+
+[[bin]]
+name = "gxctl"
+path = "src/main.rs"
+
+[dependencies]
+glidex-api = { workspace = true, features = ["client"] }
+glidex-tls = { workspace = true }
+glidex-topology = { workspace = true }
+base64 = "0.23"
+buffa = { version = "=0.9.2", features = ["json"] }
+buffa-types = { version = "=0.9.2", features = ["json"] }
+clap = { version = "4", features = ["derive", "env"] }
+colored = "3"
+connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "gzip", "client", "client-tls"] }
+dirs = "7"
+futures-util = "0.3"
+http-body-util = "0.1"
+hyper = { version = "1", features = ["client", "http1", "http2"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+libc = "0.2"
+nix = { version = "0.31", features = ["term", "fs", "process"] }
+percent-encoding = "2"
+rustls-pki-types = { version = "1", features = ["std"] }
+rustyline = "19"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tabled = "0.22"
+tempfile = "3"
+tokio = { version = "1.54", features = ["full"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+tower = { version = "0.5", features = ["util"] }
+zeroize = { version = "1", features = ["serde"] }
+
+[dev-dependencies]
+# The tests serve a real control plane on a temporary socket. A path-only
+# dev-dependency is left out of the published package.
+glidex-control-plane = { path = "../glidex-control-plane" }

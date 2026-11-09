@@ -48,7 +48,7 @@ function StatusPanel({
   }
   const host = status.host ?? {};
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+    <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-6">
       <div className="flex items-center justify-between">
         <div className="space-y-1 text-sm">
           <p>
@@ -203,7 +203,7 @@ function SharedSubnetsCard({ routes }: { routes: SourceRoutes }) {
     (s.ports ?? []).some((p) => (p.addresses ?? []).some((a) => a.state !== "SOURCE_ADDRESS_STATE_OK")),
   );
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6" data-testid="shared-subnets">
+    <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-6" data-testid="shared-subnets">
       <h3 className="text-base font-semibold text-gray-900">Ports that share a subnet</h3>
       {pending && (
         <p className="mt-2 text-sm text-yellow-800 bg-yellow-50 border border-yellow-200 rounded-lg p-2">

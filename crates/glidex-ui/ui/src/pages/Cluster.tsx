@@ -14,6 +14,7 @@ import { Badge, Card, ErrorBanner, PageHeader, errorMessage, primaryButton } fro
 import { PHASE_KIND } from "./HostDetail";
 import { ClusterCa, DangerZone, InitCluster } from "../components/ClusterLifecycle";
 import { OvnCard, TunnelMatrix, useOvnOverview, useTunnels } from "../components/OvnViews";
+import DevicePools from "../components/DevicePools";
 import { OvnOff, OvnOutdated, OvnSettingsDialog } from "../components/OvnSettings";
 import type { OvnSettingsView } from "../types";
 
@@ -155,6 +156,7 @@ export default function Cluster() {
         <PageHeader title="Cluster" subtitle="This host is standalone." />
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
         <ThisHost />
+        <DevicePools />
         <InitCluster onDone={refreshAll} />
       </div>
     );
@@ -378,6 +380,7 @@ export default function Cluster() {
         </OvnCard>
       )}
       {ovnSettingsOpen && ovnView && <OvnSettingsDialog view={ovnView} onClose={() => setOvnSettingsOpen(false)} onDone={() => setOvnTick((x) => x + 1)} />}
+      <DevicePools />
       <ClusterCa status={summary} nodes={current} onDone={refreshAll} />
       <DangerZone status={summary} onDone={refreshAll} />
 

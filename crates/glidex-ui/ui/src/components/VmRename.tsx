@@ -32,7 +32,7 @@ export default function VmRename({ vm, onChanged }: { vm: VmResponse; onChanged:
         type="button"
         onClick={() => setEditing(true)}
         disabled={!!vm.deleting}
-        className="mt-1 text-xs text-sky-600 hover:text-sky-800 underline focus:outline-none"
+        className="mt-1 text-xs text-sky-600 hover:text-sky-800 underline focus:outline-hidden"
       >
         Rename
       </button>
@@ -55,7 +55,7 @@ export default function VmRename({ vm, onChanged }: { vm: VmResponse; onChanged:
           onKeyDown={(e) => {
             if (e.key === "Enter" && trimmed && trimmed !== vm.name && !busy) save();
           }}
-          className="w-full px-2 py-1 border border-gray-300 rounded text-sm bg-white"
+          className="w-full px-2 py-1 border border-gray-300 rounded-sm text-sm bg-white"
           autoFocus
         />
         <p className="mt-1 text-xs text-gray-500">
@@ -68,7 +68,7 @@ export default function VmRename({ vm, onChanged }: { vm: VmResponse; onChanged:
           type="button"
           onClick={save}
           disabled={busy || !trimmed || trimmed === vm.name}
-          className="px-3 py-1 text-xs font-medium text-white bg-sky-600 hover:bg-sky-700 rounded disabled:opacity-50"
+          className="px-3 py-1 text-xs font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-sm disabled:opacity-50"
         >
           {busy ? "Saving..." : "Rename"}
         </button>
@@ -80,7 +80,7 @@ export default function VmRename({ vm, onChanged }: { vm: VmResponse; onChanged:
             setError(null);
           }}
           disabled={busy}
-          className="px-3 py-1 text-xs font-medium text-gray-600 bg-gray-200 hover:bg-gray-300 rounded"
+          className="px-3 py-1 text-xs font-medium text-gray-600 bg-gray-200 hover:bg-gray-300 rounded-sm"
         >
           Cancel
         </button>

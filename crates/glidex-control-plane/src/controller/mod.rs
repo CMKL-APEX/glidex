@@ -181,6 +181,7 @@ impl VmManager {
                 loop {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     m2.migrate_ovn_settings();
+                    m2.migrate_pci_settings();
                     m2.reconcile_ovn().await;
                 }
             }),

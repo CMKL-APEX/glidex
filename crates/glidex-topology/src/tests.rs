@@ -283,3 +283,13 @@ fn cpu_lists_parse() {
     );
     assert_eq!(numa::parse_list(""), Vec::<u32>::new());
 }
+
+#[test]
+fn cpu_lists_format() {
+    assert_eq!(numa::format_list(&[3, 0, 1, 2, 8, 10, 11]), "0-3,8,10-11");
+    assert_eq!(numa::format_list(&[]), "");
+    assert_eq!(
+        numa::parse_list(&numa::format_list(&[5, 1, 2, 9])),
+        vec![1, 2, 5, 9]
+    );
+}
