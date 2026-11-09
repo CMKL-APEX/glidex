@@ -17,6 +17,8 @@ pub struct StateMachine<S: Schema> {
     db: Arc<Db<S>>,
     /// Where received snapshots land before they are installed.
     dir: PathBuf,
+    /// Apply without a flush, flushing at checkpoints (D31).
+    checkpointed: bool,
 }
 
 impl<S: Schema> Clone for StateMachine<S> {
@@ -24,6 +26,7 @@ impl<S: Schema> Clone for StateMachine<S> {
         StateMachine {
             db: self.db.clone(),
             dir: self.dir.clone(),
+            checkpointed: self.checkpointed,
         }
     }
 }
@@ -43,8 +46,12 @@ fn put_meta<S: Schema>(
 }
 
 impl<S: Schema> StateMachine<S> {
-    pub fn new(db: Arc<Db<S>>, dir: PathBuf) -> StateMachine<S> {
-        StateMachine { db, dir }
+    pub fn new(db: Arc<Db<S>>, dir: PathBuf, checkpointed: bool) -> StateMachine<S> {
+        StateMachine {
+            db,
+            dir,
+            checkpointed,
+        }
     }
 
     fn position(
@@ -64,6 +71,11 @@ impl<S: Schema> StateMachine<S> {
 
     fn snapshot_now(&self) -> Result<Option<Snapshot<TypeConfig<S>>>, StorageError> {
         let view = s(self.db.snapshot_view())?;
+        // openraft may purge the log up to the position reported here: the
+        // state must be durable that far first, or a crash would leave it
+        // behind the log's start (§6.2b, I4). After the view, so the
+        // checkpoint covers what it reads.
+        s(self.db.checkpoint())?;
         let Some(applied) = &view.last_applied else {
             return Ok(None);
         };
@@ -121,7 +133,7 @@ impl<S: Schema> RaftStateMachine<TypeConfig<S>> for StateMachine<S> {
         let Some(last) = entries.last().map(|e| e.log_id) else {
             return Ok(Vec::new());
         };
-        let db = self.db.clone();
+        let (db, checkpointed) = (self.db.clone(), self.checkpointed);
         tokio::task::spawn_blocking(move || {
             // The whole batch is one transaction (D32), with `last_applied`
             // at its last entry and the latest membership in it.
@@ -149,13 +161,21 @@ impl<S: Schema> RaftStateMachine<TypeConfig<S>> for StateMachine<S> {
                 Some(m) => Some(s(serde_json::to_vec(m))?),
                 None => None,
             };
-            s(db.apply_batch(batch, |txn| {
+            let also = |txn: &redb::WriteTransaction| {
                 put_meta::<S>(txn, LAST_APPLIED, &last)?;
                 if let Some(m) = &membership {
                     put_meta::<S>(txn, LAST_MEMBERSHIP, m)?;
                 }
                 Ok(())
-            }))?;
+            };
+            // A failed checkpoint fails the apply, and openraft stops the
+            // state machine: never skipped, or the state would stay behind
+            // while the log goes on purging (§6.2b).
+            if checkpointed {
+                s(db.apply_checkpointed(batch, also))?;
+            } else {
+                s(db.apply_batch(batch, also))?;
+            }
             Ok(vec![(); n])
         })
         .await
