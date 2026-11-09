@@ -4,15 +4,17 @@
 
 ## Specific to Claude Code
 
-- **Shared state lives in the repository, not in memory.** Your
-  auto-memory is private to one user's sessions; other sessions and
-  people don't see it. What another session needs to know (what is in
-  flight, a decision, a host's state, a known flake) goes in
-  [spec/progress.md](spec/progress.md) or the area's spec, in a PR.
+- **Shared state lives in the repository and its issues, not in
+  memory.** Your auto-memory is private to one user's sessions; other
+  sessions and people don't see it. What another session needs to know
+  goes where AGENTS.md says: a decision in the area's spec, in a PR; work
+  in flight, a host's state, a check waiting on a person or a known flake
+  in a GitHub issue labelled `in-flight`, `host`, `check` or `flake`.
   Memory is for how *you* work with this user.
 - **At the start of a session**: read [spec/progress.md](spec/progress.md),
-  then `git fetch origin main`, `gh pr list` and `git worktree list`, to
-  see what has moved and who is working where. Create your worktree
+  then `git fetch origin main`, `gh pr list`, `gh issue list -l in-flight`
+  (and `-l host` before touching a host) and `git worktree list`, to see
+  what has moved and who is working where. Create your worktree
   before editing anything.
 - **Long runs in the background.** Workspace tests, clippy, release
   builds, installs and the UI e2e take minutes to an hour: start them
