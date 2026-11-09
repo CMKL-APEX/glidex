@@ -761,6 +761,8 @@ id or its name.
 | `GET` | `/cluster/snapshot` | Download a snapshot of the replicated store (store it like the database) |
 | `GET` | `/cluster/settings/ovn` | Whether cluster networks use OVN, and its settings |
 | `PUT` | `/cluster/settings/ovn` | Turn OVN on or off and set the shared edge |
+| `GET` | `/cluster/settings/pci` | The device pools and grants, and whether they come from the cluster setting or this server's file |
+| `PUT` | `/cluster/settings/pci` | Replace the device pools and grants (`system-admin`) |
 | `GET` | `/cluster/settings/ovn/edge-defaults` | A suggested shared edge from what the nodes report |
 | `GET` | `/cluster/ovn` | OVN as it is now: databases, chassis, gateways |
 | `GET` | `/cluster/ovn/tunnels` | Each node's Geneve tunnels and their state |

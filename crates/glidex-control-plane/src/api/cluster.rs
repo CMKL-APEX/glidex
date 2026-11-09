@@ -187,6 +187,23 @@ pub async fn put_ovn_settings(
     Ok(Proto(StatusCode::OK, svc::put_ovn_settings(&c, req).await?))
 }
 
+// ---- device pools and grants as a cluster setting (spec/22-host-topology.md H20)
+
+pub async fn get_pci_settings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    Ok(Proto(
+        StatusCode::OK,
+        svc::get_pci_settings(&c, Default::default())?,
+    ))
+}
+
+pub async fn put_pci_settings(
+    c: Caller,
+    b: Option<Json<Value>>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = body(b, &[])?;
+    Ok(Proto(StatusCode::OK, svc::put_pci_settings(&c, req).await?))
+}
+
 pub async fn edge_defaults(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Proto(
         StatusCode::OK,

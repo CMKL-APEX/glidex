@@ -20,6 +20,7 @@ pub mod node;
 pub mod ovn_settings;
 pub mod paths;
 pub mod pci;
+pub mod pci_settings;
 pub mod restart;
 pub mod router;
 pub mod scheduler;

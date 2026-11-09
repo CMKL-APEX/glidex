@@ -20,7 +20,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 | Area | Milestone | Branch / PR | Notes |
 |---|---|---|---|
 | Security (`glidex-auth`) | OIDC login state kept by the caller | `feat/oidc-detached-login` | `OidcState::begin`/`finish`, for hyperstor's mgmt behind one name on several hosts ([11-security.md](11-security.md) §5.4) |
-| Host topology | HT6 replicated and discovered pools ([22-host-topology.md](22-host-topology.md) H20–H23, §9.1b) | `spec/pci-pool-discovery` | Spec; pools and grants per server's file meant a pool on gpu-dev2 was unknown with prism2 leading |
+| Host topology | HT6 replicated and discovered pools ([22-host-topology.md](22-host-topology.md) H20–H23, §9.1b; #397) | `feat/ht6-pci-setting` | The setting and its migration first; then its API and gxctl, host overrides, discovered pools, the UI card, the installer |
 | Clustering | C10 apply durability ([14-clustering.md](14-clustering.md) D31, D32) | #383 | Spec; the code is next (redb 4.5 is in, #382) |
 
 ## Areas

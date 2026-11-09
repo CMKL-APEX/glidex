@@ -1183,6 +1183,11 @@ impl TenantStore {
         Ok(m)
     }
 
+    /// Every tenant's pools on this cluster.
+    pub fn all_device_pools(&self) -> Result<Vec<TenantPool>, TenantError> {
+        self.read_all::<TenantPool>(DEVICE_POOLS)
+    }
+
     /// The tenant's pools on this cluster, by name.
     pub fn device_pools(&self, tenant: &str) -> Result<Vec<TenantPool>, TenantError> {
         Ok(self

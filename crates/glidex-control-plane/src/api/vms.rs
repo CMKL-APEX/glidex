@@ -389,6 +389,7 @@ pub(crate) fn device_bdf(path: &str) -> Result<String, ApiErr> {
 pub(crate) fn pci_pool_entities(c: &Caller, name: &str) -> (Ent, EntitySet) {
     let projects = c.manager().projects();
     let grants: Vec<String> = pool_grants(c, name)
+        .iter()
         .flat_map(|g| g.projects.iter())
         .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
         .collect();
@@ -398,23 +399,21 @@ pub(crate) fn pci_pool_entities(c: &Caller, name: &str) -> (Ent, EntitySet) {
     (Ent::PciPool(name.to_string()), es)
 }
 
-fn pool_grants<'a>(
-    c: &'a Caller,
-    name: &'a str,
-) -> impl Iterator<Item = &'a crate::config::PciGrant> + 'a {
-    c.auth()
-        .config
-        .pci
-        .allow
+fn pool_grants(c: &Caller, name: &str) -> Vec<crate::config::PciGrant> {
+    c.manager()
+        .pci_grants()
         .iter()
-        .filter(move |g| g.pool.as_deref() == Some(name))
+        .filter(|g| g.pool.as_deref() == Some(name))
+        .cloned()
+        .collect()
 }
 
 /// Tenant ids granted cluster pool `name` (`pci.allow` with `tenants`);
 /// for an open pool (`["*"]`, spec/19-tenancy.md D80) every tenant with an
 /// admission here, suspended or not.
 pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
-    if pool_grants(c, name).any(|g| g.tenants.iter().any(|t| t == "*")) {
+    let granted = pool_grants(c, name);
+    if granted.iter().any(|g| g.tenants.iter().any(|t| t == "*")) {
         return c
             .auth()
             .tenants
@@ -424,7 +423,8 @@ pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
             .map(|a| a.tenant_id)
             .collect();
     }
-    pool_grants(c, name)
+    granted
+        .iter()
         .flat_map(|g| g.tenants.iter())
         .filter_map(|t| {
             c.auth()
@@ -448,11 +448,8 @@ pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet
         .ok()
         .flatten()
         .map(|n| n.spec.name);
-    let allow: Vec<_> = c
-        .auth()
-        .config
-        .pci
-        .allow
+    let all = c.manager().pci_grants();
+    let allow: Vec<_> = all
         .iter()
         .filter(|g| {
             g.bdf

@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) designed, not built** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API and its migration** (§15). §17 records
 where the implementation differs from the design. Extends
 [14-clustering.md](14-clustering.md) §9.1 (scheduler),
 [04-hypervisors.md](04-hypervisors.md) (command lines),
@@ -745,11 +745,14 @@ setting. Devices no pool covers may form discovered pools (§9.1b).
   D80): VM requests and tenant pools (§9.1a) treat it as a grant to
   each, and the tenant's cap `devices.<pool>` bounds its share. `"*"`
   goes alone, on a pool.
-- `GET /cluster/pci` (`readCluster`) returns the setting; `PUT
-  /cluster/pci` (`manageCluster`) replaces it, checked as a file's pools
-  are (overlap, an empty `vf_of`) and refused (`409`) when it removes or
-  renames a pool that VMs' `devices` or `gpus` requests, or a tenant
-  pool's `from`, name, listing them. `gxctl pci pool
+- `GET /cluster/settings/pci` (`readCluster`) returns the pools and
+  grants in force and their source (the setting, or this server's file
+  until one is written); `PUT /cluster/settings/pci`
+  (`configurePciPools`, in `host.cluster.critical`: system admins, with
+  step-up) replaces them, checked as a file's pools are (overlap, an
+  empty `vf_of`) and refused (`409`) when it removes or renames a pool
+  that VMs' `devices` or `gpus` requests, or a tenant pool's `from`,
+  name, listing them. `gxctl pci pool
   list|show|set|rm|adopt`, `gxctl pci grant …`; the Cluster page's
   Devices card.
 - **Migration.** On the leader of a cluster with no `pci_settings`, the
@@ -1134,4 +1137,17 @@ Where HT2 differs from the design above, and why:
   `match.vf_of`, a nested match of the PF (empty is refused). Not done:
   per-VF MAC, VLAN and spoof checking (§13), and VFs across reboots
   (the installer's `--vfio-devices`, with `sriov_numvfs`).
-
+- **HT6, the setting** (H20, §9.1): `pci_settings` in `Meta`. Pool
+  resolution, the scheduler, `GET /pci-pools`, the node's `prepare: true`
+  pass and the `usePciPool` and `usePciDevice` grants read the pools and
+  grants in force (`VmManager::pci_pools`, `pci_grants`): the setting
+  once written, else this host's file. Every node recomputes them when
+  the key is applied. The leader's controller writes the setting from
+  its file once, when the file has pools or grants (`updated_by:
+  "migrate:<node id>"`); a server whose file differs from the setting
+  logs once that it is ignored. A standalone host migrates the same way.
+  `GET/PUT /cluster/settings/pci` (`GetPciSettings`, `PutPciSettings`)
+  as §9.1 says; gxctl has `pci settings [set <file.json>]` until the
+  pool commands come. Not done yet: `gxctl pci pool …` and `pci grant`,
+  host overrides, discovered pools, the UI card and the installer
+  (#397).

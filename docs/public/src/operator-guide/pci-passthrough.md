@@ -361,12 +361,30 @@ one NUMA node and PCI root per host node. See
 Instead of naming devices by address, a VM can ask for a number of
 devices from a pool (`devices: [{"pool": "a100", "count": 2}]`), and
 Glidex picks ready, uncordoned devices no other VM holds, near each
-other and the VM's memory. Pools are defined in `pci.pools` and granted
-with `pci.allow` entries that name a `pool`:
+other and the VM's memory. Pools are defined in `pools` and granted
+with `allow` entries that name a `pool`:
 
 ```json
 { "pool": "a100", "tenants": ["research"] }
 ```
+
+Pools and grants are a cluster setting: every server reads the same
+ones, whichever leads. Show them, or replace them from a JSON file with
+the same `pools` and `allow` arrays as a configuration file's `pci`
+section:
+
+```bash
+gxctl pci settings
+gxctl pci settings set pci.json
+```
+
+The call is `PUT /cluster/settings/pci` and needs `system-admin`. It's
+refused while a VM or a tenant pool still asks for a pool it removes or
+renames. Until the setting is written, a server uses `pci.pools` and
+`pci.allow` from its own `control-plane.json`. The leader, or a
+standalone host, copies its file's pools and grants into the setting
+once. After that, those file keys are ignored, and a server whose file
+still differs logs a warning saying so.
 
 The picked devices are claimed and passed through like devices named by
 address. For GPUs, `"gpus": {"count": 4}` also places and sizes the VM

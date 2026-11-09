@@ -137,7 +137,7 @@ async fn pci_pools(client: &ApiClient, project: Option<&str>) {
     if r.pools.is_empty() {
         let none = match project {
             Some(p) => format!("No device pools project {p} may use"),
-            None => "No device pools (pci.pools in control-plane.json)".into(),
+            None => "No device pools (gxctl pci settings)".into(),
         };
         println!("{}", none.yellow());
     }
@@ -174,10 +174,48 @@ async fn pci_pools(client: &ApiClient, project: Option<&str>) {
     }
 }
 
-/// `pci`, `pci <address>`, `pci pools [--project P]`
+/// `pci settings [set <file.json>]`: the cluster's device pools and grants
+/// (spec/22-host-topology.md H20), shown or replaced from a file holding
+/// `{"pools": [...], "allow": [...]}` as `control-plane.json`'s `pci` has them.
+async fn pci_settings(client: &ApiClient, args: &[&str]) {
+    use glidex_api::proto::glidex::cluster::v1::{GetPciSettingsRequest, PutPciSettingsRequest};
+    let s = match crate::cluster::rpc(client).await {
+        Ok(s) => s,
+        Err(e) => return err(e),
+    };
+    let shown = match args {
+        [] => s
+            .get_pci_settings(GetPciSettingsRequest::default())
+            .await
+            .map(|r| serde_json::to_value(r.into_owned())),
+        ["set", path] => {
+            let req: PutPciSettingsRequest = match std::fs::read(path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+            {
+                Ok(r) => r,
+                Err(e) => return err(format!("{path}: {e}")),
+            };
+            s.put_pci_settings(req)
+                .await
+                .map(|r| serde_json::to_value(r.into_owned()))
+        }
+        _ => return err("usage: pci settings [set <file.json>]".to_string()),
+    };
+    match shown {
+        Ok(Ok(v)) => println!("{}", serde_json::to_string_pretty(&v).unwrap_or_default()),
+        Ok(Err(e)) => err(e.to_string()),
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
+/// `pci`, `pci <address>`, `pci pools [--project P]`, `pci settings …`
 pub async fn pci(client: &ApiClient, args: &[&str]) {
     if args.first() == Some(&"pools") {
         return pci_pools(client, flag_value(args, "--project")).await;
+    }
+    if args.first() == Some(&"settings") {
+        return pci_settings(client, &args[1..]).await;
     }
     let devices = match list_pci_devices(client).await {
         Ok(d) => d,

@@ -37,6 +37,8 @@ fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
     f(&mut cfg);
+    // The manager reads the same file: pools and grants (main.rs configures it).
+    manager.configure(&cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
     H {
@@ -2620,10 +2622,6 @@ async fn pools_are_granted_and_hand_out_devices() {
             node: None,
         }];
     });
-    // The manager has the pools from the same file (main.rs configures it).
-    let mut cfg = Config::default();
-    cfg.pci.pools = pools;
-    h.app.manager.configure(&cfg);
     h.app.manager.report_self().unwrap();
     let nodes = h.app.manager.nodes();
     let mut n = nodes.get("local").unwrap().unwrap();
@@ -2729,6 +2727,68 @@ async fn pools_are_granted_and_hand_out_devices() {
     assert_eq!(v["details"]["quota"][0]["resource"], "devices.a100", "{v}");
     let (_, v, _) = h.call("GET", &format!("/projects/{pa}"), None, &a).await;
     assert_eq!(v["project"]["usage"]["devices"]["a100"], 2, "{v}");
+
+    // spec/22-host-topology.md H20: the pools and grants as a cluster
+    // setting. Read with `readCluster`, written by a system admin only.
+    let (s, v, _) = h.call("GET", "/cluster/settings/pci", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["source"], "PCI_SETTINGS_SOURCE_FILE", "{v}");
+    assert_eq!(v["settings"]["pools"][0]["name"], "a100", "{v}");
+    let (s, _, _) = h.call("GET", "/cluster/settings/pci", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let admin = h.user("admin");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
+    // Writing needs a recent login (step-up), so sessions here.
+    let adm = h.session(&admin);
+    let aud_session = h.session(&aud);
+    let a100 = json!({ "name": "a100", "class": "gpu", "match": { "vendor_id": "0x10de" } });
+    let (s, _, _) = h
+        .call(
+            "PUT",
+            "/cluster/settings/pci",
+            Some(json!({ "pools": [a100] })),
+            &aud_session,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an auditor can't write it");
+    let (s, v, _) = h
+        .call("PUT", "/cluster/settings/pci", Some(json!({})), &adm)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("VM v1 (a100)"),
+        "{v}"
+    );
+    let mut odd = a100.clone();
+    odd["bar_mib"] = json!(3000);
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/cluster/settings/pci",
+            Some(json!({ "pools": [odd] })),
+            &adm,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // Granting the pool to pb too: bob is now refused for want of a free
+    // device, not of a grant.
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/cluster/settings/pci",
+            Some(
+                json!({ "pools": [a100], "allow": [{ "pool": "a100", "projects": ["pa", "pb"] }] }),
+            ),
+            &adm,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["source"], "PCI_SETTINGS_SOURCE_CLUSTER", "{v}");
+    assert!(v["settings"]["updated_at"].is_string(), "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v7", "pb", "a100")), &b)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
 }
 
 /// spec/22-host-topology.md §10.1: a pool of a PF's VFs hands out ready VFs,
@@ -2764,9 +2824,6 @@ async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
             node: None,
         }];
     });
-    let mut cfg = Config::default();
-    cfg.pci.pools = pools;
-    h.app.manager.configure(&cfg);
     h.app.manager.report_self().unwrap();
     let nodes = h.app.manager.nodes();
     let mut n = nodes.get("local").unwrap().unwrap();
@@ -2876,9 +2933,6 @@ async fn gpu_requests_expand_from_the_pool() {
         c.pci.pools = pools.clone();
         c.pci.allow = vec![grant("a100"), grant("t4")];
     });
-    let mut cfg = Config::default();
-    cfg.pci.pools = pools;
-    h.app.manager.configure(&cfg);
     h.app.manager.report_self().unwrap();
     let nodes = h.app.manager.nodes();
     let mut n = nodes.get("local").unwrap().unwrap();
