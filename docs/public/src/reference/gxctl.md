@@ -193,7 +193,13 @@ Routers have no `gxctl` command yet: use the web UI or the
 | `uplink-rm <bridge> <name>` | Remove an uplink, restoring the NIC |
 | `pci`, `pci-devices` | List the host's PCI devices, with their NUMA node and whether each is ready for passthrough |
 | `pci pools [--project P]` | The device pools: their devices per node, holders, and how many are free; with `--project`, the pools that project may use and how many are free |
+| `pci pool show <pool>` | One pool of the cluster setting as JSON, with its grants |
+| `pci pool set <pool.json>` | Add a pool to the cluster setting from a file holding one pool (`{"name": ..., "match": {...}}`), or replace the pool of that name |
+| `pci pool rm <pool>` | Remove a pool and its grants from the cluster setting; refused while VMs or tenant pools use it |
 | `pci pool adopt <pool> [--name N]` | Make a discovered pool (`amd-7551`) a defined one in the cluster setting, under its name or `N` |
+| `pci grant` | List the cluster's grants |
+| `pci grant <pool\|address> [--node N] [--projects a,b] [--tenants t,u]` | Let projects and tenants use a pool, or the device at an address (on node `N`, else on every node); `--tenants '*'` opens a pool to every admitted tenant. Granting a discovered pool adopts it under its name |
+| `pci grant rm <pool\|address> [--node N] [--projects a,b] [--tenants t,u]` | Take projects and tenants off a grant; without them, remove the grant |
 | `pci settings [set <file.json>]` | The cluster's device pools and grants; `set` replaces them from a file holding `{"pools": [...], "allow": [...]}` |
 | `pci <address>` | One device in detail |
 

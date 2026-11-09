@@ -379,6 +379,20 @@ gxctl pci settings
 gxctl pci settings set pci.json
 ```
 
+Or change one pool or grant at a time:
+
+```bash
+gxctl pci pool show r9700
+gxctl pci pool set r9700.json                 # one pool: add it, or replace the pool of its name
+gxctl pci pool rm r9700                       # the pool and its grants
+gxctl pci grant r9700 --projects lab,ml       # --tenants acme, or --tenants '*' for every tenant
+gxctl pci grant rm r9700 --projects ml        # without names, the whole grant
+gxctl pci grant                               # list the grants
+```
+
+Each reads the setting, changes it and writes it back whole, so the
+same checks apply.
+
 The Cluster page's **Device pools** card shows the same, standalone or
 clustered. It lists each pool, defined or discovered, with its free
 devices per node, its sizing and who it's granted to. A system admin can
@@ -412,7 +426,8 @@ gxctl pci pool adopt amd-7551 --name r9700
 
 This writes a pool matching the model to the cluster setting, where you
 edit it as any other pool. A rename is refused while VMs still ask for
-the discovered name.
+the discovered name. `gxctl pci grant amd-7551 …` adopts it under its own name
+first.
 
 ### Per-host settings
 

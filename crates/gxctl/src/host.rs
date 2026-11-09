@@ -10,6 +10,10 @@ use crate::vm::enum_word;
 use crate::{display_option, flag_value, format_unix_time, has_flag};
 use buffa::Enumeration;
 use colored::Colorize;
+use glidex_api::proto::glidex::cluster::v1::{
+    ClusterServiceClient, GetPciSettingsRequest, ListPciPoolsRequest, PciGrant, PciPool,
+    PciPoolMatch, PciPoolSpec, PutPciSettingsRequest,
+};
 use glidex_api::proto::glidex::host::v1::*;
 use tabled::{Table, Tabled};
 
@@ -121,7 +125,6 @@ fn pci_details(dev: &PciDevice) -> Vec<String> {
 /// `pci pools`: each pool with its devices per node, holders and what is
 /// free (spec/22-host-topology.md §9.1).
 async fn pci_pools(client: &ApiClient, project: Option<&str>) {
-    use glidex_api::proto::glidex::cluster::v1::ListPciPoolsRequest;
     let s = match crate::cluster::node_rpc(client).await {
         Ok(s) => s,
         Err(e) => return err(e),
@@ -183,7 +186,6 @@ async fn pci_pools(client: &ApiClient, project: Option<&str>) {
 /// (spec/22-host-topology.md H20), shown or replaced from a file holding
 /// `{"pools": [...], "allow": [...]}` as `control-plane.json`'s `pci` has them.
 async fn pci_settings(client: &ApiClient, args: &[&str]) {
-    use glidex_api::proto::glidex::cluster::v1::{GetPciSettingsRequest, PutPciSettingsRequest};
     let s = match crate::cluster::rpc(client).await {
         Ok(s) => s,
         Err(e) => return err(e),
@@ -214,48 +216,47 @@ async fn pci_settings(client: &ApiClient, args: &[&str]) {
     }
 }
 
-/// `pci pool adopt <slug> [--name N]`: write discovered pool `slug` to the
-/// cluster's setting, under its slug or `N` (spec/22-host-topology.md
-/// §9.1b), then edit it as any pool.
-async fn pci_pool(client: &ApiClient, args: &[&str]) {
-    use glidex_api::proto::glidex::cluster::v1::{
-        GetPciSettingsRequest, ListPciPoolsRequest, PciPoolMatch, PciPoolSpec,
-        PutPciSettingsRequest,
+// ---- `pci pool …` and `pci grant …`: edits of the cluster's setting --------
+
+/// The setting's pools and grants as a PUT that changes nothing yet; the
+/// edits below change it and it is written back whole (spec/22-host-topology.md
+/// H20). Before a setting is written this is the server's file, which the
+/// first write then moves to the setting.
+async fn current_setting(
+    s: &ClusterServiceClient<RpcTransport>,
+) -> Result<PutPciSettingsRequest, String> {
+    let r = s
+        .get_pci_settings(GetPciSettingsRequest::default())
+        .await
+        .map_err(rpc_err)?
+        .into_owned();
+    let st = r.settings.as_option().cloned().unwrap_or_default();
+    Ok(PutPciSettingsRequest {
+        pools: st.pools,
+        allow: st.allow,
+        ..Default::default()
+    })
+}
+
+/// The pools listed now, discovered ones among them.
+async fn listed_pools(client: &ApiClient) -> Result<Vec<PciPool>, String> {
+    let nodes = crate::cluster::node_rpc(client).await?;
+    Ok(nodes
+        .list_pci_pools(ListPciPoolsRequest::default())
+        .await
+        .map_err(rpc_err)?
+        .into_owned()
+        .pools)
+}
+
+/// A defined pool named `name` matching discovered pool `found`'s vendor
+/// and device id (§9.1b).
+fn adopted(found: &PciPool, name: &str) -> Result<PciPoolSpec, String> {
+    let Some((vendor_id, device_id)) = glidex_topology::pci::pool_slug_ids(&found.name) else {
+        return Err(format!("{} is not a discovered pool's name", found.name));
     };
-    let ["adopt", slug, ..] = args else {
-        return err("usage: pci pool adopt <discovered pool> [--name N]".to_string());
-    };
-    let s = match crate::cluster::rpc(client).await {
-        Ok(s) => s,
-        Err(e) => return err(e),
-    };
-    let nodes = match crate::cluster::node_rpc(client).await {
-        Ok(n) => n,
-        Err(e) => return err(e),
-    };
-    let listed = match nodes.list_pci_pools(ListPciPoolsRequest::default()).await {
-        Ok(r) => r.into_owned(),
-        Err(e) => return err(rpc_err(e)),
-    };
-    let Some(found) = listed
-        .pools
-        .iter()
-        .find(|p| p.name == *slug && p.discovered == Some(true))
-    else {
-        return err(format!("no discovered pool {slug} (see 'pci pools')"));
-    };
-    let Some((vendor_id, device_id)) = glidex_topology::pci::pool_slug_ids(slug) else {
-        return err(format!("{slug} is not a discovered pool's name"));
-    };
-    let current = match s.get_pci_settings(GetPciSettingsRequest::default()).await {
-        Ok(r) => r.into_owned(),
-        Err(e) => return err(rpc_err(e)),
-    };
-    let settings = current.settings.as_option().cloned().unwrap_or_default();
-    let name = flag_value(args, "--name").unwrap_or(slug).to_string();
-    let mut pools = settings.pools.clone();
-    pools.push(PciPoolSpec {
-        name: name.clone(),
+    Ok(PciPoolSpec {
+        name: name.to_string(),
         class: found.class.clone(),
         r#match: PciPoolMatch {
             vendor_id: Some(vendor_id),
@@ -264,20 +265,278 @@ async fn pci_pool(client: &ApiClient, args: &[&str]) {
         }
         .into(),
         ..Default::default()
-    });
-    let req = PutPciSettingsRequest {
-        pools,
-        allow: settings.allow.clone(),
-        ..Default::default()
+    })
+}
+
+/// `pci pool set`: `spec` replaces the pool of its name, or is added.
+fn set_pool(e: &mut PutPciSettingsRequest, spec: PciPoolSpec) {
+    match e.pools.iter_mut().find(|p| p.name == spec.name) {
+        Some(p) => *p = spec,
+        None => e.pools.push(spec),
+    }
+}
+
+/// `pci pool rm`: the pool and the grants naming it. The server refuses
+/// it while VMs or tenant pools use the pool.
+fn remove_pool(e: &mut PutPciSettingsRequest, name: &str) -> Result<(), String> {
+    let before = e.pools.len();
+    e.pools.retain(|p| p.name != name);
+    if e.pools.len() == before {
+        return Err(format!("no pool {name} in the setting (see 'pci pools')"));
+    }
+    e.allow.retain(|g| g.pool.as_deref() != Some(name));
+    Ok(())
+}
+
+/// What `pci grant` edits: a pool's grant, or a device's (by address, on
+/// one node or on every node).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum GrantTarget<'a> {
+    Pool(&'a str),
+    Device(&'a str, Option<&'a str>),
+}
+
+impl<'a> GrantTarget<'a> {
+    /// A PCI address (`0000:41:00.0`) is a device; anything else a pool.
+    fn of(target: &'a str, node: Option<&'a str>) -> Self {
+        if target.contains(':') {
+            GrantTarget::Device(target, node)
+        } else {
+            GrantTarget::Pool(target)
+        }
+    }
+
+    fn is(&self, g: &PciGrant) -> bool {
+        match *self {
+            GrantTarget::Pool(p) => g.bdf.is_none() && g.pool.as_deref() == Some(p),
+            GrantTarget::Device(b, n) => g.bdf.as_deref() == Some(b) && g.node.as_deref() == n,
+        }
+    }
+}
+
+/// `pci grant`: `projects` and `tenants` may use the target, added to its
+/// grant.
+fn grant(e: &mut PutPciSettingsRequest, t: GrantTarget, projects: &[String], tenants: &[String]) {
+    let g = match e.allow.iter().position(|g| t.is(g)) {
+        Some(i) => &mut e.allow[i],
+        None => {
+            e.allow.push(match t {
+                GrantTarget::Pool(p) => PciGrant {
+                    pool: Some(p.to_string()),
+                    ..Default::default()
+                },
+                GrantTarget::Device(b, n) => PciGrant {
+                    bdf: Some(b.to_string()),
+                    node: n.map(String::from),
+                    ..Default::default()
+                },
+            });
+            e.allow.last_mut().expect("just pushed")
+        }
     };
-    match s.put_pci_settings(req).await {
-        Ok(_) => println!("{} pool {name} adopted from {slug}", "OK".green()),
+    for (have, add) in [(&mut g.projects, projects), (&mut g.tenants, tenants)] {
+        for a in add {
+            if !have.contains(a) {
+                have.push(a.clone());
+            }
+        }
+    }
+}
+
+/// `pci grant rm`: the names taken off the target's grants, or its grants
+/// whole when none are named. A grant left to no one goes.
+fn revoke(
+    e: &mut PutPciSettingsRequest,
+    t: GrantTarget,
+    projects: &[String],
+    tenants: &[String],
+) -> Result<(), String> {
+    if !e.allow.iter().any(|g| t.is(g)) {
+        return Err("no such grant (see 'pci grant')".to_string());
+    }
+    let whole = projects.is_empty() && tenants.is_empty();
+    e.allow.retain_mut(|g| {
+        if !t.is(g) {
+            return true;
+        }
+        if whole {
+            return false;
+        }
+        g.projects.retain(|p| !projects.contains(p));
+        g.tenants.retain(|x| !tenants.contains(x));
+        !g.projects.is_empty() || !g.tenants.is_empty()
+    });
+    Ok(())
+}
+
+/// One grant as `pci grant` lists it.
+fn grant_line(g: &PciGrant) -> String {
+    let target = match (&g.pool, &g.bdf, &g.node) {
+        (Some(p), _, _) => format!("pool {p}"),
+        (None, Some(b), Some(n)) => format!("device {b} on {n}"),
+        (None, Some(b), None) => format!("device {b}"),
+        (None, None, _) => "?".to_string(),
+    };
+    let mut to = Vec::new();
+    if !g.projects.is_empty() {
+        to.push(format!("projects {}", g.projects.join(", ")));
+    }
+    if !g.tenants.is_empty() {
+        to.push(format!("tenants {}", g.tenants.join(", ")));
+    }
+    format!("{target}: {}", to.join("; "))
+}
+
+/// A `--projects a,b` list.
+fn names(args: &[&str], flag: &str) -> Vec<String> {
+    flag_value(args, flag)
+        .map(|v| {
+            v.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+const POOL_USAGE: &str = "usage: pci pool list | show <pool> | set <pool.json> | rm <pool> \
+                          | adopt <discovered pool> [--name N]";
+const GRANT_USAGE: &str = "usage: pci grant [<pool|address> [--node N] [--projects a,b] \
+                           [--tenants t,u]] | pci grant rm <pool|address> [--node N] \
+                           [--projects a,b] [--tenants t,u]";
+
+/// `pci pool list|show|set|rm|adopt`: the cluster's pools, one at a time
+/// (spec/22-host-topology.md §9.1, §9.1b).
+async fn pci_pool(client: &ApiClient, args: &[&str]) {
+    if matches!(args, ["list"] | ["ls"]) {
+        return pci_pools(client, None).await;
+    }
+    let s = svc!(crate::cluster::rpc(client));
+    let mut e = match current_setting(&s).await {
+        Ok(e) => e,
+        Err(e) => return err(e),
+    };
+    let done = match args {
+        ["show", name] => {
+            let Some(p) = e.pools.iter().find(|p| p.name == *name) else {
+                return err(format!(
+                    "no pool {name} in the setting (a discovered pool is shown by 'pci pools')"
+                ));
+            };
+            println!("{}", serde_json::to_string_pretty(p).unwrap_or_default());
+            for g in e.allow.iter().filter(|g| g.pool.as_deref() == Some(name)) {
+                println!("{} {}", "grant".bold(), grant_line(g));
+            }
+            return;
+        }
+        ["set", path] => {
+            let spec: PciPoolSpec = match std::fs::read(path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| serde_json::from_slice(&b).map_err(|e| e.to_string()))
+            {
+                Ok(p) => p,
+                Err(e) => return err(format!("{path}: {e}")),
+            };
+            let name = spec.name.clone();
+            set_pool(&mut e, spec);
+            format!("pool {name} set")
+        }
+        ["rm", name] => {
+            if let Err(m) = remove_pool(&mut e, name) {
+                return err(m);
+            }
+            format!("pool {name} removed, with its grants")
+        }
+        ["adopt", slug, ..] => {
+            let listed = match listed_pools(client).await {
+                Ok(l) => l,
+                Err(e) => return err(e),
+            };
+            let Some(found) = listed
+                .iter()
+                .find(|p| p.name == *slug && p.discovered == Some(true))
+            else {
+                return err(format!("no discovered pool {slug} (see 'pci pools')"));
+            };
+            let name = flag_value(args, "--name").unwrap_or(slug);
+            match adopted(found, name) {
+                Ok(spec) => e.pools.push(spec),
+                Err(m) => return err(m),
+            }
+            format!("pool {name} adopted from {slug}")
+        }
+        _ => return usage(POOL_USAGE),
+    };
+    match s.put_pci_settings(e).await {
+        Ok(_) => println!("{} {done}", "OK".green()),
+        Err(e) => err(rpc_err(e)),
+    }
+}
+
+/// `pci grant [rm] …`: who may use a pool or a device (§9.1). Granting a
+/// discovered pool adopts it under its name first (§9.1b).
+async fn pci_grant(client: &ApiClient, args: &[&str]) {
+    let s = svc!(crate::cluster::rpc(client));
+    let mut e = match current_setting(&s).await {
+        Ok(e) => e,
+        Err(e) => return err(e),
+    };
+    let (rm, rest) = match args {
+        [] => {
+            if e.allow.is_empty() {
+                println!("{}", "No grants".yellow());
+            }
+            for g in &e.allow {
+                println!("{}", grant_line(g));
+            }
+            return;
+        }
+        ["rm", rest @ ..] => (true, rest),
+        rest => (false, rest),
+    };
+    let Some(target) = rest.first().filter(|t| !t.starts_with("--")) else {
+        return usage(GRANT_USAGE);
+    };
+    let t = GrantTarget::of(target, flag_value(rest, "--node"));
+    let (projects, tenants) = (names(rest, "--projects"), names(rest, "--tenants"));
+    let done = if rm {
+        if let Err(m) = revoke(&mut e, t, &projects, &tenants) {
+            return err(m);
+        }
+        format!("grant on {target} changed")
+    } else {
+        if projects.is_empty() && tenants.is_empty() {
+            return usage(GRANT_USAGE);
+        }
+        if let GrantTarget::Pool(p) = t
+            && !e.pools.iter().any(|d| d.name == p)
+        {
+            let listed = match listed_pools(client).await {
+                Ok(l) => l,
+                Err(e) => return err(e),
+            };
+            match listed
+                .iter()
+                .find(|d| d.name == p && d.discovered == Some(true))
+            {
+                Some(found) => match adopted(found, p) {
+                    Ok(spec) => e.pools.push(spec),
+                    Err(m) => return err(m),
+                },
+                None => return err(format!("no pool {p} (see 'pci pools')")),
+            }
+        }
+        grant(&mut e, t, &projects, &tenants);
+        format!("{target} granted")
+    };
+    match s.put_pci_settings(e).await {
+        Ok(_) => println!("{} {done}", "OK".green()),
         Err(e) => err(rpc_err(e)),
     }
 }
 
 /// `pci`, `pci <address>`, `pci pools [--project P]`, `pci settings …`,
-/// `pci pool adopt …`
+/// `pci pool …`, `pci grant …`
 pub async fn pci(client: &ApiClient, args: &[&str]) {
     if args.first() == Some(&"pools") {
         return pci_pools(client, flag_value(args, "--project")).await;
@@ -287,6 +546,9 @@ pub async fn pci(client: &ApiClient, args: &[&str]) {
     }
     if args.first() == Some(&"pool") {
         return pci_pool(client, &args[1..]).await;
+    }
+    if args.first() == Some(&"grant") {
+        return pci_grant(client, &args[1..]).await;
     }
     let devices = match list_pci_devices(client).await {
         Ok(d) => d,
@@ -1063,5 +1325,92 @@ mod tests {
         .unwrap();
         assert_eq!(j.devices[0].sysfs_path, d.sysfs_path);
         assert_eq!(j.devices[0].driver, None);
+    }
+
+    #[test]
+    fn pool_and_grant_edits() {
+        let spec = |name: &str, device: &str| PciPoolSpec {
+            name: name.into(),
+            r#match: PciPoolMatch {
+                vendor_id: Some("0x1002".into()),
+                device_id: Some(device.into()),
+                ..Default::default()
+            }
+            .into(),
+            ..Default::default()
+        };
+        let names = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let mut e = PutPciSettingsRequest::default();
+        set_pool(&mut e, spec("r9700", "0x7551"));
+        set_pool(&mut e, spec("mi300", "0x74a1"));
+        // Same name: replaced in place, not added.
+        set_pool(&mut e, spec("r9700", "0x7550"));
+        assert_eq!(e.pools.len(), 2);
+        assert_eq!(e.pools[0].r#match.device_id.as_deref(), Some("0x7550"));
+
+        let pool = GrantTarget::of("r9700", None);
+        assert_eq!(pool, GrantTarget::Pool("r9700"));
+        grant(&mut e, pool, &names(&["lab"]), &[]);
+        // A second grant on the target joins the first, without repeats.
+        grant(&mut e, pool, &names(&["lab", "ml"]), &names(&["acme"]));
+        let dev = GrantTarget::of("0000:41:00.0", Some("gpu-dev2"));
+        assert_eq!(dev, GrantTarget::Device("0000:41:00.0", Some("gpu-dev2")));
+        grant(&mut e, dev, &names(&["lab"]), &[]);
+        // The same address on every node is another grant.
+        grant(
+            &mut e,
+            GrantTarget::of("0000:41:00.0", None),
+            &names(&["ml"]),
+            &[],
+        );
+        assert_eq!(e.allow.len(), 3);
+        assert_eq!(e.allow[0].projects, names(&["lab", "ml"]));
+        assert_eq!(e.allow[0].tenants, names(&["acme"]));
+        assert_eq!(
+            grant_line(&e.allow[0]),
+            "pool r9700: projects lab, ml; tenants acme"
+        );
+        assert_eq!(
+            grant_line(&e.allow[1]),
+            "device 0000:41:00.0 on gpu-dev2: projects lab"
+        );
+
+        revoke(&mut e, pool, &names(&["ml"]), &[]).unwrap();
+        assert_eq!(e.allow[0].projects, names(&["lab"]));
+        // A grant left to no one goes.
+        revoke(&mut e, dev, &names(&["lab"]), &[]).unwrap();
+        assert_eq!(e.allow.len(), 2);
+        assert!(revoke(&mut e, dev, &[], &[]).is_err());
+        grant(&mut e, GrantTarget::Pool("mi300"), &[], &names(&["*"]));
+
+        // Removing a pool takes its grants with it.
+        remove_pool(&mut e, "r9700").unwrap();
+        assert_eq!(e.pools.len(), 1);
+        assert!(e.allow.iter().all(|g| g.pool.as_deref() != Some("r9700")));
+        assert_eq!(e.allow.len(), 2);
+        assert!(remove_pool(&mut e, "r9700").is_err());
+        // Without names, the whole grant goes.
+        revoke(&mut e, GrantTarget::Pool("mi300"), &[], &[]).unwrap();
+        assert_eq!(e.allow.len(), 1);
+    }
+
+    #[test]
+    fn adopting_takes_the_discovered_pools_ids() {
+        let found = PciPool {
+            name: "amd-7551".into(),
+            class: Some("gpu".into()),
+            discovered: Some(true),
+            ..Default::default()
+        };
+        let p = adopted(&found, "r9700").unwrap();
+        assert_eq!(p.name, "r9700");
+        assert_eq!(p.class.as_deref(), Some("gpu"));
+        assert_eq!(p.r#match.vendor_id.as_deref(), Some("0x1002"));
+        assert_eq!(p.r#match.device_id.as_deref(), Some("0x7551"));
+        let bad = PciPool {
+            name: "r9700".into(),
+            ..Default::default()
+        };
+        assert!(adopted(&bad, "x").is_err());
     }
 }
