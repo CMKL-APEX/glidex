@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API, its migration, host overrides, discovered pools and the installer** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools) in progress: the setting, its API, its migration, host overrides, discovered pools, the installer and the UI card; the acceptance run on gpu-dev2 not run yet** (§15). §17 records
 where the implementation differs from the design. Extends
 [14-clustering.md](14-clustering.md) §9.1 (scheduler),
 [04-hypervisors.md](04-hypervisors.md) (command lines),
@@ -1174,6 +1174,13 @@ Where HT2 differs from the design above, and why:
   the host's `pci.overrides` set `bar_mib`. `vfio-devices.json` gains
   `exclude` (the host's `pci.exclude`): the boot unit's plan and the
   G20 claim skip those devices, and the claim's udev rules jump past
-  them (`GOTO`). Not done yet: the other `gxctl pci pool` commands and
-  `pci grant` (the setting's `pci settings set` covers them) and the UI
-  card (#397).
+  them (`GOTO`). The Cluster page's **Device pools** card
+  (`components/DevicePools.tsx`, standalone or clustered, for
+  `readCluster`): each pool from `GET /pci-pools` with free devices per
+  node, sizing, `bar_mib` and grants from the setting, discovered ones
+  marked; with `configurePciPools`, Adopt (a pool matching the slug's
+  ids, under its name or another), Remove (with its grants) and the
+  whole setting as JSON. Not done yet: the other `gxctl pci pool`
+  commands and `pci grant` (the setting's `pci settings set`, and the
+  card's editor, cover them), and the acceptance run on gpu-dev2
+  (#397).

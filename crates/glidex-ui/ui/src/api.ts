@@ -112,7 +112,16 @@ import {
 import { CredentialService, DatastoreService, DiskService, ImageService } from "./gen/glidex/storage/v1/storage_pb";
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
-import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
+import {
+  ClusterService,
+  ImportService,
+  NodeService,
+  type GetPciSettingsResponseJson,
+  type PciGrantJson,
+  type PciPoolJson,
+  type PciPoolSpecJson,
+  type PutOvnSettingsRequestJson,
+} from "./gen/glidex/cluster/v1/cluster_pb";
 import {
   AdmissionService,
   DirectoryService,
@@ -1311,6 +1320,21 @@ export const getNodeTopology = (id: string) =>
 /** The device pools a project may use and how many are free (spec/22-host-topology.md §9.1). */
 export const listProjectPciPools = (project: string) =>
   rpc(NodeService.method.listPciPools, { project }).then((r) => (r.pools ?? []) as PciPoolJson[]);
+/** Every device pool, defined or discovered, with its devices per node (needs a host role). */
+export const listPciPools = () => rpc(NodeService.method.listPciPools, {}).then((r) => (r.pools ?? []) as PciPoolJson[]);
+/** The cluster's device pools and grants, and whether they come from the setting or this server's file (spec/22-host-topology.md H20). */
+export type PciSettingsView = GetPciSettingsResponseJson;
+export const getPciSettings = () => rpc(ClusterService.method.getPciSettings).then((r) => r as PciSettingsView);
+/** Replaces the device pools and grants for every server. */
+export const putPciSettings = (s: { pools: PciPoolSpecJson[]; allow: PciGrantJson[] }) =>
+  rpc(ClusterService.method.putPciSettings, s).then((r) => r as PciSettingsView);
+/** The vendor and device ids a discovered pool's name stands for (`amd-7551`; spec/22-host-topology.md §9.1b). */
+export function discoveredIds(name: string): [string, string] | null {
+  const m = /^(nvidia|amd|intel|[0-9a-f]{4})-([0-9a-f]{4})$/.exec(name);
+  if (!m) return null;
+  const vendor = ({ nvidia: "10de", amd: "1002", intel: "8086" } as Record<string, string>)[m[1]] ?? m[1];
+  return [`0x${vendor}`, `0x${m[2]}`];
+}
 /** Bind a device's IOMMU group to vfio-pci on its node, or put it back (spec/22-host-topology.md §5.3). */
 export const prepareDevice = (id: string, address: string) => rpc(NodeService.method.prepareDevice, { id, address });
 export const releaseDevice = (id: string, address: string) => rpc(NodeService.method.releaseDevice, { id, address });

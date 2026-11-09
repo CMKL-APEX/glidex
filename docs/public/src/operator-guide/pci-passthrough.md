@@ -379,6 +379,12 @@ gxctl pci settings
 gxctl pci settings set pci.json
 ```
 
+The Cluster page's **Device pools** card shows the same, standalone or
+clustered. It lists each pool, defined or discovered, with its free
+devices per node, its sizing and who it's granted to. A system admin can
+also adopt a discovered pool, remove a pool (its grants go with it), or
+edit the pools and grants as JSON there.
+
 The call is `PUT /cluster/settings/pci` and needs `system-admin`. It's
 refused while a VM or a tenant pool still asks for a pool it removes or
 renames. Until the setting is written, a server uses `pci.pools` and
