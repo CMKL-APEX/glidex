@@ -2235,7 +2235,15 @@ Not yet:
 
 ### C10: apply durability
 
-Not built. Decisions D31 and D32 (owner, 2026-11-09). Measured, before
+Decisions D31 and D32 (owner, 2026-11-09); tracked in #409.
+
+| | |
+|---|---|
+| Spec \| Code | D32: `StateMachine::apply` applies each batch openraft hands over with one `Db::apply_batch`: one transaction with `last_applied` at the batch's last entry and the latest membership; after the commit the revision steps through each entry's and subscribers hear each in order. `Db::apply` is a batch of one |
+| Tests | `a_batch_lands_whole_and_is_announced_entry_by_entry` (raftstore): rows, `last_applied`, revisions heard in order, blank entries unannounced, a batch with one bad entry or a failing `also` writes nothing; the raftstore cluster tests and the control plane's cluster tests run on the batched path |
+| Not yet | D31 (checkpointed applies, the setting, `GLIDEX_RAFT_DURABLE_APPLIES`); the crash tests; end-to-end latency on a test cluster |
+
+Measured, before
 the design (redb 4.5, prism2's disk, the prism servers' sizes: a 160 MB
 state database and a 70,000-entry log): applying a write set takes
 354 µs durable and 35 µs with `Durability::None` and a durable commit
