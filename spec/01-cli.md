@@ -1,9 +1,10 @@
 # `gxctl` CLI
 
-Source: `crates/glidex-control-plane/src/bin/gxctl/` (`main.rs`: REPL
-and VM commands; `client.rs`: transport, token file, error rendering;
-`console.rs`: `connect` / `log`; `admin.rs`: access-control commands).
-Binary produced by the same crate as the control plane.
+Source: `crates/gxctl/src/` (`main.rs`: REPL and VM commands;
+`client.rs`: transport, token file, error rendering; `console.rs`:
+`connect` / `log`; `admin.rs`: access-control commands). Its own crate,
+published to crates.io (`cargo install gxctl`); the installer builds it
+with the rest.
 
 `gxctl` is an **interactive** shell. Invoking it drops into a
 `rustyline` REPL with history and tab completion. Commands talk to

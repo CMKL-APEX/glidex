@@ -59,7 +59,7 @@ daemon with a narrow protocol on a Unix socket.
 | `glidex-metad` | `glidex-metad` (`glidex-metad.service`) | [`glidex-metad`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-metad) | The metadata endpoint guests reach at `169.254.169.254`: checks each request and asks the control plane to answer for the VM behind the port it came from. Holds no key |
 | `pylond` | root (`glidex-pylond.service`), only with Pylon | the separate Pylon project | Pylon's core arbiter: Pylon VMs register with it; the control plane reads their statistics and sends policy updates |
 | `glidex-ui` | `glidex-ui` (`glidex-ui.service`) | [`glidex-ui`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ui) | Serves the React UI over HTTPS and proxies `/api/*` (WebSocket upgrades included) to the control plane's `ui.sock` |
-| `gxctl` | the user | `crates/glidex-control-plane/src/bin/gxctl` | CLI on the generated RPC clients |
+| `gxctl` | the user | `crates/gxctl` | CLI on the generated RPC clients |
 | `glidex-install` | root, once | [`glidex-install`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-install) | Installs binaries, users, units and the polkit rule; creates or joins a cluster |
 
 Units are in
@@ -711,7 +711,7 @@ process.
    (`createVm` in `crates/glidex-ui/ui/src/api.ts`); `glidex-ui` proxies
    `/api/*` to the control plane's `ui.sock`. `gxctl`'s `create` command calls
    the same RPC through its generated client
-   (`src/bin/gxctl/vm.rs`) over `api.sock` or HTTPS `:8841`. A REST
+   (`crates/gxctl/src/vm.rs`) over `api.sock` or HTTPS `:8841`. A REST
    client would `POST /vms` with the same message as JSON.
 2. **Listener and authentication.** `serve.rs` tags the request with its
    listener and peer; `api::authenticate` resolves the principal (the

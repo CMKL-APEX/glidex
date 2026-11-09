@@ -32,7 +32,8 @@ Every crate is in `crates/` and listed in the workspace
 
 | Crate | Kind | What it is | Key modules | Used by |
 |---|---|---|---|---|
-| `glidex-control-plane` | lib + bins `glidex-control-plane`, `gxctl` | The server: REST and RPC API, auth and Cedar authorization, the store, controllers, hypervisor drivers, scheduler, clustering, metering. Also the `gxctl` CLI. | See [below](#glidex-control-plane) | Run as a service; its tests |
+| `glidex-control-plane` | lib + bin | The server: REST and RPC API, auth and Cedar authorization, the store, controllers, hypervisor drivers, scheduler, clustering, metering. | See [below](#glidex-control-plane) | Run as a service; its tests |
+| `gxctl` | bin | The CLI: VMs, networks, storage, directory, tenancy and clusters over the control plane's RPC API, as an interactive shell or one command at a time. Published to crates.io. | `main.rs`, `client.rs`, one file per area | The user, on a host or any other machine |
 | `glidex-api` | lib | The RPC API: protos, generated messages, services and clients, and the operation table. | `build.rs`, `proto/` | Control plane (server), `gxctl` (client); the UI through generated TypeScript |
 | `glidex-vm-shim` | lib + bin | Per-VM supervisor: parent of the hypervisor, owner of its console (PTY, console socket, log) and exit record. The library half holds the file formats (`launch.json`, `instance.json`) and the `shim.sock` client. | `supervisor.rs`, `proxy.rs` (console), `replay.rs`, `launch.rs`, `state.rs`, `client.rs` | Started by the control plane, one per VM |
 | `glidex-hv-client` | lib | Blocking clients for Cloud Hypervisor's HTTP API and QEMU's QMP. | `ch.rs`, `qmp.rs`, `stats.rs` | Shim and control plane |
@@ -43,7 +44,7 @@ Every crate is in `crates/` and listed in the workspace
 | `glidex-authd` | lib + bin | Root PAM helper that checks local passwords; protocol and client in the library. | `proto.rs`, `client.rs`, `server.rs`, `pam.rs`, `limiter.rs` | Control plane |
 | `glidex-metad` | lib + bin | The metadata endpoint guests reach at `169.254.169.254`: checks each request, then asks the control plane over `metad.sock`, naming only the VM port's peer address. Holds no key. | `lib.rs` (routes, rate limit), `main.rs` | Run as a service, fed by netd's rules |
 | `glidex-auth` | lib | Core authentication, kept free of Glidex's own records so other services can reuse it: secrets (random values, base62, SHA-256, constant-time compare), session and token rules, a Cedar policy engine generic over a `Model` (schema, policies, entity types, break-glass rule), and OIDC login (code flow with PKCE, device grant, JWKS). | `secrets.rs`, `session.rs`, `token.rs`, `cedar.rs`, `oidc.rs` | Control plane (`auth/`, `authz.rs`, `directory/oidc.rs` specialize it for Glidex); hyperstor's management service |
-| `glidex-topology` | lib | A host's topology read from sysfs, with no host tools: NUMA nodes and sockets, the PCIe tree with each function's root port and switch, and network ports with their RDMA devices. Depends on no other Glidex crate. | `numa.rs`, `pci.rs`, `net.rs` | Control plane (`topology.rs`, `pci.rs`); hyperstor |
+| `glidex-topology` | lib | A host's topology read from sysfs, with no host tools: NUMA nodes and sockets, the PCIe tree with each function's root port and switch, and network ports with their RDMA devices. Depends on no other Glidex crate. | `numa.rs`, `pci.rs`, `net.rs` | Control plane (`topology.rs`, `pci.rs`); `gxctl`; hyperstor |
 | `glidex-tls` | lib | HTTPS listeners, self-signed certificates, reloadable certificates chosen by SNI, client trust, the node's Tailscale certificates. | `lib.rs`, `tailscale.rs` | Control plane, `gxctl`, `glidex-ui`, installer |
 | `glidex-raftstore` | lib | A replicated ReDB store on openraft: transactions recorded as write sets, applied as bytes on every member; waits that don't stall a Tokio worker; an in-process test cluster. | `store.rs`, `raft/`, `wait.rs`, `testing.rs` | Control plane (`store/`, `cluster/raft/`); hyperstor's map service |
 | `glidex` | lib | The crates.io umbrella: re-exports the library crates above, each behind a feature of its name (`api` by default, `client`, `full`). Holds no code of its own. | `lib.rs` | Users of the libraries from crates.io |
@@ -139,8 +140,8 @@ when it is stale.
 
 ## glidex-control-plane
 
-The control plane is one library (`src/lib.rs`) with two binaries:
-`src/main.rs` (the server) and `src/bin/gxctl/` (the CLI). Its tests
+The control plane is one library (`src/lib.rs`) and its server binary
+(`src/main.rs`). Its tests
 are in `tests/`; the Cedar schema and shipped policies in `policies/`.
 
 ### Request path
@@ -189,7 +190,10 @@ are in `tests/`; the Cedar schema and shipped policies in `policies/`.
 
 ### gxctl
 
-`src/bin/gxctl/main.rs` holds the interactive shell (rustyline) and the
+`crates/gxctl` is the CLI, published to crates.io (`cargo install
+gxctl`), so it depends only on publishable crates: `glidex-api`,
+`glidex-tls` and `glidex-topology`; its tests serve a real control plane
+(a dev-dependency). `src/main.rs` holds the interactive shell (rustyline) and the
 dispatch; each area has its own file (`vm.rs`, `storage.rs`,
 `network.rs`, `access.rs`, `cluster.rs`, `host.rs`, `directory.rs`,
 `tenancy.rs`, `usage.rs`, `admin.rs`; `dirlogin.rs` for logging in at a
@@ -290,7 +294,7 @@ holds what the installer puts on a host:
 | A store table | `tables!` in `crates/glidex-control-plane/src/store/db.rs` |
 | A schema migration | `migrate` and `SCHEMA_VERSION` in `crates/glidex-control-plane/src/store/mod.rs` |
 | A configuration setting | `crates/glidex-control-plane/src/config.rs`; `packaging/control-plane.json.example` |
-| A `gxctl` command | `crates/glidex-control-plane/src/bin/gxctl/<area>.rs` |
+| A `gxctl` command | `crates/gxctl/src/<area>.rs` |
 | A UI page | Route in `crates/glidex-ui/ui/src/App.tsx`; page in `ui/src/pages/` |
 | A UI API call | `crates/glidex-ui/ui/src/api.ts` |
 | A hypervisor command line | `crates/glidex-control-plane/src/hypervisor/cloud_hypervisor.rs`, `qemu.rs`, `pylon.rs` |

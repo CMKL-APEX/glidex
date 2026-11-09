@@ -109,6 +109,7 @@ fn build_release() {
     c.current_dir(&root).args(["build", "--release"]);
     for p in [
         "glidex-control-plane",
+        "gxctl",
         "glidex-netd",
         "glidex-ui",
         "glidex-vm-shim",
