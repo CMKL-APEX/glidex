@@ -2247,7 +2247,7 @@ Built (#410, #411, #413). Decisions D31 and D32 (owner, 2026-11-09); tracked in 
 | Spec \| Code | D31: `RaftSettings::checkpointed_applies`; the control plane sets it unless `GLIDEX_RAFT_DURABLE_APPLIES=1` (`cluster::config::DURABLE_APPLIES_ENV`). `Db::apply_checkpointed` commits with `Durability::None` unless the batch brings the unflushed applies to 100 (`CHECKPOINT_ENTRIES`) or comes 1 s (`CHECKPOINT_INTERVAL`) after the last checkpoint; `Db::checkpoint` is an empty durable commit, made by `snapshot_now` after it takes its view, by `ClusterNode::shutdown` (which leaving cluster mode goes through), by the control plane's clean shutdown, and by a 1 s timer (`checkpoint_if_due`) while Raft runs. A failed checkpoint fails the apply; the timer's and shutdown's are logged, and the next apply makes it or fails |
 | Tests | `checkpointed_applies_flush_every_hundred_entries_or_when_asked`: the 100-entry and 1 s rules, the timer's, durable applies; `a_crash_between_checkpoints_leaves_the_last_checkpoint`: a child applies 10, checkpoints, applies 5 and aborts; reopened, the database holds the 10. The raftstore cluster tests (`fast_settings`) and the control plane's run with checkpointed applies on |
 | Tests | Crashes: `TestCluster::crash` starts a member again from what a crash of its process leaves (`Db::crash_image`: the state file copied with the write transaction held, which redb opens at the last checkpoint). `members_crashed_between_checkpoints_catch_up`: a follower, then the leader, crashed under writes until a crash lost applies; each re-applies from its log and the three dumps are equal. `a_reported_snapshot_position_is_durable`: after a snapshot, a crash keeps `last_applied` at or past the reported index (fails with `snapshot_now`'s checkpoint taken out). `writes_with_no_log_behind_them_survive_a_crash`: a child process aborted right after a standalone write, a local row or a mirror's queued write keeps it |
-| Not yet | End-to-end write latency before and after, on a test cluster (a real check) |
+| Real check | End-to-end write latency on the prism cluster, with and without checkpointed applies (2026-11-10, below): passed, writes a little faster and none slower |
 
 Measured, before
 the design (redb 4.5, prism2's disk, the prism servers' sizes: a 160 MB
@@ -2258,8 +2258,30 @@ every 100 (p50); about 2,900 and 9,700 a second. End to end, on a
 (sequential writes through the leader, timed until applied; #409):
 `main` made 580–680 writes a second at a p50 of 1.4–1.7 ms, and C10
 730–870 at 1.1–1.3 ms, p90 about 30 % lower, p99 unchanged. D32 alone
-changed nothing there: sequential writes come one entry per batch. Over
-a real network: not measured yet.
+changed nothing there: sequential writes come one entry per batch.
+
+On the prism cluster (2026-11-10, main at 58dc6a8; three servers, prism2
+leading; 0.07 and 0.15 ms round trips to prism1 and gpu-dev2): a
+project's description updated through prism2's local API socket, timed
+until the API answered. Three rounds of 1,000 sequential updates and
+1,000 from 8 concurrent writers, with checkpointed applies, then with
+`GLIDEX_RAFT_DURABLE_APPLIES=1` on all three servers (a drop-in and a
+restart of each, one at a time), then checkpointed again. The drop-ins
+were removed afterwards and the project deleted.
+
+| | Sequential | 8 writers |
+|---|---|---|
+| Checkpointed, before | 142–150/s, p50 6.6–7.0 ms | 266–276/s, p50 28.8–30.0 ms |
+| Durable applies | 139–145/s, p50 6.9–7.1 ms | 238–246/s, p50 32.3–32.9 ms |
+| Checkpointed, after | 149–159/s, p50 6.2–6.6 ms | 265–278/s, p50 28.6–30.2 ms |
+
+Checkpointed applies save about 0.3–0.4 ms of a write's 6.5–7 ms, and
+10–12 % of throughput with 8 writers; p99 is the same within its noise
+(7.8–8.8 ms sequential). The rest of a write is not the apply: reading
+the same project takes 1.9 ms (p50) through the same socket, and the
+network round trips are under 0.2 ms, which leaves about 4 ms for
+proposing, the log's durable writes on the leader and a follower, and
+the commit. A further gain would come from there, not the apply.
 
 ### Validation against real OVN and conntrack (after C8)
 
