@@ -577,6 +577,11 @@ async fn main() {
     for s in servers {
         let _ = s.await;
     }
+    // A clean shutdown leaves the state flushed (spec/14-clustering.md
+    // D31): the next start re-applies nothing from the log.
+    if let Err(e) = vm_manager.database().checkpoint() {
+        tracing::warn!("the state's checkpoint at shutdown failed: {e}");
+    }
     // Asked to come back in another mode (now a cluster agent).
     if glidex_control_plane::restart::is_requested() {
         std::process::exit(glidex_control_plane::restart::EXIT_CODE);

@@ -235,6 +235,7 @@ pub fn fast_settings() -> RaftSettings {
         heartbeat_ms: 100,
         election_ms: (800, 1600),
         log_keep_entries: 100,
+        checkpointed_applies: true,
     }
 }
 

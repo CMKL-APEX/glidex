@@ -340,6 +340,7 @@ control plane makes these outbound HTTPS connections:
 | `GLIDEX_HYPERSTOR_VHOST_DIR` | `/run/hyperstor/vhost` | Where this node's `hyperstor-vhost` keeps its sockets. |
 | `GLIDEX_STORD_SOCKET` | `/run/glidex-stord/stord.sock` | `glidex-stord`'s socket, for [LVM-thin datastores](datastores.md#lvm-thin). Leave it for the installed services. |
 | `GLIDEX_OIDC_CLIENT_SECRET_FILE` | unset | File with the OIDC client secret, used when there is no `oidc-client-secret` credential (for a control plane run by hand). |
+| `GLIDEX_RAFT_DURABLE_APPLIES` | unset | Servers of a cluster only. `1` flushes the state database at every Raft entry it applies, as earlier builds did. Unset, a server flushes it at checkpoints instead: every 100 entries or second, at a clean shutdown and when a snapshot is taken. A crash between checkpoints loses nothing, since every entry is in the Raft log first and is applied again at the next start. A copy of the state database taken while a server runs is up to a checkpoint old: back up through the API instead. |
 | `RUST_LOG` | `glidex_control_plane=info,tower_http=info` | Log filter. |
 
 Set them for the service in a drop-in (`sudo systemctl edit
