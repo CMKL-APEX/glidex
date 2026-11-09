@@ -193,7 +193,10 @@ fn mentions(hay: &str, needle: &str) -> bool {
 
 /// Build the bundle of `node`'s resources from `db` (the cluster store, or the
 /// node's own cache when offline). Pure: nothing is written.
-pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bundle {
+/// `at` dates what the bundle changes (a dropped network's `RestartRequired`):
+/// for a plan, its `started_at`, so that every build of a plan's bundle has
+/// the same SHA-256 and the node's acknowledgement matches the leader's.
+pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions, at: u64) -> Bundle {
     let nets = rows_of(db, TableId::Networks);
     let cluster_nets: BTreeSet<String> = nets
         .iter()
@@ -239,7 +242,6 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
             *list = kept;
         }
         if changed {
-            let now = crate::tenancy::now();
             vm["meta"]["generation"] = json!(vm["meta"]["generation"].as_u64().unwrap_or(0) + 1);
             let conds = vm["status"]["conditions"]
                 .as_array()
@@ -249,7 +251,7 @@ pub fn build_bundle(db: &Db, plan: &str, node: &str, opts: &DetachOptions) -> Bu
                 .into_iter()
                 .filter(|c| c["kind"] != "RestartRequired")
                 .collect();
-            conds.push(json!({ "kind": "RestartRequired", "status": "True", "reason": "NetworkRemoved", "message": "its cluster network stays behind; the NIC goes at the next restart", "last_transition_at": now }));
+            conds.push(json!({ "kind": "RestartRequired", "status": "True", "reason": "NetworkRemoved", "message": "its cluster network stays behind; the NIC goes at the next restart", "last_transition_at": at }));
             vm["status"]["conditions"] = Value::Array(conds);
         }
         if let Some(p) = vm["meta"]["project"].as_str() {
@@ -477,7 +479,7 @@ impl Cluster {
                     *refused.borrow_mut() = Some(DepartureError::Conflict(format!("the plan is {}", plan.state)));
                     return Ok(None);
                 }
-                let ids = build_bundle(&self.db, plan_id, &plan.node, &plan.options);
+                let ids = build_bundle(&self.db, plan_id, &plan.node, &plan.options, plan.started_at);
                 if ids.sha256() != sha {
                     *refused.borrow_mut() = Some(DepartureError::Conflict("the node's objects changed after the bundle was taken; the node fetches it again".into()));
                     return Ok(None);
@@ -848,7 +850,7 @@ impl VmManager {
         let id = uuid::Uuid::new_v4().simple().to_string()[..12].to_string();
         let now = crate::tenancy::now();
         // What the bundle will hold; the answer gives its counts.
-        let b = build_bundle(&self.database(), &id, &n.meta.id, &opts);
+        let b = build_bundle(&self.database(), &id, &n.meta.id, &opts, now);
         let named: std::collections::BTreeSet<&String> = opts
             .map_networks
             .iter()
@@ -943,7 +945,13 @@ impl VmManager {
                 .map_err(|e| DepartureError::Conflict(e.to_string()))?;
         }
         let id = format!("offline-{}", uuid::Uuid::new_v4().simple());
-        let bundle = build_bundle(&self.database(), &id, &n.meta.id, &DetachOptions::default());
+        let bundle = build_bundle(
+            &self.database(),
+            &id,
+            &n.meta.id,
+            &DetachOptions::default(),
+            crate::tenancy::now(),
+        );
         let nid = n.meta.id.clone();
         self.database()
             .write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
@@ -1087,7 +1095,13 @@ pub fn offline_detach(db_path: &Path) -> Result<Bundle, DepartureError> {
         .map_err(failed)?
         .ok_or_else(|| DepartureError::Invalid("this host is not part of a cluster".into()))?;
     let db = Db::create(db_path).map_err(failed)?;
-    let bundle = build_bundle(&db, "offline", &identity.node_id, &DetachOptions::default());
+    let bundle = build_bundle(
+        &db,
+        "offline",
+        &identity.node_id,
+        &DetachOptions::default(),
+        crate::tenancy::now(),
+    );
     drop(db);
     let pending = pending_db(db_path.parent().unwrap_or(Path::new(".")));
     write_standalone_db(&pending, &bundle)?;
@@ -1141,7 +1155,7 @@ impl Cluster {
             map_networks: BTreeMap::new(),
             with_access: true,
         };
-        let bundle = build_bundle(&self.db, "dissolve", &me, &opts);
+        let bundle = build_bundle(&self.db, "dissolve", &me, &opts, crate::tenancy::now());
         write_standalone_db(&pending_db(&dir), &bundle)
             .map_err(at("standalone database", &pending_db(&dir)))?;
         pki::write_private(&pending_sha_file(&dir), bundle.sha256().as_bytes())
@@ -1220,4 +1234,49 @@ pub static EXIT_ON_DEPARTURE: std::sync::atomic::AtomicBool =
 
 pub fn is_server(n: &Node) -> bool {
     n.spec.role == NodeRole::Server
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The node fetches a plan's bundle and acknowledges its SHA-256; the
+    /// leader builds it again to commit. A VM whose cluster network is
+    /// dropped gets a dated `RestartRequired`: dated by the clock, the two
+    /// builds differed across a second and the commit was refused, again
+    /// at each retry (a flaky `a_node_detaches_with_its_vms_and_the_cluster_lets_go`).
+    #[test]
+    fn a_plans_bundle_is_the_same_whenever_it_is_built() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("b.db")).unwrap();
+        db.write(Origin::Api, |tx| -> Result<(), crate::store::StoreError> {
+            let net = json!({ "id": "net1", "name": "c-web", "scope": "cluster" });
+            let vm = json!({
+                "meta": { "id": "vm1", "project": "p1", "generation": 1 },
+                "spec": { "config": { "networks": [{ "network": "net1" }] } },
+                "status": { "placement": { "node": "n1" } },
+            });
+            tx.open_table(TableId::Networks.definition())?
+                .insert("net1", net.to_string().as_bytes())?;
+            tx.open_table(TableId::Vms.definition())?
+                .insert("vm1", vm.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+        let opts = DetachOptions::default();
+        let first = build_bundle(&db, "plan1", "n1", &opts, 1_000);
+        assert_eq!(first.dropped_networks, vec!["net1".to_string()]);
+        assert!(
+            first
+                .rows
+                .iter()
+                .any(|r| r.value.contains("RestartRequired")),
+            "{:?}",
+            first.rows
+        );
+        // Past the next second of the clock.
+        std::thread::sleep(std::time::Duration::from_millis(1_100));
+        let again = build_bundle(&db, "plan1", "n1", &opts, 1_000);
+        assert_eq!(first.sha256(), again.sha256());
+    }
 }

@@ -207,7 +207,13 @@ async fn departure_get(
         "frozen" => {
             let db = c.db.clone();
             let b = tokio::task::spawn_blocking(move || {
-                super::departure::build_bundle(&db, &plan.plan, &plan.node, &plan.options)
+                super::departure::build_bundle(
+                    &db,
+                    &plan.plan,
+                    &plan.node,
+                    &plan.options,
+                    plan.started_at,
+                )
             })
             .await;
             match b {
