@@ -1,6 +1,7 @@
 //! The state machine is the store's ReDB database ([`Db`]): applying an entry
 //! is a pure byte operation, done in the same transaction that advances
-//! `last_applied` (§6.2). A crash therefore never applies an entry twice or
+//! `last_applied` (§6.2); the entries openraft hands over together share one
+//! transaction (D32). A crash therefore never applies an entry twice or
 //! skips one.
 
 use super::types::*;
@@ -117,43 +118,45 @@ impl<S: Schema> RaftStateMachine<TypeConfig<S>> for StateMachine<S> {
         I::IntoIter: openraft::OptionalSend,
     {
         let entries: Vec<_> = entries.into_iter().collect();
+        let Some(last) = entries.last().map(|e| e.log_id) else {
+            return Ok(Vec::new());
+        };
         let db = self.db.clone();
         tokio::task::spawn_blocking(move || {
-            let mut out = Vec::with_capacity(entries.len());
+            // The whole batch is one transaction (D32), with `last_applied`
+            // at its last entry and the latest membership in it.
+            let n = entries.len();
+            let mut batch = Vec::with_capacity(n);
+            let mut membership = None;
             for e in entries {
-                let log_id_json = s(serde_json::to_vec(&e.log_id))?;
-                let (ws, membership) = match e.payload {
-                    EntryPayload::Blank => (
-                        WriteSet {
-                            format: WRITE_SET_FORMAT,
-                            origin: S::SYSTEM,
-                            ops: Vec::new(),
-                        },
-                        None,
-                    ),
-                    EntryPayload::Normal(ws) => (ws, None),
+                let system = || WriteSet {
+                    format: WRITE_SET_FORMAT,
+                    origin: S::SYSTEM,
+                    ops: Vec::new(),
+                };
+                let ws = match e.payload {
+                    EntryPayload::Blank => system(),
+                    EntryPayload::Normal(ws) => ws,
                     EntryPayload::Membership(m) => {
-                        let stored = StoredMembership::new(Some(e.log_id), m);
-                        (
-                            WriteSet {
-                                format: WRITE_SET_FORMAT,
-                                origin: S::SYSTEM,
-                                ops: Vec::new(),
-                            },
-                            Some(s(serde_json::to_vec(&stored))?),
-                        )
+                        membership = Some(StoredMembership::new(Some(e.log_id), m));
+                        system()
                     }
                 };
-                s(db.apply(&ws, e.log_id.index, |txn| {
-                    put_meta::<S>(txn, LAST_APPLIED, &log_id_json)?;
-                    if let Some(m) = &membership {
-                        put_meta::<S>(txn, LAST_MEMBERSHIP, m)?;
-                    }
-                    Ok(())
-                }))?;
-                out.push(());
+                batch.push((ws, e.log_id.index));
             }
-            Ok(out)
+            let last = s(serde_json::to_vec(&last))?;
+            let membership = match &membership {
+                Some(m) => Some(s(serde_json::to_vec(m))?),
+                None => None,
+            };
+            s(db.apply_batch(batch, |txn| {
+                put_meta::<S>(txn, LAST_APPLIED, &last)?;
+                if let Some(m) = &membership {
+                    put_meta::<S>(txn, LAST_MEMBERSHIP, m)?;
+                }
+                Ok(())
+            }))?;
+            Ok(vec![(); n])
         })
         .await
         .map_err(io_err)?

@@ -21,7 +21,7 @@ Claimed work: an open PR, or a branch being written for one. Check
 |---|---|---|---|
 | Security (`glidex-auth`) | OIDC login state kept by the caller | `feat/oidc-detached-login` | `OidcState::begin`/`finish`, for hyperstor's mgmt behind one name on several hosts ([11-security.md](11-security.md) §5.4) |
 | Host topology | HT6 replicated and discovered pools ([22-host-topology.md](22-host-topology.md) H20–H23, §9.1b; #397) | #399 → #401 → `feat/ht6-discovered-pools` | The setting, its API and migration (#399); host overrides (#401); discovered pools and `pci pool adopt`; then the UI card and the installer |
-| Clustering | C10 apply durability ([14-clustering.md](14-clustering.md) D31, D32) | #383 | Spec; the code is next (redb 4.5 is in, #382) |
+| Clustering | C10 apply durability ([14-clustering.md](14-clustering.md) D31, D32) | #409 | D32 (batched applies) in review; D31 and the crash tests next |
 
 ## Areas
 

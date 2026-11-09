@@ -731,28 +731,47 @@ impl<S: Schema> Db<S> {
         revision: u64,
         also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        if ws.format > WRITE_SET_FORMAT {
+        self.apply_batch(vec![(ws.clone(), revision)], also)
+    }
+
+    /// Apply write sets in order, all in one transaction (spec
+    /// 14-clustering.md D32): one commit for a batch of Raft entries, not
+    /// one each. All or none of them land. Once committed, the revision
+    /// advances through each entry's in turn, and subscribers hear each
+    /// one in order.
+    pub fn apply_batch(
+        &self,
+        batch: Vec<(WriteSet<S>, u64)>,
+        also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        if let Some((ws, _)) = batch.iter().find(|(ws, _)| ws.format > WRITE_SET_FORMAT) {
             return Err(StoreError::Format(ws.format));
         }
         let txn = self.inner.begin_write()?;
-        for op in &ws.ops {
-            let key = std::str::from_utf8(op.key())
-                .map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
-            let mut t = txn.open_table(definition::<S>(op.table()))?;
-            match op {
-                Op::Put { value, .. } => {
-                    t.insert(key, value.as_slice())?;
-                }
-                Op::Delete { .. } => {
-                    t.remove(key)?;
+        for (ws, _) in &batch {
+            for op in &ws.ops {
+                let key = std::str::from_utf8(op.key())
+                    .map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
+                let mut t = txn.open_table(definition::<S>(op.table()))?;
+                match op {
+                    Op::Put { value, .. } => {
+                        t.insert(key, value.as_slice())?;
+                    }
+                    Op::Delete { .. } => {
+                        t.remove(key)?;
+                    }
                 }
             }
         }
         also(&txn)?;
         txn.commit()?;
-        self.revision.store(revision, Ordering::Release);
-        if !ws.ops.is_empty() {
-            self.published(revision, ws.clone());
+        // Each revision before its announcement: a subscriber that hears
+        // revision r finds `revision()` at r or past it.
+        for (ws, revision) in batch {
+            self.revision.store(revision, Ordering::Release);
+            if !ws.ops.is_empty() {
+                self.published(revision, ws);
+            }
         }
         Ok(())
     }
@@ -1221,6 +1240,86 @@ mod tests {
         );
         assert_eq!(a.keys.len(), 2);
         assert!(bell.has_changed().unwrap());
+    }
+
+    fn ws(ops: Vec<Op<Test>>) -> WriteSet<Test> {
+        WriteSet {
+            format: WRITE_SET_FORMAT,
+            origin: TestOrigin::Api,
+            ops,
+        }
+    }
+
+    fn put_op(k: &str, v: &[u8]) -> Op<Test> {
+        Op::Put {
+            table: TestTable::Data,
+            key: k.as_bytes().to_vec(),
+            value: v.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_batch_lands_whole_and_is_announced_entry_by_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::<Test>::create(dir.path().join("a.db")).unwrap();
+        let mut rx = db.subscribe();
+        let calls = std::cell::Cell::new(0);
+        db.apply_batch(
+            vec![
+                (ws(vec![put_op("a", b"1")]), 5),
+                // A blank or membership entry: no rows, no announcement.
+                (ws(Vec::new()), 6),
+                (
+                    ws(vec![
+                        put_op("a", b"2"),
+                        Op::Delete {
+                            table: TestTable::Data,
+                            key: b"a".to_vec(),
+                        },
+                        put_op("b", b"3"),
+                    ]),
+                    7,
+                ),
+            ],
+            |txn| {
+                calls.set(calls.get() + 1);
+                txn.open_table(definition::<Test>(Test::LOCAL))?
+                    .insert(LAST_APPLIED, b"7".as_slice())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(db.revision(), 7);
+        assert_eq!(
+            db.dump().unwrap(),
+            vec![(TestTable::Data, vec![("b".to_string(), b"3".to_vec())])]
+        );
+        let heard: Vec<u64> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|a| a.revision)
+            .collect();
+        assert_eq!(heard, vec![5, 7]);
+        assert_eq!(
+            db.snapshot_view().unwrap().last_applied.as_deref(),
+            Some(b"7".as_slice())
+        );
+
+        // One entry it can't apply, and none of the batch lands.
+        let mut bad = ws(vec![put_op("c", b"4")]);
+        bad.format = WRITE_SET_FORMAT + 1;
+        let r = db.apply_batch(vec![(ws(vec![put_op("d", b"5")]), 8), (bad, 9)], |_| Ok(()));
+        assert!(matches!(r, Err(StoreError::Format(_))), "{r:?}");
+        assert_eq!(db.revision(), 7);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(db.dump().unwrap().len(), 1);
+        let r = db.apply_batch(vec![(ws(vec![put_op("d", b"5")]), 8)], |_| {
+            Err(StoreError::Io(std::io::Error::other("no")))
+        });
+        assert!(r.is_err());
+        assert_eq!(
+            db.dump().unwrap(),
+            vec![(TestTable::Data, vec![("b".to_string(), b"3".to_vec())])]
+        );
     }
 
     #[test]
