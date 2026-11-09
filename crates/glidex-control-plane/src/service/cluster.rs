@@ -852,7 +852,11 @@ pub async fn put_pci_settings(
             node: g.node.clone().filter(|s| !s.trim().is_empty()),
         })
         .collect();
-    let next = crate::config::PciConfig { pools, allow };
+    let next = crate::config::PciConfig {
+        pools,
+        allow,
+        ..Default::default()
+    };
     next.check().map_err(invalid)?;
     c.require(Ent::Cluster, EntitySet::new())?;
     c.set_target("cluster:pci".to_string());

@@ -372,6 +372,21 @@ pub struct PciConfig {
     /// Named sets of devices a VM asks for by count
     /// (spec/22-host-topology.md §9.1).
     pub pools: Vec<PciPool>,
+    /// Devices this host keeps: in no pool, and never given to a VM here
+    /// (spec/22-host-topology.md H23). Per host, never replicated.
+    pub exclude: Vec<PoolMatch>,
+    /// A pool's `bar_mib` and `prepare` on this host, by pool name (H23).
+    pub overrides: std::collections::BTreeMap<String, PoolOverride>,
+}
+
+/// What this host changes about a pool's devices here (spec/22-host-topology.md H23).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_mib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepare: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
@@ -504,6 +519,26 @@ impl PoolMatch {
 }
 
 impl PciConfig {
+    /// Whether this host keeps the device (`exclude`).
+    pub fn excludes(&self, d: &crate::topology::SummaryDevice) -> bool {
+        self.exclude.iter().any(|m| m.matches_device(d))
+    }
+
+    /// `pools` as this host prepares them: its `overrides` applied.
+    pub fn pools_here(&self, pools: &[PciPool]) -> Vec<PciPool> {
+        pools
+            .iter()
+            .map(|p| {
+                let mut p = p.clone();
+                if let Some(o) = self.overrides.get(&p.name) {
+                    p.bar_mib = o.bar_mib.or(p.bar_mib);
+                    p.prepare = o.prepare.unwrap_or(p.prepare);
+                }
+                p
+            })
+            .collect()
+    }
+
     /// Refuse what can't work: unnamed, duplicate or matchless pools, two
     /// pools matching the same way, and grants naming neither one device
     /// nor one known pool.
@@ -544,6 +579,16 @@ impl PciConfig {
                 return Err(format!(
                     "pci.pools: pools {} and {} match the same devices",
                     o.name, p.name
+                ));
+            }
+        }
+        if self.exclude.iter().any(PoolMatch::is_empty) {
+            return Err("pci.exclude: an entry matches every device; give it a match".into());
+        }
+        for (name, o) in &self.overrides {
+            if o.bar_mib.is_some_and(|m| !m.is_power_of_two()) {
+                return Err(format!(
+                    "pci.overrides: {name}: bar_mib must be a power of two (MiB), as GPU windows are"
                 ));
             }
         }
@@ -862,8 +907,35 @@ mod tests {
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],
-            allow: vec![],
+            ..Default::default()
         };
+        // Host overrides (spec/22-host-topology.md H23): applied to the
+        // named pool only; an empty exclude or an odd bar_mib is refused.
+        c.overrides.insert(
+            "a100".into(),
+            PoolOverride {
+                bar_mib: Some(8192),
+                prepare: Some(true),
+            },
+        );
+        let here = c.pools_here(&c.pools);
+        assert_eq!((here[0].bar_mib, here[0].prepare), (Some(8192), true));
+        assert_eq!(c.pools_here(&[pool("t4", None)])[0].bar_mib, None);
+        c.overrides.get_mut("a100").unwrap().bar_mib = Some(3000);
+        assert!(c.check().unwrap_err().contains("power of two"));
+        c.overrides.clear();
+        c.exclude = vec![PoolMatch::default()];
+        assert!(c.check().unwrap_err().contains("pci.exclude"));
+        c.exclude = vec![PoolMatch {
+            addresses: vec!["0000:87:00.0".into()],
+            ..Default::default()
+        }];
+        let dev = |a: &str| crate::topology::SummaryDevice {
+            address: a.into(),
+            ..Default::default()
+        };
+        assert!(c.excludes(&dev("0000:87:00.0")) && !c.excludes(&dev("0000:90:00.0")));
+        c.exclude.clear();
         assert!(c.check().is_ok());
         let m = &c.pools[0].matches;
         assert!(m.matches("0000:87:00.0", "0x10de", "0x20b0", "0x030200"));

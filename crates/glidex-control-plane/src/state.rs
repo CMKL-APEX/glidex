@@ -645,6 +645,13 @@ impl VmManager {
             None => (*file).clone(),
         };
         if **self.pci_pools.load() != next.pools {
+            for name in file.overrides.keys() {
+                if !next.pools.iter().any(|p| p.name == *name) {
+                    tracing::warn!(
+                        "control-plane.json's pci.overrides names {name}, which is no pool (spec/22-host-topology.md H23)"
+                    );
+                }
+            }
             self.pci_pools.store(Arc::new(next.pools));
         }
         if **self.pci_grants.load() != next.allow {
@@ -1468,6 +1475,10 @@ impl VmManager {
                 self.held_groups(g)
             })
             .summary_devices();
+            let file = self.pci_file.load();
+            for d in &mut t.devices {
+                d.excluded = file.excludes(d);
+            }
         }
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
@@ -4615,18 +4626,18 @@ impl VmManager {
             .flatten()
             .map(|n| n.spec.name)
             .unwrap_or_default();
-        let pools: Vec<_> = self
-            .pci_pools()
-            .iter()
+        let file = self.pci_file.load_full();
+        let pools: Vec<_> = file
+            .pools_here(&self.pci_pools())
+            .into_iter()
             .filter(|p| p.prepare)
             .filter(|p| p.nodes.is_empty() || p.nodes.iter().any(|n| *n == me || *n == name))
-            .cloned()
             .collect();
         if pools.is_empty() {
             return;
         }
         let mut prepared = 0;
-        for (address, bar_mib) in self.local_topology().to_prepare(&pools) {
+        for (address, bar_mib) in self.local_topology().to_prepare(&pools, &file.exclude) {
             let r = self
                 .netd
                 .call::<serde_json::Value>(Op::PrepareDevice {

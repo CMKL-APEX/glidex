@@ -218,7 +218,7 @@ pub fn pick_pool_devices(
         let mut free: Vec<&crate::topology::SummaryDevice> = t
             .devices
             .iter()
-            .filter(|d| p.matches.matches_device(d))
+            .filter(|d| !d.excluded && p.matches.matches_device(d))
             .filter(|d| {
                 d.ready
                     && !n.spec.cordoned_devices.contains(&d.address)
@@ -807,6 +807,15 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
             .any(|p| p.eq_ignore_ascii_case(&addr))
         {
             return Err(format!("no PCI device {addr}"));
+        }
+        if n.status.topology.as_ref().is_some_and(|t| {
+            t.devices
+                .iter()
+                .any(|x| x.excluded && x.address.eq_ignore_ascii_case(&addr))
+        }) {
+            return Err(format!(
+                "PCI device {addr} is kept by its host (pci.exclude)"
+            ));
         }
         if n.spec.cordoned_devices.contains(&addr) {
             return Err(format!("PCI device {addr} is cordoned"));
@@ -1809,6 +1818,31 @@ mod tests {
 
     fn picked(c: &Choice) -> Vec<&str> {
         c.pool_devices.iter().map(|d| d.address.as_str()).collect()
+    }
+
+    /// spec/22-host-topology.md H23: a device its host keeps is in no pool
+    /// and isn't given by address either.
+    #[test]
+    fn a_device_the_host_keeps_is_never_given() {
+        let mut n = pool_node();
+        n.status.pci_devices = vec!["0000:07:00.0".into()];
+        let t = n.status.topology.as_mut().unwrap();
+        t.devices
+            .iter_mut()
+            .find(|d| d.address == "0000:07:00.0")
+            .unwrap()
+            .excluded = true;
+        let mut r = req(2, 1024);
+        r.pools = vec![gpus(2, false)];
+        let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+        assert!(!picked(&c).contains(&"0000:07:00.0"), "{:?}", picked(&c));
+        let mut r = req(1, 512);
+        r.vfio = vec!["0000:07:00.0".into()];
+        let err = schedule(&r, &[(n, Load::default())], &cfg()).unwrap_err();
+        assert_eq!(
+            err[0].1,
+            "PCI device 0000:07:00.0 is kept by its host (pci.exclude)"
+        );
     }
 
     #[test]
