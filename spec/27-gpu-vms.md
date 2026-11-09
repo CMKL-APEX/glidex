@@ -3,8 +3,8 @@
 Status: **design; GV1, GV2 and GV3 implemented; GV6 (AMD on gpu-dev2)
 implemented; its reboot test failed on the boot binding (2026-11-08),
 and passed with the fix, claiming the cards before `amdgpu` (G20), on
-2026-11-09; a GPU VM after the reboot not run yet, since the pool is
-known only to gpu-dev2's file (22-host-topology.md HT6)** (§12
+2026-11-09; a GPU VM after the reboot passed once the pool was
+replicated (22-host-topology.md HT6), on 2026-11-09** (§12
 milestones, §14 notes). Builds on
 [22-host-topology.md](22-host-topology.md) (HT0–HT5: topology, readiness,
 NUMA policy, device pools, SR-IOV), [04-hypervisors.md](04-hypervisors.md)
@@ -582,8 +582,13 @@ with their agreement:
 | 2026-11-09 | The node's VMs after the reboot (`on_host_boot: resume`) | **pass**: `pylon-dev` (disk on `local`) and `v2` (disk on hyperstor `hs-nvme`) both relaunched by themselves (S31, S32) |
 | 2026-11-09 | A 1-GPU VM (`gxctl create`, GPUs `1:r9700`) | **not run**: refused with `gpus: no device pool r9700`. Pools are read from each server's own `control-plane.json`, and only gpu-dev2's has `r9700`; with prism2 leading, the request was checked against prism2's. Pools and grants become a replicated setting in 22-host-topology.md HT6 (H20) |
 
-Not run yet: a GPU VM after a reboot (waits for HT6, or the pool in
-every server's file).
+With HT6 (pools in the replicated setting) installed on the three
+servers, main at `5b56b25`, and `amd-7551` adopted as `r9700` with
+`bar_mib: 16384` (22-host-topology.md §15):
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-11-09 | A 1-GPU VM after the reboot, `ht6-r9700` (`gpus: {count: 1, pool: r9700}`, 4 vCPUs, 4 GiB, `ubuntu-26.04`, Cloud Hypervisor), created through prism1 while prism2 leads | **pass**: placed on gpu-dev2 with `03:00.0` and running; Cloud Hypervisor holds `vfio_0000_03_00_0`, the card stays on `vfio-pci` with BAR0 at 16384 MiB, and the host's kernel log shows only `vfio-pci` reset lines (no AER, IOMMU fault or lockup). The guest sees `[1002:7551]` at `00:04.0`; its `amdgpu` stops at `early_init of IP block <psp> failed -19`, as the stock image has no `linux-firmware` (G15), as on 2026-10-29 |
 
 ## 13. Open questions
 
