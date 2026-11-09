@@ -1631,6 +1631,7 @@ dependencies = [
  "glidex-netd",
  "glidex-ovs",
  "glidex-tls",
+ "glidex-topology",
  "libc",
  "serde_json",
  "tempfile",

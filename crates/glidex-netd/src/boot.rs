@@ -74,6 +74,7 @@ mod tests {
         exec.file(pf, "");
         exec.link(&format!("{pf}/virtfn0"), "0000:61:00.2");
         let cfg = BootDevices {
+            exclude: vec![],
             sriov: vec![
                 SriovSetting {
                     pf: "0000:61:00.0".into(),

@@ -37,6 +37,17 @@ pub struct BootDevices {
     /// What to bind: addresses, or a pool's `match` copied as it is.
     #[serde(default)]
     pub select: Vec<Selector>,
+    /// What the host keeps (`pci.exclude`, spec/22-host-topology.md H23):
+    /// never bound or claimed, whatever selects it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<Selector>,
+}
+
+impl BootDevices {
+    /// Whether the host keeps `bdf`.
+    fn keeps(&self, exec: &dyn Exec, bdf: &str) -> bool {
+        self.exclude.iter().any(|s| s.matches(exec, bdf))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -137,6 +148,7 @@ pub fn plan_devices(exec: &dyn Exec, cfg: &BootDevices) -> Vec<(String, Action)>
     let mut out: Vec<(String, Action)> = exec
         .list_dir(Path::new("/sys/bus/pci/devices"))
         .into_iter()
+        .filter(|bdf| !cfg.keeps(exec, bdf))
         .filter_map(|bdf| {
             let chosen: Vec<&Selector> = cfg
                 .select
@@ -172,7 +184,7 @@ fn claimed_devices(exec: &dyn Exec, cfg: &BootDevices) -> Vec<String> {
     let mut out: Vec<String> = exec
         .list_dir(Path::new("/sys/bus/pci/devices"))
         .into_iter()
-        .filter(|bdf| claimable(cfg).any(|s| s.matches(exec, bdf)))
+        .filter(|bdf| !cfg.keeps(exec, bdf) && claimable(cfg).any(|s| s.matches(exec, bdf)))
         .collect();
     out.sort();
     out
@@ -235,33 +247,47 @@ pub fn claim_udev_rules(cfg: &BootDevices) -> String {
          # 80-drivers.rules loads their driver (spec/27-gpu-vms.md G20).\n",
     );
     let set = r#"ATTR{driver_override}="vfio-pci""#;
+    // What the host keeps skips the rest (spec/22-host-topology.md H23).
+    let skip = r#"GOTO="glidex_vfio_claim_end""#;
+    let keeps: Vec<&Selector> = cfg.exclude.iter().filter(|s| s.vf_of.is_none()).collect();
+    for s in &keeps {
+        udev_lines(&mut text, s, skip);
+    }
     for s in claimable(cfg) {
-        let mut own = vec![
-            r#"ACTION=="add""#.to_string(),
-            r#"SUBSYSTEM=="pci""#.to_string(),
-        ];
-        if let Some(v) = &s.vendor_id {
-            own.push(format!(r#"ATTR{{vendor}}=="0x{}""#, hex_id(v)));
-        }
-        if let Some(d) = &s.device_id {
-            own.push(format!(r#"ATTR{{device}}=="0x{}""#, hex_id(d)));
-        }
-        if let Some(c) = &s.class_code {
-            own.push(format!(r#"ATTR{{class}}=="0x{}*""#, hex_id(c)));
-        }
-        if s.addresses.is_empty() {
-            text.push_str(&format!("{}, {set}\n", own.join(", ")));
-        }
-        for a in &s.addresses {
-            text.push_str(&format!(
-                r#"{}, KERNEL=="{}", {set}"#,
-                own.join(", "),
-                a.to_ascii_lowercase()
-            ));
-            text.push('\n');
-        }
+        udev_lines(&mut text, s, set);
+    }
+    if !keeps.is_empty() {
+        text.push_str("LABEL=\"glidex_vfio_claim_end\"\n");
     }
     text
+}
+
+/// The udev lines doing `then` for what `s` matches: one, or one per address.
+fn udev_lines(text: &mut String, s: &Selector, then: &str) {
+    let mut own = vec![
+        r#"ACTION=="add""#.to_string(),
+        r#"SUBSYSTEM=="pci""#.to_string(),
+    ];
+    if let Some(v) = &s.vendor_id {
+        own.push(format!(r#"ATTR{{vendor}}=="0x{}""#, hex_id(v)));
+    }
+    if let Some(d) = &s.device_id {
+        own.push(format!(r#"ATTR{{device}}=="0x{}""#, hex_id(d)));
+    }
+    if let Some(c) = &s.class_code {
+        own.push(format!(r#"ATTR{{class}}=="0x{}*""#, hex_id(c)));
+    }
+    if s.addresses.is_empty() {
+        text.push_str(&format!("{}, {then}\n", own.join(", ")));
+    }
+    for a in &s.addresses {
+        text.push_str(&format!(
+            r#"{}, KERNEL=="{}", {then}"#,
+            own.join(", "),
+            a.to_ascii_lowercase()
+        ));
+        text.push('\n');
+    }
 }
 
 /// `glidex-netd --claim-boot-devices`, from the modprobe hook: each
@@ -399,6 +425,7 @@ mod tests {
         let cfg = BootDevices {
             sriov: vec![],
             select: vec![gpus, vfs],
+            ..Default::default()
         };
         assert_eq!(
             plan_devices(&exec, &cfg),
@@ -424,6 +451,7 @@ mod tests {
         );
         // By address.
         let one = BootDevices {
+            exclude: vec![],
             sriov: vec![],
             select: vec![Selector {
                 addresses: vec!["0000:09:00.0".into()],
@@ -438,6 +466,7 @@ mod tests {
             ..Default::default()
         };
         let two = BootDevices {
+            exclude: vec![],
             sriov: vec![],
             select: vec![
                 sized(16384),
@@ -462,6 +491,7 @@ mod tests {
         let none = BootDevices {
             sriov: vec![],
             select: vec![Selector::default()],
+            ..Default::default()
         };
         assert!(plan_devices(&exec, &none).is_empty());
     }
@@ -484,6 +514,7 @@ mod tests {
                 serde_json::from_str(r#"{"vendor_id":"0x10de"}"#).unwrap(),
                 serde_json::from_str(r#"{"vf_of":{"vendor_id":"0x15b3"}}"#).unwrap(),
             ],
+            ..Default::default()
         };
         let done = claim(&exec, &cfg);
         assert_eq!(done, vec![("0000:88:00.0".to_string(), Ok(()))]);
@@ -509,12 +540,55 @@ mod tests {
         assert!(claim(&exec, &BootDevices::default()).is_empty());
     }
 
+    /// spec/22-host-topology.md H23: what the host keeps is never bound
+    /// or claimed, and its udev rules skip it.
+    #[test]
+    fn what_the_host_keeps_is_never_bound_or_claimed() {
+        let exec = host();
+        exec.file("/sys/bus/pci/devices/0000:88:00.0", "");
+        for (f, v) in [
+            ("vendor", "0x10de"),
+            ("device", "0x20b0"),
+            ("class", "0x030200"),
+        ] {
+            exec.file(&format!("/sys/bus/pci/devices/0000:88:00.0/{f}"), v);
+        }
+        let mut cfg = BootDevices {
+            select: vec![serde_json::from_str(r#"{"vendor_id":"0x10de"}"#).unwrap()],
+            ..Default::default()
+        };
+        let all: Vec<String> = plan_devices(&exec, &cfg)
+            .into_iter()
+            .map(|(b, _)| b)
+            .collect();
+        assert!(all.contains(&"0000:88:00.0".to_string()), "{all:?}");
+        cfg.exclude = vec![serde_json::from_str(r#"{"addresses":["0000:88:00.0"]}"#).unwrap()];
+        let kept: Vec<String> = plan_devices(&exec, &cfg)
+            .into_iter()
+            .map(|(b, _)| b)
+            .collect();
+        assert!(!kept.contains(&"0000:88:00.0".to_string()), "{kept:?}");
+        assert_eq!(kept.len(), all.len() - 1, "{kept:?}");
+        assert!(claim(&exec, &cfg).is_empty());
+        let rules = claim_udev_rules(&cfg);
+        let lines: Vec<&str> = rules.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            lines,
+            [
+                r#"ACTION=="add", SUBSYSTEM=="pci", KERNEL=="0000:88:00.0", GOTO="glidex_vfio_claim_end""#,
+                r#"ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{driver_override}="vfio-pci""#,
+                r#"LABEL="glidex_vfio_claim_end""#,
+            ]
+        );
+    }
+
     #[test]
     fn at_boot_vfio_pci_lets_go_of_selected_devices_to_be_sized() {
         let exec = host();
         let cfg = BootDevices {
             sriov: vec![],
             select: vec![serde_json::from_str(r#"{"vendor_id":"0x10de"}"#).unwrap()],
+            ..Default::default()
         };
         assert_eq!(
             let_go_at_boot(&exec, &cfg),

@@ -1861,6 +1861,7 @@ fn boot_devices_bind_what_is_free_and_leave_what_a_vm_may_hold() {
     let dir = TempDir::new().unwrap();
     let (netd, _) = netd(exec.clone(), &dir);
     let cfg = BootDevices {
+        exclude: vec![],
         sriov: vec![SriovSetting {
             pf: "0000:61:00.0".into(),
             vfs: 8,
