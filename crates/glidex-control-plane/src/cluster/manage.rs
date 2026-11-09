@@ -1177,6 +1177,7 @@ pub async fn join_import(
         "import",
         crate::node::LOCAL_NODE,
         &Default::default(),
+        crate::tenancy::now(),
     );
     let req = super::import::ImportRequest {
         token: opts.token.clone(),
