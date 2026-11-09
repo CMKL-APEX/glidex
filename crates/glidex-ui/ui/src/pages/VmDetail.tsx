@@ -300,7 +300,7 @@ export default function VmDetail() {
               {vm.last_exit && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Last Exit</h3>
-                  <p className="text-sm text-gray-700 break-words">{describeExit(vm.last_exit)}</p>
+                  <p className="text-sm text-gray-700 wrap-break-word">{describeExit(vm.last_exit)}</p>
                 </div>
               )}
             </div>

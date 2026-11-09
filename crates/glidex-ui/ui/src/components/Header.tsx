@@ -60,7 +60,7 @@ export default function Header() {
   const who = me.user?.display_name ?? me.token?.name ?? (me.display_name || "unknown");
 
   return (
-    <header className="bg-white shadow-sm border-b border-gray-200">
+    <header className="bg-white shadow-xs border-b border-gray-200">
       <div className="container mx-auto px-4">
         <div className="flex flex-wrap items-center justify-between min-h-16 py-2 gap-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">

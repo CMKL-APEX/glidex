@@ -412,11 +412,11 @@ export default function Disks() {
       {disks === null ? (
         <LoadingCard />
       ) : disks.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">
           No disks yet. Create one, or create a VM from an image.
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-600 text-left">
               <tr>

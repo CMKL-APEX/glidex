@@ -577,7 +577,7 @@ function InvitationsCard({ tenant, canManage, prefill }: { tenant: Tenant; canMa
         <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm" data-testid="invitation-link">
           <p className="text-amber-900">Send this link to the person invited. It is shown once and can't be shown again.</p>
           <div className="mt-2 flex items-center gap-2">
-            <code className="flex-1 break-all font-mono text-xs bg-white px-2 py-1 rounded border border-amber-200">{link}</code>
+            <code className="flex-1 break-all font-mono text-xs bg-white px-2 py-1 rounded-sm border border-amber-200">{link}</code>
             <button
               type="button"
               className={secondaryButton}
