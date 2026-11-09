@@ -2235,7 +2235,7 @@ Not yet:
 
 ### C10: apply durability
 
-Decisions D31 and D32 (owner, 2026-11-09); tracked in #409.
+Built (#410, #411, #413). Decisions D31 and D32 (owner, 2026-11-09); tracked in #409.
 
 | | |
 |---|---|
