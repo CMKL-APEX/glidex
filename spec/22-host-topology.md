@@ -1219,12 +1219,21 @@ Where HT2 differs from the design above, and why:
     0.3 s besides the guest memory's 2.2 s; 6.0 s in all with one card,
     6.7 s with two.
 
-  The likely cause is that 6.8 maps a BAR 4 KiB at a time and newer
-  kernels in large pieces; which release changed it wasn't checked
-  (probably 6.12). It is a different host, IOMMU and card, but the gap is
-  far larger than those explain. So passthrough hosts with large-BAR GPUs
-  should run a recent kernel; 7.0 is the one measured (pci-passthrough.md,
-  *Host kernel*). prism1 and prism2 can't
-  yet: their NVIDIA OFED, 2607.0.100, doesn't build on 7.0
-  (`xsk_buff_get_metadata`). The launch deadline (12-reconciliation.md
-  D22) covers the slow mapping on 6.8.
+  After prism2 moved to Linux 6.17.0-42 (2026-11-10), the A100's map
+  was still 27 s, done twice: once at launch and once after the guest's
+  UEFI firmware moves the BAR. A kernel profile showed vfio-pci's fault
+  handler inserting 4 KiB entries (`vfio_pci_mmap_huge_fault` →
+  `vmf_insert_pfn`) though the mapping is 1 GiB-aligned: on 6.17 a huge
+  entry is tried only where transparent hugepages allow it, and the host
+  has them at `madvise`. Same A100, 6.17, UEFI guest:
+  - Cloud Hypervisor v53 or Pylon `main`, `madvise`: Linux after 60–70 s.
+  - Cloud Hypervisor v53, `always`: 13.6 s, no map over 0.5 s besides
+    the guest memory's.
+  - Pylon with CMKL-APEX/pylon#76, which madvises its BAR mappings
+    `MADV_HUGEPAGE`, `madvise`: 12.0 s.
+
+  7.0 needs neither. 6.8 wasn't tried with either. So a passthrough host with large-BAR GPUs runs 6.17 with
+  Pylon #76 or transparent hugepages `always`, or 7.0
+  (pci-passthrough.md, *Host kernel*). prism2's NVIDIA OFED, 2607.0.100,
+  builds on 6.17 but not on 7.0 (`xsk_buff_get_metadata`). The launch
+  deadline (12-reconciliation.md D22) covers the slow mapping.

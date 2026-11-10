@@ -34,20 +34,42 @@ IOMMU group (except PCI bridges). `gxctl pci` shows each device's group.
 
 ### Host kernel
 
-Use a recent kernel on a host with large-BAR GPUs: 7.0 was measured
-fast, 6.8 slow. Before a VM starts, the hypervisor maps each
-passed-through device's memory BARs into the IOMMU, and on 6.8 that
-takes tens of seconds for a big GPU:
+Before a VM starts, the hypervisor maps each passed-through device's
+memory BARs into the IOMMU. For a big GPU that is fast only on a recent
+kernel, and on 6.17 only with transparent hugepages:
 
-| Host kernel | Card, BAR | Mapping the BAR | Until Cloud Hypervisor answers |
-|---|---|---|---|
-| 6.8 | A100 40 GB, 64 GiB | 27 s | 31 s (4 GiB VM, with a ConnectX-6) |
-| 7.0 | Radeon AI PRO R9700, 16 GiB | under 0.3 s | 6 s (4 GiB VM); 6.7 s with two cards |
+| Host kernel | Card, BAR | Hypervisor, transparent hugepages | Mapping the BAR | Until the guest's kernel starts (4 GiB VM, UEFI) |
+|---|---|---|---|---|
+| 6.8 | A100 40 GB, 64 GiB | Cloud Hypervisor, `madvise` | 27 s, twice | about 60 s |
+| 6.17 | A100 40 GB, 64 GiB | Cloud Hypervisor or Pylon without #76, `madvise` | 27 s, twice | about 60–70 s |
+| 6.17 | A100 40 GB, 64 GiB | Cloud Hypervisor, `always` | under 0.5 s | 14 s |
+| 6.17 | A100 40 GB, 64 GiB | Pylon with #76, `madvise` | under 0.5 s | 12 s |
+| 7.0 | Radeon AI PRO R9700, 16 GiB | Cloud Hypervisor, `madvise` | under 0.3 s | — (the API answered in 6 s) |
 
-A BAR's size is a power of two, so it can be larger than the card's
-memory. The VM still starts on an older kernel: Glidex waits longer for
-it (see the troubleshooting table). Out-of-tree drivers must build on
-the newer kernel: NVIDIA OFED 2607.0.100 doesn't build on 7.0.
+The BAR is mapped once when the VM starts and again when the guest's
+UEFI firmware moves it. On 6.17, the kernel maps a BAR in large pieces
+only where transparent hugepages are allowed, and Ubuntu's default is
+`madvise`. So on a 6.17 host, either:
+
+- run passthrough VMs on a Pylon built with
+  [CMKL-APEX/pylon#76](https://github.com/CMKL-APEX/pylon/pull/76),
+  which asks for hugepages on its BAR mappings; or
+- set transparent hugepages to `always`. This affects every process
+  on the host:
+
+  ```bash
+  cat /sys/kernel/mm/transparent_hugepage/enabled        # [madvise] is the default
+  echo always | sudo tee /sys/kernel/mm/transparent_hugepage/enabled
+  ```
+
+  Add `transparent_hugepage=always` to the kernel command line to keep
+  it across reboots.
+
+6.8 has no fast path for this; the setting wasn't tried there. A BAR's size is a
+power of two, so it can be larger than the card's memory. The VM still
+starts on a slow host: Glidex waits longer for it (see the
+troubleshooting table). Out-of-tree drivers must build on the newer
+kernel: NVIDIA OFED 2607.0.100 builds on 6.17 but not on 7.0.
 
 ### Bind the device to `vfio-pci`
 
@@ -688,8 +710,8 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | The VM fails to start: VFIO group not viable | Another device in the IOMMU group is still on a host driver. Bind all of them to `vfio-pci`, or move the card to another slot. |
 | The VM fails to start: permission denied on `/dev/vfio/<n>` | The udev rule above; `ls -l /dev/vfio/`. |
 | No IOMMU group in `gxctl pci` | The IOMMU is off: firmware setting and kernel command line. |
-| The VM relaunches over and over; the console ends each try with `exited: launch_failed (signal 9): cloud-hypervisor API socket not ready after N s` | The hypervisor was still setting up when Glidex stopped it. Before it answers, Cloud Hypervisor maps the VM's memory and each passthrough device's memory BARs for the device: about 1 s per GiB of memory, and on a 6.8 host about 27 s for the 64 GiB BAR of a 40 GiB A100 (a BAR is a power of two, so it can be larger than the card's memory). Glidex waits 30 s, plus 1 s per GiB of memory and 1 s per 2 GiB of the devices' BARs, up to 15 minutes. If a VM still runs out, give it less memory, use QEMU, whose socket answers before that work, or move the host to a newer kernel (see [Host kernel](#host-kernel)). |
-| A VM with a ConnectX card prints nothing for a minute or more before its kernel starts | The guest's UEFI firmware spends that time on the card, on both hypervisors (70–95 s seen with a ConnectX-6 in InfiniBand mode, 2026-11-09). The VM then boots normally. The card's own boot ROM (FlexBoot) is the likely cause; disabling it on the card (`mlxconfig … EXP_ROM_UEFI_x86_ENABLE=0`) should avoid it, but that isn't confirmed yet. |
+| The VM relaunches over and over; the console ends each try with `exited: launch_failed (signal 9): cloud-hypervisor API socket not ready after N s` | The hypervisor was still setting up when Glidex stopped it. Before it answers, Cloud Hypervisor maps the VM's memory and each passthrough device's memory BARs for the device: about 1 s per GiB of memory, and on a 6.8 host, or a 6.17 host with transparent hugepages at `madvise`, about 27 s for the 64 GiB BAR of a 40 GiB A100 (a BAR is a power of two, so it can be larger than the card's memory). Glidex waits 30 s, plus 1 s per GiB of memory and 1 s per 2 GiB of the devices' BARs, up to 15 minutes. If a VM still runs out, give it less memory, use QEMU, whose socket answers before that work, or make the mapping fast (see [Host kernel](#host-kernel)). |
+| A VM with a ConnectX card prints nothing for a minute or more before its kernel starts | The guest's UEFI firmware spends that time on the card, on both hypervisors (70–95 s seen with a ConnectX-6 in InfiniBand mode, 2026-11-09). The VM then boots normally. Most of it is the card's own boot ROM (FlexBoot): the firmware reads it and the ROM then busy-waits. Turn it off on the card with `mlxconfig -d <bdf> set EXP_ROM_UEFI_x86_ENABLE=0 EXP_ROM_PXE_ENABLE=0 UEFI_HII_EN=0` and reboot the host (`=1` undoes it). On a test host that took the firmware from 67 s to 29 s; what the rest is wasn't measured. |
 | `forbidden` | The project has no grant for the device in `pci.allow`, and you are not `net-admin`. |
 | `PCI device … is cordoned` | An administrator cordoned it: `gxctl node uncordon-device`. |
 | The VM shows `DeviceHealthy=False` | The device fell off the bus or had PCIe errors: `gxctl node topology <node> --devices`, the host's `dmesg`. |
