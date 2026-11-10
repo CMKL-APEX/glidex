@@ -519,6 +519,17 @@ pub fn chosen(cfg: &Config, want: Option<&str>) -> Result<Option<String>, String
     ))
 }
 
+/// The profile an `auth` subcommand manages: its own `--profile` (`asked`),
+/// else the one this run uses (`gxctl --profile P`, `GLIDEX_PROFILE`), else
+/// the file's `current`.
+pub fn profile_for<'a>(
+    cfg: &'a Option<Config>,
+    asked: Option<&str>,
+    session: Option<&str>,
+) -> Option<(&'a String, &'a Profile)> {
+    profile_of(cfg, asked.or(session))
+}
+
 /// The `(name, profile)` pair a login or maintenance command acts on:
 /// `name` when given, else the file's `current`. `None` is not an error —
 /// commands that can act without operating on a missing profile say so
@@ -604,6 +615,27 @@ mod tests {
             i_understand: i_understand.map(|s| s.to_string()),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn an_auth_command_manages_the_profile_this_run_uses() {
+        let mut c = Config {
+            current: Some("a".into()),
+            ..Default::default()
+        };
+        c.profiles.insert("a".into(), Profile::default());
+        c.profiles.insert("b".into(), Profile::default());
+        let cfg = Some(c);
+        let name = |asked, session| profile_for(&cfg, asked, session).map(|(n, _)| n.as_str());
+        // `gxctl --profile b auth trust remove …` while `a` is current.
+        assert_eq!(name(None, Some("b")), Some("b"));
+        assert_eq!(
+            name(Some("a"), Some("b")),
+            Some("a"),
+            "the subcommand's own wins"
+        );
+        assert_eq!(name(None, None), Some("a"), "else the file's current");
+        assert_eq!(name(None, Some("gone")), None);
     }
 
     fn full() -> Config {
