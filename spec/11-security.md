@@ -1464,9 +1464,8 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |
 
 Checked on the prism cluster (2026-11-10, [20-idp-checks.md](20-idp-checks.md)):
-the units' sandboxing (§9) with taps, nftables (§8.4) for one NAT
-bridge, and OIDC against the production IdPs (Google, Google Workspace,
-JumpCloud). Still to verify on a real host: isolation between two NAT
-networks on one host and the isolated-network fence (§8.4), VFIO and
-hugepages under the VM unit (§9), and a real PAM stack including
-expired accounts.
+the units' sandboxing (§9) with taps, nftables (§8.4) between NAT
+networks and the isolated-network fence, a real PAM stack with expired,
+locked and must-change accounts (§5.3), and OIDC against the production
+IdPs (Google, Google Workspace, JumpCloud). Still to verify on a real
+host: VFIO and hugepages under the VM unit (§9).
