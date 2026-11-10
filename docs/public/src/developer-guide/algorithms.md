@@ -1013,6 +1013,9 @@ reserve(network, mac):
 - They are freed when the VM or NIC is gone, by the leader's OVN
   reconciler (`controller/ovn.rs` `gc_reservations()`). It also makes any
   a placed VM's NIC lacks: without one, the NIC gets no OVN port.
+- A port follows the NIC the node attached (`status.nics`, `Vm::port_nics()`)
+  until the next start, not the spec: a NIC given another MAC on a running
+  VM keeps its port and address, and the new MAC's reservation waits.
 - Each reservation becomes the port's `addresses` and `port_security` in
   OVN. Addresses reach guests through OVN's native DHCP.
 - Router external addresses come from `allocate_external()`: the requested

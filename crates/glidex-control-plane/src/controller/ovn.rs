@@ -106,15 +106,10 @@ impl VmManager {
             let Some(p) = &vm.status.placement else {
                 continue;
             };
-            for (i, a) in vm.config().networks.iter().enumerate() {
-                let Some(key) = keys.get(&a.network) else {
+            for (i, network, mac) in vm.port_nics() {
+                let Some(key) = keys.get(&network) else {
                     continue;
                 };
-                let mac = a
-                    .mac
-                    .clone()
-                    .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok());
-                let Some(mac) = mac else { continue };
                 let provider = d
                     .networks
                     .iter()
@@ -124,13 +119,13 @@ impl VmManager {
                 } else {
                     let Some(r) = reservations
                         .iter()
-                        .find(|r| r.network == a.network && r.mac.eq_ignore_ascii_case(&mac))
+                        .find(|r| r.network == network && r.mac.eq_ignore_ascii_case(&mac))
                     else {
                         continue;
                     };
                     Some(r.ip)
                 };
-                let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i as u8) else {
+                let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i) else {
                     continue;
                 };
                 d.ports.push(PortSpec {
@@ -139,7 +134,7 @@ impl VmManager {
                     mac: mac.to_ascii_lowercase(),
                     ip,
                     vm_id: vm.id.clone(),
-                    nic: i as u8,
+                    nic: i,
                     chassis: Some(glidex_ovs::ovn::chassis_name(&p.node)),
                 });
             }
@@ -337,8 +332,10 @@ impl VmManager {
 
     /// A reservation lives as long as the NIC it was made for (the `vm.ipam`
     /// finalizer of the plan, done as garbage collection): free any whose VM
-    /// or NIC is gone. Also make any a placed VM's NIC lacks: without one the
-    /// NIC gets no port, and NICs added to a placed VM used to get none.
+    /// or NIC is gone. A NIC edited on a running VM keeps its old address
+    /// next to the new one until the port changes at the next start. Also
+    /// make any a placed VM's NIC lacks: without one the NIC gets no port,
+    /// and NICs added to a placed VM used to get none.
     async fn gc_reservations(&self) {
         let Ok(res) = crate::ipam::list_reservations(&self.store.database()) else {
             return;
@@ -357,13 +354,12 @@ impl VmManager {
             .into_iter()
             .filter(|r| {
                 !vms.get(&r.vm_id).is_some_and(|vm: &Vm| {
-                    vm.config().networks.iter().enumerate().any(|(i, a)| {
-                        a.network == r.network
-                            && a.mac
-                                .clone()
-                                .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())
-                                .is_some_and(|m| m.eq_ignore_ascii_case(&r.mac))
-                    })
+                    vm.spec_nics()
+                        .into_iter()
+                        .chain(vm.port_nics())
+                        .any(|(_, network, mac)| {
+                            network == r.network && mac.eq_ignore_ascii_case(&r.mac)
+                        })
                 })
             })
             .collect();

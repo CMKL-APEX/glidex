@@ -698,6 +698,42 @@ impl Vm {
         &self.spec.config
     }
 
+    /// The spec's NICs as `(index, network, MAC)`.
+    pub fn spec_nics(&self) -> Vec<(u8, String, String)> {
+        self.config()
+            .networks
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| {
+                let mac = a
+                    .mac
+                    .clone()
+                    .or_else(|| glidex_ovs::names::mac_address(&self.id, i as u8).ok())?;
+                Some((i as u8, a.network.clone(), mac))
+            })
+            .collect()
+    }
+
+    /// The NICs its ports carry now, as `(index, network, MAC)`: where the
+    /// node has a port attached (`status.nics`), that port's; else the
+    /// spec's. A NIC edited or removed on a running VM changes at its next
+    /// start, and until then its port keeps what the guest runs with.
+    pub fn port_nics(&self) -> Vec<(u8, String, String)> {
+        let mut out: Vec<_> = self
+            .status
+            .nics
+            .iter()
+            .map(|n| (n.nic_index, n.network.clone(), n.mac.clone()))
+            .collect();
+        for s in self.spec_nics() {
+            if !out.iter().any(|(i, _, _)| *i == s.0) {
+                out.push(s);
+            }
+        }
+        out.sort_by_key(|(i, _, _)| *i);
+        out
+    }
+
     pub fn hypervisor(&self) -> HypervisorType {
         self.spec.config.hypervisor
     }

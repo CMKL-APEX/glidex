@@ -1395,6 +1395,11 @@ New netd ops, all on the full socket under the existing policy (§7.2 of
   live migration. The leader also makes any a placed VM's NIC lacks: a
   NIC without one gets no logical port. Freed by a new cluster finalizer
   `vm.ipam` when the VM is deleted.
+- A NIC changed on a running VM changes at its next start. Until then
+  its logical port keeps the network and MAC the node attached
+  (`status.nics`), and its address; the new MAC has its own reservation
+  ready. Otherwise port security would drop the guest's traffic until
+  it restarted. The old reservation is freed once the port changes.
 - Each reservation becomes the logical port's `addresses = "<mac>
   <ip>"` and `port_security = "<mac> <ip>"`. This is the port security
   13-metering.md §16 lists as future work, for cluster networks.
