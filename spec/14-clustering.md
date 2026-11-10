@@ -2133,15 +2133,18 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
 - **NB daemon** (2026-11-10; until then each command connected on its own,
   about 350 `ovn-nbctl` a minute on the prism cluster's leader):
   `glidex_ovn::daemon::NbDaemon`, held by the control plane, starts
-  `ovn-nbctl --detach` on the leader's first reconcile pass, with its socket
-  and pidfile in `$RUNTIME_DIRECTORY/ovn` (`OVN_RUNDIR`), and sends the pass's
-  commands through it. It starts a new one when its socket is gone, the
-  servers or the certificate files changed, or a pass failed; stops it when
-  the server stops leading or OVN is off; and with no daemon, runs commands
-  directly, saying why once. The service's control group stops it with the
+  `ovn-nbctl --detach` on the leader once a reconcile pass succeeded with
+  direct commands, with its socket and pidfile in `$RUNTIME_DIRECTORY/ovn`
+  (`OVN_RUNDIR`), and sends later passes' commands through it. A daemon
+  whose database is gone waits instead of failing, so a failed pass stops
+  it and commands run directly until a pass succeeds again. It starts a new
+  one when its socket is gone or the servers or the certificate files
+  changed; stops it when the server stops leading or OVN is off; and when
+  one can't start, runs commands directly, saying why once. The service's control group stops it with the
   control plane. OVN clients log only warnings to syslog (`-vsyslog:warn`).
-  Tests: `daemon::tests` (start once, restart on a dead socket, a new server
-  or a renewed certificate, the fallback, stopping);
+  Tests: `daemon::tests` (direct until a pass succeeds and after one fails,
+  start once, restart on a dead socket, a new server or a renewed
+  certificate, the fallback, stopping);
   `sync_through_the_daemon_does_the_same` (real NB, ignored) runs the real
   scenario through the daemon and checks it leaves nothing in its run
   directory. The views (`glidex_ovn::view`) still connect per call.

@@ -6,6 +6,12 @@
 //! runs a few dozen. The daemon keeps one connection to the leader and an
 //! in-memory replica; commands reach it through its control socket
 //! (`OVN_NB_DAEMON`).
+//!
+//! It is used only while the database answers: the first pass, and every
+//! pass after one that failed, runs its commands directly, and the daemon
+//! starts once a pass succeeds. A daemon whose database is gone doesn't
+//! fail a command, it waits for the database to come back, so a pass
+//! through it would hang until the command's timeout.
 
 use crate::{Nb, NbConn};
 use glidex_ovs::OvsError;
@@ -13,11 +19,13 @@ use glidex_ovs::exec::{Cmd, Exec, Program};
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-/// One `ovn-nbctl --detach`, started on first use and again when it died
-/// or what it connects with changed.
+/// One `ovn-nbctl --detach`, started after a pass succeeded and again when
+/// it died or what it connects with changed.
 pub struct NbDaemon {
     rundir: PathBuf,
     running: Option<Running>,
+    /// The last pass succeeded: the database answers.
+    answered: bool,
     /// The last start failure, so a failure that repeats each pass is
     /// reported once.
     failed: Option<String>,
@@ -57,6 +65,7 @@ impl NbDaemon {
         NbDaemon {
             rundir: rundir.into(),
             running: None,
+            answered: false,
             failed: None,
             warning: None,
         }
@@ -66,11 +75,15 @@ impl NbDaemon {
         self.running.is_some()
     }
 
-    /// `conn` through the daemon, started (again) if there is none, its
-    /// control socket is gone, or `conn` or its certificate files changed.
-    /// When it can't start, `conn` itself: commands then run directly, and
+    /// The connection for a pass: `conn` itself until a pass succeeded
+    /// ([`NbDaemon::passed`]), then through the daemon, started (again) if
+    /// there is none, its control socket is gone, or `conn` or its
+    /// certificate files changed. When it can't start, `conn` itself, and
     /// [`NbDaemon::take_warning`] says why.
     pub fn conn(&mut self, exec: &dyn Exec, conn: NbConn) -> NbConn {
+        if !self.answered {
+            return conn;
+        }
         let id = Identity::of(&conn);
         if let Some(r) = &self.running
             && r.started_for == id
@@ -115,8 +128,17 @@ impl NbDaemon {
         Nb::start_daemon(exec, conn, &self.rundir)
     }
 
-    /// Stop the daemon, if one runs (this server stopped leading, or a
-    /// command through it failed and the next pass should start afresh).
+    /// How the pass went. After a failure the daemon stops and commands run
+    /// directly until a pass succeeds again.
+    pub fn passed(&mut self, exec: &dyn Exec, ok: bool) {
+        self.answered = ok;
+        if !ok {
+            self.stop(exec);
+        }
+    }
+
+    /// Stop the daemon, if one runs (this server stopped leading, or OVN
+    /// was turned off).
     pub fn stop(&mut self, exec: &dyn Exec) {
         if let Some(r) = self.running.take() {
             let exit = Cmd::new(
@@ -200,10 +222,34 @@ mod tests {
     const DB: &[&str] = &["ssl:192.0.2.11:6641", "ssl:192.0.2.12:6641"];
 
     #[test]
+    fn the_daemon_is_used_only_while_the_database_answers() {
+        let f = Fixture::new();
+        let ctl = f.will_start("nbctl.1.ctl");
+        let mut d = NbDaemon::new(f.rundir());
+        // The first pass runs directly: a daemon would wait for a database
+        // that isn't there.
+        assert_eq!(d.conn(&f.exec, f.conn(DB)), f.conn(DB));
+        d.passed(&f.exec, false);
+        assert_eq!(d.conn(&f.exec, f.conn(DB)), f.conn(DB));
+        assert_eq!(f.starts(), 0);
+
+        d.passed(&f.exec, true);
+        assert_eq!(d.conn(&f.exec, f.conn(DB)).daemon, Some(ctl.clone()));
+
+        // A failed pass stops it; the next runs directly.
+        d.passed(&f.exec, false);
+        assert!(!d.is_running());
+        assert_eq!(f.exits(), [format!("ovs-appctl -t {} exit", ctl.display())]);
+        assert_eq!(d.conn(&f.exec, f.conn(DB)), f.conn(DB));
+        assert_eq!(f.starts(), 1);
+    }
+
+    #[test]
     fn commands_go_through_one_daemon_while_it_runs() {
         let f = Fixture::new();
         let ctl = f.will_start("nbctl.1.ctl");
         let mut d = NbDaemon::new(f.rundir());
+        d.passed(&f.exec, true);
         for _ in 0..3 {
             let c = d.conn(&f.exec, f.conn(DB));
             assert_eq!(c.daemon.as_deref(), Some(ctl.as_path()));
@@ -228,6 +274,7 @@ mod tests {
         let f = Fixture::new();
         let first = f.will_start("nbctl.1.ctl");
         let mut d = NbDaemon::new(f.rundir());
+        d.passed(&f.exec, true);
         d.conn(&f.exec, f.conn(DB));
 
         // Its socket gone: it died.
@@ -266,6 +313,7 @@ mod tests {
             Output::failed(1, "ovn-nbctl: no such file"),
         );
         let mut d = NbDaemon::new(f.rundir());
+        d.passed(&f.exec, true);
         assert_eq!(d.conn(&f.exec, f.conn(DB)), f.conn(DB));
         assert!(
             d.take_warning()
@@ -288,6 +336,7 @@ mod tests {
         let f = Fixture::new();
         let ctl = f.will_start("nbctl.1.ctl");
         let mut d = NbDaemon::new(f.rundir());
+        d.passed(&f.exec, true);
         d.conn(&f.exec, f.conn(DB));
         d.stop(&f.exec);
         assert!(!d.is_running());

@@ -1056,9 +1056,10 @@ didn't create.
 5. Every call is an `ovn-nbctl` command line, so tests assert exact
    commands. On the leader they go through one `ovn-nbctl --detach`
    daemon (`glidex_ovn::daemon`), which keeps a single connection to
-   OVN's leader and a replica of the tables. A new daemon is started when
-   the old one died, the servers or certificates changed, or a pass
-   failed. Without one, commands run directly.
+   OVN's leader and a replica of the tables. It is used only while the
+   database answers: commands run directly until a pass succeeds, and
+   again after a pass fails. A new daemon is started when the old one
+   died or the servers or certificates changed.
 
 Supporting details:
 - `derived_mac()` gives router ports stable, locally administered MACs

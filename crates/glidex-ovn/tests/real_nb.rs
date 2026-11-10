@@ -94,6 +94,8 @@ fn sync_scenario(through_daemon: bool) {
         daemon: None,
     };
     if through_daemon {
+        // As after a pass that succeeded directly.
+        daemon.passed(&exec, true);
         conn = daemon.conn(&exec, conn);
         assert!(conn.daemon.is_some(), "{:?}", daemon.take_warning());
     }

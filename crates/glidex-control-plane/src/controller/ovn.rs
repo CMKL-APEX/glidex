@@ -262,11 +262,7 @@ impl VmManager {
                 tracing::warn!("{w}");
             }
             let r = glidex_ovn::sync(&glidex_ovn::Nb::new(&exec, conn), &desired);
-            if r.is_err() {
-                // The next pass starts a new daemon, in case this one is
-                // what failed.
-                daemon.stop(&exec);
-            }
+            daemon.passed(&exec, r.is_ok());
             r
         })
         .await;
