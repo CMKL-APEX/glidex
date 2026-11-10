@@ -1145,7 +1145,7 @@ may ask it for what.
 | `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex` (datastores, 24-storage.md S11), `DevicePolicy=closed` with only `DeviceAllow=block-device-mapper rw` (lvm datastores' volumes, which glidex-stord hands to `glidex`; the host's other device-mapper devices stay root's, 24-storage.md S18), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
 | `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
 | `glidex-ui` | `User=glidex-ui`, `StateDirectory=glidex-ui` (`0700`, its self-signed certificate, §5.1.1), `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, existing `ProtectSystem`/`PrivateDevices` kept. |
-| `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
+| `glidex-netd` | `ProtectHome=yes`. No `CapabilityBoundingSet`, on purpose: besides `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, `install_ovs` runs the package manager, whose maintainer scripts may need any capability; `netd.json`'s policy decides who may ask for it (seen on the prism cluster, 2026-11-10). |
 | `glidex-stord` (S6, 24-storage.md §11.1) | Root, `Type=notify`, `RuntimeDirectory=glidex-stord` (`stord.sock` `root:glidex 0660`, `stord-admin.sock` for `glidex-admin`). `ProtectSystem=strict` with `ReadWritePaths=/etc/lvm /run/lvm /run/lock /run/systemd/system` (LVM's backups and locks, the VM units' drop-ins), `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_IPC_LOCK CAP_SYS_RAWIO CAP_MKNOD`, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`. It acts only on the volume groups in `/etc/glidex/stord.json` (`allowed_vgs`, none by default) and on volumes named `gx-d-*`/`gx-i-*` (24-storage.md S17). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
@@ -1463,6 +1463,10 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Login profiles, trust ladder and client trust ([17-gxctl-auth.md](17-gxctl-auth.md), decision 18) | **implemented** — G1–G5 landed: profile file `bin/gxctl/config.rs`, ladder `glidex_tls::Trust`/`ClientTls::with_trust`, failover + binding preflight `bin/gxctl/client.rs`, `auth` family `bin/gxctl/admin.rs`, server halves `api/access.rs` (`server_info`, `pam_token`) + `auth::create_token` device/client stamp |
 | Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |
 
-Still to verify on a real host: the generated nftables rules (§8.4),
-systemd sandboxing with VFIO, hugepages and taps (§9), a real PAM stack
-including expired accounts, and OIDC against the production IdP.
+Checked on the prism cluster (2026-11-10, [20-idp-checks.md](20-idp-checks.md)):
+the units' sandboxing (§9) with taps, nftables (§8.4) for one NAT
+bridge, and OIDC against the production IdPs (Google, Google Workspace,
+JumpCloud). Still to verify on a real host: isolation between two NAT
+networks on one host and the isolated-network fence (§8.4), VFIO and
+hugepages under the VM unit (§9), and a real PAM stack including
+expired accounts.
