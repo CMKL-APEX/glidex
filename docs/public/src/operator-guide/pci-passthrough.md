@@ -32,6 +32,23 @@ ls /sys/kernel/iommu_groups/
 A device can only be passed through with every other device in its
 IOMMU group (except PCI bridges). `gxctl pci` shows each device's group.
 
+### Host kernel
+
+Use a recent kernel on a host with large-BAR GPUs: 7.0 was measured
+fast, 6.8 slow. Before a VM starts, the hypervisor maps each
+passed-through device's memory BARs into the IOMMU, and on 6.8 that
+takes tens of seconds for a big GPU:
+
+| Host kernel | Card, BAR | Mapping the BAR | Until Cloud Hypervisor answers |
+|---|---|---|---|
+| 6.8 | A100 40 GB, 64 GiB | 27 s | 31 s (4 GiB VM, with a ConnectX-6) |
+| 7.0 | Radeon AI PRO R9700, 16 GiB | under 0.3 s | 6 s (4 GiB VM); 6.7 s with two cards |
+
+A BAR's size is a power of two, so it can be larger than the card's
+memory. The VM still starts on an older kernel: Glidex waits longer for
+it (see the troubleshooting table). Out-of-tree drivers must build on
+the newer kernel: NVIDIA OFED 2607.0.100 doesn't build on 7.0.
+
 ### Bind the device to `vfio-pci`
 
 Glidex can do this and the next step for you, per device, on any node:
@@ -671,7 +688,7 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | The VM fails to start: VFIO group not viable | Another device in the IOMMU group is still on a host driver. Bind all of them to `vfio-pci`, or move the card to another slot. |
 | The VM fails to start: permission denied on `/dev/vfio/<n>` | The udev rule above; `ls -l /dev/vfio/`. |
 | No IOMMU group in `gxctl pci` | The IOMMU is off: firmware setting and kernel command line. |
-| The VM relaunches over and over; the console ends each try with `exited: launch_failed (signal 9): cloud-hypervisor API socket not ready after N s` | The hypervisor was still setting up when Glidex stopped it. Before it answers, Cloud Hypervisor maps the VM's memory and each passthrough device's memory BARs for the device: about 1 s per GiB of memory, and on a 6.8 host about 27 s for the 64 GiB BAR of a 40 GiB A100 (a BAR is a power of two, so it can be larger than the card's memory). Glidex waits 30 s, plus 1 s per GiB of memory and 1 s per 2 GiB of the devices' BARs, up to 15 minutes. If a VM still runs out, give it less memory or use QEMU, whose socket answers before that work. |
+| The VM relaunches over and over; the console ends each try with `exited: launch_failed (signal 9): cloud-hypervisor API socket not ready after N s` | The hypervisor was still setting up when Glidex stopped it. Before it answers, Cloud Hypervisor maps the VM's memory and each passthrough device's memory BARs for the device: about 1 s per GiB of memory, and on a 6.8 host about 27 s for the 64 GiB BAR of a 40 GiB A100 (a BAR is a power of two, so it can be larger than the card's memory). Glidex waits 30 s, plus 1 s per GiB of memory and 1 s per 2 GiB of the devices' BARs, up to 15 minutes. If a VM still runs out, give it less memory, use QEMU, whose socket answers before that work, or move the host to a newer kernel (see [Host kernel](#host-kernel)). |
 | A VM with a ConnectX card prints nothing for a minute or more before its kernel starts | The guest's UEFI firmware spends that time on the card, on both hypervisors (70–95 s seen with a ConnectX-6 in InfiniBand mode, 2026-11-09). The VM then boots normally. The card's own boot ROM (FlexBoot) is the likely cause; disabling it on the card (`mlxconfig … EXP_ROM_UEFI_x86_ENABLE=0`) should avoid it, but that isn't confirmed yet. |
 | `forbidden` | The project has no grant for the device in `pci.allow`, and you are not `net-admin`. |
 | `PCI device … is cordoned` | An administrator cordoned it: `gxctl node uncordon-device`. |
