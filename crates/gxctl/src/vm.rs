@@ -3,7 +3,7 @@
 //! (spec/18-grpc.md §9.1). The live console is the `Console` bidi RPC (`console.rs`).
 
 use crate::client::{ApiClient, RpcTransport};
-use crate::tenancy::{err, fail, rpc_err, usage};
+use crate::tenancy::{err, rpc_err, usage};
 use crate::{
     credential_choice, flag_value, format_unix_time, has_flag, project_names, prompt,
     prompt_optional, prompt_path, prompt_path_optional, signed_in_name, storage,
@@ -714,15 +714,14 @@ pub async fn create(client: &ApiClient, args: &[&str]) {
 
     let name = prompt("VM name: ");
     if name.is_empty() {
-        println!("{}", "Error: VM name is required".red());
-        return;
+        return err("VM name is required");
     }
 
     let gpus = match parse_gpus(&prompt(
         "GPUs (count[:pool][:nvlink], e.g. 4:a100; sizes the VM from the pool; optional): ",
     )) {
         Ok(g) => g,
-        Err(e) => return println!("{} {}", "Error:".red(), e),
+        Err(e) => return err(e),
     };
     // With GPUs, an empty answer takes the pool's per-device sizing (0).
     let (vcpu_default, mem_default, hint) = match gpus {
@@ -843,11 +842,7 @@ pub async fn create(client: &ApiClient, args: &[&str]) {
         match choice.as_str() {
             "image" | "i" => {
                 if ready.is_empty() {
-                    println!(
-                        "{}",
-                        "Error: no downloaded images; pull one with 'image pull <key>'".red()
-                    );
-                    return;
+                    return err("no downloaded images; pull one with 'image pull <key>'");
                 }
                 let pick = prompt(&format!("Image ({}) [{}]: ", ready.join(", "), ready[0]));
                 image = Some(if pick.is_empty() {
@@ -860,8 +855,7 @@ pub async fn create(client: &ApiClient, args: &[&str]) {
                     s => match s.parse::<u32>() {
                         Ok(n) => Some(n),
                         Err(_) => {
-                            println!("{}", "Error: size must be a whole number of GiB".red());
-                            return;
+                            return err("size must be a whole number of GiB");
                         }
                     },
                 };
@@ -869,8 +863,7 @@ pub async fn create(client: &ApiClient, args: &[&str]) {
             "disk" | "d" => {
                 let d = prompt("Existing disk (name or id; see 'disk list'): ");
                 if d.is_empty() {
-                    println!("{}", "Error: a disk is required".red());
-                    return;
+                    return err("a disk is required");
                 }
                 root_disk = Some(d);
             }
@@ -887,8 +880,7 @@ pub async fn create(client: &ApiClient, args: &[&str]) {
         };
         rootfs_path = prompt_path(rootfs_prompt);
         if rootfs_path.is_empty() {
-            println!("{}", "Error: disk image path is required".red());
-            return;
+            return err("disk image path is required");
         }
     }
 
@@ -918,8 +910,7 @@ pub async fn create(client: &ApiClient, args: &[&str]) {
             answer
         };
         if answer.is_empty() {
-            println!("{}", "Error: a kernel is required for kernel boot".red());
-            return;
+            return err("a kernel is required for kernel boot");
         }
         if answer.starts_with('/') {
             kernel_image_path = answer;
@@ -1090,7 +1081,7 @@ pub async fn create(client: &ApiClient, args: &[&str]) {
 async fn send_create(client: &ApiClient, request: CreateVmRequest) {
     let svc = match rpc(client).await {
         Ok(s) => s,
-        Err(e) => return fail(e),
+        Err(e) => return err(e),
     };
     match svc.create_vm(request).await {
         Ok(r) => {
@@ -1101,7 +1092,7 @@ async fn send_create(client: &ApiClient, request: CreateVmRequest) {
             println!("  State: {}", state_word(&vm));
             println!("  Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
         }
-        Err(e) => fail(rpc_err(e)),
+        Err(e) => err(rpc_err(e)),
     }
 }
 
@@ -1404,7 +1395,7 @@ async fn create_unprompted(client: &ApiClient, args: &[&str]) {
     let f = match parse_create(args) {
         Ok(f) => f,
         Err(e) => {
-            fail(e);
+            err(e);
             return usage(CREATE_USAGE);
         }
     };
@@ -1445,7 +1436,7 @@ async fn create_unprompted(client: &ApiClient, args: &[&str]) {
     };
     let firmware_boot = firmware.is_some() || firmware_path.is_some();
     if firmware_boot && (f.kernel.is_some() || f.kernel_args.is_some()) {
-        fail("--kernel and --kernel-args are for kernel boot: add --firmware none");
+        err("--kernel and --kernel-args are for kernel boot: add --firmware none");
         return;
     }
 
@@ -1466,7 +1457,7 @@ async fn create_unprompted(client: &ApiClient, args: &[&str]) {
         let (kernels, default) = kernel_choices(&all_images, chosen);
         let k = f.kernel.clone().unwrap_or_else(|| default.to_string());
         if k.is_empty() {
-            fail("kernel boot needs a kernel: give --kernel, or --firmware for firmware boot");
+            err("kernel boot needs a kernel: give --kernel, or --firmware for firmware boot");
             return;
         }
         if k.starts_with('/') {
@@ -1484,7 +1475,7 @@ async fn create_unprompted(client: &ApiClient, args: &[&str]) {
     // kernel image or a managed root disk (spec 23-kernel-boot.md K4).
     let seeded = firmware_boot || kernel.is_some() || !matches!(f.boot, BootDisk::Path(_));
     if !seeded && (f.cloud_init.is_some() || f.credential.is_some()) {
-        fail(
+        err(
             "--cloud-init and --credential need firmware boot, a kernel image, or --image or --root-disk",
         );
         return;

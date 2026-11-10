@@ -5,7 +5,7 @@
 //! Local peers and token holders need no ticket; tickets are for browsers.
 
 use crate::client::ApiClient;
-use crate::tenancy::rpc_err;
+use crate::tenancy::{err, rpc_err};
 use colored::Colorize;
 use connectrpc::client::{BidiStream, SharedHttp2Connection};
 use glidex_api::proto::glidex::vm::v1::__buffa::oneof::console_request::Request as R;
@@ -143,19 +143,16 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
     };
     let info = match info {
         Ok(i) => i,
-        Err(e) => return println!("{} {}", "Error:".red(), e),
+        Err(e) => return err(e),
     };
     if info.available != Some(true) {
-        println!(
-            "{} VM is not running. Start the VM first with: start {}",
-            "Error:".red(),
-            vm_id
-        );
-        return;
+        return err(format!(
+            "VM is not running. Start the VM first with: start {vm_id}"
+        ));
     }
     let (mut stream, early) = match open_console(client, vm_id).await {
         Ok(s) => s,
-        Err(e) => return println!("{} {}", "Error:".red(), e),
+        Err(e) => return err(e),
     };
     println!(
         "{} Connected to the VM console via {}",
@@ -172,8 +169,7 @@ pub async fn handle_connect(client: &ApiClient, vm_id: &str) {
     let orig = match set_raw_mode(stdin.as_fd()) {
         Some(t) => t,
         None => {
-            println!("{} Failed to set terminal to raw mode", "Error:".red());
-            return;
+            return err("Failed to set terminal to raw mode");
         }
     };
     let running = Arc::new(AtomicBool::new(true));
@@ -257,6 +253,6 @@ pub async fn handle_log(client: &ApiClient, vm_id: &str) {
             }
             let _ = out.flush();
         }
-        Err(e) => println!("{} {}", "Error:".red(), e),
+        Err(e) => err(e),
     }
 }

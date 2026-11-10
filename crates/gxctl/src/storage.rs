@@ -168,8 +168,7 @@ pub async fn credential_add(client: &ApiClient) {
         if u.is_empty() { me } else { u }
     };
     if username.is_empty() {
-        println!("{}", "Error: username is required".red());
-        return;
+        return err("username is required");
     }
     println!(
         "{}",

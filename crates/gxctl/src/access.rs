@@ -1357,6 +1357,7 @@ pub async fn policy(client: &ApiClient, args: &[&str]) {
                 Ok(v) if v.valid == Some(true) => println!("{} {} is valid", "OK:".green(), id),
                 Ok(v) => {
                     println!("{} {} is not valid:", "Invalid:".red(), id);
+                    crate::tenancy::set_failed();
                     for e in &v.errors {
                         println!("  {}", e);
                     }

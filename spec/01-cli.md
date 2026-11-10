@@ -23,7 +23,7 @@ See [11-security.md](11-security.md) §5.1, §5.2, §5.5.
 | `GLIDEX_CONFIG` | Path to the profile file; empty disables reading it, which is what CI should set. |
 | *(no socket, no `--url`)* | TCP to `https://localhost:8841`. |
 | `--project <id\|name>` (`-p`) / `GLIDEX_PROJECT` | Project for this session (below). |
-| `gxctl [options] <command…>` | Run one REPL command and exit (`gxctl list`, `gxctl --url https://cp:8841 login --oidc`). |
+| `gxctl [options] <command…>` | Run one REPL command and exit (`gxctl list`, `gxctl --url https://cp:8841 login --oidc`). It exits 1 when the command prints an error or its usage line (an unknown command, a missing argument, a request that fails), 2 when gxctl can't set up its connection (no usable socket, URL or profile, or a profile bound to another cluster), else 0. |
 
 - **Unix socket:** the control plane identifies the caller by peer uid
   (`SO_PEERCRED`); gxctl sends no credentials. Root and `glidex-admin`
@@ -367,7 +367,7 @@ credential, the `default` network). Rules:
 - `--start` sends `power: running`; without it the VM is created
   stopped, as with the prompts.
 - A one-shot run (`gxctl create …`) exits 1 when the create fails, so a
-  script can tell; other commands still exit 0 after printing an error.
+  script can tell, as every one-shot command does (below).
 
 
 ### `connect` loop

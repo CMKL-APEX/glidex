@@ -569,7 +569,7 @@ pub async fn pci(client: &ApiClient, args: &[&str]) {
                     println!("{}", l);
                 }
             }
-            None => println!("{} no PCI device with address {}", "Error:".red(), addr),
+            None => err(format!("no PCI device with address {addr}")),
         }
     } else {
         let rows: Vec<PciRow> = devices.iter().map(PciRow::from).collect();
@@ -719,11 +719,9 @@ pub async fn ovs(client: &ApiClient, args: &[&str]) {
                 Err(e) => err(rpc_err(e)),
             }
         }
-        Some(other) => println!(
-            "{} unknown 'ovs {}'; use 'ovs status', 'ovs install' or 'ovs dpdk-init'",
-            "Error:".red(),
-            other
-        ),
+        Some(other) => err(format!(
+            "unknown 'ovs {other}'; use 'ovs status', 'ovs install' or 'ovs dpdk-init'"
+        )),
     }
 }
 
@@ -888,17 +886,13 @@ pub async fn uplink_add(client: &ApiClient, args: &[&str]) {
         Err(e) => {
             let e = rpc_err(e);
             if e.contains("DHCP-managed") {
-                println!(
-                    "{} {}\n  Give the NIC a static address first, or re-run with --accept-dhcp to move it anyway.",
-                    "Error:".red(),
-                    e
-                );
+                err(format!(
+                    "{e}\n  Give the NIC a static address first, or re-run with --accept-dhcp to move it anyway."
+                ));
             } else if e.contains("host_interface_in_use") {
-                println!(
-                    "{} {}\n  The NIC is in use by the host. Re-run with --migrate-ip --force to move its IP configuration onto the bridge (rolled back automatically if the gateway stops answering or this CLI can't confirm).",
-                    "Error:".red(),
-                    e
-                );
+                err(format!(
+                    "{e}\n  The NIC is in use by the host. Re-run with --migrate-ip --force to move its IP configuration onto the bridge (rolled back automatically if the gateway stops answering or this CLI can't confirm)."
+                ));
             } else {
                 err(e);
             }
@@ -948,11 +942,7 @@ async fn finish_uplink(client: &ApiClient, bridge: &str, u: &Uplink) {
         bridge, deadline
     );
     if client.health_check().await.is_err() {
-        println!(
-            "{} API unreachable; glidex-netd will roll the change back automatically.",
-            "Error:".red()
-        );
-        return;
+        return err("API unreachable; glidex-netd will roll the change back automatically.");
     }
     match svc!(rpc(client))
         .commit_uplink(CommitUplinkRequest {
@@ -969,11 +959,7 @@ async fn finish_uplink(client: &ApiClient, bridge: &str, u: &Uplink) {
             name,
             bridge
         ),
-        Err(e) => println!(
-            "{} {} (the change will be rolled back)",
-            "Error:".red(),
-            rpc_err(e)
-        ),
+        Err(e) => err(format!("{} (the change will be rolled back)", rpc_err(e))),
     }
 }
 

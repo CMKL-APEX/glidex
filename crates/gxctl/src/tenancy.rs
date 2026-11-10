@@ -8,16 +8,16 @@ use colored::Colorize;
 use glidex_api::proto::glidex::api::v1::EntityRef;
 use glidex_api::proto::glidex::tenancy::v1::*;
 
+/// Print an error. A one-shot run then exits 1, so a script can tell.
 pub(crate) fn err(e: impl std::fmt::Display) {
     println!("{} {}", "Error:".red(), e);
+    set_failed();
 }
 
 static FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// An error a one-shot run exits 1 for, so a script can tell (`create`
-/// without prompts).
-pub(crate) fn fail(e: impl std::fmt::Display) {
-    err(e);
+/// The command failed, for an error printed some other way than `err`.
+pub(crate) fn set_failed() {
     FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -25,8 +25,16 @@ pub(crate) fn failed() -> bool {
     FAILED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// `failed()`, cleared: for tests.
+#[cfg(test)]
+pub(crate) fn take_failed() -> bool {
+    FAILED.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The command was given wrong: it fails as an error does.
 pub(crate) fn usage(u: &str) {
     println!("{}", u.yellow());
+    set_failed();
 }
 
 /// The stable error code of a connectrpc error (`ErrorInfo.reason`),

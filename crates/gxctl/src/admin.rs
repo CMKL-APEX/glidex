@@ -15,13 +15,7 @@ use std::io::IsTerminal;
 use std::path::PathBuf;
 use zeroize::Zeroizing;
 
-fn err(e: impl std::fmt::Display) {
-    println!("{} {}", "Error:".red(), e);
-}
-
-fn usage(u: &str) {
-    println!("{}", u.yellow());
-}
+use crate::tenancy::{err, usage};
 
 fn s(v: &Value) -> &str {
     v.as_str().unwrap_or("")
