@@ -1054,7 +1054,12 @@ didn't create.
 3. A foreign row where a Glidex object should go is reported, never changed.
 4. A row that already matches costs no write.
 5. Every call is an `ovn-nbctl` command line, so tests assert exact
-   commands.
+   commands. On the leader they go through one `ovn-nbctl --detach`
+   daemon (`glidex_ovn::daemon`), which keeps a single connection to
+   OVN's leader and a replica of the tables. It is used only while the
+   database answers: commands run directly until a pass succeeds, and
+   again after a pass fails. A new daemon is started when the old one
+   died or the servers or certificates changed.
 
 Supporting details:
 - `derived_mac()` gives router ports stable, locally administered MACs

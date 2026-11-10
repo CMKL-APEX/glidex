@@ -368,6 +368,8 @@ pub struct VmManager {
     pub(crate) orphans: std::sync::Mutex<Vec<Orphan>>,
     /// netd's socket identity at the last port sync (restart detection).
     pub(crate) netd_seen: std::sync::Mutex<Option<(u64, u64)>>,
+    /// The leader's `ovn-nbctl` daemon (spec/14-clustering.md §11.1).
+    pub(crate) nb_daemon: std::sync::Mutex<glidex_ovn::daemon::NbDaemon>,
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
     /// `initialize` has loaded the VMs into `vms`. Before that every VM is
     /// unknown, and the probe keeps every hold (S26).
@@ -579,6 +581,9 @@ impl VmManager {
             watched: std::sync::Mutex::new(Default::default()),
             orphans: std::sync::Mutex::new(Vec::new()),
             netd_seen: std::sync::Mutex::new(None),
+            nb_daemon: std::sync::Mutex::new(glidex_ovn::daemon::NbDaemon::new(
+                crate::paths::run_dir().join("ovn"),
+            )),
             controllers_started: std::sync::atomic::AtomicBool::new(false),
             vms_loaded: std::sync::atomic::AtomicBool::new(false),
             sched: ArcSwap::from_pointee(Default::default()),

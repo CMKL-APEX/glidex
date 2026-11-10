@@ -240,6 +240,7 @@ impl VmManager {
     /// One pass of the leader's network controller.
     pub async fn reconcile_ovn(self: &Arc<Self>) {
         if !self.ovn_enabled() || !self.store.database().can_write() {
+            self.stop_nb_daemon().await;
             return;
         }
         self.gc_reservations().await;
@@ -252,9 +253,17 @@ impl VmManager {
             }
         };
         let sb_conn = conn.clone();
+        let me = self.clone();
         let r = tokio::task::spawn_blocking(move || {
             let exec = SystemExec::new();
-            glidex_ovn::sync(&glidex_ovn::Nb::new(&exec, conn), &desired)
+            let mut daemon = me.nb_daemon.lock().unwrap();
+            let conn = daemon.conn(&exec, conn);
+            if let Some(w) = daemon.take_warning() {
+                tracing::warn!("{w}");
+            }
+            let r = glidex_ovn::sync(&glidex_ovn::Nb::new(&exec, conn), &desired);
+            daemon.passed(&exec, r.is_ok());
+            r
         })
         .await;
         self.forget_stale_chassis(sb_conn).await;
@@ -268,6 +277,19 @@ impl VmManager {
             Ok(Err(e)) => tracing::warn!("OVN northbound sync: {}", e),
             Err(e) => tracing::warn!("OVN sync task: {}", e),
         }
+    }
+
+    /// Stop the `ovn-nbctl` daemon, if one runs: this server no longer
+    /// leads, or OVN was turned off.
+    async fn stop_nb_daemon(self: &Arc<Self>) {
+        if !self.nb_daemon.lock().unwrap().is_running() {
+            return;
+        }
+        let me = self.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            me.nb_daemon.lock().unwrap().stop(&SystemExec::new());
+        })
+        .await;
     }
 
     /// Chassis of nodes that are no longer members. Removal deletes a node's
