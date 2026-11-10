@@ -1545,18 +1545,19 @@ impl VmManager {
     }
 
     /// Attach (or re-attach: netd is idempotent) every NIC of the spec,
-    /// first detaching ports the spec no longer has. Each port is written
-    /// to `status.nics` before netd attaches it.
+    /// first detaching ports the spec no longer has or has with another
+    /// MAC. Each port is written to `status.nics` before netd attaches it.
     async fn attach_ports(
         &self,
         vm: &Vm,
         st: &mut VmStatus,
     ) -> Result<Vec<NicBinding>, VmManagerError> {
         let networks = vm.config().networks.clone();
+        let spec = vm.spec_nics();
         let stale = |n: &NicStatus| {
-            networks
-                .get(n.nic_index as usize)
-                .is_some_and(|a| a.network == n.network)
+            spec.iter().any(|(i, network, mac)| {
+                *i == n.nic_index && *network == n.network && mac.eq_ignore_ascii_case(&n.mac)
+            })
         };
         if st.nics.iter().any(|n| !stale(n)) {
             self.detach_ports(&vm.id, st, Some(&stale)).await?;

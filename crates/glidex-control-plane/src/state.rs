@@ -5047,28 +5047,24 @@ impl VmManager {
     /// Reservations to make for `vm`'s NICs on cluster networks.
     pub(crate) fn cluster_nics(&self, vm: &Vm) -> Vec<(String, String, String, u8)> {
         let nets = self.networks.list().unwrap_or_default();
-        vm.config()
-            .networks
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| {
-                nets.iter().any(|n| {
-                    n.id == a.network
-                        && n.scope == crate::network::NetworkScope::Cluster
-                        && n.mode != NetworkMode::Bridged
-                })
-            })
-            .filter_map(|(i, a)| {
-                Some((
-                    a.network.clone(),
-                    a.mac
-                        .clone()
-                        .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())?,
-                    vm.id.clone(),
-                    i as u8,
-                ))
-            })
-            .collect()
+        let mut out: Vec<(String, String, String, u8)> = Vec::new();
+        // The running ports' as well as the spec's: a NIC edited on a
+        // running VM keeps its address until its next start.
+        for (i, network, mac) in vm.port_nics().into_iter().chain(vm.spec_nics()) {
+            let cluster = nets.iter().any(|n| {
+                n.id == network
+                    && n.scope == crate::network::NetworkScope::Cluster
+                    && n.mode != NetworkMode::Bridged
+            });
+            if cluster
+                && !out
+                    .iter()
+                    .any(|(n, m, _, _)| *n == network && m.eq_ignore_ascii_case(&mac))
+            {
+                out.push((network, mac, vm.id.clone(), i));
+            }
+        }
+        out
     }
 
     /// Create a network: host side in netd first, record only on success.

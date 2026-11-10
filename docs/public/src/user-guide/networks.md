@@ -182,7 +182,8 @@ pick a network and **Attach**, or **Detach** a NIC; or
 `gxctl attach-network <vm> <network>` and
 `gxctl detach-network <vm> <network>`. A new NIC goes after the others,
 and the NICs you keep keep their MACs. On a running VM the change
-applies at the next start. `PATCH` with `networks` replaces the whole
+applies at the next start; until then the guest keeps its NICs, MACs and
+addresses. `PATCH` with `networks` replaces the whole
 list. See [Virtual machines](vms.md#networks).
 
 ## Addresses

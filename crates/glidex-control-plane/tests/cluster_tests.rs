@@ -3400,6 +3400,116 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     );
     assert_eq!(ports().await, 3);
 
+    // A NIC given another MAC while its VM runs: the port and the address
+    // stay the guest's until the next start, which takes the new ones.
+    let set_nics = |nics: Vec<glidex_control_plane::models::NicStatus>| {
+        let (server, b_id) = (&server, &b_id);
+        async move {
+            let mut rec = server.manager.get_vm(b_id).await.unwrap();
+            rec.resource_version += 1;
+            rec.status.nics = nics;
+            let ws = glidex_control_plane::store::WriteSet {
+                format: 1,
+                origin: glidex_control_plane::store::Origin::Controller,
+                ops: vec![glidex_control_plane::store::Op::Put {
+                    table: glidex_control_plane::store::TableId::Vms,
+                    key: b_id.as_bytes().to_vec(),
+                    value: serde_json::to_vec(&rec).unwrap(),
+                }],
+            };
+            let r = cluster(server)
+                .client
+                .request(
+                    &server.addr.to_string(),
+                    hyper::Method::POST,
+                    "/cluster/v1/status-write",
+                    &[("content-type", "application/json".into())],
+                    serde_json::to_vec(&ws).unwrap().into(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                r.status,
+                StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&r.body)
+            );
+            wait_for("the NICs written", || async {
+                server.manager.get_vm(b_id).await.unwrap().status.nics.len()
+                    == rec.status.nics.len()
+            })
+            .await;
+        }
+    };
+    let running: Vec<_> = server
+        .manager
+        .get_vm(&b_id)
+        .await
+        .unwrap()
+        .spec_nics()
+        .into_iter()
+        .map(
+            |(i, network, mac)| glidex_control_plane::models::NicStatus {
+                network,
+                nic_index: i,
+                mac,
+                port: None,
+                ipv4: None,
+                port_ok: true,
+                metadata_index: None,
+            },
+        )
+        .collect();
+    set_nics(running).await;
+    server
+        .manager
+        .detach_network(&b_id, "lab", None)
+        .await
+        .unwrap();
+    let new_mac = "02:00:00:00:aa:01";
+    server
+        .manager
+        .attach_network(
+            &b_id,
+            glidex_control_plane::models::NetworkAttachment {
+                network: "lab".into(),
+                mac: Some(new_mac.into()),
+                queue_pairs: None,
+            },
+        )
+        .await
+        .unwrap();
+    server.manager.clone().reconcile_ovn().await;
+    let lab_port = || async {
+        let d = server.manager.__desired_ovn_for_tests().await.unwrap();
+        d.ports
+            .into_iter()
+            .find(|p| p.vm_id == b_id && p.nic == 1)
+            .map(|p| (p.mac, p.ip))
+    };
+    assert_eq!(lab_port().await, Some((lab.mac.clone(), Some(lab.ip))));
+    let lab_macs = || async {
+        let mut m: Vec<String> =
+            glidex_control_plane::ipam::list_reservations(&server.manager.database())
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.vm_id == b_id && r.nic == 1)
+                .map(|r| r.mac)
+                .collect();
+        m.sort();
+        m
+    };
+    let mut both = vec![lab.mac.clone(), new_mac.to_string()];
+    both.sort();
+    assert_eq!(lab_macs().await, both);
+    // Stopped, its ports go; at the next start the new MAC is the port's.
+    set_nics(Vec::new()).await;
+    server.manager.clone().reconcile_ovn().await;
+    assert_eq!(lab_macs().await, vec![new_mac.to_string()]);
+    let (mac, ip) = lab_port().await.expect("the new port");
+    assert_eq!(mac, new_mac);
+    assert!(ip.is_some_and(|ip| ip != lab.ip), "{ip:?}");
+
     // A network in use can't go; a VM that goes frees its address.
     let (s, _) = call(&server, "DELETE", "/networks/web", None, &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
