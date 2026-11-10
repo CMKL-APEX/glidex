@@ -13,7 +13,7 @@ use glidex_ovs::vsctl::{self, Row};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::net::{IpAddr, Ipv4Addr};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub const OWNER_KEY: &str = "glidex-owner";
 pub const OWNER_VALUE: &str = "glidex";
@@ -76,15 +76,18 @@ impl<'a> Nb<'a> {
         c
     }
 
-    /// Start a daemon (`ovn-nbctl --detach`); returns its control socket.
+    /// Start a daemon (`ovn-nbctl --detach`) whose control socket and
+    /// pidfile go in `rundir` (`OVN_RUNDIR`); returns the control socket.
     pub fn start_daemon(
         exec: &dyn Exec,
         conn: &NbConn,
-        pidfile: &str,
+        rundir: &Path,
     ) -> Result<PathBuf, OvsError> {
         let args = vec![
             "--detach".to_string(),
-            format!("--pidfile={pidfile}"),
+            format!("--pidfile={}", rundir.join("ovn-nbctl.pid").display()),
+            // A daemon this process lost track of must not block the next.
+            "--overwrite-pidfile".to_string(),
             format!("--db={}", conn.db.join(",")),
             "-p".into(),
             conn.key.display().to_string(),
@@ -93,8 +96,16 @@ impl<'a> Nb<'a> {
             "-C".into(),
             conn.ca.display().to_string(),
         ];
-        let out = exec.check(&Cmd::new(Program::OvnNbctl, args))?.stdout_str();
-        Ok(PathBuf::from(out.trim()))
+        let cmd =
+            Cmd::new(Program::OvnNbctl, args).env("OVN_RUNDIR", &rundir.display().to_string());
+        let out = exec.check(&cmd)?.stdout_str();
+        let ctl = out.trim();
+        if ctl.is_empty() {
+            return Err(OvsError::Io(
+                "ovn-nbctl --detach printed no control socket".into(),
+            ));
+        }
+        Ok(PathBuf::from(ctl))
     }
 
     /// Run commands as one transaction (`cmd1 -- cmd2 -- …`).
@@ -1267,4 +1278,5 @@ fn ensure_port(
 #[cfg(test)]
 mod tests;
 
+pub mod daemon;
 pub mod view;
