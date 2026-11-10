@@ -129,7 +129,8 @@ or `--rootfs` (a host path). Other flags are `--network` (repeatable;
 (`none` for kernel boot), `--kernel`, `--gpus`, `--node` and more:
 `gxctl help create` lists them, and [gxctl](../reference/gxctl.md) says
 what each does. An unknown flag is refused, and the command exits 1 when
-the VM can't be created.
+the VM can't be created, as any gxctl command run on its own exits 1
+when it fails.
 
 ### API
 

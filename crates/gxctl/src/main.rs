@@ -35,6 +35,7 @@ use rustyline::{CompletionType, Config, Context, Editor, Helper};
 use std::io::{self, IsTerminal, Write};
 use std::os::fd::AsFd;
 use std::path::PathBuf;
+use tenancy::{err, usage};
 
 #[derive(Parser)]
 #[command(name = "gxctl")]
@@ -449,21 +450,16 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
             "policy" => w::WatchKind::WATCH_KIND_POLICY,
             "datastore" | "datastores" => w::WatchKind::WATCH_KIND_DATASTORE,
             other => {
-                println!(
-                    "{} unknown kind '{other}' (vms, disks, images, networks, nodes, imports, cluster, policy, datastores)",
-                    "Error:".red()
-                );
-                return;
+                return err(format!(
+                    "unknown kind '{other}' (vms, disks, images, networks, nodes, imports, cluster, policy, datastores)"
+                ));
             }
         };
         req.kinds.push(kind.into());
     }
     let t = match client.rpc_transport().await {
         Ok(t) => t,
-        Err(e) => {
-            println!("{} {}", "Error:".red(), e.message);
-            return;
-        }
+        Err(e) => return err(e.message),
     };
     let svc = w::WatchServiceClient::new(t.clone(), t.config());
     // What was last printed per (kind, id), to skip repeats after a reconnect.
@@ -475,10 +471,7 @@ async fn handle_watch(client: &ApiClient, args: &[&str]) {
         loop {
             let mut stream = match svc.watch(req.clone()).await {
                 Ok(s) => s,
-                Err(e) => {
-                    println!("{} {}", "Error:".red(), tenancy::rpc_err(e));
-                    return;
-                }
+                Err(e) => return err(tenancy::rpc_err(e)),
             };
             loop {
                 let e: w::WatchResponse = match stream.message().await {
@@ -1561,7 +1554,7 @@ async fn handle_command(line: &str, client: &CliClient) -> bool {
     match split_line(line) {
         Ok(words) => handle_words(&words, client).await,
         Err(e) => {
-            println!("{} {}", "Error:".red(), e);
+            err(e);
             true
         }
     }
@@ -1597,13 +1590,13 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "connect" | "console" | "attach" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: connect <name|id>".yellow());
+                usage("Usage: connect <name|id>");
                 return true;
             }
             let vm_id = match client.resolve_vm(parts[1]).await {
                 Ok(id) => id,
                 Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
+                    err(e);
                     return true;
                 }
             };
@@ -1616,13 +1609,13 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "log" | "logs" => {
             if parts.len() < 2 {
-                println!("{}", "Usage: log <name|id>".yellow());
+                usage("Usage: log <name|id>");
                 return true;
             }
             let vm_id = match client.resolve_vm(parts[1]).await {
                 Ok(id) => id,
                 Err(e) => {
-                    println!("{} {}", "Error:".red(), e);
+                    err(e);
                     return true;
                 }
             };
@@ -1691,7 +1684,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "network-rm" | "net-rm" => match parts.get(1) {
             Some(name) => network::delete(client, name).await,
-            None => println!("{}", "Usage: network-rm <name>".yellow()),
+            None => usage("Usage: network-rm <name>"),
         },
 
         "bridges" => host::bridges(client).await,
@@ -1714,14 +1707,13 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
 
         "health" => match client.health_check().await {
             Ok(()) => println!("{} API server is healthy", "OK:".green()),
-            Err(e) => println!("{} {}", "Error:".red(), e),
+            Err(e) => err(e),
         },
 
-        _ => println!(
-            "{} Unknown command: {}. Type 'help' for available commands.",
-            "Error:".red(),
+        _ => err(format!(
+            "Unknown command: {}. Type 'help' for available commands.",
             parts[0]
-        ),
+        )),
     }
 
     true
@@ -1862,6 +1854,26 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_command_that_errs_or_is_given_wrong_fails_the_run() {
+        // No server: these fail before they would need one.
+        let client = ApiClient::unix("/nonexistent/glidex.sock".into());
+        let run = |line: &str| {
+            let words: Vec<String> = line.split_whitespace().map(String::from).collect();
+            let client = &client;
+            async move {
+                tenancy::take_failed();
+                handle_words(&words, client).await;
+                tenancy::take_failed()
+            }
+        };
+        assert!(run("no-such-command").await, "an unknown command");
+        assert!(run("connect").await, "a usage line");
+        assert!(run("network-rm").await, "a usage line");
+        assert!(run("watch nothing").await, "an error");
+        assert!(!run("help").await, "help");
+    }
 
     #[test]
     fn help_is_asked_for_and_never_runs_the_command() {

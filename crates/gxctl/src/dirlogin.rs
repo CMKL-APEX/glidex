@@ -230,7 +230,7 @@ pub async fn refresh_if_due(cl: &ApiClient, want: Option<&str>) {
                     p.directory = Some(l.keep);
                 }
             }) {
-                err(format!("keeping the refreshed login: {e}"));
+                eprintln!("{} keeping the refreshed login: {e}", "Warning:".yellow());
             }
         }
         Err(e) => eprintln!("{} {}", "Warning:".yellow(), e),

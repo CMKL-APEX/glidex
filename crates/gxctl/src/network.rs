@@ -171,7 +171,9 @@ fn host_network_request(name: &str, args: &[&str]) -> Result<CreateNetworkReques
 /// `network-add <name> …`, `network create <name> …` without `--project`
 pub async fn create_host(client: &ApiClient, args: &[&str]) {
     let Some(name) = args.first().filter(|a| !a.starts_with("--")) else {
-        println!("{}", "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node [N]]".yellow());
+        usage(
+            "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node [N]]",
+        );
         return;
     };
     let req = match host_network_request(name, args) {
