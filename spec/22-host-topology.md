@@ -1208,3 +1208,23 @@ Where HT2 differs from the design above, and why:
   write. Device (`bdf`) grants stay with the JSON editor and gxctl. The
   pool and grant reference is in the PCI passthrough guide. The
   acceptance run on gpu-dev2 passed on 2026-11-09 (§15).
+- **Launch time and the host kernel** (2026-11-10). Before its API
+  answers, Cloud Hypervisor maps the VM's memory into the IOMMU, then each
+  device's memory BARs. Traced with `strace` on Cloud Hypervisor v53, 16
+  vCPUs, 4 GiB:
+  - prism2, Linux 6.8.0-138, an A100 40 GB (64 GiB BAR 1) and a
+    ConnectX-6: one 27.2 s `VFIO_IOMMU_MAP_DMA` for the A100's BAR, 31 s
+    in all.
+  - gpu-dev2, Linux 7.0.0-42, R9700s (16 GiB BAR 0): no map call over
+    0.3 s besides the guest memory's 2.2 s; 6.0 s in all with one card,
+    6.7 s with two.
+
+  The likely cause is that 6.8 maps a BAR 4 KiB at a time and newer
+  kernels in large pieces; which release changed it wasn't checked
+  (probably 6.12). It is a different host, IOMMU and card, but the gap is
+  far larger than those explain. So passthrough hosts with large-BAR GPUs
+  should run a recent kernel; 7.0 is the one measured (pci-passthrough.md,
+  *Host kernel*). prism1 and prism2 can't
+  yet: their NVIDIA OFED, 2607.0.100, doesn't build on 7.0
+  (`xsk_buff_get_metadata`). The launch deadline (12-reconciliation.md
+  D22) covers the slow mapping on 6.8.
