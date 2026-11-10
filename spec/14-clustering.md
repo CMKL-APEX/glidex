@@ -1712,7 +1712,7 @@ Findings from the OVN 26.03 documentation (`ovn-nb(5)`, `ovn-sb(5)`,
 
 | Failure | Effect | Recovery |
 |---|---|---|
-| Leader host dies | Election within ~2 s; cluster controllers restart on the new leader; in-flight writes fail with `503 leader_changed` (gxctl and the UI retry idempotent requests) | automatic |
+| Leader host dies | Election once the followers' election timeout runs out: 3–6 s after the last heartbeat with the defaults (`cluster.raft.election_ms`). A leader's control plane restarted within that time leads again in the same term, with no election (openraft restores it from its saved vote); cluster controllers restart on the new leader; in-flight writes fail with `503 leader_changed` (gxctl and the UI retry idempotent requests) | automatic |
 | Minority of servers lost | No effect on API or VMs | Replace or re-join the servers |
 | Majority of servers lost | API: `503 cluster_unavailable` (local stale reads allowed, §6.4). VMs keep running; nodes act on their cache (§8.2) | Bring servers back, or `--force-new-cluster` (§5.12) |
 | Agent host partitioned | Its VMs keep running; cluster shows `NodeUnreachable` (D8) | Reconnects and sends its outbox (§8.2) |
