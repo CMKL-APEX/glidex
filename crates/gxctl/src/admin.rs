@@ -214,7 +214,7 @@ pub async fn auth(client: &ApiClient, args: &[&str]) {
         "status" => auth_status(client, &args[1..]).await,
         "use" => auth_use(&args[1..]),
         "profiles" => auth_profiles(&args[1..]),
-        "trust" => auth_trust(&args[1..]).await,
+        "trust" => auth_trust(client, &args[1..]).await,
         "token" | "tokens" => access::token(client, &args[1..]).await,
         "whoami" => access::whoami(client).await,
         _ => usage(
@@ -307,10 +307,12 @@ async fn auth_login(session: &ApiClient, args: &[&str]) {
     };
 
     // §6.1.1 — target and profile: a named profile, the `--url` target, or
-    // the live current one. With nothing to go on, ask which server, never
+    // the profile this run uses (`gxctl --profile P auth login`), else the
+    // live current one. With nothing to go on, ask which server, never
     // guess.
     if name.is_none() && urls.is_empty() {
-        match config::profile_of(&cfg, None) {
+        let in_use = session.profile_name();
+        match config::profile_for(&cfg, None, in_use.as_deref()) {
             Some((n, p)) => {
                 name = Some(n.clone());
                 urls = p.url.clone();
@@ -874,13 +876,10 @@ async fn auth_status(client: &ApiClient, args: &[&str]) {
         Ok(c) => c,
         Err(e) => return err(e),
     };
-    // The profile this session runs under if one does; else the one asked
-    // for; else the file's current (§6.2).
-    let want = flag_value(args, "--profile");
-    let pair = config::profile_of(&cfg, want).or_else(|| match client.profile_name() {
-        Some(n) => config::profile_of(&cfg, Some(&n)),
-        None => None,
-    });
+    // The one asked for; else the profile this session runs under; else the
+    // file's current (§6.2).
+    let session = client.profile_name();
+    let pair = config::profile_for(&cfg, flag_value(args, "--profile"), session.as_deref());
     let (name, p) = match pair {
         Some(x) => x,
         None => {
@@ -1070,13 +1069,14 @@ fn auth_profiles(args: &[&str]) {
     }
 }
 
-async fn auth_trust(args: &[&str]) {
+async fn auth_trust(client: &ApiClient, args: &[&str]) {
     let cfg = match config::load() {
         Ok(c) => c,
         Err(e) => return err(e),
     };
+    let session = client.profile_name();
     let want = flag_value(args, "--profile");
-    let Some((name, p)) = config::profile_of(&cfg, want) else {
+    let Some((name, p)) = config::profile_for(&cfg, want, session.as_deref()) else {
         return err("no profile to manage: name one with --profile or log one in");
     };
     let name = name.clone();
