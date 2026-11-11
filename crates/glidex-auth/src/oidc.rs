@@ -262,13 +262,17 @@ fn b64url(data: &[u8]) -> String {
 }
 
 /// A same-site path to return to after login; anything else becomes `/`.
+/// No control characters or whitespace: browsers drop tabs and newlines
+/// from a `Location` before parsing it, so `/<TAB>/host` would become
+/// `//host`, another site; a newline can't be a header value at all.
 pub fn safe_return_to(r: Option<&str>) -> String {
     match r {
         Some(p)
             if p.starts_with('/')
                 && !p.starts_with("//")
                 && !p.contains('\\')
-                && !p.contains("://") =>
+                && !p.contains("://")
+                && !p.chars().any(|c| c.is_control() || c.is_whitespace()) =>
         {
             p.to_string()
         }
@@ -830,6 +834,11 @@ mod tests {
         assert_eq!(safe_return_to(Some("//evil.example")), "/");
         assert_eq!(safe_return_to(Some("https://evil.example")), "/");
         assert_eq!(safe_return_to(Some("/\\evil")), "/");
+        assert_eq!(safe_return_to(Some("/\t/evil.example")), "/");
+        assert_eq!(safe_return_to(Some("/\n/evil.example")), "/");
+        assert_eq!(safe_return_to(Some("/\r\n/evil.example")), "/");
+        assert_eq!(safe_return_to(Some("/ /evil.example")), "/");
+        assert_eq!(safe_return_to(Some("/vms?tab=disks")), "/vms?tab=disks");
         assert_eq!(safe_return_to(None), "/");
     }
 
