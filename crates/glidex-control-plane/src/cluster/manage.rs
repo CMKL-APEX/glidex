@@ -326,16 +326,9 @@ pub async fn join(
     let server = opts.server.to_string();
 
     // Pin the CA by the hash in the token before sending anything.
-    let ca_pem = net::fetch_ca_untrusted(&server).await?;
-    let got = pki::public_key_fingerprint(&ca_pem)?;
-    if got != ca_hash {
-        return Err(other(format!(
-            "the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
-            &got[..12],
-            &ca_hash[..12]
-        )));
-    }
+    let ca_pem = pin_ca(&net::fetch_ca_untrusted(&server).await?, ca_hash, "join")?;
     let trusting = net::client_trusting(&ca_pem)?;
+    await_pinned(&trusting, &server).await?;
 
     let ccfg = cfg.cluster.clone();
     let advertise = resolve_advertise(opts.advertise, &ccfg)?;
@@ -508,16 +501,9 @@ pub async fn rejoin(
     let node_id = opts.node_id.clone().or_else(|| old.as_ref().map(|i| i.node_id.clone())).ok_or_else(|| other("this host has no cluster identity: pass the node id from `gxctl node rejoin-token`"))?;
     let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
     let server = opts.server.to_string();
-    let ca_pem = net::fetch_ca_untrusted(&server).await?;
-    let got = pki::public_key_fingerprint(&ca_pem)?;
-    if got != ca_hash {
-        return Err(other(format!(
-            "the server's CA ({}…) is not the one the token names ({}…): refusing to rejoin. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
-            &got[..12],
-            &ca_hash[..12]
-        )));
-    }
+    let ca_pem = pin_ca(&net::fetch_ca_untrusted(&server).await?, ca_hash, "rejoin")?;
     let trusting = net::client_trusting(&ca_pem)?;
+    await_pinned(&trusting, &server).await?;
     let ccfg = cfg.cluster.clone();
     let advertise = match (opts.advertise, &old) {
         (Some(a), _) => a,
@@ -1153,16 +1139,9 @@ pub async fn join_import(
     }
     let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
     let server = opts.server.to_string();
-    let ca_pem = net::fetch_ca_untrusted(&server).await?;
-    let got = pki::public_key_fingerprint(&ca_pem)?;
-    if got != ca_hash {
-        return Err(other(format!(
-            "the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
-            &got[..12],
-            &ca_hash[..12]
-        )));
-    }
+    let ca_pem = pin_ca(&net::fetch_ca_untrusted(&server).await?, ca_hash, "join")?;
     let trusting = net::client_trusting(&ca_pem)?;
+    await_pinned(&trusting, &server).await?;
     let ccfg = cfg.cluster.clone();
     let advertise = resolve_advertise(opts.advertise, &ccfg)?;
     let listen = opts.listen.unwrap_or(ccfg.listen);
@@ -1349,6 +1328,57 @@ async fn report_after_joining(manager: &Arc<VmManager>) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::warn!("reporting this node after joining: {}", e),
         Err(e) => tracing::warn!("reporting this node after joining: {}", e),
+    }
+}
+
+/// The CA a token pins, out of the bundle a server answered before any
+/// trust: only that certificate is trusted for the rest of the join.
+/// Trusting the whole bundle would let anyone in the network path add
+/// their own CA after the real one and receive the token.
+fn pin_ca(bundle: &str, ca_hash: &str, verb: &str) -> Result<String, ClusterError> {
+    match pki::pinned_ca(bundle, ca_hash)? {
+        Some(pem) => Ok(pem),
+        None => {
+            let got = pki::public_key_fingerprint(bundle)?;
+            Err(other(format!(
+                "the server's CA ({}…) is not the one the token names ({}…): refusing to {verb}. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
+                &got[..12.min(got.len())],
+                &ca_hash[..12.min(ca_hash.len())]
+            )))
+        }
+    }
+}
+
+/// Wait until `server` presents a certificate from the pinned CA before
+/// anything secret is sent. Right after a CA rotation (a server left) a
+/// server still serves its certificate from the old CA for a few seconds,
+/// until it renews (every node checks every 3 s); the token is never sent
+/// to a certificate the pin doesn't vouch for.
+async fn await_pinned(trusting: &PeerClient, server: &str) -> Result<(), ClusterError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match trusting
+            .request(
+                server,
+                hyper::Method::GET,
+                "/cluster/v1/ca",
+                &[],
+                Bytes::new(),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(net::NetError::Connect(_, e))
+                if e.contains("certificate") && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                return Err(other(format!(
+                    "{server} did not present a certificate from the CA the token names: {e}"
+                )));
+            }
+        }
     }
 }
 
