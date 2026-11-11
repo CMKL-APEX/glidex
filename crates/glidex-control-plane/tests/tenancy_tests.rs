@@ -2004,3 +2004,158 @@ async fn an_open_pool_is_granted_to_every_admitted_tenant() {
         .await;
     assert_eq!(pools(other_p).await, vec![json!("a100")]);
 }
+
+/// A kernel taken from a VM's disk is that VM's (spec/23-kernel-boot.md §3):
+/// listed, read and booted only with its project. Shared images name only
+/// the VMs a caller can read.
+#[tokio::test]
+async fn a_vms_own_kernel_stays_with_its_project() {
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let ada = h
+        .app
+        .auth
+        .store
+        .user_for_identity("pam", "ada", "ada", None, false)
+        .unwrap()
+        .unwrap()
+        .id;
+    let (olivia, bob) = (h.user("olivia"), h.user("bob"));
+    for u in [&olivia, &bob] {
+        h.app
+            .auth
+            .add_link(
+                "grant.host-paths",
+                Ent::User(u.clone()),
+                Ent::Cluster,
+                "test",
+            )
+            .unwrap();
+    }
+    let mut projects = Vec::new();
+    for (slug, owner) in [("acme", &olivia), ("lab", &bob)] {
+        let (_, v) = h
+            .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+            .await;
+        let t = v["tenant"]["id"].as_str().unwrap().to_string();
+        let (s, _) = h
+            .rest(
+                "POST",
+                &format!("/tenants/{t}/bindings"),
+                Some(json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": ada } })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+        let (s, v) = h
+            .rest("PUT", &format!("/admissions/{slug}"), Some(json!({})), &at)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let name = format!("{slug}-p");
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/projects",
+                Some(json!({ "name": name, "tenant": t, "owners": [owner] })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        projects.push(v["project"]["id"].as_str().unwrap().to_string());
+    }
+    let (o, b) = (h.token(&olivia), h.token(&bob));
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_body("secret-vm", &projects[0])), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm_id = vm_of(&v)["id"].as_str().unwrap().to_string();
+
+    // The kernel extracted from her VM's disk.
+    let img = json!({
+        "id": "k-own", "name": "secret-vm-kernel", "kind": "kernel",
+        "source": { "kind": "host", "path": "/tmp/vmlinux" },
+        "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": 1, "file_size_bytes": 1,
+        "sha256": "", "arch": "x86_64", "created_at": 1, "owner": vm_id,
+    });
+    h.app
+        .manager
+        .database()
+        .write(
+            glidex_control_plane::store::Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(glidex_control_plane::store::TableId::Images.definition())?
+                    .insert("k-own", img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    // And a shared kernel her other VM boots.
+    let shared = json!({
+        "id": "k-shared", "name": "shared-kernel", "kind": "kernel",
+        "source": { "kind": "host", "path": "/tmp/vmlinux" },
+        "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": 1, "file_size_bytes": 1,
+        "sha256": "", "arch": "x86_64", "created_at": 1,
+    });
+    h.app
+        .manager
+        .database()
+        .write(
+            glidex_control_plane::store::Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(glidex_control_plane::store::TableId::Images.definition())?
+                    .insert("k-shared", shared.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    h.app.manager.images().reload_all();
+    let mut body = vm_body("secret-booter", &projects[0]);
+    body.as_object_mut().unwrap().remove("kernel_image_path");
+    body["kernel"] = json!("k-shared");
+    let (s, v) = h.rest("POST", "/vms", Some(body), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let users = |v: &Value| -> Value {
+        v["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "shared-kernel")
+            .map(|i| i["used_by_vms"].clone())
+            .unwrap()
+    };
+    assert!(h.app.manager.images().get_image("k-own").is_ok());
+
+    // An empty list has no `images` at all.
+    let names = |v: &Value| -> Vec<String> {
+        v["images"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|i| i["name"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (s, v) = h.rest("GET", "/images", None, &o).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(names(&v).contains(&"secret-vm-kernel".to_string()), "{v}");
+    assert_eq!(users(&v), json!(["secret-booter"]), "{v}");
+    let (s, _) = h.rest("GET", "/images/k-own", None, &o).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Another tenant's user neither sees it nor boots it.
+    let (s, v) = h.rest("GET", "/images", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(!names(&v).contains(&"secret-vm-kernel".to_string()), "{v}");
+    // The shared kernel, without the names of VMs it can't read.
+    assert!(users(&v).as_array().is_none_or(|a| a.is_empty()), "{v}");
+    for path in ["/images/k-own", "/images/k-own/events"] {
+        let (s, v) = h.rest("GET", path, None, &b).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {v}");
+    }
+    let mut body = vm_body("borrower", &projects[1]);
+    body.as_object_mut().unwrap().remove("kernel_image_path");
+    body["kernel"] = json!("k-own");
+    let (s, v) = h.rest("POST", "/vms", Some(body), &b).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+}
