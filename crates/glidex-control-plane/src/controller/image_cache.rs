@@ -429,6 +429,10 @@ impl VmManager {
             }),
         )?;
         let mut result: Result<u64, String> = Ok(0);
+        // Parts put in place so far: a copy that fails on a later part
+        // removes them, or the next pass would find the main file and count
+        // a half copy as this node's.
+        let mut placed = Vec::new();
         for (part, dest) in self.image_files(img) {
             let tmp = dest.with_extension("cache.part");
             let path = format!("/cluster/v1/images/{}/file?part={part}", img.id);
@@ -482,6 +486,7 @@ impl VmManager {
                 result = Err(e.to_string());
                 break;
             }
+            placed.push(dest.clone());
             if part == "main" {
                 result = Ok(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
             }
@@ -509,6 +514,9 @@ impl VmManager {
                 Ok(None)
             }
             Err(e) => {
+                for p in &placed {
+                    let _ = std::fs::remove_file(p);
+                }
                 tracing::warn!(image = %img.name, "fetching the image: {}", e);
                 self.put_cache_row(
                     &img.id,
