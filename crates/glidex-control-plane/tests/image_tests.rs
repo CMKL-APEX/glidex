@@ -100,6 +100,7 @@ struct Fixtures {
     qcow2: Vec<u8>,
     raw: Vec<u8>,
     with_backing: Vec<u8>,
+    with_data_file: Vec<u8>,
 }
 
 fn fixtures(dir: &Path) -> Fixtures {
@@ -118,10 +119,21 @@ fn fixtures(dir: &Path) -> Fixtures {
             .arg(&q)
             .arg(&b),
     );
+    // Its guest data in a file on the host: here the fixture's raw disk,
+    // by absolute path.
+    let d = dir.join("data-file.qcow2");
+    run_ok(
+        Command::new("qemu-img")
+            .args(["create", "-q", "-f", "qcow2", "-o"])
+            .arg(format!("data_file={},data_file_raw=on", raw.display()))
+            .arg(&d)
+            .arg(std::fs::metadata(&raw).unwrap().len().to_string()),
+    );
     Fixtures {
         qcow2: std::fs::read(&q).unwrap(),
         raw: std::fs::read(&raw).unwrap(),
         with_backing: std::fs::read(&b).unwrap(),
+        with_data_file: std::fs::read(&d).unwrap(),
     }
 }
 
@@ -185,6 +197,7 @@ async fn start_server(fx: &Fixtures) -> (String, Arc<AtomicUsize>) {
     files.insert("good.qcow2".to_string(), fx.qcow2.clone());
     files.insert("disk.raw".to_string(), fx.raw.clone());
     files.insert("backing.qcow2".to_string(), fx.with_backing.clone());
+    files.insert("data-file.qcow2".to_string(), fx.with_data_file.clone());
     files.insert("fw.fd".to_string(), FIRMWARE.to_vec());
     files.insert("vars.fd".to_string(), VARS.to_vec());
     files.insert(
@@ -665,6 +678,24 @@ async fn checksum_mismatch_and_backing_file_fail() {
         "{img}"
     );
     assert_eq!(img["verified"], false);
+
+    // An external data file points at a host path just the same.
+    let (_, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/data-file.qcow2"), "name": "evil-data"})),
+    )
+    .await;
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_FAILED");
+    assert!(
+        img["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("external data file"),
+        "{img}"
+    );
 
     // A failed image can be deleted.
     let (status, _) = request(&app, "DELETE", "/images/evil", None).await;

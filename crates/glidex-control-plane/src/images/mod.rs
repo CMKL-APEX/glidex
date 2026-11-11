@@ -1772,6 +1772,7 @@ impl ImageManager {
                         .unwrap_or(0),
                     backing_filename: None,
                     backing_format: None,
+                    format_specific: None,
                 }),
                 partition::read_table(&path, d.format, size.unwrap_or(d.size_bytes))
                     .ok()
