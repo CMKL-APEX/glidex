@@ -213,6 +213,19 @@ pub struct ImgInfo {
         skip_serializing_if = "Option::is_none"
     )]
     pub backing_format: Option<String>,
+    /// The format's own details; for qcow2, `data.data-file` names an
+    /// external data file (see [`ImgInfo::data_file`]). Read only: not
+    /// part of what the API shows of a disk.
+    #[serde(rename = "format-specific", default, skip_serializing)]
+    pub format_specific: Option<serde_json::Value>,
+}
+
+impl ImgInfo {
+    /// A qcow2 image's external data file: like a backing file, a path on
+    /// the host that QEMU opens and reads the guest's data from.
+    pub fn data_file(&self) -> Option<&str> {
+        self.format_specific.as_ref()?["data"]["data-file"].as_str()
+    }
 }
 
 /// `qemu-img info`. `format: None` lets qemu-img probe, which is only done

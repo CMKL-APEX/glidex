@@ -1488,6 +1488,12 @@ impl ImageManager {
                     .into(),
             ));
         }
+        if info.data_file().is_some() {
+            return Err(ImageError::InvalidImage(
+                "image has an external data file; refusing a downloaded image that points at host paths"
+                    .into(),
+            ));
+        }
         if info.virtual_size > max_size {
             return Err(ImageError::InvalidImage(format!(
                 "virtual size {} is over GLIDEX_MAX_IMAGE_SIZE ({})",
