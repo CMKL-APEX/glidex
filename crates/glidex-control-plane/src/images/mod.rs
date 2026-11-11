@@ -262,6 +262,12 @@ pub struct Image {
     pub file_size_bytes: u64,
     /// sha256 of the stored file (hex); empty until Ready.
     pub sha256: String,
+    /// sha256 of a firmware image's stored variable-store template (hex),
+    /// however it came (a download, a package, a host file): what another
+    /// node's copy is checked against. `None` without a template, and on
+    /// records made before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars_sha256: Option<String>,
     pub arch: Arch,
     pub created_at: u64,
     #[serde(default)]
@@ -2172,6 +2178,7 @@ mod tests {
             virtual_size_bytes: GIB,
             file_size_bytes: 0,
             sha256: String::new(),
+            vars_sha256: None,
             arch: Arch::X86_64,
             created_at: 0,
             download: DownloadMeta::default(),

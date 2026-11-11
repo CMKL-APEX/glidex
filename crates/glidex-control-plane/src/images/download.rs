@@ -584,6 +584,7 @@ impl ImageManager {
             virtual_size_bytes: 0,
             file_size_bytes: 0,
             sha256: String::new(),
+            vars_sha256: None,
             arch,
             created_at: now(),
             retry_seq: 0,
@@ -617,14 +618,16 @@ impl ImageManager {
             // A local copy: made before the record exists, so a failure
             // leaves nothing behind.
             let (mgr, id) = (self.clone(), img.id.clone());
-            let (size, sha256) = tokio::task::spawn_blocking(move || {
+            let ((size, sha256), vars_sha256) = tokio::task::spawn_blocking(move || {
                 mgr.import_firmware(&id, &code, vars.as_deref())
+                    .map(|r| (r, mgr.stored_vars_sha256(&id)))
             })
             .await
             .map_err(|e| ImageError::Io(e.to_string()))??;
             img.virtual_size_bytes = size;
             img.file_size_bytes = size;
             img.sha256 = sha256;
+            img.vars_sha256 = vars_sha256;
             img.status = ImageStatus::Ready;
             self.insert_image(&img)?;
             tracing::info!(image = %img.name, source = ?img.source, "firmware imported");
@@ -882,21 +885,24 @@ impl ImageManager {
                 FirmwareSource::Deb { code, vars, .. } => Some((code, vars)),
                 _ => None,
             });
-        let (virtual_size, actual_size, sha256) = tokio::task::spawn_blocking(move || {
-            if firmware {
-                mgr.install_firmware(&id_owned, sha256, deb, vars)
-            } else {
-                mgr.verify_and_install(&id_owned, sha256, max)
-                    .map(|(info, sha)| (info.virtual_size, info.actual_size, sha))
-            }
-        })
-        .await
-        .map_err(|e| ImageError::Io(e.to_string()))??;
+        let ((virtual_size, actual_size, sha256), vars_sha256) =
+            tokio::task::spawn_blocking(move || {
+                if firmware {
+                    mgr.install_firmware(&id_owned, sha256, deb, vars)
+                        .map(|r| (r, mgr.stored_vars_sha256(&id_owned)))
+                } else {
+                    mgr.verify_and_install(&id_owned, sha256, max)
+                        .map(|(info, sha)| ((info.virtual_size, info.actual_size, sha), None))
+                }
+            })
+            .await
+            .map_err(|e| ImageError::Io(e.to_string()))??;
 
         let mut img = self.get_image(id)?;
         img.virtual_size_bytes = virtual_size;
         img.file_size_bytes = actual_size;
         img.sha256 = sha256;
+        img.vars_sha256 = vars_sha256;
         img.format = if firmware {
             DiskFormat::Raw
         } else {
@@ -1178,6 +1184,14 @@ impl ImageManager {
         f.sync_all().map_err(io)?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o444)).map_err(io)?;
         std::fs::rename(&tmp, dest).map_err(io)
+    }
+
+    /// The sha256 of a firmware image's stored variable-store template, if
+    /// it has one: recorded so that other nodes' copies can be checked.
+    fn stored_vars_sha256(&self, id: &str) -> Option<String> {
+        std::fs::read(self.firmware_vars_template(id))
+            .ok()
+            .map(|d| sha256_hex(&d))
     }
 
     /// Install a downloaded firmware file (spec §5, firmware): no image

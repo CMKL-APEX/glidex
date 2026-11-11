@@ -435,7 +435,10 @@ impl VmManager {
             match cluster.client.get_to_file(&holder, &path, &tmp).await {
                 // Optional parts: a firmware without a template, a kernel
                 // without an initramfs.
-                Ok(404) if part == "vars" || (part == "initrd" && img.initrd.is_none()) => {
+                Ok(404)
+                    if (part == "vars" && img.vars_sha256.is_none())
+                        || (part == "initrd" && img.initrd.is_none()) =>
+                {
                     continue;
                 }
                 Ok(200) => {}
@@ -451,10 +454,13 @@ impl VmManager {
                 }
             }
             // The parts with a recorded digest: the main file, a kernel's
-            // initramfs.
+            // initramfs, a firmware's variable-store template (records made
+            // before it was kept have none, and their template is taken as
+            // it comes).
             let want = match part {
                 "main" => Some(img.sha256.clone()),
                 "initrd" => img.initrd.as_ref().map(|i| i.sha256.clone()),
+                "vars" => img.vars_sha256.clone(),
                 _ => None,
             };
             if let Some(want) = want {

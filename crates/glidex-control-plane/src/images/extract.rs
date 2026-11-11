@@ -445,6 +445,7 @@ fn extraction_record(name: String, arch: Arch, nodes: Vec<String>) -> Image {
         virtual_size_bytes: 0,
         file_size_bytes: 0,
         sha256: String::new(),
+        vars_sha256: None,
         arch,
         created_at: now(),
         download: Default::default(),
