@@ -872,6 +872,9 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         es.image(image);
         call.require_action("readImage", Ent::Image(image.clone()), es, &[])?;
     }
+    if let Some(k) = &req.kernel {
+        crate::service::storage::require_kernel_for(call, k, &project).await?;
+    }
     // An image means a new root disk, on the default datastore.
     if req.image.is_some() {
         crate::service::storage::disk_datastore(call, None)?;
@@ -1271,6 +1274,7 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             let mut kes = EntitySet::new();
             kes.image(k);
             call.require_action("readImage", Ent::Image(k.clone()), kes, &[])?;
+            crate::service::storage::require_kernel_for(call, k, &project).await?;
         }
         if let Some(cred) = &cp.credential {
             update = true;

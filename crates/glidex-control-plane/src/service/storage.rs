@@ -482,18 +482,77 @@ pub fn firmware_catalog(
     })
 }
 
+/// What a caller sees of images. Images are shared, but an image a VM
+/// owns (a kernel taken from its disk, spec/23-kernel-boot.md §3) goes with
+/// that VM's project, and of the VMs and disks an image names, a caller
+/// sees only those it may read.
+pub(crate) struct ImageScope {
+    /// VM id → whether the caller may read it.
+    owners: std::collections::HashMap<String, bool>,
+    vm_names: std::collections::HashSet<String>,
+    disk_names: std::collections::HashSet<String>,
+}
+
+impl ImageScope {
+    pub(crate) async fn new(call: &Call) -> Self {
+        let mut s = ImageScope {
+            owners: Default::default(),
+            vm_names: Default::default(),
+            disk_names: Default::default(),
+        };
+        for vm in call.manager().list_vms().await {
+            let (e, es) = crate::api::vm_entities(&vm);
+            let ok = call.allowed("readVm", e, es);
+            if ok {
+                s.vm_names.insert(vm.name.clone());
+            }
+            s.owners.insert(vm.id.clone(), ok);
+        }
+        for d in call.manager().list_disks() {
+            let (e, es) = disk_entities(&d.id, &d.project);
+            if call.allowed("readDisk", e, es) {
+                s.disk_names.insert(d.name.clone());
+            }
+        }
+        s
+    }
+
+    /// `i` as the caller may see it; `None` if it may not see it at all.
+    /// An owned image whose VM is gone is left to those who may delete it.
+    pub(crate) fn view(&self, call: &Call, mut i: ImageResponse) -> Option<ImageResponse> {
+        if let Some(owner) = &i.owner {
+            let ok = match self.owners.get(owner) {
+                Some(ok) => *ok,
+                None => {
+                    let mut es = EntitySet::new();
+                    es.image(&i.id);
+                    call.allowed("deleteImage", Ent::Image(i.id.clone()), es)
+                }
+            };
+            if !ok {
+                return None;
+            }
+        }
+        i.used_by_vms.retain(|n| self.vm_names.contains(n));
+        i.linked_disks.retain(|n| self.disk_names.contains(n));
+        Some(i)
+    }
+}
+
 pub async fn list_images(
     call: &Call,
     _req: pb::ListImagesRequest,
 ) -> ServiceResult<pb::ListImagesResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
+    let scope = ImageScope::new(call).await;
     Ok(pb::ListImagesResponse {
         images: call
             .manager()
             .list_images()
             .await
-            .iter()
-            .map(image_pb)
+            .into_iter()
+            .filter_map(|i| scope.view(call, i))
+            .map(|i| image_pb(&i))
             .collect(),
         ..Default::default()
     })
@@ -507,16 +566,47 @@ fn require_image(call: &Call, id: &str) -> ServiceResult<()> {
     Ok(())
 }
 
+/// An image by id or name, as the caller may see it: one it may not see
+/// (another project's VM's own kernel) is not found.
+pub(crate) async fn visible_image(call: &Call, key: &str) -> ServiceResult<ImageResponse> {
+    let i = call.manager().get_image(key).await.map_err(manager_err)?;
+    ImageScope::new(call).await.view(call, i).ok_or_else(|| {
+        ServiceError::from(crate::api::err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("image {key} not found"),
+        ))
+    })
+}
+
+/// A VM in `project` may boot kernel image `key`: a kernel another VM owns
+/// (taken from its disk) only in that VM's project.
+pub(crate) async fn require_kernel_for(call: &Call, key: &str, project: &str) -> ServiceResult<()> {
+    let i = visible_image(call, key).await?;
+    if let Some(owner) = &i.owner {
+        let same = call
+            .manager()
+            .get_vm(owner)
+            .await
+            .is_ok_and(|vm| vm.project == project);
+        if !same {
+            return Err(crate::api::err(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!("kernel image {key} is a VM's own and boots only VMs of that VM's project"),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 pub async fn get_image(
     call: &Call,
     req: pb::GetImageRequest,
 ) -> ServiceResult<pb::GetImageResponse> {
     require_image(call, &req.id)?;
-    let i = call
-        .manager()
-        .get_image(&req.id)
-        .await
-        .map_err(manager_err)?;
+    let i = visible_image(call, &req.id).await?;
     Ok(pb::GetImageResponse {
         image: image_pb(&i).into(),
         ..Default::default()
@@ -652,11 +742,7 @@ pub async fn image_events(
     req: pb::ListImageEventsRequest,
 ) -> ServiceResult<pb::ListImageEventsResponse> {
     require_image(call, &req.id)?;
-    let i = call
-        .manager()
-        .get_image(&req.id)
-        .await
-        .map_err(manager_err)?;
+    let i = visible_image(call, &req.id).await?;
     let events = call
         .manager()
         .object_events("image", &i.id)

@@ -151,7 +151,11 @@ async fn snapshot(
             }
             Kind::Image => {
                 if c.allowed("readImage", Ent::Cluster, EntitySet::new()) {
+                    let scope = crate::service::storage::ImageScope::new(c).await;
                     for img in m.list_images().await {
+                        let Some(img) = scope.view(c, img) else {
+                            continue;
+                        };
                         view.insert(
                             (Kind::Image, img.id.clone()),
                             serde_json::to_value(crate::service::storage::image_pb(&img))
