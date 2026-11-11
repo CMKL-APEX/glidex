@@ -20,6 +20,24 @@ const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.
 const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
+/// Pylon release (github.com/CMKL-APEX/pylon/releases), verified against
+/// `PYLON_ASSETS` (the release's SHA256SUMS). Bump together. Installed only
+/// with `--with-pylon` (spec/30-pylon.md P10, P11).
+const PYLON_VERSION: &str = "v0.0.8-rc1";
+/// Each Pylon release asset, the name it is installed under in `BIN_DIR`,
+/// and its sha256. x86_64 only.
+const PYLON_ASSETS: [(&str, &str, &str); 2] = [
+    (
+        "pylon-x86_64",
+        "pylon",
+        "68ade7b49c7482f94484cd183e090dbed73ae2c2cb62badd39b8d4992884707c",
+    ),
+    (
+        "pylond-x86_64",
+        "pylond",
+        "e988b54501ab3b3984e0a3956f699624bdd3624c54f6c7feaeac06d114198ad2",
+    ),
+];
 /// rustup-init from `static.rust-lang.org/rustup/archive/<version>/<target>/`,
 /// verified against `rustup_asset` (the `rustup-init.sha256` published next
 /// to it) before it runs. Only used when Rust is missing; after that
@@ -177,7 +195,7 @@ fn main() -> Result<()> {
         ensure_service_user(user.as_deref())?;
     }
     install_cloud_hypervisor(&platform)?;
-    install_pylon(&opts, &mut changed)?;
+    install_pylon(&opts, &platform, &mut changed)?;
     install_binaries(&opts, &user_home, &mut changed)?;
     install_ui_assets()?;
     // Our own home, not SUDO_USER's: a root run mustn't leave root-owned
@@ -841,8 +859,11 @@ struct Options {
     sriov: Vec<(String, u32)>,
     /// `--now`: apply the boot devices now as well. Never saved.
     vfio_now: bool,
-    /// `--with-pylon`: install Pylon hypervisor and pylond daemon (spec/30-pylon.md §9).
+    /// `--with-pylon`: install the pinned Pylon release (spec/30-pylon.md §9).
     with_pylon: Option<bool>,
+    /// `--pylon-from DIR`: install a local Pylon build instead, this run
+    /// only (P12). Never saved.
+    pylon_from: Option<PathBuf>,
 }
 
 /// `a,b , c` → `[a, b, c]`.
@@ -931,6 +952,7 @@ impl Default for Options {
             sriov: Vec::new(),
             vfio_now: false,
             with_pylon: None,
+            pylon_from: None,
         }
     }
 }
@@ -988,6 +1010,7 @@ impl Options {
                 "--tailscale-cert" => o.tailscale_cert = Some(true),
                 "--with-pylon" | "--pylon" => o.with_pylon = Some(true),
                 "--no-pylon" => o.with_pylon = Some(false),
+                "--pylon-from" => o.pylon_from = Some(PathBuf::from(value("--pylon-from")?)),
                 "--datastore" => o
                     .datastores
                     .push(DatastoreReg::parse(&value("--datastore")?, true)?),
@@ -1152,8 +1175,12 @@ fn print_help() {
          \x20                            profile reserved (kept by default)\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
-         \x20     --with-pylon           install Pylon hypervisor and pylond daemon (spec/30-pylon.md)\n\
-         \x20     --no-pylon             skip Pylon hypervisor and pylond\n\
+         \x20     --with-pylon           install the Pylon hypervisor and pylond, release {PYLON_VERSION}\n\
+         \x20                            (x86_64; checksums verified; spec/30-pylon.md)\n\
+         \x20     --no-pylon             stop installing and updating them (--remove-pylon on\n\
+         \x20                            uninstall deletes them)\n\
+         \x20     --pylon-from DIR       this run only: install DIR/pylon (or DIR/cloud-hypervisor)\n\
+         \x20                            and DIR/pylond, a local Pylon build, instead\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
          \x20     --tailscale-cert       serve the web UI with this node's Tailscale certificate\n\
          \x20                            (lets glidex-ui fetch it from tailscaled; its ts.net\n\
@@ -1233,6 +1260,14 @@ fn print_plan(opts: &Options) {
         ADMIN_GROUP,
         on(opts.services)
     );
+    match &opts.pylon_from {
+        Some(dir) => println!("  - Pylon and pylond from {}", dir.display()),
+        None => println!(
+            "  - Pylon {} and pylond (checksums verified): {}",
+            PYLON_VERSION,
+            on(opts.with_pylon == Some(true))
+        ),
+    }
     if opts.services {
         println!(
             "  - web UI with this node's Tailscale certificate: {}",
@@ -1585,6 +1620,35 @@ const BASE_DEPS: &[Dep] = &[
     ),
 ];
 
+/// The libraries the Pylon release's `pylond` links (libbpf, for
+/// `scx_pylon`); the VMM needs only glibc.
+const PYLON_DEPS: &[Dep] = &[
+    dep(
+        Probe::AnyFile(&[
+            "/usr/lib/x86_64-linux-gnu/libelf.so.1",
+            "/usr/lib64/libelf.so.1",
+            "/usr/lib/libelf.so.1",
+        ]),
+        ["libelf1t64", "elfutils-libelf", "libelf"],
+    ),
+    dep(
+        Probe::AnyFile(&[
+            "/usr/lib/x86_64-linux-gnu/libz.so.1",
+            "/usr/lib64/libz.so.1",
+            "/usr/lib/libz.so.1",
+        ]),
+        ["zlib1g", "zlib", "zlib"],
+    ),
+    dep(
+        Probe::AnyFile(&[
+            "/usr/lib/x86_64-linux-gnu/libzstd.so.1",
+            "/usr/lib64/libzstd.so.1",
+            "/usr/lib/libzstd.so.1",
+        ]),
+        ["libzstd1", "libzstd", "zstd"],
+    ),
+];
+
 /// Where distributions put OVMF (kept in step with the control plane's
 /// `hypervisor::qemu::OVMF_CODE_CANDIDATES`).
 const OVMF_CODE_PATHS: &[&str] = &[
@@ -1673,6 +1737,9 @@ fn wanted_deps(opts: &Options, platform: &Platform, role: Option<&str>) -> Vec<D
     }
     if opts.networking {
         deps.extend_from_slice(NETWORKING_DEPS);
+    }
+    if (opts.with_pylon == Some(true) || opts.pylon_from.is_some()) && platform.arch == "x86_64" {
+        deps.extend_from_slice(PYLON_DEPS);
     }
     deps
 }
@@ -2203,81 +2270,118 @@ fn warn_shadowed(name: &str, ours: &str) {
     }
 }
 
-fn find_pylon_source() -> Option<PathBuf> {
-    let release = target_dir().join("release");
-    let in_release = release.join("pylon");
-    if in_release.exists() {
-        return Some(in_release);
+/// The pinned Pylon release with `--with-pylon`, or a local build with
+/// `--pylon-from` (spec/30-pylon.md P10–P12). Each binary is replaced only
+/// when its sha256 differs; a new `pylond` restarts glidex-pylond, and a
+/// new `pylon` applies to VMs launched afterwards.
+fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> Result<()> {
+    if let Some(dir) = &opts.pylon_from {
+        section("Pylon & pylond (local build)");
+        return install_pylon_from(dir, changed);
     }
-    if let Some(parent) = workspace_root().parent() {
-        let pylon_target = parent.join("pylon/target/release");
-        let pylon_bin = pylon_target.join("pylon");
-        if pylon_bin.exists() {
-            return Some(pylon_bin);
+    if opts.with_pylon != Some(true) {
+        // Installed before P11 by picking up a local build, which no longer
+        // happens by itself.
+        if opts.with_pylon.is_none() && Path::new(&format!("{}/pylon", BIN_DIR)).exists() {
+            println!(
+                "{} {}/pylon is left as it is; --with-pylon keeps it at Pylon {}.",
+                "Note:".yellow(),
+                BIN_DIR,
+                PYLON_VERSION
+            );
         }
-        let ch_bin = pylon_target.join("cloud-hypervisor");
-        if ch_bin.exists() {
-            return Some(ch_bin);
-        }
-    }
-    None
-}
-
-fn find_pylond_source() -> Option<PathBuf> {
-    let release = target_dir().join("release");
-    let in_release = release.join("pylond");
-    if in_release.exists() {
-        return Some(in_release);
-    }
-    if let Some(parent) = workspace_root().parent() {
-        let pylond_bin = parent.join("pylon/target/release/pylond");
-        if pylond_bin.exists() {
-            return Some(pylond_bin);
-        }
-    }
-    None
-}
-
-/// Installs Pylon hypervisor and pylond daemon when requested or present
-/// in the local build / release bundle (spec/30-pylon.md §9).
-fn install_pylon(opts: &Options, changed: &mut Changes) -> Result<()> {
-    let pylon_src = find_pylon_source();
-    let pylond_src = find_pylond_source();
-    let want = match opts.with_pylon {
-        Some(true) => true,
-        Some(false) => false,
-        None => pylon_src.is_some() || pylond_src.is_some(),
-    };
-    if !want {
         return Ok(());
     }
     section("Pylon & pylond");
-    if let Some(src) = pylon_src {
-        let dst = format!("{}/pylon", BIN_DIR);
-        if install_if_changed(&src, &dst, "0755")? {
-            println!("{} {}", "Updated:".green(), dst);
-        } else {
-            println!("{} {}", "Up to date:".green(), dst);
-        }
-        let has_cap = run_capture("getcap", &[&dst]).is_ok_and(|o| o.contains("cap_net_admin"));
-        if !has_cap {
-            sudo(&argv(&["setcap", "cap_net_admin+ep", &dst]))?;
-            println!("{} cap_net_admin on {}", "Granted:".green(), dst);
-        }
-    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylon", BIN_DIR)).exists() {
-        bail!("--with-pylon: pylon binary not found in target/release or adjacent pylon repo");
+    if platform.arch != "x86_64" {
+        bail!(
+            "--with-pylon: Pylon {} is released for x86_64 only; on {} build it and use --pylon-from DIR",
+            PYLON_VERSION,
+            platform.arch
+        );
     }
-
-    if let Some(src) = pylond_src {
-        let dst = format!("{}/pylond", BIN_DIR);
-        if install_if_changed(&src, &dst, "0755")? {
-            println!("{} {}", "Updated:".green(), dst);
+    let tmp = TempDir::new()?;
+    for (asset, name, sha256) in PYLON_ASSETS {
+        let dst = format!("{}/{}", BIN_DIR, name);
+        if file_sha256(Path::new(&dst)).ok().as_deref() == Some(sha256) {
+            println!("{} {} ({})", "Up to date:".green(), dst, PYLON_VERSION);
+            continue;
+        }
+        let url = format!(
+            "https://github.com/CMKL-APEX/pylon/releases/download/{}/{}",
+            PYLON_VERSION, asset
+        );
+        let download_path = tmp.path().join(name);
+        download_verified(&url, &download_path, sha256)?;
+        install_if_changed(&download_path, &dst, "0755")?;
+        println!("{} {} ({})", "Installed:".green(), dst, PYLON_VERSION);
+        if name == "pylond" {
             changed.pylond = true;
+        }
+    }
+    grant_pylon_net_admin()
+}
+
+/// `--pylon-from DIR`: a local build, this run only. Its version is printed
+/// so the run's output says what went on the host.
+fn install_pylon_from(dir: &Path, changed: &mut Changes) -> Result<()> {
+    let vmm = ["pylon", "cloud-hypervisor"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+        .with_context(|| {
+            format!(
+                "--pylon-from: neither pylon nor cloud-hypervisor in {}",
+                dir.display()
+            )
+        })?;
+    let pylond = dir.join("pylond");
+    if !pylond.is_file() {
+        bail!("--pylon-from: no pylond in {}", dir.display());
+    }
+    for (src, name) in [(&vmm, "pylon"), (&pylond, "pylond")] {
+        let version = run_capture(&src.to_string_lossy(), &["--version"])
+            .with_context(|| format!("{} --version failed", src.display()))?;
+        let version = version.trim();
+        println!("{} {} ({})", "Local build:".cyan(), version, src.display());
+        if pylon_build_is_dirty(version) {
+            println!(
+                "{} {} was built with uncommitted changes.",
+                "Warning:".yellow(),
+                src.display()
+            );
+        }
+        let dst = format!("{}/{}", BIN_DIR, name);
+        if install_if_changed(src, &dst, "0755")? {
+            println!("{} {}", "Installed:".green(), dst);
+            if name == "pylond" {
+                changed.pylond = true;
+            }
         } else {
             println!("{} {}", "Up to date:".green(), dst);
         }
-    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylond", BIN_DIR)).exists() {
-        bail!("--with-pylon: pylond binary not found in target/release or adjacent pylon repo");
+    }
+    println!(
+        "{} the next run without --pylon-from installs Pylon {} again (with --with-pylon).",
+        "Note:".yellow(),
+        PYLON_VERSION
+    );
+    grant_pylon_net_admin()
+}
+
+/// `cloud-hypervisor v55.0.0-123-gabcdef-dirty` (`git describe --dirty`).
+fn pylon_build_is_dirty(version: &str) -> bool {
+    version.ends_with("-dirty")
+}
+
+/// Tap devices inside non-root glidex-vm@ units, as for cloud-hypervisor.
+/// Replacing the file drops the capability, so it is checked every run.
+fn grant_pylon_net_admin() -> Result<()> {
+    let dst = format!("{}/pylon", BIN_DIR);
+    let has_cap = run_capture("getcap", &[&dst]).is_ok_and(|o| o.contains("cap_net_admin"));
+    if !has_cap {
+        sudo(&argv(&["setcap", "cap_net_admin+ep", &dst]))?;
+        println!("{} cap_net_admin on {}", "Granted:".green(), dst);
     }
     Ok(())
 }
@@ -4545,9 +4649,66 @@ mod tests {
             "a 'no' is remembered too"
         );
 
+        // A local Pylon build is for this run only.
+        let from = Options::parse(
+            Some(&pylon_on.render()),
+            &args(&["--pylon-from", "/src/pylon/target/release"]),
+        )
+        .unwrap();
+        assert_eq!(
+            from.pylon_from.as_deref(),
+            Some(Path::new("/src/pylon/target/release"))
+        );
+        assert!(!from.render().contains("pylon_from"));
+        assert!(Options::parse(None, &args(&["--pylon-from"])).is_err());
+
         assert!(Options::parse(None, &args(&["--bogus"])).is_err());
         assert!(Options::parse(None, &args(&["--ovs-profile", "fast"])).is_err());
         assert!(Options::parse(None, &args(&["--ovs-profile"])).is_err());
+    }
+
+    #[test]
+    fn pylon_libraries_only_with_pylon_on_x86_64() {
+        let x86 = Platform {
+            os: "linux",
+            arch: "x86_64",
+        };
+        let has_libelf = |deps: &[Dep]| deps.iter().any(|d| d.packages[0] == "libelf1t64");
+        let none = Options::default();
+        assert!(!has_libelf(&wanted_deps(&none, &x86, None)));
+        let on = Options::parse(None, &args(&["--with-pylon"])).unwrap();
+        let apt: Vec<_> = wanted_deps(&on, &x86, None)
+            .iter()
+            .filter(|d| PYLON_DEPS.iter().any(|p| p.packages == d.packages))
+            .map(|d| d.packages[0])
+            .collect();
+        assert_eq!(apt, ["libelf1t64", "zlib1g", "libzstd1"]);
+        let from = Options::parse(None, &args(&["--pylon-from", "/tmp/p"])).unwrap();
+        assert!(has_libelf(&wanted_deps(&from, &x86, None)));
+        let arm = Platform {
+            os: "linux",
+            arch: "aarch64",
+        };
+        assert!(!has_libelf(&wanted_deps(&on, &arm, None)));
+    }
+
+    #[test]
+    fn pylon_assets_are_pinned() {
+        assert!(PYLON_VERSION.starts_with('v'));
+        let names: Vec<_> = PYLON_ASSETS.iter().map(|(_, n, _)| *n).collect();
+        assert_eq!(names, ["pylon", "pylond"]);
+        for (asset, _, sha256) in PYLON_ASSETS {
+            assert!(asset.ends_with("-x86_64"), "{asset}");
+            assert!(
+                sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{asset}: {sha256}"
+            );
+        }
+        assert!(pylon_build_is_dirty(
+            "cloud-hypervisor v55.0.0-12-gabc1234-dirty"
+        ));
+        assert!(!pylon_build_is_dirty("cloud-hypervisor v55.0.0"));
+        assert!(!pylon_build_is_dirty("pylond 0.0.8-dev"));
     }
 
     fn pkgs(

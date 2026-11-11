@@ -48,9 +48,9 @@ The installer prints its plan, then:
    Glidex binaries and the web UI. With `--prebuilt` it skips this step.
 3. Creates the service users and groups (see [Users and
    groups](#users-and-groups)).
-4. Installs a pinned Cloud Hypervisor release, [Pylon](#pylon) when
-   asked for or found, the Glidex binaries and the web UI, and the
-   UEFI firmware.
+4. Installs a pinned Cloud Hypervisor release, a pinned
+   [Pylon](#pylon) release when asked for, the Glidex binaries and the
+   web UI, and the UEFI firmware.
 5. Sets up VM networking: Open vSwitch, `glidex-netd` and the boot
    devices, if any (see [Host networking](host-networking.md)).
 6. Writes the systemd units and configuration files, then starts or
@@ -109,8 +109,9 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--no-ovn` | Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster. |
 | `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it or there is no `tailscaled`. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
 | `--no-tailscale-cert` | Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts `tailscaled` if it removed its grant. |
-| `--with-pylon` (or `--pylon`) | Install the [Pylon](../user-guide/vms.md#elastic-cpu) hypervisor and its `pylond` core arbiter. You build them first from the `CMKL-APEX/pylon` repository, checked out next to this one (`cargo build --release -p cloud-hypervisor -p pylond`): the installer takes `target/release/pylon` (or `cloud-hypervisor`) and `pylond` from there, or from this checkout's `target/release`. Without the option, they are installed when found there. Refused when asked for and not found. See [Pylon](#pylon). |
-| `--no-pylon` | Skip Pylon and `pylond`. |
+| `--with-pylon` (or `--pylon`) | Install the [Pylon](../user-guide/vms.md#elastic-cpu) hypervisor and its `pylond` core arbiter from the Pylon release this Glidex pins, checking each file's SHA-256, and keep them at that release on later runs. x86_64 only. See [Pylon](#pylon). |
+| `--no-pylon` | Stop installing and updating Pylon. What is installed stays; `glidex-install uninstall --remove-pylon` deletes it. |
+| `--pylon-from DIR` | For this run only, install a local Pylon build instead of the release: `DIR/pylon` (or `DIR/cloud-hypervisor`) and `DIR/pylond`, such as a `CMKL-APEX/pylon` checkout's `target/release`. The installer prints the build's version and warns when it has uncommitted changes. The next run without it installs the pinned release again. |
 | `--qemu`, `--networking`, `--services`, `--ovn` | Undo an earlier `--no-…`. |
 | `--datastore NAME=PATH` | Register `PATH` (a directory under `/srv/glidex`, mounted on every node) as shared datastore `NAME`. Repeatable. Not saved. See [Registering at install time](datastores.md#registering-at-install-time). |
 | `--local-datastore NAME=PATH` | Register `PATH` as a node-local datastore `NAME`. Repeatable. Not saved. |
@@ -204,7 +205,29 @@ own `~/.glidex/`, for a control plane you run by hand.
 
 ## Pylon
 
-With `--with-pylon`, the host runs `glidex-pylond.service`. It listens
+With `--with-pylon`, the installer downloads `pylon-x86_64` and
+`pylond-x86_64` from the
+[Pylon release](https://github.com/CMKL-APEX/pylon/releases) this
+Glidex pins (`v0.0.8-rc1`), checks each against its pinned SHA-256, and
+installs them as `/usr/local/bin/pylon` and `/usr/local/bin/pylond`.
+A file is replaced only when its SHA-256 differs. VMs already running
+keep their `pylon`; a new `pylond` restarts `glidex-pylond`.
+
+- **What it needs.** The release is built on Ubuntu 24.04: it needs
+  glibc 2.38 or later, and `pylond` needs `libelf`, `zlib` and `zstd`
+  (`libelf1t64`, `zlib1g` and `libzstd1`), which the installer adds. On
+  another architecture or an older distribution, build Pylon yourself
+  and install it with `--pylon-from`.
+- **Which Pylon a host runs.** `pylon --version` of the release prints
+  `cloud-hypervisor v55.0.0`, not the release, so compare
+  `sha256sum /usr/local/bin/pylon /usr/local/bin/pylond` with the
+  release's `SHA256SUMS`.
+- **Hosts that had Pylon before.** Earlier installers took Pylon from a
+  local build without `--with-pylon`. They no longer do: a host that
+  never chose it keeps its binaries as they are, and the installer says
+  so. Run once with `--with-pylon` to move it to the release.
+
+The host runs `glidex-pylond.service`. It listens
 on `/run/pylon/pylond.sock` (group `glidex`) and starts before the
 control plane. Pylon VMs register with it, and it parks and wakes their
 vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
@@ -220,14 +243,11 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
 - **The `sched_ext` scheduler.** On a kernel built with `sched_ext`
   (6.12 or later), `pylond` attaches Pylon's `scx_pylon` kernel
   scheduler when it starts, and falls back to its own core table if
-  that fails. This needs a `pylond` built from Pylon with
-  [CMKL-APEX/pylon#9](https://github.com/CMKL-APEX/pylon/pull/9); an
-  earlier one never attaches it from this service. `scx_pylon` then
+  that fails. `scx_pylon` then
   schedules every task on the host, not only VMs, until `pylond` stops.
   Check it with `cat /sys/kernel/sched_ext/state /sys/kernel/sched_ext/root/ops`
   (`enabled`, `pylon`). To keep it off, start `pylond` with
-  `--no-scx` in a drop-in (`sudo systemctl edit glidex-pylond`), if
-  your `pylond` has that option:
+  `--no-scx` in a drop-in (`sudo systemctl edit glidex-pylond`):
 
   ```ini
   [Service]
