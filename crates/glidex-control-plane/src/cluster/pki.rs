@@ -245,6 +245,35 @@ pub fn pem_bundle_ders(pem: &str) -> Result<Vec<Vec<u8>>, PkiError> {
     Ok(out)
 }
 
+/// The one certificate of `bundle` whose public key has the SHA-256
+/// `fingerprint` (a join token's pin), as PEM; `None` if none has. A bundle
+/// fetched before any trust is untrusted as a whole: only this certificate
+/// is vouched for by the token, so only it may be trusted.
+pub fn pinned_ca(bundle: &str, fingerprint: &str) -> Result<Option<String>, PkiError> {
+    for der in pem_bundle_ders(bundle)? {
+        let (_, c) = parse_x509_certificate(&der).map_err(|e| PkiError::Parse(e.to_string()))?;
+        if hex(&Sha256::digest(c.public_key().raw)) == fingerprint {
+            return Ok(Some(pem_of(&der)));
+        }
+    }
+    Ok(None)
+}
+
+/// A DER certificate as PEM.
+pub fn pem_of(der: &[u8]) -> String {
+    use base64::Engine;
+    let b = base64::engine::general_purpose::STANDARD.encode(der);
+    let lines: Vec<&str> = b
+        .as_bytes()
+        .chunks(64)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        lines.join("\n")
+    )
+}
+
 pub fn public_key_fingerprint(cert_pem: &str) -> Result<String, PkiError> {
     let der = parse_pem_cert(cert_pem)?;
     let (_, c) = parse_x509_certificate(&der).map_err(|e| PkiError::Parse(e.to_string()))?;
@@ -331,6 +360,25 @@ mod tests {
         let (pem, _) = ca.sign_node(&csr, "other", false, 30).unwrap();
         let seen = inspect_node_cert(&pem_bundle_ders(&pem).unwrap()[0]).unwrap();
         assert_eq!((seen.node_id.as_str(), seen.server), ("other", false));
+    }
+
+    #[test]
+    fn only_the_pinned_ca_of_a_bundle_is_kept() {
+        let real = Ca::generate("c1").unwrap();
+        let other = Ca::generate("c1").unwrap();
+        let fp = real.public_key_fingerprint().unwrap();
+        // Another CA after the pinned one, as an attacker in the path would add.
+        let bundle = format!("{}{}", real.cert_pem, other.cert_pem);
+        let kept = pinned_ca(&bundle, &fp).unwrap().unwrap();
+        assert_eq!(pem_bundle_ders(&kept).unwrap().len(), 1);
+        assert_eq!(public_key_fingerprint(&kept).unwrap(), fp);
+        // Order doesn't matter, and a bundle without it pins nothing.
+        let bundle = format!("{}{}", other.cert_pem, real.cert_pem);
+        assert_eq!(
+            public_key_fingerprint(&pinned_ca(&bundle, &fp).unwrap().unwrap()).unwrap(),
+            fp
+        );
+        assert!(pinned_ca(&other.cert_pem, &fp).unwrap().is_none());
     }
 
     #[test]

@@ -99,10 +99,9 @@ impl Cluster {
         self.files.save_ca_key(ca.key_pem())?;
         let trust = self.files.read(self.files.trust()).unwrap_or_default();
         let fp = ca.public_key_fingerprint()?;
-        if !pki::pem_bundle_ders(&trust)?
-            .iter()
-            .any(|d| pki::public_key_fingerprint(&pem_of(d)).ok().as_deref() == Some(fp.as_str()))
-        {
+        if !pki::pem_bundle_ders(&trust)?.iter().any(|d| {
+            pki::public_key_fingerprint(&pki::pem_of(d)).ok().as_deref() == Some(fp.as_str())
+        }) {
             pki::write_private(
                 &self.files.trust(),
                 format!("{}\n{}", trust.trim_end(), ca.cert_pem).as_bytes(),
@@ -286,7 +285,7 @@ impl Cluster {
             .unwrap_or_else(|| self.files.read(self.files.trust()).unwrap_or_default());
         let old_fps: Vec<String> = pki::pem_bundle_ders(&old_bundle)?
             .iter()
-            .filter_map(|d| pki::public_key_fingerprint(&pem_of(d)).ok())
+            .filter_map(|d| pki::public_key_fingerprint(&pki::pem_of(d)).ok())
             .collect();
         let now = crate::tenancy::now();
         let grace = grace_secs.unwrap_or(self.config.ca_rotation_grace_secs);
@@ -667,18 +666,4 @@ impl Cluster {
             }
         });
     }
-}
-
-fn pem_of(der: &[u8]) -> String {
-    use base64::Engine;
-    let b = base64::engine::general_purpose::STANDARD.encode(der);
-    let lines: Vec<&str> = b
-        .as_bytes()
-        .chunks(64)
-        .map(|c| std::str::from_utf8(c).unwrap())
-        .collect();
-    format!(
-        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
-        lines.join("\n")
-    )
 }
