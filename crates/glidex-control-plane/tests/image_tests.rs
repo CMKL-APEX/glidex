@@ -1675,7 +1675,7 @@ async fn firmware_download_with_a_vars_template() {
     let tmp = TempDir::new().unwrap();
     let fx = fixtures(tmp.path());
     let (base, _) = start_server(&fx).await;
-    let (app, _manager) = create_app(tmp.path());
+    let (app, manager) = create_app(tmp.path());
     let fw = |name: &str, extra: Value| {
         let mut body = json!({"url": format!("{base}/fw.fd"), "sha256": sha256_hex(FIRMWARE), "name": name, "kind": "IMAGE_KIND_FIRMWARE", "hypervisor": "HYPERVISOR_QEMU"});
         body.as_object_mut()
@@ -1725,6 +1725,12 @@ async fn firmware_download_with_a_vars_template() {
     );
     let vars = img["path"].as_str().unwrap().replace(".fd", ".vars.fd");
     assert_eq!(std::fs::read(&vars).unwrap(), VARS);
+    // The stored template's digest is recorded, for other nodes' copies.
+    let rec = manager
+        .images()
+        .get_image(img["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(rec.vars_sha256, Some(sha256_hex(VARS)));
     assert_eq!(
         std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777,
         0o444
@@ -1747,6 +1753,12 @@ async fn firmware_download_with_a_vars_template() {
         (Some("IMAGE_STATE_READY"), Some(false)),
         "{img}"
     );
+    // Unpinned, the template it got is still what other nodes check against.
+    let rec = manager
+        .images()
+        .get_image(img["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(rec.vars_sha256, Some(sha256_hex(VARS)));
     let (_, img) = request(
         &app,
         "POST",

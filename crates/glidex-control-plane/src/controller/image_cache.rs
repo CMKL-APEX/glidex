@@ -429,13 +429,20 @@ impl VmManager {
             }),
         )?;
         let mut result: Result<u64, String> = Ok(0);
+        // Parts put in place so far: a copy that fails on a later part
+        // removes them, or the next pass would find the main file and count
+        // a half copy as this node's.
+        let mut placed = Vec::new();
         for (part, dest) in self.image_files(img) {
             let tmp = dest.with_extension("cache.part");
             let path = format!("/cluster/v1/images/{}/file?part={part}", img.id);
             match cluster.client.get_to_file(&holder, &path, &tmp).await {
                 // Optional parts: a firmware without a template, a kernel
                 // without an initramfs.
-                Ok(404) if part == "vars" || (part == "initrd" && img.initrd.is_none()) => {
+                Ok(404)
+                    if (part == "vars" && img.vars_sha256.is_none())
+                        || (part == "initrd" && img.initrd.is_none()) =>
+                {
                     continue;
                 }
                 Ok(200) => {}
@@ -451,10 +458,13 @@ impl VmManager {
                 }
             }
             // The parts with a recorded digest: the main file, a kernel's
-            // initramfs.
+            // initramfs, a firmware's variable-store template (records made
+            // before it was kept have none, and their template is taken as
+            // it comes).
             let want = match part {
                 "main" => Some(img.sha256.clone()),
                 "initrd" => img.initrd.as_ref().map(|i| i.sha256.clone()),
+                "vars" => img.vars_sha256.clone(),
                 _ => None,
             };
             if let Some(want) = want {
@@ -476,6 +486,7 @@ impl VmManager {
                 result = Err(e.to_string());
                 break;
             }
+            placed.push(dest.clone());
             if part == "main" {
                 result = Ok(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
             }
@@ -503,6 +514,9 @@ impl VmManager {
                 Ok(None)
             }
             Err(e) => {
+                for p in &placed {
+                    let _ = std::fs::remove_file(p);
+                }
                 tracing::warn!(image = %img.name, "fetching the image: {}", e);
                 self.put_cache_row(
                     &img.id,

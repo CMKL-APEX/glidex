@@ -2033,6 +2033,89 @@ async fn a_vm_boots_through_its_nodes_copy_of_the_firmware() {
     );
 }
 
+/// A node copies a firmware image's variable-store template only if it
+/// matches the digest the image records: a holder can't hand other nodes a
+/// template of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_firmware_template_copy_is_checked_against_its_digest() {
+    use glidex_control_plane::store::{Origin, TableId};
+    use sha2::{Digest, Sha256};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let hex = |d: &[u8]| glidex_control_plane::cluster::pki::hex(&Sha256::digest(d));
+    let agent_id = agent.manager.local_node_id();
+
+    let code = vec![9u8; 4096];
+    let vars = vec![7u8; 1024];
+    // `good` holds the template it records; `bad` holds another one.
+    for (id, held) in [("fw-good", vars.clone()), ("fw-bad", vec![6u8; 1024])] {
+        let img = json!({
+            "id": id, "name": id, "kind": "firmware", "hypervisor": "qemu",
+            "source": { "kind": "firmware", "key": "test", "url": "http://example.invalid/fw", "version": "1" },
+            "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": code.len(), "file_size_bytes": code.len(),
+            "sha256": hex(&code), "vars_sha256": hex(&vars), "arch": "x86_64", "created_at": 1,
+            "pinned": [agent_id],
+        });
+        let images = server.manager.images();
+        std::fs::create_dir_all(images.firmware_path(id).parent().unwrap()).unwrap();
+        std::fs::write(images.firmware_path(id), &code).unwrap();
+        std::fs::write(images.firmware_vars_template(id), &held).unwrap();
+        server
+            .manager
+            .database()
+            .write(
+                Origin::Api,
+                |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                    tx.open_table(TableId::Images.definition())?
+                        .insert(id, img.to_string().as_bytes())?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    let row = |id: &'static str| {
+        let db = agent.manager.database();
+        let agent_id = agent_id.clone();
+        async move {
+            let txn = db.begin_read().unwrap();
+            txn.open_table(TableId::ImageCaches.definition())
+                .ok()
+                .and_then(|t| t.get(format!("{id}/{agent_id}").as_str()).ok().flatten())
+                .and_then(|v| serde_json::from_slice::<Value>(v.value()).ok())
+                .unwrap_or(Value::Null)
+        }
+    };
+    wait_for("the agent's copy of the matching template", || async {
+        row("fw-good").await["phase"] == "Ready"
+    })
+    .await;
+    assert_eq!(
+        std::fs::read(agent.manager.images().firmware_vars_template("fw-good")).unwrap(),
+        vars
+    );
+    wait_for("the agent refusing the other template", || async {
+        row("fw-bad").await["phase"] == "Failed"
+    })
+    .await;
+    let r = row("fw-bad").await;
+    assert!(
+        r["error"].as_str().unwrap().contains("does not match"),
+        "{r}"
+    );
+    assert!(
+        !agent
+            .manager
+            .images()
+            .firmware_vars_template("fw-bad")
+            .exists()
+    );
+    // Nor does a half copy count later: the code file it took first is gone.
+    tokio::time::sleep(Duration::from_secs(6)).await;
+    assert_ne!(row("fw-bad").await["phase"], "Ready");
+    assert!(!agent.manager.images().firmware_path("fw-bad").exists());
+}
+
 /// A server and an agent named `agent1`, both running their controllers.
 async fn server_and_agent() -> (Cp, Cp) {
     let mut cfg = test_config();
