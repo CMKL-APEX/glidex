@@ -34,6 +34,7 @@ don't conflict over it:
 | Metering | [13-metering.md](13-metering.md) | M0–M5 (M4's host run passed 2026-11-07; M5, the current hour on a cluster VM's charts, #339 #340) | M5's host check, not run yet; then §15.9 | §15 Milestones |
 | Reconciliation | [12-reconciliation.md](12-reconciliation.md) | M1–M4 (M4 checked on an installed KVM host, 2026-11-07); M5 renaming a VM (D21, #326–#328) | — | §18 Milestones |
 | Kernel boot | [23-kernel-boot.md](23-kernel-boot.md) | K0–K4; extraction on a node of the kernel's architecture (#153) | §13 changes to other specs | §12 Milestones |
+| Pylon | [30-pylon.md](30-pylon.md) | P0–P4 (P4's host e2e not run yet); P5, Pylon pinned to release `v0.0.8-rc1` (`--with-pylon` only, `--pylon-from` for a local build) | Publishing the `v0.0.8-rc1` release; an install from it on a host | §11 Implementation status |
 | Security | [11-security.md](11-security.md) | S0–S6 | On a real host: nftables rules, systemd sandboxing with VFIO, hugepages and taps, a real PAM stack, OIDC against the production IdP | §17 Implementation status |
 | RPC API | [18-grpc.md](18-grpc.md) | G0–G5 | — | §15 Implementation status |
 | gxctl auth | [17-gxctl-auth.md](17-gxctl-auth.md) | G1–G5 | — | §12 Implementation plan |
