@@ -82,20 +82,35 @@ async fn vm_id_of(app: &App, peer: &str) -> Result<String, super::ApiErr> {
         )
     })?;
     let index = glidex_ovs::metadata::index_of(ip).ok_or_else(unknown)?;
-    let vm = app
-        .manager
-        .list_vms()
-        .await
-        .into_iter()
-        .find(|v| {
-            app.manager.is_local(v)
-                && v.status
-                    .nics
-                    .iter()
-                    .any(|n| n.metadata_index == Some(index))
-        })
-        .ok_or_else(unknown)?;
-    Ok(vm.id)
+    let vms = app.manager.list_vms().await;
+    owner_of(
+        vms.iter()
+            .filter(|v| app.manager.is_local(v))
+            .map(|v| (v.id.as_str(), &v.status)),
+        index,
+    )
+    .map(str::to_string)
+    .ok_or_else(unknown)
+}
+
+/// The one live VM whose attached port holds `index`. A stopped VM may
+/// still list a NIC whose detach failed, and netd may since have given its
+/// index to another VM's port: only a running or paused VM with the port
+/// up counts, and two claims to one index answer for neither.
+fn owner_of<'a>(
+    vms: impl Iterator<Item = (&'a str, &'a crate::models::VmStatus)>,
+    index: u16,
+) -> Option<&'a str> {
+    use crate::models::VmPhase;
+    let mut found = vms.filter(|(_, st)| {
+        matches!(st.phase, VmPhase::Running | VmPhase::Paused)
+            && st
+                .nics
+                .iter()
+                .any(|n| n.port_ok && n.metadata_index == Some(index))
+    });
+    let (id, _) = found.next()?;
+    found.next().is_none().then_some(id)
 }
 
 /// Answers already given: the same one until 80% of its lifetime (W8,
@@ -288,6 +303,51 @@ async fn glidex_token(State(app): State<AppState>, Json(ask): Json<Ask>) -> Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn status(phase: crate::models::VmPhase, index: u16, port_ok: bool) -> crate::models::VmStatus {
+        crate::models::VmStatus {
+            phase,
+            nics: vec![crate::models::NicStatus {
+                network: "n".into(),
+                nic_index: 0,
+                mac: "02:00:00:00:00:01".into(),
+                port: Some("gx00000000-0".into()),
+                ipv4: None,
+                port_ok,
+                metadata_index: Some(index),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn only_a_live_vm_with_its_port_up_owns_an_index() {
+        use crate::models::VmPhase::*;
+        let stale = status(Stopped, 3, true);
+        let live = status(Running, 3, true);
+        let paused = status(Paused, 4, true);
+        let down = status(Running, 5, false);
+        let vms = || {
+            [
+                ("stale", &stale),
+                ("live", &live),
+                ("paused", &paused),
+                ("down", &down),
+            ]
+            .into_iter()
+        };
+        assert_eq!(
+            owner_of(vms(), 3),
+            Some("live"),
+            "the stopped VM's old claim is ignored"
+        );
+        assert_eq!(owner_of(vms(), 4), Some("paused"));
+        assert_eq!(owner_of(vms(), 5), None, "port not up");
+        assert_eq!(owner_of(vms(), 6), None);
+        let twin = status(Running, 3, true);
+        let both = [("live", &live), ("twin", &twin)];
+        assert_eq!(owner_of(both.into_iter(), 3), None, "two claims: neither");
+    }
 
     #[test]
     fn answers_are_reused_until_80_percent_of_their_life() {
