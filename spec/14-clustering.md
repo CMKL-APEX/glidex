@@ -2316,7 +2316,7 @@ the commit. A further gain would come from there, not the apply.
 
 ### C11: peer identity
 
-In progress: tasks 1 and 2 are built. Decisions D33–D35.
+In progress: tasks 1–3 are built. Decisions D33–D35.
 
 | | |
 |---|---|
@@ -2324,7 +2324,9 @@ In progress: tasks 1 and 2 are built. Decisions D33–D35.
 | Tests | `an_agent_refuses_certificates_the_cluster_did_not_issue_or_revoked`: a server certificate the CA signed for a node the cluster doesn't have is refused by the agent (never issued), then once issued (not a current server), then once deny-listed (`node_removed`), while the server itself is answered throughout. The other 50 cluster tests pass with the check on servers too |
 | Spec \| Code | Task 2 (D34): `check_status_write` refuses a node's own `nodes` write that changes `status.advertise`, next to `phase`, `departed_ids` and `raft_id`. Servers still set it at join, rejoin and import, and a server's raw write of its own record is unchanged |
 | Tests | `cluster::sync::tests::a_node_may_not_change_its_own_address`: a status report passes; changing or dropping `advertise` is refused |
-| Not yet | Tasks 3 and 4 (D35) |
+| Spec \| Code | Task 3 (D35): `cluster::net::Target` is an address and, optionally, the node expected there; every `PeerClient` method takes `impl Into<Target>` (an address string is a `Target` with no node). `PeerClient::dial` makes every connection and, when the target names a node, refuses a certificate whose node id (CN) is another's; pooled connections are keyed by node and address. Pinned: relayed host actions and UI (`api::relay`), console, console log and stats relays (`remote_node_addr`), device operations and topology, image copies (`holder_of`, store copies), and OVN status. Not pinned, by D35's rule: seed and server-list addresses (join, the agent's server list) and Raft's leader lookup (by Raft id, in `glidex-raftstore`) |
+| Tests | `a_request_to_a_known_node_checks_its_certificate`: the agent is answered when the agent is expected; at the agent's address, expecting the server or another id fails on identity; an address alone is answered |
+| Not yet | Task 4 (D35's header) |
 
 ### Validation against real OVN and conntrack (after C8)
 

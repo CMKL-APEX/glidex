@@ -326,7 +326,7 @@ async fn run_on_host(
         .ok()
         .flatten()
         .and_then(|n| n.status.advertise)
-        .map(|a| a.to_string())
+        .map(|a| crate::cluster::net::Target::node(node, a))
         .ok_or_else(|| {
             err(
                 StatusCode::NOT_FOUND,

@@ -330,7 +330,7 @@ impl VmManager {
     }
 
     /// The node-API address of a node (other than this one) with a ready copy.
-    fn holder_of(&self, img: &Image) -> Option<String> {
+    fn holder_of(&self, img: &Image) -> Option<crate::cluster::net::Target> {
         let me = self.local_node_id();
         self.image_caches(&img.id)
             .into_iter()
@@ -340,8 +340,8 @@ impl VmManager {
                     .get(&n)
                     .ok()
                     .flatten()
-                    .and_then(|n| n.status.advertise)
-                    .map(|a| a.to_string())
+                    .and_then(|r| r.status.advertise)
+                    .map(|a| crate::cluster::net::Target::node(n, a))
             })
     }
 

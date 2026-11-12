@@ -7080,3 +7080,47 @@ async fn an_agent_refuses_certificates_the_cluster_did_not_issue_or_revoked() {
     let (s, b) = ask(sc.client.clone()).await;
     assert_eq!(s, StatusCode::OK, "the server is still answered: {b}");
 }
+
+/// spec/14-clustering.md D35: a request to a node known by id is refused
+/// when another node's certificate answers at its address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_request_to_a_known_node_checks_its_certificate() {
+    use glidex_control_plane::cluster::net::Target;
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let client = cluster(&server).client.clone();
+    let ask = |to: Target| {
+        let client = client.clone();
+        async move {
+            client
+                .request_timeout(
+                    to,
+                    hyper::Method::GET,
+                    "/cluster/v1/status",
+                    &[],
+                    bytes::Bytes::new(),
+                    Duration::from_secs(10),
+                )
+                .await
+        }
+    };
+    let agent_id = agent.manager.local_node_id();
+    let r = ask(Target::node(&agent_id, agent.addr)).await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+    // The agent's address, expecting the server: refused before any request.
+    let server_id = server.manager.local_node_id();
+    let Err(e) = ask(Target::node(&server_id, agent.addr)).await else {
+        panic!("answered")
+    };
+    let e = e.to_string();
+    assert!(e.contains(&format!("not node {server_id}'s")), "{e}");
+    // A connection checked for the agent isn't reused for another node.
+    let Err(e) = ask(Target::node("someone-else", agent.addr)).await else {
+        panic!("answered")
+    };
+    let e = e.to_string();
+    assert!(e.contains("not node someone-else's"), "{e}");
+    // An address alone still checks only the CA.
+    let r = ask(agent.addr.to_string().into()).await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+}
