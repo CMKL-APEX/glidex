@@ -10,6 +10,7 @@ import {
   settled,
   nodeUnreachable,
   notReadyReason,
+  pylonUnmanagedReason,
   tsSecs,
   unscheduledReason,
   vmActivity,
@@ -249,6 +250,11 @@ export default function VmDetail() {
                     </span>
                   )}
                 </p>
+                {pylonUnmanagedReason(vm) && (
+                  <p className="mt-1 p-2 bg-amber-50 border border-amber-200 rounded-sm text-xs text-amber-800" data-testid="pylon-unmanaged">
+                    Not managed by pylond: {pylonUnmanagedReason(vm)}
+                  </p>
+                )}
                 {may("updateVm") && <VmCpuScale vm={vm} onChanged={fetchVm} />}
               </div>
               <div>
