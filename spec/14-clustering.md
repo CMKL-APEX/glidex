@@ -2316,13 +2316,15 @@ the commit. A further gain would come from there, not the apply.
 
 ### C11: peer identity
 
-In progress: task 1 is built. Decisions D33–D35.
+In progress: tasks 1 and 2 are built. Decisions D33–D35.
 
 | | |
 |---|---|
 | Spec \| Code | Task 1 (D33): `node_denylist` and `issued_certs` are in `cluster::sync::SHARED`, so agents receive them in their list and watch. `Cluster::check_peer` refuses a server certificate whose node the `nodes` table doesn't list as a server, or lists as a tombstone ("certificate is not a current server's"). A deny-listed serial is still refused as `node_removed`. The empty-registry rule needs no code: after an agent's first list its registry holds at least its own certificate |
 | Tests | `an_agent_refuses_certificates_the_cluster_did_not_issue_or_revoked`: a server certificate the CA signed for a node the cluster doesn't have is refused by the agent (never issued), then once issued (not a current server), then once deny-listed (`node_removed`), while the server itself is answered throughout. The other 50 cluster tests pass with the check on servers too |
-| Not yet | Tasks 2–4 (D34, D35) |
+| Spec \| Code | Task 2 (D34): `check_status_write` refuses a node's own `nodes` write that changes `status.advertise`, next to `phase`, `departed_ids` and `raft_id`. Servers still set it at join, rejoin and import, and a server's raw write of its own record is unchanged |
+| Tests | `cluster::sync::tests::a_node_may_not_change_its_own_address`: a status report passes; changing or dropping `advertise` is refused |
+| Not yet | Tasks 3 and 4 (D35) |
 
 ### Validation against real OVN and conntrack (after C8)
 
