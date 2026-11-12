@@ -1207,7 +1207,7 @@ async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Req
         return r;
     }
     let mut req = fresh(req);
-    if let Err(r) = crate::api::relay::accept_authorized(&mut req) {
+    if let Err(r) = crate::api::relay::accept_authorized(&mut req, &c.identity.node_id) {
         return r;
     }
     serve_marked(&c, req).await

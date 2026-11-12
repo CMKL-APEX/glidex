@@ -26,6 +26,9 @@ use axum::response::{IntoResponse, Response};
 pub const VIA_NODE_HEADER: &str = "x-glidex-via-node";
 pub const TARGET_NODE_HEADER: &str = "x-glidex-target-node";
 pub const AUTHORIZED_HEADER: &str = "x-glidex-authorized";
+/// On a host request a server relays: the node it is meant for, which the
+/// receiver checks is itself (spec/14-clustering.md D35).
+pub const RELAYED_TO_HEADER: &str = "x-glidex-relayed-to";
 /// On relayed answers: the node that ran the request.
 pub const SERVED_BY_HEADER: &str = "x-glidex-served-by";
 const MAX_RELAYED_BODY: usize = 32 << 20;
@@ -369,6 +372,7 @@ async fn run_on_host(
         }
     }
     headers.push((AUTHORIZED_HEADER, authorized.join(",")));
+    headers.push((RELAYED_TO_HEADER, node.to_string()));
     if let Some(h) = super::gate::principal_header(&p) {
         headers.push((super::gate::PRINCIPAL_HEADER, h));
     }
@@ -454,8 +458,22 @@ pub fn accept_relayed(req: &mut Request, peer_node: &str, self_node: &str) -> Re
 }
 
 /// On an agent, `/cluster/v1/host/<path>` from a server: a host-local
-/// request it authorized for this host.
-pub fn accept_authorized(req: &mut Request) -> Result<(), Response> {
+/// request it authorized for this host, `me`. One meant for another node
+/// is refused; a server too old to say runs it here as before.
+pub fn accept_authorized(req: &mut Request, me: &str) -> Result<(), Response> {
+    if let Some(to) = req.headers_mut().remove(RELAYED_TO_HEADER)
+        && to.as_bytes() != me.as_bytes()
+    {
+        return Err(err(
+            StatusCode::CONFLICT,
+            "wrong_node",
+            format!(
+                "this request was authorized for node {}, not this one ({me})",
+                String::from_utf8_lossy(to.as_bytes())
+            ),
+        )
+        .into_response());
+    }
     let Some(action) = req
         .headers()
         .get(AUTHORIZED_HEADER)
