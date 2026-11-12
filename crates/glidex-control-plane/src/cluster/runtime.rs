@@ -512,9 +512,6 @@ impl Cluster {
         Ok(())
     }
 
-    /// Verify a peer's certificate against what the leader issued (D20) and
-    /// the deny list: a certificate the CA signed but the cluster never
-    /// issued is refused.
     /// Whether this cluster ever issued the certificate with `serial`.
     pub fn was_issued(&self, serial: &str) -> bool {
         let Ok(txn) = self.db.begin_read() else {
@@ -525,6 +522,10 @@ impl Cluster {
             .is_some_and(|t| t.get(serial).ok().flatten().is_some())
     }
 
+    /// Verify a peer's certificate against what the leader issued (D20) and
+    /// the deny list: a certificate the CA signed but the cluster never
+    /// issued is refused. Agents hold both tables too (D33). A server
+    /// certificate must also belong to a node listed as a current server.
     pub fn check_peer(&self, peer: &PeerCert) -> Result<(), &'static str> {
         use redb::ReadableTableMetadata;
         let Ok(txn) = self.db.begin_read() else {
@@ -545,8 +546,27 @@ impl Cluster {
             if !empty && t.get(peer.serial.as_str()).ok().flatten().is_none() {
                 return Err("certificate was not issued by this cluster");
             }
+            if !empty && peer.server && !Self::is_current_server(&txn, &peer.node_id) {
+                return Err("certificate is not a current server's");
+            }
         }
         Ok(())
+    }
+
+    /// `node` is listed as a server and isn't a tombstone. Removing or
+    /// forgetting a node changes its row in the write that denies its
+    /// certificates, so this holds before the deny list reaches an agent.
+    fn is_current_server(txn: &redb::ReadTransaction, node: &str) -> bool {
+        let Ok(t) = txn.open_table(crate::store::TableId::Nodes.definition()) else {
+            return false;
+        };
+        t.get(node)
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice::<crate::node::Node>(v.value()).ok())
+            .is_some_and(|n| {
+                n.spec.role == crate::node::NodeRole::Server && !n.status.phase.is_tombstone()
+            })
     }
 }
 

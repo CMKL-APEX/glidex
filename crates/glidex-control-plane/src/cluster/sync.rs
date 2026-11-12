@@ -144,7 +144,10 @@ pub fn node_vms(db: &Db, node: &str) -> Vec<(String, Value)> {
 }
 
 /// Tables a node receives in full: catalogs and names that hold no secrets.
-const SHARED: [TableId; 8] = [
+/// The deny list and the issued certificates (serials, nodes, expiry) let
+/// an agent refuse a revoked peer as a server does (spec/14-clustering.md
+/// D33).
+const SHARED: [TableId; 10] = [
     TableId::Projects,
     TableId::Meta,
     TableId::Images,
@@ -153,6 +156,8 @@ const SHARED: [TableId; 8] = [
     TableId::ImageMeta,
     TableId::ImageCaches,
     TableId::CaBundle,
+    TableId::NodeDenylist,
+    TableId::IssuedCerts,
 ];
 
 /// Shared like `SHARED`, but only with nodes that know these tables
