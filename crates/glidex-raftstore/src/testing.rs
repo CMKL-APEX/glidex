@@ -427,11 +427,38 @@ impl TestCluster {
     pub fn put(&self, id: RaftId, key: &str, value: &str) -> Result<(), StoreError> {
         let db = self.by_id(id).db.clone();
         let (k, v) = (key.to_string(), value.to_string());
-        db.write(TestOrigin::Api, move |tx| -> Result<(), StoreError> {
-            tx.open_table(definition::<Test>(TestTable::Data))?
-                .insert(&k, v.as_bytes())?;
-            Ok(())
-        })
+        let write = move || {
+            db.write(TestOrigin::Api, move |tx| -> Result<(), StoreError> {
+                tx.open_table(definition::<Test>(TestTable::Data))?
+                    .insert(&k, v.as_bytes())?;
+                Ok(())
+            })
+        };
+        // The write waits for Raft to commit it. Made on a runtime worker,
+        // that wait holds a thread the members' own tasks need; many in a
+        // row starve their heartbeats until a follower calls an election.
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(write)
+            }
+            _ => write(),
+        }
+    }
+
+    /// One write through whichever of `among` leads, following leadership
+    /// if it moves. Returns the member that took it.
+    pub async fn put_on_leader(&self, among: &[RaftId], key: &str, value: &str) -> RaftId {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let leader = self.leader(among).await;
+            match self.put(leader, key, value) {
+                Ok(()) => return leader,
+                Err(StoreError::NotLeader { .. }) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => panic!("writing {key} through n{leader}: {e:?}"),
+            }
+        }
     }
 
     /// Wait until every one of `among` has applied at least what `from` has.

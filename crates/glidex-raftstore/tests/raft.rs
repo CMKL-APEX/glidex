@@ -106,22 +106,27 @@ async fn a_partitioned_leaders_writes_are_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lagging_learner_catches_up_from_a_snapshot() {
     let mut c = TestCluster::new(3).await;
-    let leader = c.leader(&c.ids()).await;
     // Enough writes that the log has been purged (the test keeps ~100).
+    // Leadership may move on a loaded machine; the writes follow it.
+    let mut leader = 0;
     for i in 0..400 {
-        c.put(leader, &format!("k{i:04}"), "v").unwrap();
+        leader = c.put_on_leader(&c.ids(), &format!("k{i:04}"), "v").await;
     }
     c.converge(&c.ids(), leader).await;
-    // Wait for Raft to purge, so a new member can't be fed from the log.
-    let node = c.by_id(leader).node.clone();
-    node.raft.trigger().snapshot().await.unwrap();
-    node.raft
-        .wait(Some(Duration::from_secs(20)))
-        .metrics(|m| m.snapshot.is_some(), "snapshot")
-        .await
-        .unwrap();
-    node.raft.trigger().purge_log(300).await.unwrap();
+    // Every member snapshots and purges, so whichever leads next can't
+    // feed a new member from its log.
+    for id in c.ids() {
+        let raft = &c.by_id(id).node.raft;
+        raft.trigger().snapshot().await.unwrap();
+        raft.wait(Some(Duration::from_secs(20)))
+            .metrics(|m| m.snapshot.is_some(), "snapshot")
+            .await
+            .unwrap();
+        raft.trigger().purge_log(300).await.unwrap();
+    }
     tokio::time::sleep(Duration::from_millis(500)).await;
+    let leader = c.leader(&c.ids()).await;
+    let node = c.by_id(leader).node.clone();
     let idx = c.add_started(4).await;
     let id = c.nodes[idx].id;
     node.add_learner(id, "n4").await.unwrap();
