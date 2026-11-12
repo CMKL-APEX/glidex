@@ -6982,3 +6982,101 @@ async fn a_large_write_set_replicates_to_every_server() {
         .await;
     }
 }
+
+/// spec/14-clustering.md D33: an agent checks a peer's certificate as a
+/// server does: against the certificates the cluster issued, its deny list,
+/// and, for a server certificate, the nodes listed as current servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_agent_refuses_certificates_the_cluster_did_not_issue_or_revoked() {
+    use glidex_control_plane::cluster::net::{ClusterTls, PeerClient, TlsMaterial};
+    use glidex_control_plane::cluster::pki::NodeKey;
+    use glidex_control_plane::store::{Origin, StoreError, TableId};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let sc = cluster(&server);
+
+    // A server certificate the CA signs for a node the cluster doesn't have.
+    let key = NodeKey::generate().unwrap();
+    let csr = key.csr(&["127.0.0.1".parse().unwrap()], &[]).unwrap();
+    let (cert_pem, info) = sc
+        .signing_ca()
+        .unwrap()
+        .sign_node(&csr, "ghost", true, 1)
+        .unwrap();
+    let trust = sc.files.read(sc.files.trust()).unwrap();
+    let ghost = PeerClient::new(
+        ClusterTls::new(TlsMaterial::from_pem(&cert_pem, &key.key_pem(), &trust).unwrap()).unwrap(),
+    );
+    let ask = |client: Arc<PeerClient>| {
+        let addr = agent.addr.to_string();
+        async move {
+            let r = client
+                .request_timeout(
+                    &addr,
+                    hyper::Method::GET,
+                    "/cluster/v1/status",
+                    &[],
+                    bytes::Bytes::new(),
+                    Duration::from_secs(10),
+                )
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            (r.status, body)
+        }
+    };
+
+    // The server itself is answered.
+    let (s, b) = ask(sc.client.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+
+    // Never issued: refused.
+    let (s, b) = ask(ghost.clone()).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthenticated")),
+        "{b}"
+    );
+
+    // Issued, but not a node listed as a server: refused.
+    server
+        .manager
+        .database()
+        .write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::IssuedCerts.definition())?.insert(
+                info.serial.as_str(),
+                json!({ "node": "ghost", "kind": "node" })
+                    .to_string()
+                    .as_bytes(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    wait_for("the issued row on the agent", || async {
+        ask(ghost.clone()).await.1["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("not a current server"))
+    })
+    .await;
+
+    // Revoked: refused as a removed node.
+    server
+        .manager
+        .database()
+        .write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::NodeDenylist.definition())?.insert(
+                info.serial.as_str(),
+                json!({ "node": "ghost", "at": 1, "why": "test" })
+                    .to_string()
+                    .as_bytes(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    wait_for("the deny row on the agent", || async {
+        ask(ghost.clone()).await.1["error"] == "node_removed"
+    })
+    .await;
+    let (s, b) = ask(sc.client.clone()).await;
+    assert_eq!(s, StatusCode::OK, "the server is still answered: {b}");
+}
