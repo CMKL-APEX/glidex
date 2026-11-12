@@ -135,6 +135,14 @@ fn wait_running(dir: &Path) -> InstanceFile {
     i
 }
 
+/// A client of the shim in `dir`. The shim binds its socket after the
+/// launch, so a failed launch can say `Exited` a moment before it is there.
+fn shim_client(dir: &Path) -> ShimClient {
+    let sock = dir.join("shim.sock");
+    wait_for("shim.sock", Duration::from_secs(5), || sock.exists());
+    ShimClient::connect(&sock).unwrap()
+}
+
 fn wait_exited(dir: &Path) -> InstanceFile {
     wait_for("exit", Duration::from_secs(15), || {
         instance(dir).is_some_and(|i| i.phase == Phase::Exited)
@@ -170,7 +178,7 @@ fn requested_stop_then_release() {
     assert!(alive(hv));
     assert!(dir.path().join("console.sock").exists());
 
-    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    let mut c = shim_client(dir.path());
     assert_eq!(c.status().unwrap().instance_id, "inst-1");
     // Release refuses while the hypervisor runs.
     assert!(c.release().is_err());
@@ -182,7 +190,7 @@ fn requested_stop_then_release() {
     // The console stays up until release.
     assert!(std::os::unix::net::UnixStream::connect(dir.path().join("console.sock")).is_ok());
 
-    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    let mut c = shim_client(dir.path());
     c.release().unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
     for s in ["shim.sock", "console.sock", "api.sock"] {
@@ -209,10 +217,7 @@ fn a_killed_hypervisor_is_a_crash() {
     .unwrap();
     let exit = wait_exited(dir.path()).exit.unwrap();
     assert_eq!((exit.cause, exit.signal), (ExitCause::Crashed, Some(9)));
-    ShimClient::connect(&dir.path().join("shim.sock"))
-        .unwrap()
-        .release()
-        .unwrap();
+    shim_client(dir.path()).release().unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
 }
 
@@ -314,10 +319,7 @@ fn a_failed_launch_reports_the_hypervisors_output() {
         exit.message
     );
     // The console and shim.sock stay up so the failure can be inspected.
-    ShimClient::connect(&dir.path().join("shim.sock"))
-        .unwrap()
-        .release()
-        .unwrap();
+    shim_client(dir.path()).release().unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
     assert!(
         std::fs::read_to_string(dir.path().join("console.log"))
@@ -353,10 +355,7 @@ fn a_hypervisor_that_never_answers_is_stopped_and_the_console_says_why() {
         "{:?}",
         exit.message
     );
-    ShimClient::connect(&dir.path().join("shim.sock"))
-        .unwrap()
-        .release()
-        .unwrap();
+    shim_client(dir.path()).release().unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
     let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
     assert!(
@@ -459,7 +458,7 @@ fn the_hypervisor_runs_on_its_cpus_and_can_be_rebound() {
     let mine = glidex_vm_shim::util::cpu_list(&glidex_vm_shim::util::own_affinity().unwrap());
     assert_eq!(allowed_lists(shim.id())[0].1, mine);
 
-    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    let mut c = shim_client(dir.path());
     let n = c.set_affinity(&[last]).unwrap();
     let lists = allowed_lists(hv);
     assert_eq!(n as usize, lists.len());
@@ -474,7 +473,7 @@ fn the_hypervisor_runs_on_its_cpus_and_can_be_rebound() {
 
     c.kill().unwrap();
     wait_exited(dir.path());
-    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    let mut c = shim_client(dir.path());
     assert!(matches!(
         c.set_affinity(&[last]),
         Err(glidex_vm_shim::client::ShimError::Remote { code, .. }) if code == "not_running"
@@ -507,7 +506,7 @@ fn qemu_vcpus_are_pinned_once_qmp_answers() {
     let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
     assert!(log.contains("pinned 2 vCPUs to CPUs"), "{log}");
 
-    let mut c = ShimClient::connect(&dir.path().join("shim.sock")).unwrap();
+    let mut c = shim_client(dir.path());
     // Dedicated VMs are not rebound wholesale.
     assert!(matches!(
         c.set_affinity(&[first]),
@@ -540,10 +539,7 @@ fn a_vcpu_pinning_mismatch_fails_the_launch() {
         exit.message
     );
     assert!(!alive(inst.hypervisor_pid.unwrap()));
-    ShimClient::connect(&dir.path().join("shim.sock"))
-        .unwrap()
-        .release()
-        .unwrap();
+    shim_client(dir.path()).release().unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
 }
 
@@ -574,10 +570,7 @@ fn an_unbindable_affinity_fails_the_spawn() {
         exit.message
     );
     assert!(inst.hypervisor_pid.is_none());
-    ShimClient::connect(&dir.path().join("shim.sock"))
-        .unwrap()
-        .release()
-        .unwrap();
+    shim_client(dir.path()).release().unwrap();
     assert_eq!(wait_exit_status(&mut shim), 0);
 }
 
@@ -601,10 +594,7 @@ fn a_job_records_its_exit() {
         wait_for("shim.sock", Duration::from_secs(5), || {
             dir.path().join("shim.sock").exists()
         });
-        ShimClient::connect(&dir.path().join("shim.sock"))
-            .unwrap()
-            .release()
-            .unwrap();
+        shim_client(dir.path()).release().unwrap();
         assert_eq!(wait_exit_status(&mut shim), 0);
         if cause == ExitCause::CleanExit {
             let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
