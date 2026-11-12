@@ -303,6 +303,9 @@ Cloud Hypervisor, the binaries and the UI, and restarts the services
 whose binary or unit changed. Running VMs keep running across a control
 plane restart: each runs in its own `glidex-vm@<id>` unit. A running VM
 keeps the Cloud Hypervisor binary it started with until it is restarted.
+On Ubuntu, `needrestart` only lists the services that use an upgraded
+library (such as Open vSwitch or a QEMU VM's unit); the installer
+doesn't let it restart them, so restart them yourself when it suits.
 Reload web UI tabs that were open before the update to get the new UI.
 
 With the kernel profile saved, the installer also turns off DPDK it

@@ -603,6 +603,7 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
             sudo(&argv(&[
                 "env",
                 "DEBIAN_FRONTEND=noninteractive",
+                "NEEDRESTART_MODE=l",
                 "apt-get",
                 "install",
                 "-y",
@@ -1860,12 +1861,16 @@ fn package_commands(manager: &str, missing: &[&str], update: &[&str]) -> Vec<Vec
         return vec![];
     }
     match manager {
+        // needrestart, from its apt hook, would otherwise restart every
+        // service using an upgraded library: Open vSwitch, OVN's databases
+        // and the units of running VMs (a QEMU VM was stopped this way).
         "apt-get" => vec![
             argv(&["apt-get", "update"]),
             with(
                 &[
                     "env",
                     "DEBIAN_FRONTEND=noninteractive",
+                    "NEEDRESTART_MODE=l",
                     "apt-get",
                     "install",
                     "-y",
@@ -4893,7 +4898,7 @@ mod tests {
             lines("apt-get", &["clang"], &["curl"]),
             [
                 "apt-get update",
-                "env DEBIAN_FRONTEND=noninteractive apt-get install -y clang curl"
+                "env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y clang curl"
             ]
         );
         assert_eq!(
