@@ -2110,10 +2110,14 @@ async fn a_firmware_template_copy_is_checked_against_its_digest() {
             .firmware_vars_template("fw-bad")
             .exists()
     );
-    // Nor does a half copy count later: the code file it took first is gone.
-    tokio::time::sleep(Duration::from_secs(6)).await;
-    assert_ne!(row("fw-bad").await["phase"], "Ready");
-    assert!(!agent.manager.images().firmware_path("fw-bad").exists());
+    // Nor is there ever a half copy, through the retries that follow: the
+    // code file goes in place only with its checked template.
+    let until = std::time::Instant::now() + Duration::from_secs(6);
+    while std::time::Instant::now() < until {
+        assert_ne!(row("fw-bad").await["phase"], "Ready");
+        assert!(!agent.manager.images().firmware_path("fw-bad").exists());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 /// A server and an agent named `agent1`, both running their controllers.
