@@ -1563,7 +1563,7 @@ impl VmManager {
     /// Whether `vm` runs here. A VM without a placement is this host's (a
     /// record from before nodes).
     /// The node API address of the node `vm` runs on, if that is not this one.
-    pub fn remote_node_addr(&self, vm: &Vm) -> Option<String> {
+    pub fn remote_node_addr(&self, vm: &Vm) -> Option<crate::cluster::net::Target> {
         if self.is_local(vm) {
             return None;
         }
@@ -1573,7 +1573,7 @@ impl VmManager {
             .ok()
             .flatten()
             .and_then(|n| n.status.advertise)
-            .map(|a| a.to_string())
+            .map(|a| crate::cluster::net::Target::node(node, a))
     }
 
     pub(crate) fn is_local(&self, vm: &Vm) -> bool {
@@ -4755,7 +4755,7 @@ impl VmManager {
         let r = cluster
             .client
             .request_timeout(
-                &addr.to_string(),
+                crate::cluster::net::Target::node(&node.meta.id, addr),
                 hyper::Method::POST,
                 &format!("/cluster/v1/devices/{address}/{op}"),
                 &[],
@@ -4807,7 +4807,7 @@ impl VmManager {
         let r = cluster
             .client
             .request_timeout(
-                &addr.to_string(),
+                crate::cluster::net::Target::node(&node.meta.id, addr),
                 hyper::Method::GET,
                 "/cluster/v1/topology",
                 &[],

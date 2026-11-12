@@ -1715,7 +1715,7 @@ pub enum ConsoleTarget {
     Local(String),
     /// On another node: relayed over `/cluster/v1/vms/{id}/console` (§8.4).
     Remote {
-        addr: String,
+        addr: crate::cluster::net::Target,
         vm: String,
     },
 }

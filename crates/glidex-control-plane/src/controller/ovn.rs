@@ -768,7 +768,10 @@ impl VmManager {
         let asks = nodes.iter().map(|n| {
             let cluster = cluster.clone();
             let id = n.meta.id.clone();
-            let addr = n.status.advertise.map(|a| a.to_string());
+            let addr = n
+                .status
+                .advertise
+                .map(|a| crate::cluster::net::Target::node(&id, a));
             let local = id == me;
             async move {
                 let r: Result<serde_json::Value, String> = if local {

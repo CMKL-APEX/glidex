@@ -193,6 +193,69 @@ impl ClusterTls {
     }
 }
 
+/// Where a request goes: an address and, when the caller knows which node
+/// should answer there, that node's id. A connection to a known node is
+/// refused unless the certificate is that node's (spec/14-clustering.md
+/// D35); an address alone (a seed, a server not yet known) checks only
+/// the CA.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Target {
+    pub addr: String,
+    pub node: Option<String>,
+}
+
+impl Target {
+    /// `node`, expected at `addr`.
+    pub fn node(node: impl Into<String>, addr: impl ToString) -> Target {
+        Target {
+            addr: addr.to_string(),
+            node: Some(node.into()),
+        }
+    }
+
+    /// The pool's key: a connection checked for one node isn't reused for
+    /// a request that expects another.
+    fn key(&self) -> String {
+        match &self.node {
+            Some(n) => format!("{n}@{}", self.addr),
+            None => self.addr.clone(),
+        }
+    }
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.addr)
+    }
+}
+
+impl From<&str> for Target {
+    fn from(addr: &str) -> Target {
+        Target {
+            addr: addr.to_string(),
+            node: None,
+        }
+    }
+}
+
+impl From<String> for Target {
+    fn from(addr: String) -> Target {
+        Target { addr, node: None }
+    }
+}
+
+impl From<&String> for Target {
+    fn from(addr: &String) -> Target {
+        addr.as_str().into()
+    }
+}
+
+impl From<&Target> for Target {
+    fn from(t: &Target) -> Target {
+        t.clone()
+    }
+}
+
 /// An HTTP/2 client for node-to-node requests. Connections are kept per
 /// address and re-made when they break.
 pub struct PeerClient {
@@ -234,23 +297,48 @@ impl PeerClient {
         })
     }
 
-    async fn connect(
+    /// TCP and TLS to `to`, checking that the peer is the node it names.
+    async fn dial(
         &self,
-        addr: &str,
+        to: &Target,
         config: Arc<ClientConfig>,
-    ) -> Result<hyper::client::conn::http2::SendRequest<Full<Bytes>>, NetError> {
-        let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
-        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
+    ) -> Result<tokio_rustls::client::TlsStream<tokio::net::TcpStream>, NetError> {
+        let ce = |e: &dyn std::fmt::Display| NetError::Connect(to.addr.clone(), e.to_string());
+        let sock: SocketAddr = to.addr.parse().map_err(|e| ce(&e))?;
         let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock))
             .await
             .map_err(|_| ce(&"timed out"))?
             .map_err(|e| ce(&e))?;
         let _ = tcp.set_nodelay(true);
-        let name = ServerName::IpAddress(sock.ip().into());
         let tls = tokio_rustls::TlsConnector::from(config)
-            .connect(name, tcp)
+            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
             .await
             .map_err(|e| ce(&e))?;
+        if let Some(want) = &to.node {
+            let got = tls
+                .get_ref()
+                .1
+                .peer_certificates()
+                .and_then(|c| c.first())
+                .and_then(|c| super::pki::inspect_node_cert(c.as_ref()).ok())
+                .map(|c| c.node_id);
+            if got.as_deref() != Some(want.as_str()) {
+                return Err(ce(&format!(
+                    "the certificate there is not node {want}'s ({})",
+                    got.as_deref().unwrap_or("no node id")
+                )));
+            }
+        }
+        Ok(tls)
+    }
+
+    async fn connect(
+        &self,
+        to: &Target,
+        config: Arc<ClientConfig>,
+    ) -> Result<hyper::client::conn::http2::SendRequest<Full<Bytes>>, NetError> {
+        let ce = |e: &dyn std::fmt::Display| NetError::Connect(to.addr.clone(), e.to_string());
+        let tls = self.dial(to, config).await?;
         let (sender, conn) =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
                 .await
@@ -265,36 +353,35 @@ impl PeerClient {
     /// pooled connection.
     pub async fn request(
         &self,
-        addr: &str,
+        to: impl Into<Target>,
         method: Method,
         path: &str,
         headers: &[(&str, String)],
         body: Bytes,
     ) -> Result<Reply, NetError> {
-        self.request_timeout(addr, method, path, headers, body, self.timeout)
+        self.request_timeout(to, method, path, headers, body, self.timeout)
             .await
     }
 
     /// As [`request`](Self::request), with a limit for the whole exchange.
     pub async fn request_timeout(
         &self,
-        addr: &str,
+        to: impl Into<Target>,
         method: Method,
         path: &str,
         headers: &[(&str, String)],
         body: Bytes,
         timeout: Duration,
     ) -> Result<Reply, NetError> {
+        let to = to.into();
+        let addr = to.addr.as_str();
         for attempt in 0..2 {
-            let pooled = self.conns.lock().unwrap().get(addr).cloned();
+            let pooled = self.conns.lock().unwrap().get(&to.key()).cloned();
             let mut sender = match pooled {
                 Some(s) if !s.is_closed() => s,
                 _ => {
-                    let s = self.connect(addr, self.tls.config()).await?;
-                    self.conns
-                        .lock()
-                        .unwrap()
-                        .insert(addr.to_string(), s.clone());
+                    let s = self.connect(&to, self.tls.config()).await?;
+                    self.conns.lock().unwrap().insert(to.key(), s.clone());
                     s
                 }
             };
@@ -323,13 +410,13 @@ impl PeerClient {
             match sent {
                 Ok(Ok(r)) => return Ok(r),
                 Ok(Err(e)) => {
-                    self.conns.lock().unwrap().remove(addr);
+                    self.conns.lock().unwrap().remove(&to.key());
                     if attempt == 1 || !e.is_closed() && !e.is_canceled() {
                         return Err(NetError::Request(addr.to_string(), e.to_string()));
                     }
                 }
                 Err(_) => {
-                    self.conns.lock().unwrap().remove(addr);
+                    self.conns.lock().unwrap().remove(&to.key());
                     return Err(NetError::Request(addr.to_string(), "timed out".into()));
                 }
             }
@@ -342,22 +429,21 @@ impl PeerClient {
     /// time limit.
     pub async fn request_stream(
         &self,
-        addr: &str,
+        to: impl Into<Target>,
         method: Method,
         path: &str,
         headers: &[(&str, String)],
         body: Bytes,
     ) -> Result<hyper::Response<hyper::body::Incoming>, NetError> {
+        let to = to.into();
+        let addr = to.addr.as_str();
         for attempt in 0..2 {
-            let pooled = self.conns.lock().unwrap().get(addr).cloned();
+            let pooled = self.conns.lock().unwrap().get(&to.key()).cloned();
             let mut sender = match pooled {
                 Some(s) if !s.is_closed() => s,
                 _ => {
-                    let s = self.connect(addr, self.tls.config()).await?;
-                    self.conns
-                        .lock()
-                        .unwrap()
-                        .insert(addr.to_string(), s.clone());
+                    let s = self.connect(&to, self.tls.config()).await?;
+                    self.conns.lock().unwrap().insert(to.key(), s.clone());
                     s
                 }
             };
@@ -373,13 +459,13 @@ impl PeerClient {
             match tokio::time::timeout(self.timeout, sender.send_request(req)).await {
                 Ok(Ok(r)) => return Ok(r),
                 Ok(Err(e)) => {
-                    self.conns.lock().unwrap().remove(addr);
+                    self.conns.lock().unwrap().remove(&to.key());
                     if attempt == 1 || !e.is_closed() && !e.is_canceled() {
                         return Err(NetError::Request(addr.to_string(), e.to_string()));
                     }
                 }
                 Err(_) => {
-                    self.conns.lock().unwrap().remove(addr);
+                    self.conns.lock().unwrap().remove(&to.key());
                     return Err(NetError::Request(addr.to_string(), "timed out".into()));
                 }
             }
@@ -392,7 +478,7 @@ impl PeerClient {
     /// stream when it is `101`.
     pub async fn upgrade_with(
         &self,
-        addr: &str,
+        to: impl Into<Target>,
         method: Method,
         path: &str,
         headers: &[(&str, String)],
@@ -405,19 +491,13 @@ impl PeerClient {
         ),
         NetError,
     > {
+        let to = to.into();
+        let addr = to.addr.as_str();
         let ClientTls::Node(t) = &self.tls else {
             return Err(NetError::Other("not a cluster node".into()));
         };
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
-        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock))
-            .await
-            .map_err(|_| ce(&"timed out"))?
-            .map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full())
-            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
-            .await
-            .map_err(|e| ce(&e))?;
+        let tls = self.dial(&to, t.client_h1.load_full()).await?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
             .await
             .map_err(|e| ce(&e))?;
@@ -458,20 +538,15 @@ impl PeerClient {
     /// is written only for `200`.
     pub async fn get_to_file(
         &self,
-        addr: &str,
+        to: impl Into<Target>,
         path: &str,
         dest: &std::path::Path,
     ) -> Result<u16, NetError> {
+        let to = to.into();
+        let addr = to.addr.as_str();
         use tokio::io::AsyncWriteExt;
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
-        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::net::TcpStream::connect(sock)
-            .await
-            .map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(self.tls.config())
-            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
-            .await
-            .map_err(|e| ce(&e))?;
+        let tls = self.dial(&to, self.tls.config()).await?;
         let (mut sender, conn) =
             hyper::client::conn::http2::handshake(TokioExecutor::new(), TokioIo::new(tls))
                 .await
@@ -514,22 +589,16 @@ impl PeerClient {
     /// request (`Upgrade: glidex-stream`). Used to relay consoles.
     pub async fn upgrade(
         &self,
-        addr: &str,
+        to: impl Into<Target>,
         path: &str,
     ) -> Result<TokioIo<hyper::upgrade::Upgraded>, NetError> {
+        let to = to.into();
+        let addr = to.addr.as_str();
         let ClientTls::Node(t) = &self.tls else {
             return Err(NetError::Other("not a cluster node".into()));
         };
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
-        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::time::timeout(self.timeout, tokio::net::TcpStream::connect(sock))
-            .await
-            .map_err(|_| ce(&"timed out"))?
-            .map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(t.client_h1.load_full())
-            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
-            .await
-            .map_err(|e| ce(&e))?;
+        let tls = self.dial(&to, t.client_h1.load_full()).await?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
             .await
             .map_err(|e| ce(&e))?;
@@ -562,23 +631,18 @@ impl PeerClient {
     /// POST a file as the request body, streamed (snapshots).
     pub async fn post_file(
         &self,
-        addr: &str,
+        to: impl Into<Target>,
         path: &str,
         headers: &[(&str, String)],
         file: &std::path::Path,
     ) -> Result<Reply, NetError> {
+        let to = to.into();
+        let addr = to.addr.as_str();
         use http_body_util::StreamBody;
         use hyper::body::Frame;
         use tokio::io::AsyncReadExt;
         let ce = |e: &dyn std::fmt::Display| NetError::Connect(addr.to_string(), e.to_string());
-        let sock: SocketAddr = addr.parse().map_err(|e| ce(&e))?;
-        let tcp = tokio::net::TcpStream::connect(sock)
-            .await
-            .map_err(|e| ce(&e))?;
-        let tls = tokio_rustls::TlsConnector::from(self.tls.config())
-            .connect(ServerName::IpAddress(sock.ip().into()), tcp)
-            .await
-            .map_err(|e| ce(&e))?;
+        let tls = self.dial(&to, self.tls.config()).await?;
         let (mut sender, conn) = hyper::client::conn::http2::handshake::<
             _,
             _,
