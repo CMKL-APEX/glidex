@@ -208,10 +208,16 @@ own `~/.glidex/`, for a control plane you run by hand.
 With `--with-pylon`, the installer downloads `pylon-x86_64` and
 `pylond-x86_64` from the
 [Pylon release](https://github.com/CMKL-APEX/pylon/releases) this
-Glidex pins (`v0.0.8-rc1`), checks each against its pinned SHA-256, and
+Glidex pins (`v0.0.8-rc2`), checks each against its pinned SHA-256, and
 installs them as `/usr/local/bin/pylon` and `/usr/local/bin/pylond`.
-A file is replaced only when its SHA-256 differs. VMs already running
-keep their `pylon`; a new `pylond` restarts `glidex-pylond`.
+A file is replaced only when its SHA-256 differs; a new `pylond`
+restarts `glidex-pylond`.
+
+- **Restart Pylon VMs after an update.** A running VM keeps its `pylon`,
+  and it registers with `pylond` only once, when it starts: after
+  `glidex-pylond` restarts, VMs started before no longer get cores
+  managed. A release can also change what the VMM and `pylond` share
+  (v0.0.8-rc2 does), so restart them with the new `pylon` either way.
 
 - **What it needs.** The release is built on Ubuntu 24.04: it needs
   glibc 2.38 or later, and `pylond` needs `libelf`, `zlib` and `zstd`

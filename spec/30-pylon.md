@@ -72,13 +72,14 @@ This document makes two changes:
 | P4 | Hypervisor identity & fallback | `HypervisorType` gains `Pylon` (`"pylon"`, proto `HYPERVISOR_PYLON = 3`, binary `/usr/local/bin/pylon`). In addition, a node without `pylon` or `pylond` can still run any elastic VM configured for `cloudhypervisor` or `qemu` via ACPI hotplug; if a VM requests `cpu_policy: elastic` without pinning `hypervisor`, the scheduler prefers nodes advertising feature `pylon` and falls back to `cloudhypervisor` ACPI hotplug when none is present. | Lets clusters mix Pylon-capable nodes (kernel ≥ 6.12 with `CONFIG_SCHED_ext`) and standard KVM hosts seamlessly. |
 | P5 | Firmware sharing | `HypervisorType::Pylon` shares the `cloudhv-edk2` (`CLOUDHV.fd` / `CLOUDHV_EFI.fd`) firmware catalog entry and images with `HypervisorType::CloudHypervisor`. | Pylon is a Cloud Hypervisor fork and boots the exact same EDK2 build; duplicating downloads or image records wastes disk and operator steps. |
 | P6 | Shim & client reuse | `PylonDriver` uses `ChClient` (`glidex-hv-client`) for all control-socket operations (`ping`, `observe`, `pause`, `resume`, `add_device`, `remove_device`, `resize_vcpus`, `power_button`, `shutdown_vmm`, `block_stats`). `HypervisorType::Pylon::launch_kind()` maps to `HypervisorKind::CloudHypervisor` in `launch.json`, and `/usr/local/bin/pylon` is added to the shim's default binary allowlist. | Pylon's HTTP API over `--api-socket` is byte-for-byte identical to Cloud Hypervisor's. |
-| P7 | Shared page & socket paths in sandbox | Each Pylon VM's 8,192-byte shared page is placed at `/run/glidex-cp/vms/<vm-id>/pylon.shm` (inside the VM's existing tmpfs runtime directory, `0600` `glidex:glidex`), not `/dev/shm`. `glidex-vm@.service` adds `-/run/pylon` to `ReadWritePaths` so the VMM can connect to `/run/pylon/pylond.sock` and send its `shm` and `eventfd` descriptors via `SCM_RIGHTS`. | Keeps `/dev/shm` closed under `DevicePolicy=closed` and avoids world-visible files in `/dev/shm`. |
+| P7 | Shared page & socket paths in sandbox | *Superseded by P14 for the shared page.* Each Pylon VM's 8,192-byte shared page is placed at `/run/glidex-cp/vms/<vm-id>/pylon.shm` (inside the VM's existing tmpfs runtime directory, `0600` `glidex:glidex`), not `/dev/shm`. `glidex-vm@.service` adds `-/run/pylon` to `ReadWritePaths` so the VMM can connect to `/run/pylon/pylond.sock` and send its `shm` and `eventfd` descriptors via `SCM_RIGHTS`. | Keeps `/dev/shm` closed under `DevicePolicy=closed` and avoids world-visible files in `/dev/shm`. |
 | P8 | Host core partitioning | On a node running `pylond`, Core 0 runs `pylond` Plane 1 (control socket) + OS/housekeeping, Core 1 (or the first sibling-free core reserved for it) runs `pylond` Plane 2 (the `_rdtsc`/`_tpause` matrix engine), and both are recorded in `TopologySummary.reserved_cpus` (`ReservedFor::Pylon`). `pylond` manages the node's shareable CPU pool (online CPUs minus `reserved_cpus` minus `dedicated` VMs' CPUs). | Prevents `dedicated` VMs, OVS-DPDK PMDs and `pylond`'s polling engine from stepping on each other. |
 | P9 | Quotas and scheduler accounting | Quotas and scheduler load count `vcpu_count` as the VM's baseline CPU request (matching non-elastic VMs) and check that `max_vcpus` does not exceed the node's (or NUMA node's) shareable CPU count. Metering samples actual cgroup v2 `cpu.stat` (`usage_usec`), which reflects the exact physical CPU time consumed under both Pylon and ACPI hotplug. | Tenants are billed for the CPU time they actually consume and cannot create a VM whose `max_vcpus` can never fit on its host. |
 | P10 | Pinned Pylon release | `glidex-install` pins Pylon like Cloud Hypervisor and the UEFI firmware: `PYLON_VERSION` (first `v0.0.8-rc1`) and, per asset, a sha256 (`PYLON_ASSETS`). It downloads `pylon-x86_64` and `pylond-x86_64` from that tag's GitHub release of `CMKL-APEX/pylon` with `download_verified`, and installs each to `/usr/local/bin/pylon` and `/usr/local/bin/pylond` when the installed file's sha256 differs. Both are glibc builds (`x86_64-unknown-linux-gnu`); `pylond` needs `libelf1t64`, `zlib1g` and `libzstd1`, which the installer adds; they are built on Ubuntu 24.04 and need its glibc or later. A replaced `pylon` applies to VMs launched afterwards; a replaced `pylond` restarts `glidex-pylond`. Only x86_64: `--with-pylon` on another architecture fails with a message. | What runs on a host was whatever build sat in `target/release` or a sibling `../pylon` checkout, with no version or commit check: on 2026-11-11 prism1 ran a `-dirty` build, gpu-dev2 another commit, and neither had pylon#76 (BAR mappings `MADV_HUGEPAGE`, 60 s → 12 s for an A100 VM on 6.17). A pin says which Pylon a glidex release was tested with, and the sha256 catches a replaced asset. `pylond` links `libelf`, `libz` and `libzstd` (libbpf, for `scx_pylon`), so a static musl build isn't simple. |
 | P11 | Opt-in per host | Pylon is installed only with `--with-pylon`. The installer saves it in its options file, so later runs on that host keep Pylon updated; `--no-pylon` stops that (`--remove-pylon` uninstalls). A Pylon build lying in `target/release` or `../pylon` is no longer installed by itself. | Cloud Hypervisor stays the default hypervisor; downloading Pylon onto every host would put an unused binary with `cap_net_admin` on hosts that don't run Pylon VMs. |
 | P12 | Local builds | `--pylon-from <dir>` installs `<dir>/pylon` (or `<dir>/cloud-hypervisor`) and `<dir>/pylond` instead of the release, prints their `--version` and warns when it ends in `-dirty`. It is not saved: the next run without it installs the pinned release again. | Pylon development still needs to try a build on a host, but explicitly; a silently picked-up local build is how the hosts drifted. |
 | P13 | Release assets | On a `v*` tag, Pylon's release workflow builds `x86_64-unknown-linux-gnu` and attaches `pylon-x86_64` (the VMM), `pylond-x86_64` and `SHA256SUMS` to the tag's draft release, next to the release's other files (`cloud-hypervisor`, `pylond`, `scx_pylon` and the rest), which glidex doesn't use. A maintainer publishes it: a draft's files can't be downloaded without a GitHub token. The sha256s pinned in glidex come from that `SHA256SUMS`, checked against a download. The release VMM reports `cloud-hypervisor v55.0.0`, not the tag, since CI checks out without tags, so a host's Pylon is identified by its sha256. | The workflow inherited from Cloud Hypervisor attaches `cloud-hypervisor` and `ch-remote` only, and no `pylond`. |
+| P14 | Shared page as a memfd | glidex passes no `shm=` in `--pylon`. Since Pylon `v0.0.8-rc2` the VMM creates the shared page as a `memfd` with its size sealed, sends it to `pylond`, which refuses any other kind of file, and refuses `shm=<path>`. This replaces P7's `pylon.shm` file; P7's `-/run/pylon` in `ReadWritePaths` stays, for the socket. The VMM and `pylond` must come from the same release (they share a host page with its own version), which the pin (P10) gives. | A file at a path could be opened, replaced or truncated by other local users (Pylon's reason); a `memfd` needs no path in the sandbox. |
 
 ## 3. Generalized CPU Elasticity Model
 
@@ -247,19 +248,18 @@ with three differences:
    microseconds without ACPI hotplug.
 3. **`--pylon`:** appends:
    ```text
-   --pylon shm=/run/glidex-cp/vms/<vm-id>/pylon.shm,socket=/run/pylon/pylond.sock,gpa=0xfedf0000,initial_active_vcpus=<vcpu_count>,min_cores=<min_vcpus>,max_cores=<max_vcpus>,priority_weight=<cpu_weight>,vm_id=<u64_id>
+   --pylon socket=/run/pylon/pylond.sock,gpa=0xfedf0000,initial_active_vcpus=<vcpu_count>,min_cores=<min_vcpus>,max_cores=<max_vcpus>,priority_weight=<cpu_weight>,vm_id=<u64_id>
    ```
    where:
-   - `shm` is `<vm_runtime_dir>/pylon.shm` (derived from `api_socket`'s
-     parent directory `/run/glidex-cp/vms/<vm-id>`), quoted with `q()` if
-     needed;
+   - there is no `shm`: the VMM makes the shared page a sealed `memfd`
+     (P14);
    - `vm_id` is the lower 64 bits of the VM's UUIDv4 (non-zero; `1` if
      the fold is `0`), giving `pylond` and `PylonHeader.vm_id` a
      deterministic numeric identifier.
 
 ### 6.2 Shared memory ABI & Guest telemetry (`pylon-abi`)
 
-The Pylon VMM maps `/run/glidex-cp/vms/<vm-id>/pylon.shm` (8,192 bytes,
+The Pylon VMM maps its shared page, a sealed `memfd` (P14; 8,192 bytes,
 `MAP_SHARED`, `MemoryVisibility::Shared`) at Guest Physical Address
 `0xFEDF_0000`:
 
@@ -323,8 +323,8 @@ ReadWritePaths=@HOME@ /run/glidex-cp/vms/%i -/run/glidex/vhost -/run/pylon -/srv
 ```
 
 The `-` prefix means `systemd` ignores the path on hosts where
-`glidex-pylond` is not installed. Because `pylon.shm` lives inside
-`/run/glidex-cp/vms/%i`, `/dev/shm` remains inaccessible to VMs.
+`glidex-pylond` is not installed. The shared page is a `memfd` (P14),
+so `/dev/shm` remains inaccessible to VMs.
 
 ## 8. Node Discovery, Topology & Scheduler
 
@@ -384,7 +384,7 @@ Stacked PRs on `main`:
 | **P2: Generalized elasticity (`min_vcpus`, `max_vcpus`, `cpu_weight`) & ACPI hotplug fallback** | Add `min_vcpus`, `max_vcpus`, `cpu_weight` to `VmConfig` and protos; pass `max_vcpus` to CH (`--cpus boot=,max=`) and QEMU (`-smp cpus=,maxcpus=`); implement `HypervisorDriver::resize_vcpus` (CH `PUT /vm.resize`, QEMU QMP `device_add`/`device_del`) and controller live drift without `RestartRequired`; apply `cpu_weight` to cgroup v2 `cpu.weight` in `glidex-vm-shim`. | `crates/glidex-api/proto/glidex/vm/v1/vm.proto`, `crates/glidex-hv-client/src/{ch,qmp}.rs`, `crates/glidex-control-plane/src/{models,state,hypervisor,controller/vm}.rs`, `crates/glidex-vm-shim/src/{launch,supervisor}.rs` |
 | **P3: `glidex-pylond` daemon, installer & topology integration** | Package `glidex-pylond.service`; add `pylon` and `pylond` installation and capabilities to `glidex-install`; report `pylond` status in `NodeFeatures` and reserve `pylond` engine cores in `host-topology`. | `packaging/glidex-pylond.service`, `crates/glidex-install/src/{main,uninstall}.rs`, `crates/glidex-control-plane/src/node.rs` |
 | **P4: End-to-end tests** | Unit and functional tests covering `PylonDriver` argv, live vCPU resize on CH and QEMU, cgroup `cpu.weight`, and Pylon VM registration against `pylond`. | `crates/glidex-control-plane/src/hypervisor/`, `crates/glidex-e2e/` |
-| **P5: Pinned Pylon release** | In Pylon: the release workflow attaches `pylon-x86_64`, `pylond-x86_64` and `SHA256SUMS` (P13); tag `v0.0.8-rc1`. In glidex: `PYLON_VERSION` and `PYLON_ASSETS`, download and verify, `--with-pylon` saved and no auto pick-up (P10, P11), `--pylon-from` (P12), `libelf1t64`/`zlib1g`/`libzstd1`; operator docs. | Pylon `.github/workflows/release.yaml`; `crates/glidex-install/src/main.rs`, `docs/public/src/operator-guide/` |
+| **P5: Pinned Pylon release** | In Pylon: the release workflow attaches `pylon-x86_64`, `pylond-x86_64` and `SHA256SUMS` (P13); tags `v0.0.8-rc1`, `v0.0.8-rc2`. In glidex: `PYLON_VERSION` and `PYLON_ASSETS`, download and verify, `--with-pylon` saved and no auto pick-up (P10, P11), `--pylon-from` (P12), `libelf1t64`/`zlib1g`/`libzstd1`; operator docs. | Pylon `.github/workflows/release.yaml`; `crates/glidex-install/src/main.rs`, `docs/public/src/operator-guide/` |
 
 ## 11. Implementation status
 
@@ -395,4 +395,4 @@ Stacked PRs on `main`:
 | P2 | Done | Done | Done | — |
 | P3 | Done | Done | Done | — |
 | P4 | Done | Done | Done | Host e2e |
-| P5 | Done | Pylon: release assets (pylon#80); `v0.0.8-rc1` tagged, its draft release's `SHA256SUMS` checked against a download. glidex: `PYLON_VERSION` `v0.0.8-rc1` and `PYLON_ASSETS`, download and verify, `--with-pylon` only (no pick-up), `--pylon-from`, `libelf1t64`/`zlib1g`/`libzstd1` | Options (`--pylon-from` not saved), the libraries only with Pylon on x86_64, the pinned assets' shape, `-dirty` detection | Publishing the `v0.0.8-rc1` release; an install from it on a host (not run yet) |
+| P5 | Done | Pylon: release assets (pylon#80); `v0.0.8-rc2` published, its `SHA256SUMS` checked against an anonymous download. glidex: `PYLON_VERSION` `v0.0.8-rc2` and `PYLON_ASSETS`, `--pylon` without `shm=` (P14), download and verify, `--with-pylon` only (no pick-up), `--pylon-from`, `libelf1t64`/`zlib1g`/`libzstd1` | Options (`--pylon-from` not saved), the libraries only with Pylon on x86_64, the pinned assets' shape, `-dirty` detection | An install from the pinned release on a host, and a Pylon VM started with it (not run yet) |
