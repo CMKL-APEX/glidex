@@ -2316,7 +2316,7 @@ the commit. A further gain would come from there, not the apply.
 
 ### C11: peer identity
 
-In progress: tasks 1–3 are built. Decisions D33–D35.
+Built: tasks 1–4. Decisions D33–D35.
 
 | | |
 |---|---|
@@ -2326,7 +2326,9 @@ In progress: tasks 1–3 are built. Decisions D33–D35.
 | Tests | `cluster::sync::tests::a_node_may_not_change_its_own_address`: a status report passes; changing or dropping `advertise` is refused |
 | Spec \| Code | Task 3 (D35): `cluster::net::Target` is an address and, optionally, the node expected there; every `PeerClient` method takes `impl Into<Target>` (an address string is a `Target` with no node). `PeerClient::dial` makes every connection and, when the target names a node, refuses a certificate whose node id (CN) is another's; pooled connections are keyed by node and address. Pinned: relayed host actions and UI (`api::relay`), console, console log and stats relays (`remote_node_addr`), device operations and topology, image copies (`holder_of`, store copies), and OVN status. Not pinned, by D35's rule: seed and server-list addresses (join, the agent's server list) and Raft's leader lookup (by Raft id, in `glidex-raftstore`) |
 | Tests | `a_request_to_a_known_node_checks_its_certificate`: the agent is answered when the agent is expected; at the agent's address, expecting the server or another id fails on identity; an address alone is answered |
-| Not yet | Task 4 (D35's header) |
+| Spec \| Code | Task 4 (D35): a relayed host request carries `x-glidex-relayed-to` with the node it was authorized for (`api::relay::RELAYED_TO_HEADER`). `accept_authorized` refuses one naming another node with `409 wrong_node`; a request without the header, from a server too old to send it, runs as before |
+| Tests | `a_relayed_host_request_runs_only_on_the_node_it_names`: the agent refuses a host request naming another node, and doesn't refuse one naming itself. Relayed host actions in the other cluster tests carry the header |
+| Not yet | Refusing a relayed host request without the header, once every server sends it (the next feature level) |
 
 ### Validation against real OVN and conntrack (after C8)
 

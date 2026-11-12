@@ -7124,3 +7124,44 @@ async fn a_request_to_a_known_node_checks_its_certificate() {
     let r = ask(agent.addr.to_string().into()).await.unwrap();
     assert_eq!(r.status, StatusCode::OK);
 }
+
+/// spec/14-clustering.md D35: a relayed host request names the node it was
+/// authorized for, and another node refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_relayed_host_request_runs_only_on_the_node_it_names() {
+    use glidex_control_plane::api::relay::{AUTHORIZED_HEADER, RELAYED_TO_HEADER};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let client = cluster(&server).client.clone();
+    let send = |to: &str| {
+        let client = client.clone();
+        let addr = agent.addr.to_string();
+        let headers = vec![
+            (AUTHORIZED_HEADER, "readHost".to_string()),
+            (RELAYED_TO_HEADER, to.to_string()),
+        ];
+        async move {
+            let r = client
+                .request_timeout(
+                    addr.as_str(),
+                    hyper::Method::GET,
+                    "/cluster/v1/host/host/topology",
+                    &headers,
+                    bytes::Bytes::new(),
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            (r.status, body)
+        }
+    };
+    let (s, b) = send("another-node").await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::CONFLICT, Some("wrong_node")),
+        "{b}"
+    );
+    let (s, b) = send(&agent.manager.local_node_id()).await;
+    assert_ne!(b["error"].as_str(), Some("wrong_node"), "{s} {b}");
+}
