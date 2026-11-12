@@ -544,7 +544,9 @@ pub fn check_status_write(
                     let cur = get(TableId::Nodes, key)?.ok_or("no such node")?;
                     let new: Value = serde_json::from_slice(value).map_err(|e| e.to_string())?;
                     same_except(&cur, &new, &["status", "meta"])?;
-                    for f in ["phase", "departed_ids", "raft_id"] {
+                    // The address is the servers' to set (D34): others dial
+                    // it on users' behalf.
+                    for f in ["phase", "departed_ids", "raft_id", "advertise"] {
                         if cur["status"][f] != new["status"][f] {
                             return Err(format!("a node may not change its own status.{f}"));
                         }
@@ -917,6 +919,53 @@ mod tests {
         };
         assert!(check("new", &row("d1/new")).is_ok());
         assert!(check("new", &row("d1/old")).is_err());
+    }
+
+    /// spec/14-clustering.md D34: a node reports its own status, but its
+    /// cluster address is the servers' to set.
+    #[test]
+    fn a_node_may_not_change_its_own_address() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("db")).unwrap();
+        let cur = serde_json::json!({
+            "meta": { "id": "n1" }, "spec": { "name": "a" },
+            "status": { "phase": "Active", "advertise": "10.0.0.1:7443", "uptime": 1 },
+        });
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::Nodes.definition())?
+                .insert("n1", cur.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+        let check = |v: &Value| {
+            let ws = WriteSet {
+                format: WRITE_SET_FORMAT,
+                origin: Origin::Controller,
+                ops: vec![put(TableId::Nodes, "n1", v)],
+            };
+            db.write(
+                Origin::Controller,
+                |tx| -> Result<Result<(), String>, StoreError> {
+                    Ok(check_status_write(tx, "n1", &ws))
+                },
+            )
+            .unwrap()
+        };
+        let mut report = cur.clone();
+        report["status"]["uptime"] = 2.into();
+        assert_eq!(check(&report), Ok(()));
+        let mut moved = cur.clone();
+        moved["status"]["advertise"] = "10.0.0.2:7443".into();
+        assert_eq!(
+            check(&moved),
+            Err("a node may not change its own status.advertise".into())
+        );
+        let mut dropped = cur.clone();
+        dropped["status"]
+            .as_object_mut()
+            .unwrap()
+            .remove("advertise");
+        assert!(check(&dropped).is_err());
     }
 
     /// A node creates the record of a kernel it extracts from one of its
