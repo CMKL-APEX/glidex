@@ -249,7 +249,8 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
 - **The `sched_ext` scheduler.** On a kernel built with `sched_ext`
   (6.12 or later), `pylond` attaches Pylon's `scx_pylon` kernel
   scheduler when it starts, and falls back to its own core table if
-  that fails. `scx_pylon` then
+  that fails; the journal says which (`journalctl -u glidex-pylond`,
+  at `RUST_LOG=info`, which the unit sets). `scx_pylon` then
   schedules every task on the host, not only VMs, until `pylond` stops.
   Check it with `cat /sys/kernel/sched_ext/state /sys/kernel/sched_ext/root/ops`
   (`enabled`, `pylon`). To keep it off, start `pylond` with
@@ -260,6 +261,15 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
   ExecStart=
   ExecStart=/usr/local/bin/pylond --socket /run/pylon/pylond.sock --cores ${PYLON_CORES} --no-scx
   ```
+- **Where a VM parks its vCPUs.** Glidex starts a Pylon VM with
+  `park=kvm` when `scx_pylon` is attached on its host, and `park=vmm`
+  otherwise: `pylond` refuses a VM that parks in KVM without
+  `scx_pylon`. A VM keeps its mode until it restarts.
+- **Is a VM managed?** `gxctl get <vm>` shows `Pylon: not managed` when
+  `pylond` has no registration for a running Pylon VM: it refused the
+  VM (the VMM writes why in the VM's console log, `gxctl log <vm>`), or
+  `pylond` restarted after the VM started. The VM still runs, with all
+  its vCPUs, but nothing parks them; restart it to register again.
 
 A host offers Pylon when `/usr/local/bin/pylon` is there; Pylon VMs also
 need `pylond` running to scale. Elastic VMs run on any host with Cloud

@@ -350,6 +350,12 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
         );
     }
     println!("  Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
+    if let Some(c) = vm.conditions.iter().find(|c| {
+        c.kind == "PylonManaged"
+            && c.status.as_known() == Some(ConditionStatus::CONDITION_STATUS_FALSE)
+    }) {
+        println!("  Pylon:      {} ({})", "not managed".yellow(), c.message);
+    }
     if let (Some(min), Some(max)) = (vm.min_vcpus, vm.max_vcpus) {
         if min < max {
             println!(

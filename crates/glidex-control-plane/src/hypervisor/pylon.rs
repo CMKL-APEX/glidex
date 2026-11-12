@@ -40,8 +40,41 @@ pub fn pylon_vm_id(api_socket: &str) -> u64 {
 /// Default pylond socket path on the host.
 pub const DEFAULT_PYLOND_SOCKET: &str = "/run/pylon/pylond.sock";
 
+/// Where the kernel says which `sched_ext` scheduler is attached.
+const SCHED_EXT_SYSFS: &str = "/sys/kernel/sched_ext";
+
+/// Where the VMM parks an idle vCPU (`--pylon park=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Park {
+    /// Inside KVM: faster, but `pylond` accepts it only with `scx_pylon`.
+    Kvm,
+    /// In the VMM's vCPU thread: works without `scx_pylon`.
+    Vmm,
+}
+
+impl Park {
+    fn as_str(self) -> &'static str {
+        match self {
+            Park::Kvm => "kvm",
+            Park::Vmm => "vmm",
+        }
+    }
+}
+
+/// `park=kvm` only where `scx_pylon` is attached: `pylond` refuses a VM
+/// that parks in KVM without it, and the VM then runs unmanaged
+/// (spec/30-pylon.md P15).
+pub(crate) fn park_mode(sched_ext: &Path) -> Park {
+    let read = |f: &str| std::fs::read_to_string(sched_ext.join(f)).unwrap_or_default();
+    if read("state").trim() == "enabled" && read("root/ops").trim() == "pylon" {
+        Park::Kvm
+    } else {
+        Park::Vmm
+    }
+}
+
 /// Build the command line arguments for Pylon.
-pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
+pub(crate) fn args(config: &VmConfig, api_socket: &str, park: Park) -> Vec<String> {
     let mut a = cloud_hypervisor::args(config, api_socket);
 
     let max_vcpus = config.effective_max_vcpus();
@@ -75,8 +108,14 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     // No `shm=`: since Pylon v0.0.8-rc2 the VMM makes the shared page a
     // sealed memfd itself and refuses a path (spec/30-pylon.md P14).
     let pylon_opt = format!(
-        "socket={},gpa=0xfedf0000,initial_active_vcpus={},min_cores={},max_cores={},priority_weight={},vm_id={}",
-        DEFAULT_PYLOND_SOCKET, initial_active_vcpus, min_cores, max_vcpus, priority_weight, vm_id
+        "socket={},gpa=0xfedf0000,initial_active_vcpus={},min_cores={},max_cores={},priority_weight={},vm_id={},park={}",
+        DEFAULT_PYLOND_SOCKET,
+        initial_active_vcpus,
+        min_cores,
+        max_vcpus,
+        priority_weight,
+        vm_id,
+        park.as_str()
     );
 
     a.push("--pylon".into());
@@ -104,7 +143,11 @@ impl HypervisorDriver for PylonDriver {
         })?;
         cloud_hypervisor::check_mmio64_here(config)?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
-        argv.extend(args(config, api_socket));
+        argv.extend(args(
+            config,
+            api_socket,
+            park_mode(Path::new(SCHED_EXT_SYSFS)),
+        ));
         Ok(LaunchArgs {
             argv,
             fallback: None,
@@ -187,6 +230,38 @@ struct VmPolicyUpdateResponse {
     priority_weight: Option<u32>,
 }
 
+/// One request to pylond's control socket and its whole answer.
+fn pylond_exchange(
+    pylond_socket: &str,
+    payload: &[u8],
+    what: &str,
+) -> Result<Vec<u8>, HypervisorError> {
+    use std::io::{Read, Write};
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+    let mut stream = UnixStream::connect(pylond_socket).map_err(|e| {
+        HypervisorError::SocketConnection(format!(
+            "failed to connect to pylond socket {pylond_socket}: {e}"
+        ))
+    })?;
+    // pylond gives each connection 5 s; don't hold a controller thread longer.
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+    let _ = stream.set_write_timeout(Some(Duration::from_secs(5)));
+    stream.write_all(payload).map_err(|e| {
+        HypervisorError::ApiRequest(format!("failed to send {what} to pylond: {e}"))
+    })?;
+    stream.flush().map_err(|e| {
+        HypervisorError::ApiRequest(format!("failed to flush {what} to pylond: {e}"))
+    })?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+
+    let mut resp_buf = Vec::new();
+    stream.read_to_end(&mut resp_buf).map_err(|e| {
+        HypervisorError::ApiRequest(format!("failed to read {what} response from pylond: {e}"))
+    })?;
+    Ok(resp_buf)
+}
+
 pub fn send_pylon_policy_update(
     pylond_socket: &str,
     vm_id: u64,
@@ -194,17 +269,9 @@ pub fn send_pylon_policy_update(
     max_cores: Option<u32>,
     priority_weight: Option<u32>,
 ) -> Result<(), HypervisorError> {
-    let path = Path::new(pylond_socket);
-    if !path.exists() {
+    if !Path::new(pylond_socket).exists() {
         return Ok(());
     }
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-    let mut stream = UnixStream::connect(path).map_err(|e| {
-        HypervisorError::SocketConnection(format!(
-            "failed to connect to pylond socket {pylond_socket}: {e}"
-        ))
-    })?;
     let req = VmPolicyUpdateRequest {
         vm_id,
         min_cores,
@@ -214,20 +281,7 @@ pub fn send_pylon_policy_update(
     let payload = serde_json::to_vec(&req).map_err(|e| {
         HypervisorError::ApiRequest(format!("failed to serialize pylond policy update: {e}"))
     })?;
-    stream.write_all(&payload).map_err(|e| {
-        HypervisorError::ApiRequest(format!("failed to send policy update to pylond: {e}"))
-    })?;
-    stream.flush().map_err(|e| {
-        HypervisorError::ApiRequest(format!("failed to flush policy update to pylond: {e}"))
-    })?;
-    let _ = stream.shutdown(std::net::Shutdown::Write);
-
-    let mut resp_buf = Vec::new();
-    stream.read_to_end(&mut resp_buf).map_err(|e| {
-        HypervisorError::ApiRequest(format!(
-            "failed to read policy update response from pylond: {e}"
-        ))
-    })?;
+    let resp_buf = pylond_exchange(pylond_socket, &payload, "policy update")?;
     let resp: VmPolicyUpdateResponse = serde_json::from_slice(&resp_buf).map_err(|e| {
         HypervisorError::ApiRequest(format!(
             "failed to parse pylond policy update response: {e}"
@@ -240,6 +294,59 @@ pub fn send_pylon_policy_update(
         )));
     }
     Ok(())
+}
+
+/// What pylond knows of a VM (spec/30-pylon.md P16).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PylondRegistration {
+    /// pylond lists the VM: it manages its cores.
+    Listed,
+    /// pylond answers without it: it refused the VM, or restarted since.
+    NotListed,
+    /// No pylond socket on this host.
+    NoPylond,
+}
+
+/// Ask pylond whether it has `vm_id`, with the stats request metering
+/// sends. pylond answers only for VMs the caller's user registered, root
+/// and its own user; the control plane and the VMs run as the same user.
+pub fn pylond_registration(
+    pylond_socket: &str,
+    vm_id: u64,
+) -> Result<PylondRegistration, HypervisorError> {
+    if !Path::new(pylond_socket).exists() {
+        return Ok(PylondRegistration::NoPylond);
+    }
+    let payload = serde_json::to_vec(&serde_json::json!({ "action": "stats", "vm_id": vm_id }))
+        .map_err(|e| HypervisorError::ApiRequest(format!("failed to serialize: {e}")))?;
+    let resp_buf = pylond_exchange(pylond_socket, &payload, "stats request")?;
+
+    #[derive(Deserialize)]
+    struct StatsVm {
+        vm_id: u64,
+    }
+    #[derive(Deserialize)]
+    struct StatsResponse {
+        accepted: bool,
+        #[serde(default)]
+        message: String,
+        #[serde(default)]
+        vms: Vec<StatsVm>,
+    }
+    let resp: StatsResponse = serde_json::from_slice(&resp_buf).map_err(|e| {
+        HypervisorError::ApiRequest(format!("failed to parse pylond stats response: {e}"))
+    })?;
+    if !resp.accepted {
+        return Err(HypervisorError::ApiRequest(format!(
+            "pylond refused the stats request: {}",
+            resp.message
+        )));
+    }
+    Ok(if resp.vms.iter().any(|v| v.vm_id == vm_id) {
+        PylondRegistration::Listed
+    } else {
+        PylondRegistration::NotListed
+    })
 }
 
 #[cfg(test)]
@@ -270,6 +377,69 @@ mod tests {
     }
 
     #[test]
+    fn park_in_kvm_only_with_scx_pylon_attached() {
+        let dir = tempfile::tempdir().unwrap();
+        let sx = dir.path();
+        // No sched_ext at all (Linux 6.8).
+        assert_eq!(park_mode(&sx.join("absent")), Park::Vmm);
+        std::fs::create_dir_all(sx.join("root")).unwrap();
+        std::fs::write(sx.join("state"), "disabled\n").unwrap();
+        assert_eq!(park_mode(sx), Park::Vmm);
+        // Another sched_ext scheduler.
+        std::fs::write(sx.join("state"), "enabled\n").unwrap();
+        std::fs::write(sx.join("root/ops"), "rusty\n").unwrap();
+        assert_eq!(park_mode(sx), Park::Vmm);
+        std::fs::write(sx.join("root/ops"), "pylon\n").unwrap();
+        assert_eq!(park_mode(sx), Park::Kvm);
+
+        let c = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 2, "max_vcpus": 4, "mem_size_mib": 1024, "rootfs_path": "/r",
+            "kernel_image_path": "/k", "kernel_args": "console=hvc0 root=/dev/vda",
+        }))
+        .unwrap();
+        let a = args(&c, "/run/glidex-cp/vms/x/api.sock", Park::Kvm);
+        let pos = a.iter().position(|x| x == "--pylon").unwrap();
+        assert!(a[pos + 1].ends_with(",park=kvm"), "{}", a[pos + 1]);
+    }
+
+    #[test]
+    fn pylond_registration_reads_the_stats_answer() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("pylond.sock");
+        let s = sock.to_str().unwrap();
+        assert_eq!(
+            pylond_registration(s, 7).unwrap(),
+            PylondRegistration::NoPylond
+        );
+
+        let h = serve_once(
+            &sock,
+            r#"{"accepted":true,"message":"stats retrieved","vms":[{"vm_id":7,"current_cores":1}]}"#,
+        );
+        assert_eq!(
+            pylond_registration(s, 7).unwrap(),
+            PylondRegistration::Listed
+        );
+        let req: serde_json::Value = serde_json::from_str(&h.join().unwrap()).unwrap();
+        assert_eq!(req, serde_json::json!({ "action": "stats", "vm_id": 7 }));
+
+        // What rc2 answered for a VM it refused at registration.
+        let h = serve_once(
+            &sock,
+            r#"{"accepted":true,"message":"stats retrieved","vms":[]}"#,
+        );
+        assert_eq!(
+            pylond_registration(s, 7).unwrap(),
+            PylondRegistration::NotListed
+        );
+        h.join().unwrap();
+
+        let h = serve_once(&sock, r#"{"accepted":false,"message":"busy"}"#);
+        assert!(pylond_registration(s, 7).is_err());
+        h.join().unwrap();
+    }
+
+    #[test]
     fn pylon_vm_id_edge_cases() {
         // Non-UUID directory path falls back to 1
         assert_eq!(pylon_vm_id("/run/glidex-cp/vms/non-uuid-name/api.sock"), 1);
@@ -297,12 +467,13 @@ mod tests {
         }))
         .unwrap();
         let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000001/api.sock";
-        let a = args(&c, api);
+        let a = args(&c, api, Park::Vmm);
         let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
         assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
         let val = &a[pos + 1];
         assert!(!val.contains("shm="), "{val}");
+        assert!(val.ends_with(",park=vmm"), "{val}");
         assert!(val.starts_with("socket=/run/pylon/pylond.sock,"), "{val}");
         assert!(val.contains("initial_active_vcpus=8"));
         assert!(val.contains("min_cores=2"));
@@ -320,7 +491,7 @@ mod tests {
         }))
         .unwrap();
         let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000002/api.sock";
-        let a = args(&c, api);
+        let a = args(&c, api, Park::Vmm);
         let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
         assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
@@ -341,7 +512,7 @@ mod tests {
         }))
         .unwrap();
         let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000003/api.sock";
-        let a = args(&c, api);
+        let a = args(&c, api, Park::Vmm);
         let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
         assert_eq!(&a[cpus_pos + 1], "boot=4,max=4");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
@@ -363,7 +534,7 @@ mod tests {
         .unwrap();
         c.vcpu_pins = vec![12, 14];
         let api = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000004/api.sock";
-        let a = args(&c, api);
+        let a = args(&c, api, Park::Vmm);
         let cpus_pos = a.iter().position(|x| x == "--cpus").expect("--cpus flag");
         assert_eq!(&a[cpus_pos + 1], "boot=2,max=2,affinity=[0@[12],1@[14]]");
     }

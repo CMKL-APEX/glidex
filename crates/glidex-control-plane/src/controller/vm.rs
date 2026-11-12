@@ -56,6 +56,9 @@ const CRASH_BACKOFF_BASE: u64 = 10;
 const CRASH_BACKOFF_MAX: u64 = 300;
 /// Slack after a stop's grace before the controller escalates (§9.1).
 const STOP_SLACK_SECS: u64 = 15;
+/// How long after a launch a Pylon VM missing from pylond counts as
+/// unmanaged (spec/30-pylon.md P16).
+const PYLON_REGISTER_SECS: u64 = 10;
 
 /// Set (or update) a condition; `last_transition_at` moves only when its
 /// status changes.
@@ -1916,6 +1919,56 @@ impl VmManager {
                 }
             } else {
                 clear_cond(&mut st.conditions, "VcpuResizePending");
+            }
+
+            // Whether pylond manages the VM (spec/30-pylon.md P16): the VMM
+            // logs a refused registration only to the console log.
+            if guest == GuestState::Running {
+                use crate::hypervisor::pylon;
+                let api = paths.api_socket.clone();
+                let reg = blocking(move || {
+                    pylon::pylond_registration(
+                        pylon::DEFAULT_PYLOND_SOCKET,
+                        pylon::pylon_vm_id(&api),
+                    )
+                })
+                .await?;
+                // The VMM registers as it starts; give it a moment.
+                let settled = st.instance.as_ref().is_none_or(|i| {
+                    crate::tenancy::now().saturating_sub(i.launched_at) >= PYLON_REGISTER_SECS
+                });
+                match reg {
+                    Ok(pylon::PylondRegistration::Listed) => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::True,
+                        "Registered",
+                        "pylond manages the VM's cores",
+                    ),
+                    Ok(pylon::PylondRegistration::NotListed) if settled => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::False,
+                        "NotRegistered",
+                        "pylond has no registration for the VM: it refused it (the VMM says why \
+                         in the console log, `gxctl log`) or restarted since; restart the VM",
+                    ),
+                    Ok(pylon::PylondRegistration::NoPylond) => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::False,
+                        "NoPylond",
+                        "glidex-pylond isn't running on this node",
+                    ),
+                    Ok(pylon::PylondRegistration::NotListed) => {}
+                    Err(e) => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::Unknown,
+                        "PylondError",
+                        e.to_string(),
+                    ),
+                }
             }
         } else if let Some(observed_vcpus) = observed.vcpu_count {
             let desired_vcpus = vm.spec.config.vcpu_count;

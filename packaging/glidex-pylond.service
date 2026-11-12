@@ -11,6 +11,8 @@ UMask=0007
 RuntimeDirectory=pylon
 RuntimeDirectoryMode=0750
 Environment="PYLON_CORES=2-7"
+# pylond logs only errors without it (spec/30-pylon.md P17).
+Environment="RUST_LOG=info"
 EnvironmentFile=-/etc/default/glidex-pylond
 ExecStart=/usr/local/bin/pylond --socket /run/pylon/pylond.sock --cores ${PYLON_CORES}
 Restart=on-failure
