@@ -429,10 +429,10 @@ impl VmManager {
             }),
         )?;
         let mut result: Result<u64, String> = Ok(0);
-        // Parts put in place so far: a copy that fails on a later part
-        // removes them, or the next pass would find the main file and count
-        // a half copy as this node's.
-        let mut placed = Vec::new();
+        // Every part is fetched and checked before any is put in place: a
+        // main file without its checked template would be a half copy that
+        // the next pass counts as this node's.
+        let mut fetched = Vec::new();
         for (part, dest) in self.image_files(img) {
             let tmp = dest.with_extension("cache.part");
             let path = format!("/cluster/v1/images/{}/file?part={part}", img.id);
@@ -482,14 +482,13 @@ impl VmManager {
                     break;
                 }
             }
-            if let Err(e) = std::fs::rename(&tmp, &dest) {
-                result = Err(e.to_string());
-                break;
-            }
-            placed.push(dest.clone());
-            if part == "main" {
-                result = Ok(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
-            }
+            fetched.push((part, tmp, dest));
+        }
+        if result.is_ok() {
+            result = place_together(&fetched);
+        }
+        for (_, tmp, _) in &fetched {
+            let _ = std::fs::remove_file(tmp);
         }
         match result {
             Ok(bytes) => {
@@ -514,9 +513,6 @@ impl VmManager {
                 Ok(None)
             }
             Err(e) => {
-                for p in &placed {
-                    let _ = std::fs::remove_file(p);
-                }
                 tracing::warn!(image = %img.name, "fetching the image: {}", e);
                 self.put_cache_row(
                     &img.id,
@@ -584,6 +580,33 @@ impl VmManager {
 }
 
 /// Whether `vm` boots through firmware or kernel image `id`.
+/// Put fetched parts in place, the main file last: its presence is what
+/// says this node holds the image. If one can't be moved, those already
+/// moved are taken out again. The size of the main file on success.
+fn place_together(
+    fetched: &[(&str, std::path::PathBuf, std::path::PathBuf)],
+) -> Result<u64, String> {
+    let mut placed = Vec::new();
+    let order = fetched
+        .iter()
+        .filter(|(p, ..)| *p != "main")
+        .chain(fetched.iter().filter(|(p, ..)| *p == "main"));
+    for (_, tmp, dest) in order {
+        if let Err(e) = std::fs::rename(tmp, dest) {
+            for p in &placed {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e.to_string());
+        }
+        placed.push(dest);
+    }
+    Ok(fetched
+        .iter()
+        .find(|(p, ..)| *p == "main")
+        .and_then(|(_, _, dest)| std::fs::metadata(dest).ok())
+        .map_or(0, |m| m.len()))
+}
+
 fn boots(vm: &crate::models::Vm, id: &str) -> bool {
     vm.uses_boot_image(id)
 }
