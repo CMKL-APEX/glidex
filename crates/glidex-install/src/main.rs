@@ -23,19 +23,19 @@ const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
 /// Pylon release (github.com/CMKL-APEX/pylon/releases), verified against
 /// `PYLON_ASSETS` (the release's SHA256SUMS). Bump together. Installed only
 /// with `--with-pylon` (spec/30-pylon.md P10, P11).
-const PYLON_VERSION: &str = "v0.0.8-rc1";
+const PYLON_VERSION: &str = "v0.0.8-rc2";
 /// Each Pylon release asset, the name it is installed under in `BIN_DIR`,
 /// and its sha256. x86_64 only.
 const PYLON_ASSETS: [(&str, &str, &str); 2] = [
     (
         "pylon-x86_64",
         "pylon",
-        "68ade7b49c7482f94484cd183e090dbed73ae2c2cb62badd39b8d4992884707c",
+        "191ec88528b6b92ba1ffc5967c0e06cb86c9ca32b6e6a04682b01e84790e8a30",
     ),
     (
         "pylond-x86_64",
         "pylond",
-        "e988b54501ab3b3984e0a3956f699624bdd3624c54f6c7feaeac06d114198ad2",
+        "230504314ef2304d68cc5e4609728486e75c1b3c07cd1b851c96065831ce89b0",
     ),
 ];
 /// rustup-init from `static.rust-lang.org/rustup/archive/<version>/<target>/`,

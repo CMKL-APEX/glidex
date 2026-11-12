@@ -15,17 +15,6 @@ use glidex_hv_client::{Observed, ch::ChClient};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Derive the shared memory path for a Pylon VM from its api socket path.
-/// E.g. `/run/glidex-cp/vms/<id>/api.sock` -> `/run/glidex-cp/vms/<id>/pylon.shm`.
-pub fn pylon_shm_path(api_socket: &str) -> String {
-    let p = Path::new(api_socket);
-    if let Some(parent) = p.parent() {
-        parent.join("pylon.shm").to_string_lossy().into_owned()
-    } else {
-        format!("{}.pylon.shm", api_socket)
-    }
-}
-
 /// Derive a deterministic 64-bit VM ID for Pylon from a VM UUID string.
 pub fn pylon_vm_id_from_uuid(uuid_str: &str) -> u64 {
     uuid::Uuid::parse_str(uuid_str)
@@ -81,18 +70,13 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
         a[pos + 1] = cpus;
     }
 
-    let shm = pylon_shm_path(api_socket);
     let vm_id = pylon_vm_id(api_socket);
 
+    // No `shm=`: since Pylon v0.0.8-rc2 the VMM makes the shared page a
+    // sealed memfd itself and refuses a path (spec/30-pylon.md P14).
     let pylon_opt = format!(
-        "shm={},socket={},gpa=0xfedf0000,initial_active_vcpus={},min_cores={},max_cores={},priority_weight={},vm_id={}",
-        shm,
-        DEFAULT_PYLOND_SOCKET,
-        initial_active_vcpus,
-        min_cores,
-        max_vcpus,
-        priority_weight,
-        vm_id
+        "socket={},gpa=0xfedf0000,initial_active_vcpus={},min_cores={},max_cores={},priority_weight={},vm_id={}",
+        DEFAULT_PYLOND_SOCKET, initial_active_vcpus, min_cores, max_vcpus, priority_weight, vm_id
     );
 
     a.push("--pylon".into());
@@ -282,10 +266,6 @@ mod tests {
     #[test]
     fn pylon_paths_and_ids() {
         let sock = "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000042/api.sock";
-        assert_eq!(
-            pylon_shm_path(sock),
-            "/run/glidex-cp/vms/00000000-0000-0000-0000-000000000042/pylon.shm"
-        );
         assert_eq!(pylon_vm_id(sock), 0x42);
     }
 
@@ -322,10 +302,8 @@ mod tests {
         assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
         let val = &a[pos + 1];
-        assert!(
-            val.contains("shm=/run/glidex-cp/vms/00000000-0000-0000-0000-000000000001/pylon.shm")
-        );
-        assert!(val.contains("socket=/run/pylon/pylond.sock"));
+        assert!(!val.contains("shm="), "{val}");
+        assert!(val.starts_with("socket=/run/pylon/pylond.sock,"), "{val}");
         assert!(val.contains("initial_active_vcpus=8"));
         assert!(val.contains("min_cores=2"));
         assert!(val.contains("max_cores=8"));
