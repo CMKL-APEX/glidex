@@ -279,7 +279,14 @@ default:
 }
 ```
 
-`projects` takes project ids or names, `tenants` tenant ids or slugs.
+`projects` takes project ids, `<tenant>/<project>` (the tenant's id or
+slug, then the project's name), or bare project names; `tenants` takes
+tenant ids or slugs. Project names are unique within a tenant only, so
+on a host with several tenants name projects as `<tenant>/<project>`. A
+bare name grants only while one project has it: the control plane
+refuses to start when a grant's bare name matches projects in more than
+one tenant, and refuses to create a project whose name such a grant
+uses while another project already has it.
 In a cluster, the same address on two hosts is two devices: `node` (a
 node id or name) grants the one on that node; without it, the grant
 covers the device at that address on every node. A VM is then placed

@@ -434,12 +434,41 @@ pub(crate) fn may_use_pool_directly(c: &Caller, name: &str, project: &str) -> bo
     )
 }
 
-fn pool_entities_without(c: &Caller, name: &str, tenant: Option<&str>) -> (Ent, EntitySet) {
+/// The project a device grant's project key names (`pci.allow`;
+/// spec/22-host-topology.md H26): an id, `<tenant>/<name>` with the tenant
+/// by id or slug, or a bare name only one project has. A bare name that
+/// several projects have names none.
+fn grant_project(c: &Caller, key: &str) -> Option<String> {
     let projects = c.manager().projects();
+    if let Ok(Some(p)) = projects.get(key) {
+        return Some(p.id);
+    }
+    match key.split_once('/') {
+        Some((tenant, name)) => {
+            let t = c
+                .auth()
+                .tenants
+                .resolve_in(c.p.directory_id(), tenant)
+                .ok()?;
+            projects
+                .named(name)
+                .ok()?
+                .into_iter()
+                .find(|p| p.tenant_id == t.id)
+                .map(|p| p.id)
+        }
+        None => match projects.named(key).ok()?.as_slice() {
+            [p] => Some(p.id.clone()),
+            _ => None,
+        },
+    }
+}
+
+fn pool_entities_without(c: &Caller, name: &str, tenant: Option<&str>) -> (Ent, EntitySet) {
     let grants: Vec<String> = pool_grants(c, name)
         .iter()
         .flat_map(|g| g.projects.iter())
-        .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
+        .filter_map(|p| grant_project(c, p))
         .collect();
     let mut tenants = pool_tenant_grants(c, name);
     tenants.retain(|t| Some(t.as_str()) != tenant);
@@ -489,7 +518,6 @@ pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
 /// tenants granted it in the config: grants for that address on every
 /// node, or on this one by id or name (spec/22-host-topology.md §8.5).
 pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet) {
-    let projects = c.manager().projects();
     let name = c
         .manager()
         .nodes()
@@ -514,7 +542,7 @@ pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet
     let grants: Vec<String> = allow
         .iter()
         .flat_map(|g| g.projects.iter())
-        .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
+        .filter_map(|p| grant_project(c, p))
         .collect();
     let tenants: Vec<String> = allow
         .iter()

@@ -251,13 +251,14 @@ pool, and Glidex picks them. Pools are defined in
 
 The control plane refuses to start with two pools of the same name, a
 pool without a match, two pools with the same match on the same nodes,
-or a grant naming an unknown pool. Restart the control plane after
-changing pools or grants.
+or a grant naming an unknown pool or naming a project by a name that
+several projects have. Restart the control plane after changing pools
+or grants.
 
 ### Who may use a pool
 
-A `pci.allow` entry with `pool` grants the pool to projects (ids or
-names) or tenants (ids or slugs), like device grants (see
+A `pci.allow` entry with `pool` grants the pool to projects (ids,
+`<tenant>/<project>`, or names) or tenants (ids or slugs), like device grants (see
 [Who may use a device](pci-passthrough.md#who-may-use-a-device)).
 `net-admin` and `system-admin` may use any pool. In policies the
 permission is `usePciPool`.

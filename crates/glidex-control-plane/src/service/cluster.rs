@@ -862,6 +862,12 @@ pub async fn put_pci_settings(
     c.set_target("cluster:pci".to_string());
     c.audit_always();
     let m = c.manager();
+    let ambiguous = m.ambiguous_grant_names(&next.allow);
+    if !ambiguous.is_empty() {
+        return Err(invalid(crate::state::ambiguous_grant_message(
+            "allow", &ambiguous,
+        )));
+    }
     // A pool still in force afterwards: defined, or discovered over the
     // nodes once these pools apply (spec/22-host-topology.md H21).
     let still = crate::pci_discovery::discover(&next.pools, &m.nodes().list().unwrap_or_default());
