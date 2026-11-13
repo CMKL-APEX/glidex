@@ -706,6 +706,22 @@ message TenantClusterReport {
   uint64 disks = 7;
   uint64 disk_gib = 8 [json_name = "disk_gib"];
   uint64 networks = 9;
+  // What a storage cluster holds of the tenant (spec/19-tenancy.md D85);
+  // absent when the cluster reports none.
+  TenantStorageReport storage = 10;
+}
+
+// A storage cluster's totals for one tenant (spec/19-tenancy.md D85).
+message TenantStorageReport {
+  uint64 volumes = 1;
+  // The volumes' provisioned size.
+  uint64 volume_gib = 2 [json_name = "volume_gib"];
+  // The space they actually take.
+  uint64 volume_used_bytes = 3 [json_name = "volume_used_bytes"];
+  uint64 buckets = 4;
+  // The space the buckets' objects take.
+  uint64 bucket_bytes = 5 [json_name = "bucket_bytes"];
+  uint64 s3_keys = 6 [json_name = "s3_keys"];
 }
 
 message ListTenantClustersRequest {

@@ -1380,6 +1380,7 @@ dependencies = [
  "glidex-raftstore",
  "glidex-tls",
  "glidex-topology",
+ "glidex-trust",
 ]
 
 [[package]]
@@ -1463,6 +1464,7 @@ dependencies = [
  "glidex-stord",
  "glidex-tls",
  "glidex-topology",
+ "glidex-trust",
  "glidex-vm-shim",
  "http",
  "http-body-util",
@@ -1661,6 +1663,32 @@ dependencies = [
  "nix",
  "serde",
  "tempfile",
+]
+
+[[package]]
+name = "glidex-trust"
+version = "0.0.8-dev"
+dependencies = [
+ "aws-lc-rs",
+ "base64 0.23.1",
+ "bytes",
+ "getrandom 0.4.3",
+ "glidex-tls",
+ "glidex-trust",
+ "http",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "jsonwebtoken",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "url",
 ]
 
 [[package]]

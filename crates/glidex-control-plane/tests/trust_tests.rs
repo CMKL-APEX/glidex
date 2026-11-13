@@ -1249,6 +1249,48 @@ async fn the_cluster_reports_its_tenants_back() {
     .await
     .unwrap();
     assert_eq!(s, 403);
+
+    // A storage cluster's report: only storage, as tenant totals (D85).
+    // The VM counts read as zero, and the tenant's page shows the totals.
+    let a = glidex_control_plane::directory::peer::assertion(
+        &north.app.auth.connectors,
+        glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+        &north_id,
+        &issuer,
+        glidex_control_plane::trust::REPORT,
+        glidex_control_plane::auth::store::now(),
+    )
+    .unwrap();
+    let storage = json!({ "cluster_id": north_id, "report": { "at": 1, "tenants": [{
+        "tenant": t.tenant, "storage": { "volumes": 2, "volume_gib": 100,
+        "volume_used_bytes": 7_516_192_768u64, "buckets": 1, "bucket_bytes": 12_345, "s3_keys": 3 },
+    }] } });
+    let (s, _) = glidex_control_plane::directory::peer::post(
+        &acme.base,
+        &d.tls_sha256,
+        "/d/local/feed/v1/report",
+        &a,
+        &storage,
+    )
+    .await
+    .unwrap();
+    assert_eq!(s, 204);
+    let (s, v) = acme
+        .rest(
+            "GET",
+            "/tenants/acme/clusters",
+            None,
+            &format!("{cookie}|{csrf}"),
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let rep = &v["clusters"][0]["report"];
+    assert_eq!(rep["storage"]["volumes"], "2", "{v}");
+    assert_eq!(rep["storage"]["volume_gib"], "100", "{v}");
+    assert_eq!(rep["storage"]["volume_used_bytes"], "7516192768", "{v}");
+    assert_eq!(rep["storage"]["bucket_bytes"], "12345", "{v}");
+    assert_eq!(rep["storage"]["s3_keys"], "3", "{v}");
+    assert!(rep["vms"].is_null() || rep["vms"] == "0", "{v}");
 }
 
 /// D13: past its `max_staleness` without a feed, a trusted directory's

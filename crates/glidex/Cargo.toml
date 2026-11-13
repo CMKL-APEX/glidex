@@ -1,6 +1,6 @@
 [package]
 name = "glidex"
-description = "Glidex, a control plane for KVM virtual machines: its libraries (RPC API and clients, authentication, the replicated store, host networking and topology) under one name"
+description = "Glidex, a control plane for KVM virtual machines: its libraries (RPC API and clients, authentication, trust between clusters and directories, the replicated store, host networking and topology) under one name"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -21,6 +21,7 @@ glidex-ovs = { workspace = true, optional = true }
 glidex-raftstore = { workspace = true, optional = true }
 glidex-tls = { workspace = true, optional = true }
 glidex-topology = { workspace = true, optional = true }
+glidex-trust = { workspace = true, optional = true }
 
 [features]
 default = ["api"]
@@ -35,7 +36,8 @@ ovs = ["dep:glidex-ovs"]
 raftstore = ["dep:glidex-raftstore"]
 tls = ["dep:glidex-tls"]
 topology = ["dep:glidex-topology"]
-full = ["client", "auth", "hv-client", "ovn", "ovs", "raftstore", "tls", "topology"]
+trust = ["dep:glidex-trust"]
+full = ["client", "auth", "hv-client", "ovn", "ovs", "raftstore", "tls", "topology", "trust"]
 
 [package.metadata.docs.rs]
 all-features = true

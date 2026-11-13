@@ -276,7 +276,7 @@ and [Access control](../operator-guide/access-control.md).
 | `tenant bindings <t>`, `bind <t> <tenant-admin\|tenant-auditor> <principal>`, `unbind <t> <link>` | Tenant roles |
 | `tenant device-pools <t>` | The tenant's pools on this cluster: cluster pool, held/max, free, projects |
 | `tenant device-pool set <t> <name> --from <pool> --max N [--projects p1,p2]`, `device-pool remove <t> <name>` | Add or change a tenant pool, or remove one |
-| `tenant clusters <t>` | Clusters of other organizations the tenant uses, with each one's last report |
+| `tenant clusters <t>` | Clusters of other organizations the tenant uses, with each one's last report (a storage cluster's: volumes, provisioned and used, buckets, S3 keys) |
 | `tenant opt-in <t> --offer TOKEN`, `opt-out <t> --cluster ID` | Start using another organization's cluster with the offer token its operator sent, or stop |
 | `admission list` | Tenants admitted on this site, with their caps |
 | `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, `devices.<pool>` |

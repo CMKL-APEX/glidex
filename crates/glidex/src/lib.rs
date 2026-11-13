@@ -16,6 +16,7 @@
 //! | `raftstore` | `raftstore` | `glidex-raftstore`: a replicated ReDB store on openraft |
 //! | `tls` | `tls` | `glidex-tls`: HTTPS listeners, certificates and client trust |
 //! | `topology` | `topology` | `glidex-topology`: a host's NUMA, PCIe and network ports from sysfs |
+//! | `trust` | `trust` | `glidex-trust`: a cluster's side of trust with another organization's directory |
 //!
 //! [operator guide]: https://cmkl-apex.github.io/glidex/docs/
 
@@ -35,3 +36,5 @@ pub use glidex_raftstore as raftstore;
 pub use glidex_tls as tls;
 #[cfg(feature = "topology")]
 pub use glidex_topology as topology;
+#[cfg(feature = "trust")]
+pub use glidex_trust as trust;
