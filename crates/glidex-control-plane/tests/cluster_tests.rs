@@ -7005,7 +7005,7 @@ async fn an_agent_refuses_certificates_the_cluster_did_not_issue_or_revoked() {
     let (cert_pem, info) = sc
         .signing_ca()
         .unwrap()
-        .sign_node(&csr, "ghost", true, 1)
+        .sign_node(&csr, "ghost", true, 1, &["127.0.0.1".parse().unwrap()])
         .unwrap();
     let trust = sc.files.read(sc.files.trust()).unwrap();
     let ghost = PeerClient::new(
@@ -7127,6 +7127,15 @@ async fn a_request_to_a_known_node_checks_its_certificate() {
     // An address alone still checks only the CA.
     let r = ask(agent.addr.to_string().into()).await.unwrap();
     assert_eq!(r.status, StatusCode::OK);
+    // D36: a request for "a server" (the leader, a seed) takes any server's
+    // certificate, and no agent's.
+    let r = ask(Target::server(server.addr)).await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+    let Err(e) = ask(Target::server(agent.addr)).await else {
+        panic!("answered")
+    };
+    let e = e.to_string();
+    assert!(e.contains("not a server's"), "{e}");
 }
 
 /// spec/14-clustering.md D35: a relayed host request names the node it was

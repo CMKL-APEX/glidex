@@ -56,7 +56,7 @@ impl Cluster {
                     let _ = me
                         .client
                         .request_timeout(
-                            &addr,
+                            crate::cluster::net::Target::server(&addr),
                             hyper::Method::POST,
                             "/cluster/v1/heartbeat",
                             &[("content-type", "application/json".into())],

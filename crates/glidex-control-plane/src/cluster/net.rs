@@ -202,6 +202,9 @@ impl ClusterTls {
 pub struct Target {
     pub addr: String,
     pub node: Option<String>,
+    /// Any server will do, but only a server (D36): the leader, a seed,
+    /// an agent's list of servers.
+    pub server: bool,
 }
 
 impl Target {
@@ -210,15 +213,26 @@ impl Target {
         Target {
             addr: addr.to_string(),
             node: Some(node.into()),
+            server: false,
         }
     }
 
-    /// The pool's key: a connection checked for one node isn't reused for
-    /// a request that expects another.
+    /// A server, whichever it is, at `addr`.
+    pub fn server(addr: impl ToString) -> Target {
+        Target {
+            addr: addr.to_string(),
+            node: None,
+            server: true,
+        }
+    }
+
+    /// The pool's key: a connection checked for one node, or for a
+    /// server, isn't reused for a request that expects something else.
     fn key(&self) -> String {
-        match &self.node {
-            Some(n) => format!("{n}@{}", self.addr),
-            None => self.addr.clone(),
+        match (&self.node, self.server) {
+            (Some(n), _) => format!("{n}@{}", self.addr),
+            (None, true) => format!("server@{}", self.addr),
+            (None, false) => self.addr.clone(),
         }
     }
 }
@@ -234,13 +248,18 @@ impl From<&str> for Target {
         Target {
             addr: addr.to_string(),
             node: None,
+            server: false,
         }
     }
 }
 
 impl From<String> for Target {
     fn from(addr: String) -> Target {
-        Target { addr, node: None }
+        Target {
+            addr,
+            node: None,
+            server: false,
+        }
     }
 }
 
@@ -314,19 +333,23 @@ impl PeerClient {
             .connect(ServerName::IpAddress(sock.ip().into()), tcp)
             .await
             .map_err(|e| ce(&e))?;
-        if let Some(want) = &to.node {
+        if to.node.is_some() || to.server {
             let got = tls
                 .get_ref()
                 .1
                 .peer_certificates()
                 .and_then(|c| c.first())
-                .and_then(|c| super::pki::inspect_node_cert(c.as_ref()).ok())
-                .map(|c| c.node_id);
-            if got.as_deref() != Some(want.as_str()) {
+                .and_then(|c| super::pki::inspect_node_cert(c.as_ref()).ok());
+            if let Some(want) = &to.node
+                && got.as_ref().map(|c| c.node_id.as_str()) != Some(want.as_str())
+            {
                 return Err(ce(&format!(
                     "the certificate there is not node {want}'s ({})",
-                    got.as_deref().unwrap_or("no node id")
+                    got.as_ref().map_or("no node id", |c| c.node_id.as_str())
                 )));
+            }
+            if to.server && !got.as_ref().is_some_and(|c| c.server) {
+                return Err(ce(&"the certificate there is not a server's"));
             }
         }
         Ok(tls)

@@ -629,7 +629,13 @@ impl Cluster {
             .signing_ca()
             .ok_or_else(|| failed("this server holds no CA key"))?;
         let (cert_pem, info) = ca
-            .sign_node(&p.csr, &p.node_id, false, super::pki::NODE_VALIDITY_DAYS)
+            .sign_node(
+                &p.csr,
+                &p.node_id,
+                false,
+                super::pki::NODE_VALIDITY_DAYS,
+                &[p.advertise.ip()],
+            )
             .map_err(|e| ImportError::Invalid(e.to_string()))?;
         let trust_pem = self
             .ca_state()

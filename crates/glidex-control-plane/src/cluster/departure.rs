@@ -644,7 +644,7 @@ impl Cluster {
             match self
                 .client
                 .request_timeout(
-                    &a,
+                    crate::cluster::net::Target::server(&a),
                     hyper::Method::GET,
                     path,
                     &[],
@@ -660,7 +660,7 @@ impl Cluster {
                         && let Ok(r) = self
                             .client
                             .request_timeout(
-                                &l,
+                                crate::cluster::net::Target::server(&l),
                                 hyper::Method::GET,
                                 path,
                                 &[],

@@ -367,21 +367,27 @@ async fn renew(
             "this server holds no CA key",
         );
     };
-    match crate::node::NodeStore::new(c.db.clone()).get(&peer.node_id) {
-        Ok(Some(n)) if !n.status.phase.is_tombstone() => {}
-        _ => {
-            return fail(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "this node is not a member",
-            );
-        }
-    }
+    // The address the cluster has for it: a change of address goes
+    // through rejoin, which records the new one (D34, D36).
+    let addresses: Vec<std::net::IpAddr> =
+        match crate::node::NodeStore::new(c.db.clone()).get(&peer.node_id) {
+            Ok(Some(n)) if !n.status.phase.is_tombstone() => {
+                n.status.advertise.map(|a| a.ip()).into_iter().collect()
+            }
+            _ => {
+                return fail(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "this node is not a member",
+                );
+            }
+        };
     let (cert_pem, info) = match ca.sign_node(
         &req.csr,
         &peer.node_id,
         peer.server,
         super::pki::NODE_VALIDITY_DAYS,
+        &addresses,
     ) {
         Ok(v) => v,
         Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
@@ -607,6 +613,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         &req.node_id,
         server,
         super::pki::NODE_VALIDITY_DAYS,
+        &[req.advertise.ip()],
     ) {
         Ok(v) => v,
         Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
@@ -728,11 +735,16 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         );
     }
     let server = rec.spec.role == NodeRole::Server;
-    let (cert_pem, info) =
-        match ca.sign_node(&req.csr, &target, server, super::pki::NODE_VALIDITY_DAYS) {
-            Ok(v) => v,
-            Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
-        };
+    let (cert_pem, info) = match ca.sign_node(
+        &req.csr,
+        &target,
+        server,
+        super::pki::NODE_VALIDITY_DAYS,
+        &[req.advertise.ip()],
+    ) {
+        Ok(v) => v,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
+    };
     // D18: a voter that lost its log must not vote again as itself. It leaves
     // the group here, and comes back through the learner path.
     let raft_fresh = server && !raft_intact;
@@ -859,7 +871,7 @@ async fn join_ready(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
         let r = c
             .client
             .request(
-                &addr.to_string(),
+                crate::cluster::net::Target::node(&rec.meta.id, addr),
                 hyper::Method::PUT,
                 "/cluster/v1/ca",
                 &[("content-type", "application/json".into())],
