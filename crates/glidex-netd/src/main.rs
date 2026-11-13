@@ -315,6 +315,24 @@ fn main() {
     if !config.source_routes.subnets.is_empty() {
         watch_source_routes(netd.clone());
     }
+    // OVS keeps no OpenFlow rules across a restart of ovs-vswitchd: put
+    // the VM ports' rules back (spec/09-networking.md §9.1).
+    let rules_netd = netd.clone();
+    std::thread::spawn(move || {
+        // A failure is logged when it first shows, not every pass.
+        let mut failing = Vec::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let pass = rules_netd.repair_rules();
+            for p in &pass.applied {
+                tracing::info!(port = %p, "OpenFlow rules put back");
+            }
+            for e in pass.errors.iter().filter(|e| !failing.contains(*e)) {
+                tracing::warn!(error = %e, "OpenFlow rules");
+            }
+            failing = pass.errors;
+        }
+    });
     let status_netd = netd.clone();
     std::thread::spawn(move || server::serve(status_netd, status, Access::Status, None));
     server::serve(netd, full, Access::Full, group_gid);

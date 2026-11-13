@@ -1925,10 +1925,13 @@ fn nat_ports_get_a_metadata_index_and_rule() {
             .unwrap();
     assert_eq!(res.metadata_index, Some(1));
     let calls = exec.calls();
-    assert!(
-        calls.iter().any(|c| c == "ovs-ofctl add-flow gxbr-nat cookie=0x6d000001,priority=200,in_port=5,tcp,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000001->pkt_mark,NORMAL"),
-        "{calls:#?}"
+    // Behind the port's checks (spec/09-networking.md §9.1): only from
+    // its own MAC and reservation.
+    let mac = names::mac_address(VM, 0).unwrap();
+    let want = format!(
+        "ovs-ofctl add-flow gxbr-nat cookie=0x6d000001,priority=200,in_port=5,tcp,dl_src={mac},nw_src=10.88.0.2,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000001->pkt_mark,NORMAL"
     );
+    assert!(calls.contains(&want), "{calls:#?}");
     assert!(
         calls
             .iter()
@@ -1966,6 +1969,236 @@ fn nat_ports_get_a_metadata_index_and_rule() {
     );
     let nft = calls.iter().rfind(|c| c.starts_with("nft -f -")).unwrap();
     assert!(!nft.contains("metadata_peer"), "{nft}");
+}
+
+// --- Port security (spec/09-networking.md §9.1) ---
+
+/// The checks cookie of `VM`'s NIC 0.
+const PS_COOKIE: &str = "0x70731a2b3c4d0000";
+
+fn setup_isolated(netd: &Netd) {
+    netd.handle(
+        Op::EnsureBridge(BridgeSpec {
+            name: "gxbr-iso".into(),
+            datapath: Datapath::System,
+            mtu: None,
+            adopt: false,
+            isolated: true,
+        }),
+        &peer(),
+    )
+    .unwrap();
+}
+
+/// The `add-flows` call that put a port's checks on `bridge`.
+fn checks_call(calls: &[String], bridge: &str) -> String {
+    calls
+        .iter()
+        .find(|c| c.starts_with(&format!("ovs-ofctl add-flows {bridge} - <<< ")))
+        .cloned()
+        .unwrap_or_else(|| panic!("no checks on {bridge}: {calls:#?}"))
+}
+
+#[test]
+fn a_nat_port_gets_its_checks_before_its_metadata_rule() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    exec.clear_calls();
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    let calls = exec.calls();
+    let mac = names::mac_address(VM, 0).unwrap();
+    let base =
+        "ovs-ofctl add-flow gxbr-nat cookie=0x70731a2b3c4d0001,priority=100,in_port=5,actions=drop";
+    let clear = format!("ovs-ofctl del-flows gxbr-nat cookie={PS_COOKIE}/-1");
+    let checks = checks_call(&calls, "gxbr-nat");
+    let pos = |c: &str| calls.iter().position(|x| x == c).unwrap();
+    let meta = calls
+        .iter()
+        .position(|c| c.contains("cookie=0x6d000001"))
+        .unwrap();
+    assert!(pos(base) < pos(&clear) && pos(&clear) < pos(&checks) && pos(&checks) < meta);
+    for want in [
+        format!("priority=150,in_port=5,ip,dl_src={mac},nw_src=10.88.0.2,actions=NORMAL"),
+        format!(
+            "priority=150,in_port=5,arp,dl_src={mac},arp_spa=10.88.0.2,arp_sha={mac},actions=NORMAL"
+        ),
+        "priority=320,in_port=5,udp,tp_src=67,actions=drop".to_string(),
+        "priority=320,in_port=5,icmp6,icmp_type=134,actions=drop".to_string(),
+    ] {
+        // The MAC stays out of the message (CodeQL reads a MAC as sensitive).
+        assert!(checks.contains(&want), "a check is missing: {checks}");
+    }
+
+    // Detached: both cookies go.
+    exec.clear_calls();
+    netd.handle(
+        Op::DetachVmPort {
+            vm_id: VM.into(),
+            nic_index: 0,
+        },
+        &peer(),
+    )
+    .unwrap();
+    let want = format!("ovs-ofctl del-flows gxbr-nat cookie={PS_COOKIE}/0xffffffffffffff00");
+    assert!(exec.calls().contains(&want), "{:#?}", exec.calls());
+}
+
+#[test]
+fn an_isolated_port_is_checked_by_mac_and_a_bridged_one_too() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_isolated(&netd);
+    netd.handle(
+        Op::EnsureBridge(BridgeSpec {
+            name: "gxbr-lan".into(),
+            datapath: Datapath::System,
+            mtu: None,
+            adopt: false,
+            isolated: false,
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let mac = names::mac_address(VM, 0).unwrap();
+
+    exec.clear_calls();
+    let res: AttachResult = serde_json::from_value(
+        netd.handle(
+            Op::AttachVmPort(VmPortSpec {
+                bridge: "gxbr-iso".into(),
+                ..port_spec()
+            }),
+            &peer(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(res.metadata_index, None);
+    let checks = checks_call(&exec.calls(), "gxbr-iso");
+    assert!(checks.contains("udp,tp_src=67,actions=drop"), "{checks}");
+    assert!(
+        checks.contains("icmp6,icmp_type=134,actions=drop"),
+        "{checks}"
+    );
+    assert!(
+        checks.contains(&format!(
+            "priority=130,in_port=5,dl_src={mac},actions=NORMAL"
+        )),
+        "{checks}"
+    );
+    assert!(!checks.contains("nw_src"), "{checks}");
+
+    // Bridged: the MAC only.
+    let vm2 = "2b3c4d5e-5e6f-4a1b-9c2d-0123456789ab";
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            bridge: "gxbr-lan".into(),
+            vm_id: vm2.into(),
+            mac: names::mac_address(vm2, 0).unwrap(),
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let checks = checks_call(&exec.calls(), "gxbr-lan");
+    assert_eq!(
+        checks,
+        format!(
+            "ovs-ofctl add-flows gxbr-lan - <<< cookie=0x70732b3c4d5e0000,priority=130,in_port=5,dl_src={},actions=NORMAL\n",
+            names::mac_address(vm2, 0).unwrap()
+        )
+    );
+}
+
+#[test]
+fn an_ovn_port_gets_no_checks() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    exec.on(
+        "ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge name=br-int",
+        Output::ok(r#"{"data":[["br-int","system",["map",[["glidex-owner","glidex"]]],["set",[]]]],"headings":["name","datapath_type","external_ids","ports"]}"#),
+    );
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            bridge: "br-int".into(),
+            ovn_lport: Some("gx-1a2b3c4d-0".into()),
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    assert!(
+        !exec.calls().iter().any(|c| c.starts_with("ovs-ofctl")),
+        "{:#?}",
+        exec.calls()
+    );
+}
+
+#[test]
+fn rules_come_back_at_start_and_after_an_ovs_restart() {
+    let dir = TempDir::new().unwrap();
+    {
+        let (netd, _) = netd(exec(), &dir);
+        setup_nat(&netd);
+        netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    }
+    // netd starts again.
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    let report = netd.reconcile_startup();
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(
+        report
+            .repaired
+            .contains(&"rules of gx1a2b3c4d-0".to_string()),
+        "{report:?}"
+    );
+    checks_call(&exec.calls(), "gxbr-nat");
+    assert!(exec.calls().iter().any(|c| c.contains("cookie=0x6d000001")));
+
+    // All there: the repair pass changes nothing.
+    exec.on(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::ok(format!(
+            " cookie={PS_COOKIE}, priority=130\n cookie=0x70731a2b3c4d0001, priority=100\n cookie=0x6d000001, priority=200\n"
+        )),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert!(
+        pass.applied.is_empty() && pass.errors.is_empty(),
+        "{pass:?}"
+    );
+    assert_eq!(exec.calls(), ["ovs-ofctl dump-flows gxbr-nat"]);
+
+    // ovs-vswitchd restarted: no rules. Both come back.
+    exec.set(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::ok(" priority=0 actions=NORMAL\n"),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert_eq!(pass.applied, ["rules of gx1a2b3c4d-0"], "{pass:?}");
+    checks_call(&exec.calls(), "gxbr-nat");
+    assert!(exec.calls().iter().any(|c| c.contains("cookie=0x6d000001")));
+
+    // OVS stopped: nothing to list, nothing done.
+    exec.set(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::failed(1, "connection refused"),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert!(
+        pass.applied.is_empty() && pass.errors.is_empty(),
+        "{pass:?}"
+    );
 }
 
 // --- Source routes (spec/09-networking.md §8.6) ---
