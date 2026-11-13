@@ -665,9 +665,48 @@ impl VmManager {
             self.pci_pools.store(Arc::new(next.pools));
         }
         if **self.pci_grants.load() != next.allow {
+            for (name, n) in self.ambiguous_grant_names(&next.allow) {
+                tracing::warn!(
+                    "pci.allow names project {name}, which {n} projects have: it grants none of them until it is named as <tenant>/{name} or by id (spec/22-host-topology.md H26)"
+                );
+            }
             self.pci_grants.store(Arc::new(next.allow));
         }
         self.refresh_pools();
+    }
+
+    /// The bare project names in `grants` that several projects have
+    /// (spec/22-host-topology.md H26).
+    pub fn ambiguous_grant_names(
+        &self,
+        grants: &[crate::config::PciGrant],
+    ) -> Vec<(String, usize)> {
+        self.projects()
+            .ambiguous_names(
+                grants
+                    .iter()
+                    .flat_map(|g| g.projects.iter().map(String::as_str)),
+            )
+            .unwrap_or_default()
+    }
+
+    /// At start, when `control-plane.json`'s `pci.allow` is in force: an
+    /// error if it names a project by a bare name that several projects
+    /// have (spec/22-host-topology.md H26). Once the cluster's setting
+    /// decides, the file is ignored and a write of the setting is checked
+    /// instead.
+    pub fn check_pci_grant_names(&self) -> Result<(), String> {
+        if self.pci_settings().is_some() {
+            return Ok(());
+        }
+        let bad = self.ambiguous_grant_names(&self.pci_file.load().allow);
+        if bad.is_empty() {
+            return Ok(());
+        }
+        Err(ambiguous_grant_message(
+            "control-plane.json's pci.allow",
+            &bad,
+        ))
     }
 
     /// Recompute the pools in force: the defined ones and those discovered
@@ -6227,6 +6266,19 @@ fn fill_macs(vm_id: &str, networks: &mut [NetworkAttachment], taken: impl Fn(&st
             });
         networks[i].mac = mac;
     }
+}
+
+/// What to say about bare project names in device grants that several
+/// projects have (spec/22-host-topology.md H26).
+pub fn ambiguous_grant_message(what: &str, bad: &[(String, usize)]) -> String {
+    let names: Vec<String> = bad
+        .iter()
+        .map(|(name, n)| format!("{name} ({n} projects)"))
+        .collect();
+    format!(
+        "{what} names projects by a name that several projects have: {}. Name each as <tenant>/<project> or by its id",
+        names.join(", ")
+    )
 }
 
 #[cfg(test)]

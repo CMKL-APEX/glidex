@@ -397,7 +397,8 @@ pub struct PciGrant {
     pub bdf: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
-    /// Project ids or names.
+    /// Project ids, `<tenant>/<name>`, or names that one project has
+    /// (spec/22-host-topology.md H26).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projects: Vec<String>,
     /// Tenant ids or slugs: every project of theirs may use the device

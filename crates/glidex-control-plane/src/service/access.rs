@@ -372,8 +372,24 @@ pub fn create_project(
         Some(q) => project_quotas(q),
         None => call.auth().config.quotas.default.clone(),
     };
-    let p = call
-        .manager()
+    // A device grant that names its project by this bare name would then
+    // name several (spec/22-host-topology.md H26).
+    let m = call.manager();
+    let granted = m
+        .pci_grants()
+        .iter()
+        .any(|g| g.projects.contains(&req.name));
+    if granted && !m.projects().named(&req.name).unwrap_or_default().is_empty() {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "name_in_device_grant",
+            format!(
+                "a device grant names a project {}: choose another name, or have an administrator name that grant's project as <tenant>/<project>",
+                req.name
+            ),
+        ));
+    }
+    let p = m
         .projects()
         .create_in(&tenant.id, &req.name, req.description, Some(quotas))
         .map_err(|e| manager_err(e.into()))?;

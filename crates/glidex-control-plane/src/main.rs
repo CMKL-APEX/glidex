@@ -229,6 +229,10 @@ async fn main() {
     };
     println!("OK");
     vm_manager.configure(&cfg);
+    if let Err(e) = vm_manager.check_pci_grant_names() {
+        eprintln!("\nInvalid configuration: {}", e);
+        std::process::exit(1);
+    }
 
     // KVM (spec/12-reconciliation.md §13.3). Under the systemd runner the
     // hypervisors open /dev/kvm in their glidex-vm units, and this unit's

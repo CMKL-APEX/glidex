@@ -1227,6 +1227,138 @@ async fn a_project_of_another_tenant_answers_like_a_missing_one() {
 }
 
 #[tokio::test]
+async fn a_device_grant_names_one_project() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let a100 = PciPool {
+        name: "a100".into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some("0x10de".into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+        per_device: None,
+        bar_mib: None,
+    };
+    let h = harness_with(|c| {
+        c.pci.pools = vec![a100];
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec!["web".into()],
+            tenants: vec![],
+            node: None,
+        }];
+    });
+    let ada = h.admin("ada");
+    let at = h.session(&ada);
+    let mut tenants = std::collections::HashMap::new();
+    for slug in ["acme", "lab"] {
+        let (_, v) = h
+            .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+            .await;
+        let id = v["tenant"]["id"].as_str().unwrap().to_string();
+        let (s, _) = h
+            .rest(
+                "POST",
+                &format!("/tenants/{id}/bindings"),
+                Some(json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": ada } })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+        tenants.insert(slug, id);
+    }
+    let (alice, bob) = (h.user("alice"), h.user("bob"));
+    let (a, b) = (h.token(&alice), h.token(&bob));
+    let create = |name: &str, tenant: &str| {
+        let body = json!({ "name": name, "tenant": tenant, "owners": [alice] });
+        let at = at.clone();
+        let h = &h;
+        async move { h.rest("POST", "/projects", Some(body), &at).await }
+    };
+    let (s, v) = create("web", "acme").await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let web = v["project"]["id"].as_str().unwrap().to_string();
+    // Asked as the project's owner: an administrator may use any pool.
+    let granted = |project: String, tok: &String| {
+        let tok = tok.clone();
+        let h = &h;
+        async move {
+            let (s, v) = h
+                .rest("GET", &format!("/pci-pools?project={project}"), None, &tok)
+                .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            // An empty list is left out of the answer.
+            v["pools"]
+                .as_array()
+                .is_some_and(|p| p.iter().any(|p| p["name"] == "a100"))
+        }
+    };
+    // A bare name that one project has names it.
+    assert!(granted(web.clone(), &a).await);
+    assert_eq!(h.app.manager.check_pci_grant_names(), Ok(()));
+
+    // Another project of that name would make the grant name two.
+    let (s, v) = create("web", "lab").await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("name_in_device_grant")),
+        "{v}"
+    );
+
+    // One made anyway (by an older build) leaves the name naming none,
+    // and a server refuses to start on that file.
+    let lab_web = h
+        .app
+        .manager
+        .projects()
+        .create_in(&tenants["lab"], "web", String::new(), None)
+        .unwrap()
+        .id;
+    h.app
+        .auth
+        .add_link(
+            "role.owner",
+            Ent::User(bob.clone()),
+            Ent::Project(lab_web.clone()),
+            "test",
+        )
+        .unwrap();
+    assert!(!granted(web.clone(), &a).await);
+    assert!(!granted(lab_web.clone(), &b).await);
+    let e = h.app.manager.check_pci_grant_names().unwrap_err();
+    assert!(e.contains("web (2 projects)"), "{e}");
+
+    // The cluster's setting takes `<tenant>/<project>`, not the bare name.
+    let pool = json!({ "name": "a100", "class": "gpu", "match": { "vendor_id": "0x10de" } });
+    let put = |projects: Value| {
+        let body = json!({ "pools": [pool], "allow": [{ "pool": "a100", "projects": projects }] });
+        let at = at.clone();
+        let h = &h;
+        async move {
+            h.rest("PUT", "/cluster/settings/pci", Some(body), &at)
+                .await
+        }
+    };
+    let (s, v) = put(json!(["web"])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("web (2 projects)"),
+        "{v}"
+    );
+    let (s, v) = put(json!(["lab/web"])).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(granted(lab_web.clone(), &b).await);
+    assert!(!granted(web.clone(), &a).await);
+    let (s, v) = put(json!([format!("{}/web", tenants["acme"])])).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(granted(web, &a).await);
+    assert!(!granted(lab_web, &b).await);
+}
+
+#[tokio::test]
 async fn migration_keeps_an_existing_system_admin_whole() {
     let dir = TempDir::new().unwrap();
     // SAFETY: test-only; every test sets it the same way before reading it.

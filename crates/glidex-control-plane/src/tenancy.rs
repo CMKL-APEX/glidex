@@ -384,6 +384,27 @@ impl ProjectStore {
             .ok_or_else(|| TenancyError::NotFound(key.to_string()))
     }
 
+    /// The bare names among a device grant's project `keys` (`pci.allow`;
+    /// spec/22-host-topology.md H26) that several projects have, with how
+    /// many: such a grant names its project by id or as `<tenant>/<name>`.
+    pub fn ambiguous_names<'a>(
+        &self,
+        keys: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Vec<(String, usize)>, TenancyError> {
+        let all = self.list()?;
+        let mut out: Vec<(String, usize)> = Vec::new();
+        for k in keys {
+            if k.contains('/') || all.iter().any(|p| p.id == k) || out.iter().any(|(o, _)| o == k) {
+                continue;
+            }
+            let n = all.iter().filter(|p| p.name == k).count();
+            if n > 1 {
+                out.push((k.to_string(), n));
+            }
+        }
+        Ok(out)
+    }
+
     pub fn put(&self, p: &Project) -> Result<(), TenancyError> {
         let bytes = serde_json::to_vec(p)?;
         let txn = self.db.begin(crate::store::Origin::Api)?;
