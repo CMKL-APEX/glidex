@@ -65,6 +65,9 @@ pub enum PersistenceError {
     Disk(#[from] ImageError),
     #[error("{0}")]
     Ipam(String),
+    /// A NIC's MAC another VM's NIC has on the same network.
+    #[error("{0}")]
+    MacInUse(String),
 }
 
 /// `meta` of every resource (§6.1).
@@ -533,6 +536,11 @@ impl VmStore {
     /// Apply a `Commit` in a single write transaction.
     pub fn commit(&self, c: Commit<'_>) -> Result<(), PersistenceError> {
         let write_txn = self.db.begin(crate::store::Origin::Controller)?;
+        // The VM as stored before this write: the NICs it already had.
+        let before = match c.put_vm {
+            Some(vm) => read_vm(&write_txn, &vm.id)?,
+            None => None,
+        };
         {
             let mut table = write_txn.open_table(VMS_TABLE)?;
             if let Some(vm) = c.put_vm {
@@ -552,8 +560,7 @@ impl VmStore {
             images::delete_disk_record(&write_txn, id)?;
         }
         for (network, mac, vm_id, nic) in &c.reserve_ips {
-            crate::ipam::reserve(&write_txn, network, mac, vm_id, *nic)
-                .map_err(|e| PersistenceError::Ipam(e.to_string()))?;
+            reserve_nic(&write_txn, before.as_ref(), network, mac, vm_id, *nic)?;
         }
         for (key, event) in c.events {
             if c.delete_vm.is_some_and(|id| key == event_key("vm", id)) {
@@ -639,6 +646,64 @@ pub fn audit_system(
     if let Err(e) = write() {
         tracing::error!("audit write failed: {}", e);
     }
+}
+
+fn read_vm(tx: &Tx<'_>, id: &str) -> Result<Option<Vm>, PersistenceError> {
+    let table = tx.open_table(VMS_TABLE)?;
+    let vm = table
+        .get(id)?
+        .and_then(|v| serde_json::from_slice::<Vm>(v.value()).ok());
+    Ok(vm)
+}
+
+/// Whether `vm` has a NIC with `mac` on `network`, in its spec or on its
+/// running ports.
+fn has_nic(vm: &Vm, network: &str, mac: &str) -> bool {
+    vm.spec_nics()
+        .into_iter()
+        .chain(vm.port_nics())
+        .any(|(_, n, m)| n == network && m.eq_ignore_ascii_case(mac))
+}
+
+/// Reserve `(network, mac)`'s address for `vm_id`. A MAC is unique on its
+/// network: one another VM's NIC holds is refused. A reservation left by a
+/// VM or NIC that is gone (freed later by the network controller) is taken
+/// over. A NIC `before` (the VM as stored) already had is let be even when
+/// another VM's NIC holds the address, so that a store written before MACs
+/// were checked still saves; that NIC gets no address of its own.
+fn reserve_nic(
+    tx: &Tx<'_>,
+    before: Option<&Vm>,
+    network: &str,
+    mac: &str,
+    vm_id: &str,
+    nic: u8,
+) -> Result<(), PersistenceError> {
+    let owner = match crate::ipam::reserve(tx, network, mac, vm_id, nic) {
+        Ok(_) => return Ok(()),
+        Err(crate::ipam::IpamError::MacInUse { vm_id: owner, .. }) => owner,
+        Err(e) => return Err(PersistenceError::Ipam(e.to_string())),
+    };
+    let held = read_vm(tx, &owner)?.is_some_and(|o| has_nic(&o, network, mac));
+    if !held {
+        crate::ipam::release(tx, network, mac)
+            .and_then(|()| crate::ipam::reserve(tx, network, mac, vm_id, nic))
+            .map_err(|e| PersistenceError::Ipam(e.to_string()))?;
+        return Ok(());
+    }
+    if before.is_some_and(|b| b.id == vm_id && has_nic(b, network, mac)) {
+        tracing::warn!(
+            vm = vm_id,
+            other = %owner,
+            network,
+            mac,
+            "another VM has a NIC with this MAC on this network; this one gets no address"
+        );
+        return Ok(());
+    }
+    Err(PersistenceError::MacInUse(format!(
+        "MAC {mac} is in use on network {network} by another VM's NIC"
+    )))
 }
 
 /// Append `event` to the ring at `key` inside `txn`.
@@ -932,5 +997,78 @@ mod tests {
             store.load_all().unwrap()[0].config().networks[0].network,
             id
         );
+    }
+
+    /// A commit reserves a NIC's address only for a MAC no other VM's NIC
+    /// has on the network; a reservation whose NIC is gone is taken over,
+    /// and a VM stored with a taken MAC before the check still saves.
+    #[test]
+    fn commits_reserve_a_mac_for_one_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = VmStore::open(dir.path().join("db")).unwrap();
+        store.migrate(HostBootPolicy::Resume).unwrap();
+        let db = store.database();
+        db.write(Origin::Network, |tx| {
+            crate::ipam::allocate_subnet(
+                tx,
+                "n",
+                Some("10.89.9.0/29".parse().unwrap()),
+                "10.89.0.0/16".parse().unwrap(),
+                &[],
+            )
+        })
+        .unwrap();
+        let mac = "52:54:00:00:00:01";
+        let new_vm = |name: &str| {
+            let config: VmConfig = serde_json::from_value(serde_json::json!({
+                "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "",
+                "networks": [{"network": "n", "mac": mac}]
+            }))
+            .unwrap();
+            Vm::new(name.into(), config)
+        };
+        let put = |vm: &Vm| {
+            store.commit(Commit {
+                put_vm: Some(vm),
+                reserve_ips: vec![("n".into(), mac.into(), vm.id.clone(), 0)],
+                ..Default::default()
+            })
+        };
+        let owner = || {
+            crate::ipam::list_reservations(&db).unwrap()[0]
+                .vm_id
+                .clone()
+        };
+        let a = new_vm("a");
+        put(&a).unwrap();
+        put(&a).unwrap();
+        assert_eq!(owner(), a.id);
+
+        let b = new_vm("b");
+        assert!(matches!(put(&b), Err(PersistenceError::MacInUse(_))));
+        assert!(store.load_all().unwrap().iter().all(|v| v.id != b.id));
+
+        // Stored before MACs were checked: b saves, a keeps the address.
+        store.save(&b).unwrap();
+        put(&b).unwrap();
+        assert_eq!(owner(), a.id);
+
+        // a's NIC is gone: c takes the address over.
+        store
+            .commit(Commit {
+                delete_vm: Some(&a.id),
+                ..Default::default()
+            })
+            .unwrap();
+        store
+            .commit(Commit {
+                delete_vm: Some(&b.id),
+                ..Default::default()
+            })
+            .unwrap();
+        let c = new_vm("c");
+        put(&c).unwrap();
+        assert_eq!(owner(), c.id);
+        assert_eq!(crate::ipam::list_reservations(&db).unwrap().len(), 1);
     }
 }

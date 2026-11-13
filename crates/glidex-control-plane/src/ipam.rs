@@ -51,6 +51,14 @@ pub enum IpamError {
     ExternalPoolFull,
     #[error("external address {0} is taken")]
     ExternalTaken(Ipv4Addr),
+    /// `(network, mac)` holds an address for another VM: a MAC is unique
+    /// on its network.
+    #[error("MAC {mac} already has an address on network {network}")]
+    MacInUse {
+        network: String,
+        mac: String,
+        vm_id: String,
+    },
 }
 
 macro_rules! storage_from {
@@ -176,7 +184,9 @@ fn key(network: &str, mac: &str) -> String {
 }
 
 /// An address for `(network, mac)`: the one it already holds, else the lowest
-/// free address of the pool.
+/// free address of the pool. Refused when `(network, mac)` holds one for
+/// another VM: a MAC is unique on its network, and a reservation names one
+/// VM's NIC.
 pub fn reserve(
     tx: &Tx<'_>,
     network: &str,
@@ -195,6 +205,13 @@ pub fn reserve(
     let k = key(network, mac);
     if let Some(v) = res.get(k.as_str())? {
         let r: Reservation = serde_json::from_slice(v.value())?;
+        if r.vm_id != vm_id {
+            return Err(IpamError::MacInUse {
+                network: network.into(),
+                mac: r.mac,
+                vm_id: r.vm_id,
+            });
+        }
         return Ok(r);
     }
     let prefix = format!("{network}/");
@@ -463,5 +480,50 @@ mod tests {
             )),
             Err(IpamError::NoSubnet(_))
         ));
+    }
+
+    #[test]
+    fn a_mac_holds_an_address_for_one_vm() {
+        let (_d, db) = db();
+        db.write(Origin::Network, |tx| {
+            allocate_subnet(tx, "n", Some("10.89.9.0/29".parse().unwrap()), sup(), &[])
+        })
+        .unwrap();
+        db.write(Origin::Network, |tx| {
+            allocate_subnet(tx, "m", Some("10.89.10.0/29".parse().unwrap()), sup(), &[])
+        })
+        .unwrap();
+        let r = |net: &str, vm: &str, nic: u8| {
+            db.write(Origin::Api, |tx| {
+                reserve(tx, net, "52:54:00:00:00:01", vm, nic)
+            })
+        };
+        let a = r("n", "vm-a", 0).unwrap();
+        // The same VM again, on another NIC index too: its address.
+        assert_eq!(r("n", "vm-a", 0).unwrap().ip, a.ip);
+        assert_eq!(r("n", "vm-a", 1).unwrap().ip, a.ip);
+        // Another VM: refused, and the reservation stays the first VM's.
+        match r("n", "vm-b", 0) {
+            Err(IpamError::MacInUse {
+                network,
+                mac,
+                vm_id,
+            }) => {
+                assert_eq!(
+                    (network.as_str(), mac.as_str(), vm_id.as_str()),
+                    ("n", "52:54:00:00:00:01", "vm-a")
+                );
+            }
+            other => panic!("expected MacInUse, got {other:?}"),
+        }
+        let held = list_reservations(&db).unwrap();
+        assert_eq!(held.len(), 1);
+        assert_eq!(held[0].vm_id, "vm-a");
+        // The same MAC on another network is another NIC.
+        r("m", "vm-b", 0).unwrap();
+        // Released, the MAC is free for another VM.
+        db.write(Origin::Api, |tx| release(tx, "n", "52:54:00:00:00:01"))
+            .unwrap();
+        assert_eq!(r("n", "vm-b", 0).unwrap().vm_id, "vm-b");
     }
 }
