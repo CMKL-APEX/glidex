@@ -68,6 +68,10 @@ impl Park {
 /// `park=kvm` only where `scx_pylon` is attached: `pylond` refuses a VM
 /// that parks in KVM without it, and the VM then runs unmanaged
 /// (spec/30-pylon.md P15).
+pub(crate) fn park_mode_here() -> Park {
+    park_mode(Path::new(SCHED_EXT_SYSFS))
+}
+
 pub(crate) fn park_mode(sched_ext: &Path) -> Park {
     let read = |f: &str| std::fs::read_to_string(sched_ext.join(f)).unwrap_or_default();
     if read("state").trim() == "enabled" && read("root/ops").trim() == "pylon" {
@@ -84,11 +88,16 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str, park: Park) -> Vec<Strin
     let max_vcpus = config.effective_max_vcpus();
     let min_cores = config.effective_min_vcpus();
     let priority_weight = config.effective_cpu_weight();
-    // Start at the floor: pylond gives a managed CPU only to a parked
-    // vCPU, so a VM with every vCPU active never gets one. The guest
-    // agent's first heartbeat parks the vCPUs beyond this; without the
-    // agent all of them keep running (spec/30-pylon.md P18).
-    let initial_active_vcpus = min_cores.max(1);
+    // Start at the floor only where a parked vCPU wakes on an interrupt
+    // (park=kvm, with scx_pylon): pylond gives a managed CPU only to a
+    // parked vCPU, but with park=vmm a guest whose vCPUs the agent's first
+    // heartbeat parked stalls on work sent to them, and the agent can't
+    // report demand to wake them (seen on prism2, 2026-11-13). Elsewhere
+    // every vCPU starts and stays active (spec/30-pylon.md P18).
+    let initial_active_vcpus = match park {
+        Park::Kvm => min_cores.max(1),
+        Park::Vmm => max_vcpus,
+    };
 
     // On Pylon, all max_vcpus exist in the guest at boot (boot=max,max=max)
     // and higher vCPUs start parked.
@@ -148,11 +157,7 @@ impl HypervisorDriver for PylonDriver {
         })?;
         cloud_hypervisor::check_mmio64_here(config)?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
-        argv.extend(args(
-            config,
-            api_socket,
-            park_mode(Path::new(SCHED_EXT_SYSFS)),
-        ));
+        argv.extend(args(config, api_socket, park_mode_here()));
         Ok(LaunchArgs {
             argv,
             fallback: None,
@@ -480,8 +485,17 @@ mod tests {
         assert!(!val.contains("shm="), "{val}");
         assert!(val.ends_with(",park=vmm"), "{val}");
         assert!(val.starts_with("socket=/run/pylon/pylond.sock,"), "{val}");
-        assert!(val.contains("initial_active_vcpus=2"));
+        // park=vmm: every vCPU active, none parked (a parked one stalls the guest).
+        assert!(val.contains("initial_active_vcpus=8"));
         assert!(val.contains("min_cores=2"));
+        // park=kvm: start at the floor.
+        let kvm = args(&c, api, Park::Kvm);
+        let pos = kvm.iter().position(|x| x == "--pylon").unwrap();
+        assert!(
+            kvm[pos + 1].contains("initial_active_vcpus=2"),
+            "{}",
+            kvm[pos + 1]
+        );
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=500"));
         assert!(val.contains("vm_id=1"));
@@ -501,9 +515,16 @@ mod tests {
         assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
         let val = &a[pos + 1];
-        // A VM that may park every vCPU still boots on one.
-        assert!(val.contains("initial_active_vcpus=1"));
+        assert!(val.contains("initial_active_vcpus=8"));
         assert!(val.contains("min_cores=0"));
+        // With park=kvm, a VM that may park every vCPU still boots on one.
+        let kvm = args(&c, api, Park::Kvm);
+        let pos = kvm.iter().position(|x| x == "--pylon").unwrap();
+        assert!(
+            kvm[pos + 1].contains("initial_active_vcpus=1"),
+            "{}",
+            kvm[pos + 1]
+        );
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=200"));
         assert!(val.contains("vm_id=2"));

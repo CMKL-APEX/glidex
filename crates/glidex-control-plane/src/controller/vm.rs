@@ -1253,7 +1253,11 @@ impl VmManager {
                 growpart_disk = root.as_ref().map(|(_, d)| d.id.clone());
                 growpart_seq = root.as_ref().map(|(_, d)| d.applied_extend_root_seq);
             }
-            if vm.hypervisor() == HypervisorType::Pylon {
+            // The agent only where its first heartbeat may park vCPUs safely:
+            // with park=vmm the guest stalls on parked vCPUs (P18, P19).
+            if vm.hypervisor() == HypervisorType::Pylon
+                && crate::hypervisor::pylon::park_mode_here() == crate::hypervisor::pylon::Park::Kvm
+            {
                 let path = crate::hypervisor::pylon::PYLON_GUEST_AGENT;
                 seed.pylon_guest_agent = blocking(move || std::fs::read(path))
                     .await

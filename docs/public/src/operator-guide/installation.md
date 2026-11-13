@@ -265,12 +265,14 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
   ExecStart=/usr/local/bin/pylond --socket /run/pylon/pylond.sock --cores ${PYLON_CORES} --no-scx
   ```
 - **The guest agent.** `pylond` sees a guest's demand only through
-  `pylon-guest-agent` in the guest. Glidex puts the host's copy
+  `pylon-guest-agent` in the guest. On a host where `scx_pylon` is
+  attached, Glidex puts the host's copy
   (`/usr/local/share/glidex/pylon-guest-agent`) on a Pylon VM's
-  cloud-init seed, which installs and starts it at the first boot; a VM
-  started on a host without the file gets none, and the control plane
-  logs a warning. A Pylon VM starts with `min_vcpus` running, and the
-  agent's first report lets `pylond` park the rest.
+  cloud-init seed, which installs and starts it at the first boot, and
+  starts the VM with `min_vcpus` running; the agent's first report lets
+  `pylond` park the rest. Elsewhere a Pylon VM gets no agent and keeps
+  every vCPU running: without `scx_pylon` a parked vCPU doesn't wake on
+  an interrupt, and the guest stalls on it.
 - **Where a VM parks its vCPUs.** Glidex starts a Pylon VM with
   `park=kvm` when `scx_pylon` is attached on its host, and `park=vmm`
   otherwise: `pylond` refuses a VM that parks in KVM without
