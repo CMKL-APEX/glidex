@@ -80,10 +80,11 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str, park: Park) -> Vec<Strin
     let max_vcpus = config.effective_max_vcpus();
     let min_cores = config.effective_min_vcpus();
     let priority_weight = config.effective_cpu_weight();
-    // All max_vcpus must start active so guest SMP boot (INIT/SIPI) can
-    // bring them online into Linux. Pylond then manages cooperative core
-    // arbitration within [min_cores, max_cores] during runtime.
-    let initial_active_vcpus = max_vcpus;
+    // Start at the floor: pylond gives a managed CPU only to a parked
+    // vCPU, so a VM with every vCPU active never gets one. The guest
+    // agent's first heartbeat parks the vCPUs beyond this; without the
+    // agent all of them keep running (spec/30-pylon.md P18).
+    let initial_active_vcpus = min_cores.max(1);
 
     // On Pylon, all max_vcpus exist in the guest at boot (boot=max,max=max)
     // and higher vCPUs start parked.
@@ -475,7 +476,7 @@ mod tests {
         assert!(!val.contains("shm="), "{val}");
         assert!(val.ends_with(",park=vmm"), "{val}");
         assert!(val.starts_with("socket=/run/pylon/pylond.sock,"), "{val}");
-        assert!(val.contains("initial_active_vcpus=8"));
+        assert!(val.contains("initial_active_vcpus=2"));
         assert!(val.contains("min_cores=2"));
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=500"));
@@ -496,7 +497,8 @@ mod tests {
         assert_eq!(&a[cpus_pos + 1], "boot=8,max=8");
         let pos = a.iter().position(|x| x == "--pylon").expect("--pylon flag");
         let val = &a[pos + 1];
-        assert!(val.contains("initial_active_vcpus=8"));
+        // A VM that may park every vCPU still boots on one.
+        assert!(val.contains("initial_active_vcpus=1"));
         assert!(val.contains("min_cores=0"));
         assert!(val.contains("max_cores=8"));
         assert!(val.contains("priority_weight=200"));

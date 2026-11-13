@@ -877,10 +877,13 @@ elastic.
 
 How the range is used depends on the hypervisor:
 
-- **Pylon.** The guest boots with all `max_vcpus` and keeps them.
-  `pylond`, the host's core arbiter, parks the vCPUs the guest doesn't
-  need and wakes them on demand, between `min_vcpus` and `max_vcpus`,
-  in microseconds and without CPU hotplug. So an elastic Pylon VM's
+- **Pylon.** The guest has all `max_vcpus` and keeps them, but starts
+  with only `min_vcpus` running (at least 1). `pylond`, the host's core
+  arbiter, parks the vCPUs the guest doesn't need and wakes them on
+  demand, between `min_vcpus` and `max_vcpus`, in microseconds and
+  without CPU hotplug. It learns the guest's demand from
+  `pylon-guest-agent` in the guest; without the agent every vCPU keeps
+  running and `pylond` manages none of them. So an elastic Pylon VM's
   `vcpu_count` is always its `max_vcpus`: Glidex sets it, and the web UI
   and `gxctl` show it so. `lscpu` in the guest shows `max_vcpus` CPUs.
 - **Cloud Hypervisor and QEMU.** The guest boots with `vcpu_count`
