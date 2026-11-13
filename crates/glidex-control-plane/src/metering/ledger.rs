@@ -1758,7 +1758,7 @@ impl Ledger {
     pub fn import(&self, node: &str, e: &Export) -> Result<usize, MeteringError> {
         let now = now_ms() / 1000;
         let mut added = 0;
-        let mut hourly_rows = Vec::with_capacity(e.hourly.len());
+        let mut hourly_rows = Vec::new();
         for (k, row) in &e.hourly {
             let value = serde_json::to_vec(row)?.len();
             let key = hour_key(
@@ -1818,7 +1818,7 @@ impl Ledger {
                 },
             )?;
         }
-        let mut slot_rows = Vec::with_capacity(e.slots.len());
+        let mut slot_rows = Vec::new();
         for (k, row) in &e.slots {
             let value = serde_json::to_vec(row)?;
             let cost = op_bytes(k.len(), value.len());
