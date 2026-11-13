@@ -625,7 +625,7 @@ mod tests {
     /// With the NAT checks, port A reaches B from its own MAC and address
     /// and not from another of either; a DHCP server reply and a router
     /// advertisement from A hit their drop rules; with the bridged checks
-    /// another address passes; without rules everything passes. Not run yet.
+    /// another address passes; without rules everything passes.
     #[test]
     #[ignore = "needs root and a running Open vSwitch; adds a bridge for the test"]
     fn with_open_vswitch() {
