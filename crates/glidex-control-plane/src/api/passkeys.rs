@@ -105,7 +105,7 @@ fn with_cookie(mut r: Response, value: &str, max_age: u64, secure: bool) -> Resp
 
 fn secure(headers: &HeaderMap, listener: Option<Extension<Listener>>, app: &AppState) -> bool {
     match listener.map(|l| l.0).unwrap_or(Listener::Tcp) {
-        Listener::Ui | Listener::Relay => {
+        Listener::Ui => {
             headers
                 .get("x-forwarded-proto")
                 .and_then(|v| v.to_str().ok())

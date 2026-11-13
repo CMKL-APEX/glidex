@@ -74,22 +74,14 @@ pub enum Listener {
     /// A request another server authenticated and forwarded over :8842
     /// (spec/14-clustering.md §6.4); the principal comes from its header.
     Cluster,
-    /// A browser request an agent's UI socket relayed over :8842
-    /// (spec/16-clustering-ui.md §3.6): authenticated here like `Ui`, with the
-    /// Origin already checked by the agent.
-    Relay,
     /// `metad.sock`: glidex-metad, with its own router
     /// (spec/29-workload-identity.md W11).
     Metad,
 }
 
-/// The node that relayed a UI request (`Listener::Relay`).
-#[derive(Debug, Clone)]
-pub struct RelayedBy(pub String);
-
-/// A relayed host-local request meant for this other node's host: the
-/// route's action is authorized here on that node's `Host`, then the
-/// request runs there (spec/16-clustering-ui.md §3.6).
+/// A host-local request meant for this other node's host: the route's
+/// action is authorized here on that node's `Host`, then the request runs
+/// there (spec/28-host-page.md W2).
 #[derive(Debug, Clone)]
 pub struct RemoteHost(pub String);
 
@@ -1830,7 +1822,7 @@ pub(crate) fn client_ip(
     listener: Listener,
 ) -> Option<IpAddr> {
     match listener {
-        Listener::Ui | Listener::Relay => headers
+        Listener::Ui => headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(',').next())
@@ -1860,8 +1852,8 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     if let Some(o) = &origin {
-        // A forwarded or relayed request was checked by the node that took it.
-        if !matches!(listener, Listener::Cluster | Listener::Relay)
+        // A forwarded request was checked by the server that took it.
+        if listener != Listener::Cluster
             && (!safe || websocket)
             && !app.auth.config.auth.origin_allowed(o)
             && !(listener == Listener::Ui
@@ -1904,7 +1896,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
             Listener::Metad => {
                 return plain_error(StatusCode::FORBIDDEN, "forbidden", "not on this socket");
             }
-            Listener::Ui | Listener::Tcp | Listener::Relay => {
+            Listener::Ui | Listener::Tcp => {
                 if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>())
                 {
                     return plain_error(

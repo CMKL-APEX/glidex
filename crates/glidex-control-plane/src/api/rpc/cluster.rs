@@ -77,7 +77,7 @@ impl ClusterService for Svc {
     ) -> ServiceResult<GetClusterStatusResponse> {
         let req = req.to_owned_message();
         unary(&self.app, &ctx, |c| async move {
-            svc::status(&c.expect("authenticated operation"), req, None).await
+            svc::status(&c.expect("authenticated operation"), req).await
         })
         .await
     }

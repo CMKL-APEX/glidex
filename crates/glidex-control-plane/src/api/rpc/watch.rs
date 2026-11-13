@@ -64,14 +64,9 @@ impl WatchService for Svc {
         req: ServiceRequest<'_, WatchRequest>,
     ) -> ServiceResult<ServiceStream<WatchResponse>> {
         let req = req.to_owned_message();
-        // Through a node's UI, the cluster summary is about that node.
-        let viewer = ctx
-            .extensions()
-            .get::<crate::api::RelayedBy>()
-            .map(|v| v.0.clone());
         unary(&self.app, &ctx, |c| async move {
             let c = c.expect("authenticated operation");
-            let rx = svc::open(c, svc::kinds_of(&req), req.project.as_deref(), viewer).await?;
+            let rx = svc::open(c, svc::kinds_of(&req), req.project.as_deref()).await?;
             // Events, and a keep-alive whenever 15 s pass without one (as
             // the SSE stream's), so a proxy's idle timeout doesn't cut it.
             let stream = futures_util::stream::unfold(rx, |mut rx| async move {

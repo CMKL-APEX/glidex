@@ -148,7 +148,7 @@ are in `tests/`; the Cedar schema and shipped policies in `policies/`.
 
 ```text
  HTTP request
-   │  api/mod.rs      router: global layers (UI relay, authenticate, cluster gate)
+   │  api/mod.rs      router: global layers (UI socket and target node, authenticate, cluster gate)
    ├─▶ REST route     api/<area>.rs     decode JSON → call service → encode
    └─▶ RPC procedure  api/rpc/<area>.rs decode message → call service → encode
                          │

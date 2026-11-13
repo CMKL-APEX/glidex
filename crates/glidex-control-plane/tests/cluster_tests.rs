@@ -5463,32 +5463,25 @@ async fn an_agents_ui_points_at_a_server_whose_ui_acts_on_the_agent() {
         );
     }
 
-    // W6: what an older agent relays is still served by the server.
-    let r = cluster(&agent)
-        .client
-        .request(
-            &server.addr.to_string(),
-            axum::http::Method::GET,
-            &format!("/cluster/v1/ui/nodes/{agent_id}"),
-            &[],
-            bytes::Bytes::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status, StatusCode::OK);
-    // A relay can't vouch for anyone.
-    let r = cluster(&agent)
-        .client
-        .request(
-            &server.addr.to_string(),
-            axum::http::Method::GET,
-            "/cluster/v1/ui/vms",
-            &[("x-glidex-principal", "e30=".to_string())],
-            bytes::Bytes::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // W8: servers no longer serve UI requests an agent relays. The path
+    // falls to the server-to-server forwarding route, which agents may not use.
+    for path in [
+        format!("/cluster/v1/ui/nodes/{agent_id}"),
+        "/cluster/v1/ui".into(),
+    ] {
+        let r = cluster(&agent)
+            .client
+            .request(
+                &server.addr.to_string(),
+                axum::http::Method::GET,
+                &path,
+                &[],
+                bytes::Bytes::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}");
+    }
     // Nor may a node send another node's host what it authorized (servers only).
     let r = cluster(&agent)
         .client

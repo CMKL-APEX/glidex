@@ -321,7 +321,7 @@ pub async fn password_token(
     // Passwords only over TLS or from this host (11-security.md §5.3), the
     // same rule as `login`.
     let local = match origin.listener {
-        Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
+        Listener::Ui | Listener::Api | Listener::Cluster => true,
         Listener::Tcp => {
             app.auth.config.tls.enabled() || origin.client_ip.is_none_or(|ip| ip.is_loopback())
         }
