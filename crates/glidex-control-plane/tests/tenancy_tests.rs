@@ -880,6 +880,197 @@ async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
     assert_eq!(v["pools"][0]["used"], 1, "{v}");
 }
 
+/// spec/22-host-topology.md H25: once a tenant has tenant pools on a
+/// cluster pool, its tenant grant lets its projects use the cluster pool
+/// only through them; a grant to the project and a host role still allow
+/// it directly, and `gpus` picks the tenant pool.
+#[tokio::test]
+async fn tenant_pools_are_the_tenants_only_way_to_its_granted_pool() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    use glidex_control_plane::topology::{SummaryDevice, TopologySummary};
+    let h = harness_with(|c| {
+        c.pci.pools = vec![PciPool {
+            name: "a100".into(),
+            class: Some("gpu".into()),
+            matches: PoolMatch {
+                vendor_id: Some("0x10de".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+            per_device: None,
+            bar_mib: None,
+        }];
+        let grant = |projects: Vec<String>, tenants: Vec<String>| PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects,
+            tenants,
+            node: None,
+        };
+        c.pci.allow = vec![
+            grant(vec![], vec!["acme".into()]),
+            grant(vec!["p2".into()], vec![]),
+        ];
+    });
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let mut topo = n.status.topology.clone().unwrap_or_default();
+    // This host's first NUMA node, for the fake GPUs (`gpus` aligns).
+    let k = topo.numa_nodes.first().map(|x| x.id).unwrap_or(0);
+    let addresses = [
+        "0000:87:00.0",
+        "0000:88:00.0",
+        "0000:89:00.0",
+        "0000:90:00.0",
+    ];
+    topo.devices = addresses
+        .iter()
+        .map(|a| SummaryDevice {
+            address: a.to_string(),
+            vendor_id: "0x10de".into(),
+            device_id: "0x20b0".into(),
+            class_id: "0x030200".into(),
+            numa_node: Some(k),
+            ready: true,
+            ..Default::default()
+        })
+        .collect();
+    for a in addresses {
+        topo.device_numa.insert(a.into(), k);
+    }
+    n.status.topology = Some(TopologySummary { ..topo });
+    nodes.put(&n).unwrap();
+
+    let ada = h.admin("ada");
+    let at = h.session(&ada);
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "acme" })), &at)
+        .await;
+    let acme = v["tenant"]["id"].as_str().unwrap().to_string();
+    let (s, _) = h
+        .rest("PUT", "/admissions/acme", Some(json!({})), &at)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (owner, tom) = (h.user("olivia"), h.user("tom"));
+    h.app
+        .auth
+        .add_link(
+            "grant.host-paths",
+            Ent::User(owner.clone()),
+            Ent::Cluster,
+            "test",
+        )
+        .unwrap();
+    let (s, _) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{acme}/bindings"),
+            Some(
+                json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": tom } }),
+            ),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (o, t) = (h.token(&owner), h.token(&tom));
+    let mut ids = std::collections::HashMap::new();
+    for name in ["p1", "p2", "p3"] {
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/projects",
+                Some(json!({ "name": name, "tenant": acme, "owners": [owner] })),
+                &t,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        ids.insert(name, v["project"]["id"].as_str().unwrap().to_string());
+    }
+    let direct = |name: &str, project: &str| {
+        let mut b = vm_body(name, project);
+        b["devices"] = json!([{ "pool": "a100" }]);
+        b
+    };
+    let pools_of = |v: &Value| -> Vec<String> {
+        v["pools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Before the tenant splits it, its grant reaches every project.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("before", &ids["p1"])), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    let (s, v) = h
+        .rest(
+            "PUT",
+            &format!("/tenants/{acme}/device-pools"),
+            Some(json!({ "pools": [{ "name": "team-gpus", "from": "a100", "max": 2, "projects": ["p1", "p2"] }] })),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // Now only through the tenant pool.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("after", &ids["p1"])), &o)
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden")),
+        "{v}"
+    );
+    assert!(v.to_string().contains("team-gpus"), "{v}");
+    let (s, v) = h
+        .rest(
+            "GET",
+            &format!("/pci-pools?project={}", ids["p1"]),
+            None,
+            &o,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(pools_of(&v), ["team-gpus"], "{v}");
+    // `gpus` without a pool picks the tenant pool.
+    let mut b = vm_body("gpu", &ids["p1"]);
+    b["gpus"] = json!({ "count": 1 });
+    let (s, v) = h.rest("POST", "/vms", Some(b), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let d = &vm_of(&v)["devices"][0];
+    assert_eq!(
+        (d["pool"].as_str(), d["tenant_pool"].as_str()),
+        (Some("a100"), Some("team-gpus")),
+        "{v}"
+    );
+
+    // A grant to the project itself still allows it directly.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("granted", &ids["p2"])), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (_, v) = h
+        .rest(
+            "GET",
+            &format!("/pci-pools?project={}", ids["p2"]),
+            None,
+            &o,
+        )
+        .await;
+    assert!(pools_of(&v).contains(&"a100".to_string()), "{v}");
+    // So does a host role with usePciPool (host.devices).
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("admin", &ids["p3"])), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+}
+
 /// D24: a project of another tenant answers as a missing one does, by id
 /// or by name, on every request that names a project (and before a
 /// `gpus` request looks at its pools); a name means the caller's own

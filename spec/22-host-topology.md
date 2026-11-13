@@ -66,6 +66,7 @@ and pools for GPUs, DPUs and NICs.
 | H22 | Who uses a discovered pool | Only holders of a host role with `usePciPool` (`host.devices`) until an operator grants or adopts it. A tenant never sees or gets a device because a card was plugged in. | The user's call (2026-11-09). |
 | H23 | Host overrides | Each server's file may keep devices out of discovery and every pool on that host (`pci.exclude`), and set a pool's `bar_mib` and `prepare` for that host (`pci.overrides`). The node marks the devices it keeps `excluded` in its status, so the leader never reads another server's file. | The user's call (2026-11-09): the file overrides discovery and availability. Per host because what it covers is: a card kept for host work, and G17's safe window, which depends on the host's memory. |
 | H24 | Discovered NICs | Network controllers (class `02xx`: Ethernet, InfiniBand) form discovered pools too, class `nic`: every function, the host's own ports among them, named as H21's (`15b3-1021`). A NIC's SR-IOV VFs form a pool per PF model, `<vendor>-<device>-vf` of the PF (`15b3-1021-vf`), matching `vf_of`. Discovery still binds nothing: a port on its host driver, and a PF whose VFs are enabled, are listed as not ready (§5), and adopting with `prepare: true` binds them. Only NICs' VFs are discovered. | The user's call (2026-11-09): every NIC function, the VF slug, and no binding by discovery. Taking a host's port stays impossible without an operator: discovery never prepares, and H22 keeps the pools to host roles until adopted or granted. |
+| H25 | Tenant pools bind the tenant's grant | Once a tenant has tenant pools on a cluster pool, its tenant grant (`tenant_grants`) lets its projects use the cluster pool only through those tenant pools: a request naming the cluster pool itself is refused (`403`), `GET /pci-pools?project=` leaves it out, and `gpus` without a pool picks the tenant pool. A grant made to the project itself (`pci.allow` with `projects`) and host roles with `usePciPool` (`host.devices`) still allow it directly. VMs created before keep their requests. | Otherwise a tenant pool's `max` and project list bind nothing: any project of the tenant could ask for the cluster pool by name. |
 
 ## 3. Model
 
@@ -787,6 +788,9 @@ A tenant granted a cluster pool (by `pci.allow` with `pool` and
 - A device request may name a tenant pool. Admission resolves it to the
   cluster pool and checks the tenant pool's `max` and the project's
   membership in the same write as quotas (§9.3).
+- Once the tenant has a tenant pool on a cluster pool, its grant reaches
+  its projects only through its tenant pools (H25): a request naming the
+  cluster pool needs a grant to the project itself or a host role.
 - `GET/PUT /tenants/{id}/device-pools` (RPC `TenantService`), under the
   tenant's owner role; `gxctl tenant device-pool …`. Each lists its
   cluster pool's free count, so projects see what they can get.
@@ -1135,6 +1139,19 @@ Where HT2 differs from the design above, and why:
   done: `max` on `tenant_grants` (a tenant's grant has no size yet, so a
   tenant pool can't be checked against one); the `devices.<pool>` cap
   is the bound.
+- **H25**: `api/vms.rs::direct_pool_entities` builds the pool entity for
+  a request naming the cluster pool, leaving out the project's tenant
+  from `tenant_grants` when that tenant has tenant pools on it, so
+  Cedar's `base.pci-pool-grant` allows only a grant to the project and
+  host roles still allow it by their own policies.
+  `service/vm.rs::check_pools` (create and update) refuses with `403
+  forbidden` naming the tenant pools; `expand_gpus` and `GET
+  /pci-pools?project=` use the same decision (`may_use_pool_directly`).
+  It applies at admission only: VMs created before keep their requests.
+  Tests:
+  `tenancy_tests.rs::tenant_pools_are_the_tenants_only_way_to_its_granted_pool`
+  (before and after the split, a project grant, a host role, `gpus`
+  picking the tenant pool, the pool list).
 - **HT5** (§10.1): netd op `set_sriov_vfs` (`glidex_ovs::sriov`) writes
   `sriov_numvfs`, through 0 when the PF had some, and forgets prepared
   groups of the VFs a change removes (every one: the kernel recreates

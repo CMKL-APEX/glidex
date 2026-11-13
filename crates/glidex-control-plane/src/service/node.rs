@@ -172,22 +172,15 @@ pub async fn list_pci_pools(
     let pools = match &project {
         None => pools.collect(),
         // Only pools it may use, and no addresses or holders.
-        Some(pid) => {
-            let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(pid.clone()))];
-            pools
-                .filter(|p| {
-                    let (e, mut es) = crate::api::vms::pci_pool_entities(call, &p.name);
-                    es.project(pid);
-                    call.allowed_action("usePciPool", e, es, with_project)
-                })
-                .map(|mut p| {
-                    for n in &mut p.nodes {
-                        n.devices.clear();
-                    }
-                    p
-                })
-                .collect::<Vec<_>>()
-        }
+        Some(pid) => pools
+            .filter(|p| crate::api::vms::may_use_pool_directly(call, &p.name, pid))
+            .map(|mut p| {
+                for n in &mut p.nodes {
+                    n.devices.clear();
+                }
+                p
+            })
+            .collect::<Vec<_>>(),
     };
     // With a project: also the tenant pools it is one of (§9.1a).
     let mut pools = pools;

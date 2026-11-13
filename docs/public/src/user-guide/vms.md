@@ -457,7 +457,10 @@ and sizes the VM.
 | `hugepages`, `cpu_policy` | The pool's, when the operator set them | Yours are kept. |
 
 - **The pool:** a cluster pool or a tenant pool by name. Without
-  `pool`, the project's only GPU pool is used.
+  `pool`, the project's only GPU pool is used. Once your tenant has set
+  up tenant pools on a cluster pool, your project uses that cluster
+  pool through them, unless the operator granted it to the project
+  itself.
 - **Sizing:** what each GPU brings is set by the operator. The web UI
   shows it next to the pool (*14 vCPUs and 56 GiB each*), and
   `GET /pci-pools?project=<p>` as `per_device_vcpus` and

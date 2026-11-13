@@ -376,6 +376,12 @@ API, `PUT /tenants/{id}/device-pools` replaces the tenant's whole set.
 - A VM of one of those projects asks for `{"pool": "team-a-gpus"}`. It
   gets devices of `a100`, and the VM shows `"pool": "a100",
   "tenant_pool": "team-a-gpus"`. Other projects are refused (`403`).
+- Once the tenant has a tenant pool on `a100`, the tenant's grant
+  reaches its projects only through its tenant pools: a project asking
+  for `a100` itself is refused (`403`) unless `pci.allow` grants `a100`
+  to that project by name or id, or the caller has a host role
+  (`net-admin`, `system-admin`). VMs created before keep their devices
+  and requests.
 - The tenant pool's projects together ask for at most `max` devices
   (`tenant_quota_exceeded`, resource `tenant_pool.team-a-gpus`). The
   tenant's cap and the project quota on `a100` still apply.
