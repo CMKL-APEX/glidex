@@ -388,14 +388,10 @@ fn expand_gpus(call: &Call, project: &str, g: &pb::GpuRequest) -> ServiceResult<
         .tenants
         .device_pools(&tenant)
         .unwrap_or_default();
-    // A cluster pool `project` may use.
-    let usable = |p: &crate::config::PciPool| {
-        let with_project: &[(&'static str, Ent)] =
-            &[("project", Ent::Project(project.to_string()))];
-        let (e, mut es) = crate::api::vms::pci_pool_entities(call, &p.name);
-        es.project(project);
-        call.allowed_action("usePciPool", e, es, with_project)
-    };
+    // A cluster pool `project` may use directly (not one its tenant
+    // reaches only through tenant pools, H25).
+    let usable =
+        |p: &crate::config::PciPool| crate::api::vms::may_use_pool_directly(call, &p.name, project);
     // (name asked for, the cluster pool behind it)
     let (name, base) = match &g.pool {
         Some(n) => {
@@ -527,7 +523,9 @@ fn apply_gpus(
 }
 
 /// Each requested pool exists, and the caller may use it for `project`
-/// (`usePciPool`, spec/22-host-topology.md §9).
+/// (`usePciPool`, spec/22-host-topology.md §9). A request naming the
+/// cluster pool itself, once the project's tenant has tenant pools on
+/// it, needs more than the tenant's grant (H25).
 fn check_pools(call: &Call, project: &str, rs: &[m::DeviceRequest]) -> ServiceResult<()> {
     let pools = call.manager().pci_pools();
     let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.to_string()))];
@@ -538,6 +536,23 @@ fn check_pools(call: &Call, project: &str, rs: &[m::DeviceRequest]) -> ServiceRe
                 "invalid_config",
                 format!("no device pool {}", r.pool),
             ));
+        }
+        if r.tenant_pool.is_none() {
+            let (e, es, split) = crate::api::vms::direct_pool_entities(call, &r.pool, project);
+            if split.is_empty() {
+                call.require_action("usePciPool", e, es, with_project)?;
+            } else if !call.allowed_action("usePciPool", e, es, with_project) {
+                return Err(ServiceError::new(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    format!(
+                        "this project's tenant uses pool {} through its tenant pools: ask for one of {}",
+                        r.pool,
+                        split.join(", ")
+                    ),
+                ));
+            }
+            continue;
         }
         let (e, mut es) = crate::api::vms::pci_pool_entities(call, &r.pool);
         es.project(project);

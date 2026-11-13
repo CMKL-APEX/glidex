@@ -387,13 +387,62 @@ pub(crate) fn device_bdf(path: &str) -> Result<String, ApiErr> {
 /// Pool `name` as an entity, with the projects and tenants granted it in
 /// the config (`pci.allow` entries with `pool`).
 pub(crate) fn pci_pool_entities(c: &Caller, name: &str) -> (Ent, EntitySet) {
+    pool_entities_without(c, name, None)
+}
+
+/// Pool `name` as an entity for a request of `project` that names the
+/// cluster pool itself rather than a tenant pool, and the tenant pools of
+/// the project's tenant on it. When there are some, the tenant's grant
+/// reaches its projects only through those (spec/22-host-topology.md
+/// H25), so the entity leaves that grant out: a grant to the project, or
+/// a host role with `usePciPool`, still allows it.
+pub(crate) fn direct_pool_entities(
+    c: &Caller,
+    name: &str,
+    project: &str,
+) -> (Ent, EntitySet, Vec<String>) {
+    let tenant = c
+        .manager()
+        .projects()
+        .get(project)
+        .ok()
+        .flatten()
+        .map(|p| p.tenant_id);
+    let split: Vec<String> = tenant
+        .as_deref()
+        .map(|t| c.auth().tenants.device_pools(t).unwrap_or_default())
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| t.from == name)
+        .map(|t| t.name)
+        .collect();
+    let without = tenant.as_deref().filter(|_| !split.is_empty());
+    let (e, mut es) = pool_entities_without(c, name, without);
+    es.project(project);
+    (e, es, split)
+}
+
+/// Whether `project` may use cluster pool `name` named directly
+/// ([`direct_pool_entities`]).
+pub(crate) fn may_use_pool_directly(c: &Caller, name: &str, project: &str) -> bool {
+    let (e, es, _) = direct_pool_entities(c, name, project);
+    c.allowed_action(
+        "usePciPool",
+        e,
+        es,
+        &[("project", Ent::Project(project.to_string()))],
+    )
+}
+
+fn pool_entities_without(c: &Caller, name: &str, tenant: Option<&str>) -> (Ent, EntitySet) {
     let projects = c.manager().projects();
     let grants: Vec<String> = pool_grants(c, name)
         .iter()
         .flat_map(|g| g.projects.iter())
         .filter_map(|p| projects.resolve(p).ok().map(|p| p.id))
         .collect();
-    let tenants = pool_tenant_grants(c, name);
+    let mut tenants = pool_tenant_grants(c, name);
+    tenants.retain(|t| Some(t.as_str()) != tenant);
     let mut es = EntitySet::new();
     es.pci_pool(name, &grants, &tenants);
     (Ent::PciPool(name.to_string()), es)
