@@ -181,10 +181,12 @@ dialog runs when the action is used. Tokens never get `reauth`.
 
 ### 3.6 The UI on an agent
 
-> **Replaced for browsers** by [28-host-page.md](28-host-page.md): an agent's
-> web UI redirects to a server (W5), and a server's UI acts on any node's
-> host (W2). The relay below stays on servers for agents on older builds
-> (W6).
+> **Replaced** by [28-host-page.md](28-host-page.md): an agent's web UI
+> redirects to a server (W5), and a server's UI acts on any node's host
+> (W2). The relay below is removed (W8): servers no longer serve
+> `/cluster/v1/ui/…`, and agents older than v0.0.4 must be upgraded with
+> the servers for their web UI to work. The section is kept as the
+> record of the earlier design.
 
 An agent has no users, sessions or tokens: the auth tables replicate to
 servers only (C§8.2, `sync::filter_for`), and an agent may not write them
@@ -656,7 +658,7 @@ with the router's address, not the shared edge's.
 | CA expiry (`not_after`) and the trust bundle in `/cluster/status` `ca` (which has `signing`, `retiring`, `retire_at`, `started_at` today), and each node's certificate issuer and expiry | U4 §7.6 | |
 | Detach progress in node status (`departure: {plan, step}`) | U3 §6.4 | |
 | `GET /cluster/ovn`, `GET /networks/{id}/ovn` | U5 | Read-only; the same permission as `GET /cluster/status` / `GET /networks/{id}`. |
-| UI relay on agents: `/cluster/v1/ui/{*path}` on servers, the agent's UI socket relaying to it, host-local paths sent back through the node relay, `cluster.ui_relay` | U1 | §3.6 |
+| UI relay on agents: `/cluster/v1/ui/{*path}` on servers, the agent's UI socket relaying to it, host-local paths sent back through the node relay, `cluster.ui_relay` | U1 | §3.6; removed (28-host-page.md W8) |
 | `POST /authz/allowed` | U0 | §3.5 |
 | Watch kinds `node`, `import`, `cluster`, `policy` | U0 | §3.7 |
 
