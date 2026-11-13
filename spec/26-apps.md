@@ -103,7 +103,7 @@ Each is generic and useful without applications.
 | **Owners** | `owner {kind, id}` on VMs, disks and networks; an owner finalizer deletes owned resources with their owner; `overrideManaged` (A6). | Generalizes the VM-owned root disk (10-images.md §7, `vm.owned-disk`). |
 | **`user_data`** | A VM field (≤ 64 KiB) with cloud-init user-data, merged with the generated seed as a second MIME part, so credentials, growpart and networking still apply. Readable by whoever can read the VM: never a secret. | Today a custom seed needs a host path (`cloud_init_path`, `useHostPath`). |
 | **Fixed addresses** | `ipv4` on a VM's network attachment: an IPAM reservation of that address (refused if taken or outside the network). | Stable endpoints for databases and control planes. |
-| **Allowed addresses** | `allowed_addresses` on a NIC: extra addresses (and prefixes) the port may use, for in-guest failover (keepalived, kube-vip). OVN: port security's extra addresses; node networks: netd's filters. Needs `useNetwork` plus `assignAllowedAddress`. | A highly available endpoint without load balancers. |
+| **Allowed addresses** | `allowed_addresses` on a NIC: extra addresses (and prefixes) the port may use, for in-guest failover (keepalived, kube-vip). OVN: port security's extra addresses; node networks: netd's filters. Needs only `useNetwork`; the API checks the list against the network and its other ports ([09](09-networking.md) decisions 20 and 23). | A highly available endpoint without load balancers. |
 | **Disk hot-plug** | Attaching and detaching a data disk on a running VM takes effect at once. | Today it waits for the next start (06-rest-api.md); a Kubernetes storage driver needs it. |
 | **`App` and `AppInstance`** | The two resource kinds of §5, their API, Cedar actions (§5.3) and the `APP`/`APP_INSTANCE` watch kinds. | Opaque to the core beyond schema validation. |
 
@@ -332,7 +332,7 @@ interfaces.
 
 - **03-data-model.md:** labels, annotations and owners; `user_data`;
   `ipv4` and `allowed_addresses` on NICs; `App`, `AppInstance`.
-- **11-security.md:** the actions of §5.3, `assignAllowedAddress`; the apps
+- **11-security.md:** the actions of §5.3; the apps
   service's principal.
 - **09-networking.md:** fixed addresses and allowed addresses on node and
   OVN networks.
