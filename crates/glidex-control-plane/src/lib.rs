@@ -22,6 +22,7 @@ pub mod paths;
 pub mod pci;
 pub mod pci_discovery;
 pub mod pci_settings;
+pub mod public_net;
 pub mod restart;
 pub mod router;
 pub mod scheduler;
