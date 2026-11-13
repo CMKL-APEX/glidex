@@ -133,7 +133,7 @@ axum router (`api::router` in
 [`api/mod.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/api/mod.rs)).
 
 ```text
- listener (serve.rs)        tags the request: Tcp | Api | Ui | Cluster | Relay,
+ listener (serve.rs)        tags the request: Tcp | Api | Ui | Cluster,
    │                        peer uid (Unix sockets) or client address (TCP)
    ▼
  relay::ui_relay            glidex-ui's self-report; X-Glidex-Target-Node for host-only

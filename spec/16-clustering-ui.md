@@ -691,7 +691,9 @@ about a day each; U2–U5 a few days each.
 - **Capabilities**: `ui_capabilities.rs` (schema ↔ UI table);
   `/authz/allowed` against `/authz/check` for random actions and
   resources.
-- **Relay** (control-plane tests, in-process cluster): a relayed request
+- **Relay** (removed with the route, 28-host-page.md W8; a server now
+  refuses an agent's `/cluster/v1/ui/…` request) (control-plane tests,
+  in-process cluster): a relayed request
   carrying `X-Glidex-Principal` is refused; a relayed login creates the
   session on the server; a host-local path from the agent's UI runs on
   the agent and is authorized on `Host::"<agent>"`; `ui_relay = false`

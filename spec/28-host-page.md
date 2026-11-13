@@ -1,6 +1,6 @@
 # Host page and the UI on agents
 
-Status: **implemented** (W1–W6: #127, #128, #129); W8, removing the relay route, is designed, not built. Every host gets a **Host page** in the web UI. It
+Status: **implemented** (W1–W6: #127, #128, #129; W8, the relay route removed: #492). W8's API test: an agent's request to `/cluster/v1/ui/…` on a server is refused (`an_agents_ui_points_at_a_server_whose_ui_acts_on_the_agent`); not run on a host yet. Every host gets a **Host page** in the web UI. It
 gathers what belongs to that one host: its Open vSwitch, bridges and
 uplinks, PCI devices, topology, and maintenance. The page works on a
 standalone host and, in a cluster, from any server's UI for any node. An

@@ -59,8 +59,6 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/ovn-status", get(ovn_status))
         .route("/cluster/v1/topology", get(topology))
         .route("/cluster/v1/devices/{address}/{op}", post(device_op))
-        .route("/cluster/v1/ui", axum::routing::any(ui_relayed))
-        .route("/cluster/v1/ui/{*rest}", axum::routing::any(ui_relayed))
         .route(
             "/cluster/v1/host/{*rest}",
             axum::routing::any(host_authorized),
@@ -1150,29 +1148,6 @@ async fn device_op(
     }
 }
 
-/// `/cluster/v1/ui/<path>`: a browser request a node's UI socket relayed
-/// (spec/16-clustering-ui.md §3.6). Any node may relay; this server
-/// authenticates the request itself, as if the browser had come here.
-async fn ui_relayed(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
-    let peer = match peer(&c, p, false) {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    if c.node.is_none() {
-        return fail(
-            StatusCode::MISDIRECTED_REQUEST,
-            "not_a_server",
-            "only a server serves relayed UI requests",
-        );
-    }
-    let mut req = fresh(req);
-    if let Err(r) = crate::api::relay::accept_relayed(&mut req, &peer.node_id, &c.identity.node_id)
-    {
-        return r;
-    }
-    serve_marked(&c, req).await
-}
-
 /// The same request without what this router added (the matched route's
 /// path parameters): the API router matches it again from scratch, and its
 /// handlers' `Path` extractors would otherwise see this route's `{*rest}`
@@ -1213,7 +1188,7 @@ async fn serve_marked(c: &Cluster, req: Request) -> Response {
 }
 
 /// `/cluster/v1/host/<path>`: a host-local request a server authorized for
-/// this node's host (spec/16-clustering-ui.md §3.6). Servers only.
+/// this node's host (spec/28-host-page.md W2). Servers only.
 async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     if let Err(r) = peer(&c, p, true) {
         return r;

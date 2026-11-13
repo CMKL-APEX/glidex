@@ -265,7 +265,7 @@ pub async fn join(
 }
 
 /// A host that just became an agent comes back in agent mode: an agent has
-/// no API of its own (spec/16-clustering-ui.md §3.6), and this process still
+/// no API of its own (spec/28-host-page.md W5), and this process still
 /// serves the standalone one, whose logins the cluster refuses. Under
 /// systemd it restarts itself once this answer is out; by hand, it says so.
 fn restart_as_agent(m: &std::sync::Arc<crate::state::VmManager>) -> Option<&'static str> {
@@ -438,18 +438,15 @@ pub(crate) fn status_pb(v: Value) -> ServiceResult<pb::GetClusterStatusResponse>
     proto_of(v, STATUS)
 }
 
-/// `via`: the node whose UI relayed the request (its view of "this node").
 pub async fn status(
     call: &Call,
     req: pb::GetClusterStatusRequest,
-    via: Option<&str>,
 ) -> ServiceResult<pb::GetClusterStatusResponse> {
     let c = call;
     c.require(Ent::Cluster, EntitySet::new())?;
     let v = match c.manager().cluster() {
         Some(cl) => {
-            // Through a node's UI, "this node" is that node.
-            let mut v = manage::status_seen_from(&cl, via);
+            let mut v = manage::status_of(&cl);
             // Port checks open connections to every node: opt in (`?ports=true`).
             if req.ports {
                 v["ports"] = json!(manage::port_checks(&cl, c.manager().ovn_enabled()).await);

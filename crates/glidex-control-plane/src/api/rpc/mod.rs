@@ -108,7 +108,7 @@ pub(crate) fn routes(app: &AppState) -> Router<AppState> {
                 .service(reflection.clone()),
         );
     }
-    // A host RPC relayed from an agent's UI runs on that agent (§8).
+    // A host RPC naming another node runs on that node (§8, spec/28-host-page.md W2).
     r.layer(axum::middleware::from_fn_with_state(
         app.clone(),
         crate::api::relay::remote_host,
@@ -125,11 +125,10 @@ async fn api_socket_only(req: axum::extract::Request, next: axum::middleware::Ne
 }
 
 /// Which protocols a listener takes (spec/18-grpc.md §6): gRPC-Web is the
-/// browser's, so only the UI socket (and UI requests relayed from an
-/// agent) take it, and they take nothing else.
+/// browser's, so only the UI socket takes it, and it takes nothing else.
 fn protocol_allowed(listener: Listener, protocol: Option<Protocol>) -> bool {
     match listener {
-        Listener::Ui | Listener::Relay => protocol == Some(Protocol::GrpcWeb),
+        Listener::Ui => protocol == Some(Protocol::GrpcWeb),
         Listener::Tcp | Listener::Api => {
             matches!(protocol, Some(Protocol::Grpc | Protocol::Connect))
         }
@@ -144,8 +143,7 @@ fn protocol_allowed(listener: Listener, protocol: Option<Protocol>) -> bool {
 fn cookie_ok(listener: Listener, protocol: Option<Protocol>, p: &Principal) -> bool {
     p.session_hash.is_none()
         || listener == Listener::Cluster
-        || (matches!(listener, Listener::Ui | Listener::Relay)
-            && protocol == Some(Protocol::GrpcWeb))
+        || (listener == Listener::Ui && protocol == Some(Protocol::GrpcWeb))
 }
 
 /// One unary RPC: checks, then `f` with the caller (`None` for public

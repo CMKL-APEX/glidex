@@ -30,11 +30,9 @@ pub struct ClusterConfig {
     pub import_plan_ttl_secs: u64,
     pub ca_rotation_grace_secs: u64,
     pub ovn: OvnConfig,
-    /// On an agent, relay the web UI's requests to a server, which
-    /// authenticates them (spec/16-clustering-ui.md §3.6). Off: the agent's UI
-    /// socket answers `421` with the servers to use instead.
-    /// Replaced: an agent's UI now sends browsers to a server
-    /// (spec/28-host-page.md W5, W6); still accepted, ignored.
+    /// Replaced: an agent's UI sends browsers to a server, and servers no
+    /// longer take relayed UI requests (spec/28-host-page.md W5, W8).
+    /// Still accepted, ignored.
     pub ui_relay: bool,
     /// The address this server's web UI is published at, over what its
     /// glidex-ui reports: e.g. a load balancer in front of the servers

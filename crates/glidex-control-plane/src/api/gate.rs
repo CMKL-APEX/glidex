@@ -283,7 +283,7 @@ async fn forward(
         .unwrap_or(Listener::Tcp);
     let secure = match listener {
         Listener::Tcp => true,
-        Listener::Ui | Listener::Relay => {
+        Listener::Ui => {
             parts
                 .headers
                 .get("x-forwarded-proto")

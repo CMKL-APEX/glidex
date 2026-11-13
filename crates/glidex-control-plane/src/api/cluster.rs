@@ -71,15 +71,13 @@ pub struct StatusQuery {
 
 pub async fn status(
     c: Caller,
-    via: Option<axum::Extension<super::RelayedBy>>,
     axum::extract::Query(q): axum::extract::Query<StatusQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::GetClusterStatusRequest {
         ports: q.ports,
         ..Default::default()
     };
-    let via = via.as_ref().map(|v| v.0.0.as_str());
-    Ok(Proto(StatusCode::OK, svc::status(&c, req, via).await?))
+    Ok(Proto(StatusCode::OK, svc::status(&c, req).await?))
 }
 
 pub async fn create_token(c: Caller, b: Option<Json<Value>>) -> Result<impl IntoResponse, ApiErr> {

@@ -553,8 +553,9 @@ plane after setting it.
 
 That address is then also an accepted origin, the default SSO callback
 (register it once with your IdP), and a name each server's web UI
-answers to. Agents of an older version still relay their web UI to the
-servers until they are upgraded. If users sign in with passkeys under
+answers to. Servers don't take web UI requests relayed by agents older
+than v0.0.4: upgrade such agents together with the servers, or their web
+UI stops working. If users sign in with passkeys under
 more than one of these names, set their domain as well (see
 [Passkeys](authentication.md#the-passkeys-domain)).
 

@@ -105,7 +105,7 @@ fn default_method() -> String {
 /// Whether cookies should be `Secure`: the browser reached us over TLS.
 pub(super) fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
     match listener {
-        Listener::Ui | Listener::Relay => {
+        Listener::Ui => {
             headers
                 .get("x-forwarded-proto")
                 .and_then(|v| v.to_str().ok())
@@ -160,7 +160,7 @@ pub async fn login(
     }
     // Passwords only over TLS or from this host (spec §5.3).
     let local = match listener {
-        Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
+        Listener::Ui | Listener::Api | Listener::Cluster => true,
         Listener::Tcp => {
             app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0.0.ip().is_loopback())
         }

@@ -1,5 +1,5 @@
 //! Host-only requests across nodes, and the web UI on agents
-//! (spec/28-host-page.md, spec/16-clustering-ui.md §3.6).
+//! (spec/28-host-page.md).
 //!
 //! A host-only request (`/ovs`, `/pci-devices`, `/system/reconcile`, …)
 //! means this host, unless it names another node in `X-Glidex-Target-Node`
@@ -9,21 +9,18 @@
 //!
 //! An agent has no users, sessions or tokens (the auth tables replicate to
 //! servers only), so its glidex-ui sends browsers to a server (W5), and its
-//! UI socket answers API requests with `421 use_a_server`. Servers still
-//! take requests that agents of an older build relay (`/cluster/v1/ui/…`,
-//! W6): authenticated as if the browser had come there, the agent never
-//! vouching for a principal.
+//! UI socket answers API requests with `421 use_a_server`. Servers no
+//! longer take UI requests relayed by agents (`/cluster/v1/ui/…`, W8).
 
 use super::{ApiErr, AppState, Listener, PreAuthorized, RemoteHost, RouteAction, err};
 use crate::auth::Principal;
 use crate::authz::{Ent, EntitySet};
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::{HeaderMap, HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 
-pub const VIA_NODE_HEADER: &str = "x-glidex-via-node";
 pub const TARGET_NODE_HEADER: &str = "x-glidex-target-node";
 pub const AUTHORIZED_HEADER: &str = "x-glidex-authorized";
 /// On a host request a server relays: the node it is meant for, which the
@@ -49,10 +46,10 @@ const PASS_RESPONSE: [&str; 12] = [
     "sec-websocket-protocol",
 ];
 
-/// Paths about one host that an agent's UI means for the agent itself.
+/// Paths about one host: the ones a target node may be named on (W2).
 /// (`/system/bindings` are the cluster's role links, not the host's.)
 pub fn is_remote_host_path(path: &str) -> bool {
-    // `leave` is this host leaving, not the server it is relayed to.
+    // `leave` is the named host leaving, not the server that sends it on.
     path.starts_with("/ovs/")
         // The host family's RPCs (spec/18-grpc.md §8).
         || path.starts_with("/glidex.host.v1.")
@@ -262,7 +259,7 @@ fn take_target(app: &AppState, req: &mut Request) -> Result<(), Response> {
     Ok(())
 }
 
-/// Per-route layer (inside the audit layer): a relayed host-local request
+/// Per-route layer (inside the audit layer): a host-local request
 /// for another node's host is authorized here, on that node's `Host`, and
 /// then run there.
 pub async fn remote_host(State(app): State<AppState>, req: Request, next: Next) -> Response {
@@ -405,56 +402,6 @@ fn related_actions(action: &str) -> &'static [&'static str] {
         "ensureUplink" => &["confirmUplink"],
         _ => &[],
     }
-}
-
-/// On a server, `/cluster/v1/ui/<path>` from a node: the browser request it
-/// relayed, made ready for this API. `None` (with the answer) when refused.
-pub fn accept_relayed(req: &mut Request, peer_node: &str, self_node: &str) -> Result<(), Response> {
-    // A relay can't vouch for anyone.
-    if req.headers().contains_key(super::gate::PRINCIPAL_HEADER) {
-        return Err(err(
-            StatusCode::FORBIDDEN,
-            "forbidden",
-            "a relayed request may not carry a principal",
-        )
-        .into_response());
-    }
-    let pq = req
-        .uri()
-        .path_and_query()
-        .map(|p| p.as_str().to_string())
-        .unwrap_or_default();
-    let Some(rest) = pq.strip_prefix("/cluster/v1/ui") else {
-        return Err(err(StatusCode::NOT_FOUND, "not_found", "no such route").into_response());
-    };
-    let rest = if rest.is_empty() {
-        "/".to_string()
-    } else {
-        rest.to_string()
-    };
-    *req.uri_mut() = rest
-        .parse()
-        .map_err(|_| err(StatusCode::BAD_REQUEST, "bad_request", "bad path").into_response())?;
-    // Which node relayed it is what its certificate says.
-    if let Ok(v) = HeaderValue::from_str(peer_node) {
-        req.headers_mut().insert(VIA_NODE_HEADER, v);
-    }
-    let target = req
-        .headers()
-        .get(TARGET_NODE_HEADER)
-        .and_then(|v| v.to_str().ok())
-        .map(String::from);
-    req.headers_mut().remove(TARGET_NODE_HEADER);
-    if let Some(t) = target {
-        // A node may only ask for its own host.
-        if t == peer_node && t != self_node && is_remote_host_path(req.uri().path()) {
-            req.extensions_mut().insert(RemoteHost(t));
-        }
-    }
-    req.extensions_mut().insert(Listener::Relay);
-    req.extensions_mut()
-        .insert(super::RelayedBy(peer_node.to_string()));
-    Ok(())
 }
 
 /// On an agent, `/cluster/v1/host/<path>` from a server: a host-local

@@ -339,8 +339,8 @@ async fn main() {
     }
 
     // An agent has no API of its own: the servers' is the cluster's
-    // (spec/14-clustering.md §4). Its UI socket relays the web UI's requests to
-    // a server, which authenticates them (spec/16-clustering-ui.md §3.6).
+    // (spec/14-clustering.md §4). Its glidex-ui sends browsers to a server
+    // (spec/28-host-page.md W5).
     if vm_manager.node_link().is_some() {
         println!(
             "  Agent node: serving VMs for the cluster; node API on {}",
@@ -386,7 +386,7 @@ async fn main() {
                 match serve::bind_unix(&ui_sock) {
                     Ok(l) => {
                         println!(
-                            "  Listening on {} (Ui, relayed to the servers)",
+                            "  Listening on {} (Ui, browsers sent to a server)",
                             ui_sock.display()
                         );
                         servers.push(tokio::spawn(serve::serve_unix(

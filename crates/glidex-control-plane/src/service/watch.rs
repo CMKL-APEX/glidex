@@ -109,12 +109,7 @@ pub fn parse_kinds(s: Option<&str>) -> Result<Vec<Kind>, ApiErr> {
 /// endpoint renders it.
 type View = BTreeMap<(Kind, String), serde_json::Value>;
 
-async fn snapshot(
-    c: &Caller,
-    kinds: &[Kind],
-    only: Option<&str>,
-    viewer: Option<&str>,
-) -> Result<View, ApiErr> {
+async fn snapshot(c: &Caller, kinds: &[Kind], only: Option<&str>) -> Result<View, ApiErr> {
     let m = c.manager();
     let visible = c.visible_projects()?;
     let mut view = View::new();
@@ -231,7 +226,7 @@ async fn snapshot(
                 {
                     view.insert(
                         (Kind::Cluster, cl.identity.cluster_id.clone()),
-                        cluster_summary(&cl, viewer),
+                        cluster_summary(&cl),
                     );
                 }
             }
@@ -248,8 +243,8 @@ async fn snapshot(
 
 /// `cluster status` without what changes on every write (applied and log
 /// indexes, replication progress), so the stream only speaks on real changes.
-fn cluster_summary(cl: &crate::cluster::Cluster, viewer: Option<&str>) -> serde_json::Value {
-    let mut v = crate::cluster::manage::status_seen_from(cl, viewer);
+fn cluster_summary(cl: &crate::cluster::Cluster) -> serde_json::Value {
+    let mut v = crate::cluster::manage::status_of(cl);
     if let Some(r) = v.get_mut("raft").and_then(|r| r.as_object_mut()) {
         for k in ["last_applied", "last_log_index", "purged", "replication"] {
             r.remove(k);
@@ -339,15 +334,13 @@ impl Drop for Slot {
     }
 }
 
-/// Open a stream of `kinds` (only `project`'s VMs and disks, when given);
-/// `viewer`: the node whose UI relayed it (the cluster summary is about it).
+/// Open a stream of `kinds` (only `project`'s VMs and disks, when given).
 /// The first snapshot is taken before this returns, so a refusal is an
 /// error of the call, not of the stream.
 pub async fn open(
     call: Call,
     kinds: Vec<Kind>,
     project: Option<&str>,
-    viewer: Option<String>,
 ) -> ServiceResult<tokio::sync::mpsc::Receiver<Event>> {
     let c = call;
     let only = match project {
@@ -363,7 +356,7 @@ pub async fn open(
         ));
     }
     let slot = Slot;
-    let first = snapshot(&c, &kinds, only.as_deref(), viewer.as_deref()).await?;
+    let first = snapshot(&c, &kinds, only.as_deref()).await?;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Event>(256);
     let mut bell = c.manager().changed.subscribe();
@@ -398,7 +391,7 @@ pub async fn open(
                 break;
             }
             tokio::time::sleep(COALESCE).await;
-            now = match snapshot(&c, &kinds, only.as_deref(), viewer.as_deref()).await {
+            now = match snapshot(&c, &kinds, only.as_deref()).await {
                 Ok(v) => v,
                 // Access gone (user disabled, say): end the stream.
                 Err(_) => break,

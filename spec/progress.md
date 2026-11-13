@@ -39,7 +39,7 @@ don't conflict over it:
 | RPC API | [18-grpc.md](18-grpc.md) | G0–G5 | — | §15 Implementation status |
 | gxctl auth | [17-gxctl-auth.md](17-gxctl-auth.md) | G1–G5 | — | §12 Implementation plan |
 | Passkeys | [25-passkeys.md](25-passkeys.md) | All | A real-device check | §7 Implementation status |
-| Host page | [28-host-page.md](28-host-page.md) | W1–W6 (#127–#129) | W8, removing the `/cluster/v1/ui/…` relay route on servers | §7 Tasks |
+| Host page | [28-host-page.md](28-host-page.md) | W1–W6 (#127–#129); W8, the `/cluster/v1/ui/…` relay route removed from servers (#492) | — | §7 Tasks |
 | Tailscale certificates | [21-tailscale-tls.md](21-tailscale-tls.md) | TS0–TS2; certificates shared by the node (#171) | TS3 waits on tailscale-rs | §10 Milestones |
 
 Shared code split out recently: `glidex-auth` (#163) and
