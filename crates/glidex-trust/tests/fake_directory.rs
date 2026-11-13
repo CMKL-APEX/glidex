@@ -247,8 +247,12 @@ async fn a_cluster_trusts_the_fake_directory() {
     // A browser login: authorize, the code exchanged with a client
     // assertion, the ID token checked.
     dir.login_as(Some("u1"), true);
-    let (state, nonce, verifier) = ("st1", "n1", glidex_trust::random_token(32));
-    let url = client::authorize_url(&d, CLUSTER, CALLBACK, state, nonce, &verifier).unwrap();
+    let (state, nonce, verifier) = (
+        glidex_trust::random_token(16),
+        glidex_trust::random_token(16),
+        glidex_trust::random_token(32),
+    );
+    let url = client::authorize_url(&d, CLUSTER, CALLBACK, &state, &nonce, &verifier).unwrap();
     let back = url::Url::parse(&dir.browse(&url).unwrap()).unwrap();
     assert!(back.as_str().starts_with(CALLBACK));
     let q: std::collections::HashMap<String, String> = back.query_pairs().into_owned().collect();
@@ -269,7 +273,7 @@ async fn a_cluster_trusts_the_fake_directory() {
         answer["id_token"].as_str().unwrap(),
         &d,
         &client::client_id(CLUSTER),
-        nonce,
+        &nonce,
     )
     .unwrap();
     assert_eq!(id["sub"], "u1");

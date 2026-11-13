@@ -130,20 +130,21 @@ mod tests {
         let k = ClusterKey::generate("x:1").unwrap();
         let d = directory(&k);
         let t = crate::now();
+        let (nonce, other) = (crate::random_token(16), crate::random_token(16));
         let c = |sid: bool| {
             let mut c = json!({
                 "iss": d.issuer, "sub": "u1", "aud": "cluster:c1", "exp": t + 60,
-                "nonce": "n1", "amr": ["pwd", "mfa"],
+                "nonce": nonce, "amr": ["pwd", "mfa"],
             });
             if sid {
                 c["sid"] = "s1".into();
             }
             k.sign_jwt("JWT", &c).unwrap()
         };
-        let ok = verify_id_token(&c(true), &d, "cluster:c1", "n1").unwrap();
+        let ok = verify_id_token(&c(true), &d, "cluster:c1", &nonce).unwrap();
         assert!(mfa_of(&ok));
-        assert!(verify_id_token(&c(true), &d, "cluster:c1", "n2").is_none());
-        assert!(verify_id_token(&c(false), &d, "cluster:c1", "n1").is_none());
+        assert!(verify_id_token(&c(true), &d, "cluster:c1", &other).is_none());
+        assert!(verify_id_token(&c(false), &d, "cluster:c1", &nonce).is_none());
         assert_eq!(api_token_hash("gxt_a"), crate::sha256_hex(b"gxt_a"));
     }
 }
