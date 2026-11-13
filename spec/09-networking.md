@@ -26,6 +26,12 @@ protocol/client library), control-plane `network.rs`; packaging in
 | M8 AF_XDP + source build | yes | `afxdp_uplink_e2e` (generic mode, veth); the source build is unit-tested only |
 | M9 source routes (§8.6) | `glidex-ovs` `srcroute.rs` (plan, apply, report; 17 unit tests); netd: `source_routes` config and start check, `source_tables`/`arp_saved`, the start pass (before the OVS check), the `ip monitor address` watcher and 60 s pass, `list_source_routes` (4 tests); the installer's `rt_protos.d` file; `GET /ovs/status` `source_routes` (API test) and the host page's **Ports that share a subnet** card (UI e2e, mocked) | `in_a_network_namespace` (ignored, root, Linux 6.8): two veth ports in one subnet with strict filtering, each address answers out of its own port, without its rule the second address's pings are dropped, ARP settings set and restored. The netd binary in a namespace (2026-11-03): rules at start, a new address's rule within a second, a removed address's rule deleted, `list_source_routes` over the socket. On prism1 (2026-11-04, main at `3f9bdf0`; Linux 6.8, eight IPoIB ports in one /24, `rp_filter` 2): before, every address's traffic left by one port; with the subnet in `netd.json`, the start pass added eight tables (4200–4207) and rules, `ip route get` and pings to a peer (20 from each address, all answered) left by each address's own port, a rule deleted by hand was back within 30 s, and `list_source_routes` reported every address `ok`. hyperstor's `check` passes but has no endpoints there, so its rule check didn't run. Strict (2026-11-05, netd from main at `3f9bdf0`, `conf/all` 0 and the IPoIB ports 1 for the test, then back to 2): with the rules, 10 pings from each of the eight addresses all answered and no reverse-path drops; with an address's rule deleted (three addresses), 0 of 10 answered and 10 drops each |
 
+A NIC's MAC is unique on its network (§11), at create, edit and attach,
+and in the cluster IPAM (14-clustering.md §11.4): unit tests in
+`ipam.rs`, `store/mod.rs` and `state.rs`, API test
+`a_mac_is_unique_on_its_network` in `network_tests.rs`. Not run on a
+host yet.
+
 End-to-end tests are `#[ignore]`d in
 `crates/glidex-control-plane/tests/functional_tests.rs` and need a root
 netd plus, for M6/M8, a fake LAN (two veth pairs into a netns with a
@@ -893,7 +899,8 @@ for one address to whichever port answered first.
 - **Names** (`names.rs`) for VM id `U` (UUID) and NIC `i`:
   - port/tap `gx<first 8 hex of U>-<i>` (≤ 15 chars);
   - MAC `02:` + 5 bytes of `sha256(U ‖ i)`: locally administered
-    unicast, stable across restarts;
+    unicast, stable across restarts; the lowest `i` whose MAC neither
+    another NIC of the VM nor another VM on the network has (§11);
   - vhost socket `/run/glidex/vhost/<U>.net<i>.sock` (< 108 bytes).
 - **Tap:** `ip tuntap add dev <port> mode tap [multi_queue] user <uid>`
   (`multi_queue` only when `queue_pairs > 1`, matching what the
@@ -1128,6 +1135,15 @@ Error mapping:
 | `permission_denied` | 503 | `netd_permission_denied` (control plane not in `glidex`) |
 
 `create_vm` validation: unknown network (400); ≤ 8 attachments; a custom MAC must be unicast;
+a MAC is unique on its network: a NIC whose MAC another VM's NIC has on
+the same network (in its spec, or on its port while it runs) is `409`,
+at create, at an edit of `networks` and at `AttachNetwork`. It is
+checked under the VM write lock on the leader, which sees every VM of the
+cluster, so two writes can't both take one. A generated MAC another VM
+has there is passed over for the next one derived from the VM id. A NIC
+the VM already has is not checked again, so a VM stored with a taken MAC
+before this check still saves. The same MAC on another network is
+another NIC;
 VhostUser forces `memory.shared = true`. Deleting a network used by any
 VM (spec or live NICs) → `409` (`deleteNetwork`, or `deleteProjectNetwork`
 for a project network). While a network is being deleted, attaching a VM

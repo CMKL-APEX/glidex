@@ -388,6 +388,136 @@ async fn vms_attach_and_detach_networks() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
+/// A NIC's MAC is unique on its network: a second VM can't take one
+/// another VM's NIC has there, at create, edit or attach. The same MAC on
+/// another network is another NIC, and a VM saves its own NICs again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mac_is_unique_on_its_network() {
+    let h = harness(true);
+    for (name, mode) in [
+        ("lab", "NETWORK_MODE_NAT"),
+        ("iso", "NETWORK_MODE_ISOLATED"),
+    ] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/networks",
+            Some(json!({"name": name, "mode": mode, "bridge": format!("gxbr-{name}")})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let mac = "52:54:00:12:34:56";
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", json!([{"network": "lab", "mac": mac}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let v1 = vm_id(&body);
+
+    // Create: the same MAC on the same network, in any case.
+    for m in [mac, "52:54:00:12:34:56".to_ascii_uppercase().as_str()] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/vms",
+            Some(vm("v2", json!([{"network": "lab", "mac": m}]))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["message"].as_str().unwrap().contains("in use"),
+            "{body}"
+        );
+    }
+    // Another network: allowed.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v2", json!([{"network": "iso", "mac": mac}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let v2 = vm_id(&body);
+
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v3", json!([{"network": "lab"}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let v3 = vm_id(&body);
+    let v3_lab = vm_of(&body)["nics"][0]["mac"].as_str().unwrap().to_string();
+
+    // Attach: refused, and the VM keeps its NICs.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/vms/{v3}/networks"),
+        Some(json!({"network": "lab", "mac": mac})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (_, body) = request(&h.app, "GET", &format!("/vms/{v3}"), None).await;
+    assert_eq!(vm_of(&body)["nics"].as_array().unwrap().len(), 1, "{body}");
+
+    // Edit: v3 can't move its NIC to v1's MAC.
+    let (status, body) = request(
+        &h.app,
+        "PATCH",
+        &format!("/vms/{v3}"),
+        Some(json!({"change": {"networks": [{"network": "lab", "mac": mac}]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // v1 saves its own NIC again, and adds one.
+    let (status, body) = request(
+        &h.app,
+        "PATCH",
+        &format!("/vms/{v1}"),
+        Some(json!({"change": {"networks": [
+            {"network": "lab", "mac": mac},
+            {"network": "iso"}
+        ]}})),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(vm_of(&body)["nics"].as_array().unwrap().len(), 2, "{body}");
+    // But not a generated MAC v3 has.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/vms/{v1}/networks"),
+        Some(json!({"network": "lab", "mac": v3_lab})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A deleted VM's MAC is free again.
+    let (status, _) = request(&h.app, "DELETE", &format!("/vms/{v1}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/vms/{v3}/networks"),
+        Some(json!({"network": "lab", "mac": mac})),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+
+    for id in [&v2, &v3] {
+        let (status, _) = request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn failed_start_detaches_ports() {
     failed_start_detaches_ports_for("cloudhypervisor", "cloud-hypervisor").await;

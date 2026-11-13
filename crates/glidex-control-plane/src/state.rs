@@ -190,6 +190,7 @@ impl From<PersistenceError> for VmManagerError {
     fn from(e: PersistenceError) -> Self {
         match e {
             PersistenceError::Disk(e) => VmManagerError::Image(e),
+            PersistenceError::MacInUse(m) => VmManagerError::Network(NetError::Conflict(m)),
             e => VmManagerError::PersistenceError(e.to_string()),
         }
     }
@@ -2296,6 +2297,62 @@ impl VmManager {
         Ok(())
     }
 
+    /// A VM other than `vm_id` with a NIC of `mac` on `network`, in its
+    /// spec or on its running ports. `vms` holds every VM of the cluster.
+    fn mac_holder<'a>(
+        vms: &'a HashMap<String, Vm>,
+        vm_id: &str,
+        network: &str,
+        mac: &str,
+    ) -> Option<&'a Vm> {
+        vms.values().find(|v| {
+            v.id != vm_id
+                && v.spec_nics()
+                    .into_iter()
+                    .chain(v.port_nics())
+                    .any(|(_, n, m)| n == network && m.eq_ignore_ascii_case(mac))
+        })
+    }
+
+    /// A NIC's MAC is unique on its network: refuse one another VM has
+    /// there. Checked under the VM write lock, so two writes can't both
+    /// take a MAC. A NIC `cur` (the VM as it is) already has is let be, so
+    /// a VM recorded with a taken MAC before this check still saves.
+    fn refuse_taken_macs(
+        vms: &HashMap<String, Vm>,
+        vm_id: &str,
+        networks: &[NetworkAttachment],
+        cur: Option<&Vm>,
+    ) -> Result<(), VmManagerError> {
+        let had = cur.map(|c| {
+            c.spec_nics()
+                .into_iter()
+                .chain(c.port_nics())
+                .collect::<Vec<_>>()
+        });
+        for att in networks {
+            let Some(mac) = &att.mac else {
+                return Err(NetError::Conflict(format!(
+                    "no free MAC for a NIC on network {}: give one",
+                    att.network
+                ))
+                .into());
+            };
+            let kept = had.as_ref().is_some_and(|h| {
+                h.iter()
+                    .any(|(_, n, m)| *n == att.network && m.eq_ignore_ascii_case(mac))
+            });
+            if !kept && Self::mac_holder(vms, vm_id, &att.network, mac).is_some() {
+                return Err(NetError::Conflict(format!(
+                    "MAC {mac} is in use on network {} by another VM's NIC",
+                    att.network
+                ))
+                .into());
+            }
+        }
+        Ok(())
+    }
+
     fn check_credential(&self, project: &str, config: &VmConfig) -> Result<(), VmManagerError> {
         if let Some(username) = &config.credential {
             // A credential only takes effect through the generated seed.
@@ -2590,8 +2647,13 @@ impl VmManager {
         vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);
         vm.spec.stop_grace_secs = opts.stop_grace_secs.unwrap_or(0);
         // Stable MACs derived from the VM id, so they show up in the API
-        // and survive restarts.
-        fill_macs(&vm.id, &mut vm.spec.config.networks);
+        // and survive restarts; one another VM has on the network is
+        // passed over.
+        let id = vm.id.clone();
+        fill_macs(&id, &mut vm.spec.config.networks, |n, m| {
+            Self::mac_holder(&vms, &id, n, m).is_some()
+        });
+        Self::refuse_taken_macs(&vms, &id, &vm.spec.config.networks, None)?;
 
         // Managed disks. Checked under the VM write lock, so no other VM
         // can claim the same disk in between.
@@ -3391,8 +3453,11 @@ impl VmManager {
             }
             if let Some(nets) = c.networks {
                 let mut nets = nets;
-                fill_macs(&vm.id, &mut nets);
                 self.check_networks(&project, &mut nets)?;
+                fill_macs(vm_id, &mut nets, |n, m| {
+                    Self::mac_holder(&vms, vm_id, n, m).is_some()
+                });
+                Self::refuse_taken_macs(&vms, vm_id, &nets, Some(&cur))?;
                 vm.spec.config.networks = nets;
             }
             if let Some(keys) = c.data_disks {
@@ -6144,25 +6209,55 @@ fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Valu
 
 /// Give each NIC without a MAC the one derived from the VM id and the
 /// lowest NIC index whose MAC no other NIC has: after a detach, a new NIC
-/// mustn't take the MAC a kept one already has.
-fn fill_macs(vm_id: &str, networks: &mut [NetworkAttachment]) {
+/// mustn't take the MAC a kept one already has. Nor one `taken` says
+/// another VM has on the NIC's network.
+fn fill_macs(vm_id: &str, networks: &mut [NetworkAttachment], taken: impl Fn(&str, &str) -> bool) {
     for i in 0..networks.len() {
         if networks[i].mac.is_some() {
             continue;
         }
-        networks[i].mac = (0..glidex_ovs::names::MAX_NICS)
+        let network = &networks[i].network;
+        let mac = (0..glidex_ovs::names::MAX_NICS)
             .filter_map(|n| glidex_ovs::names::mac_address(vm_id, n).ok())
             .find(|m| {
                 !networks
                     .iter()
                     .any(|a| a.mac.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(m)))
+                    && !taken(network, m)
             });
+        networks[i].mac = mac;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A generated MAC another VM has on the NIC's network is passed over.
+    #[test]
+    fn generated_macs_pass_over_taken_ones() {
+        let id = "0123456789abcdef";
+        let derived = |n| glidex_ovs::names::mac_address(id, n).unwrap();
+        let mut nets = vec![
+            NetworkAttachment {
+                network: "a".into(),
+                mac: None,
+                queue_pairs: None,
+            },
+            NetworkAttachment {
+                network: "b".into(),
+                mac: None,
+                queue_pairs: None,
+            },
+        ];
+        let first = derived(0);
+        fill_macs(id, &mut nets, |n, m| {
+            n == "a" && m.eq_ignore_ascii_case(&first)
+        });
+        assert_eq!(nets[0].mac.as_deref(), Some(derived(1).as_str()));
+        // On b the first is free, and no two NICs share one.
+        assert_eq!(nets[1].mac.as_deref(), Some(derived(0).as_str()));
+    }
 
     /// #322: a restart's probe, run before `initialize` has loaded the VMs,
     /// let go of the holds of VMs running here. Until the VMs are loaded no

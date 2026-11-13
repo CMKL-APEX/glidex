@@ -315,7 +315,9 @@ Each entry of `networks` adds one NIC, in order (at most 8):
 
 `network` is a network's name or id that your project may use. `mac` is
 optional: by default each NIC gets a stable MAC derived from the VM's
-id. `queue_pairs` (1 to 8) is optional. The address each NIC got shows
+id. A MAC is unique on its network: a MAC another VM already has on the
+same network is refused (`409`); on another network it is fine.
+`queue_pairs` (1 to 8) is optional. The address each NIC got shows
 in the VM's details. See [Networks](networks.md).
 
 To add or remove a NIC later: under **Network** on the VM's page, pick
@@ -336,7 +338,8 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
 ```
 
 A new NIC goes after the others. The NICs you keep keep their MACs, and
-a new one gets a MAC no other NIC of the VM has. When the VM has more
+a new one gets a MAC no other NIC of the VM, and no other VM on the
+network, has. When the VM has more
 than one NIC on the network, say which to remove with its MAC
 (`--mac 02:…`, `?mac=02:…`). On a running VM the change applies at the
 next start (`gxctl` says so); inside the guest, NICs after a removed one

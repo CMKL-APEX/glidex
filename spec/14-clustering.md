@@ -1403,6 +1403,12 @@ New netd ops, all on the full socket under the existing policy (§7.2 of
   (`status.nics`), and its address; the new MAC has its own reservation
   ready. Otherwise port security would drop the guest's traffic until
   it restarted. The old reservation is freed once the port changes.
+- A reservation is one VM's NIC: a MAC is unique on its network
+  (09-networking.md §11), and the store refuses to reserve `network/mac`
+  for a VM while another VM's NIC (in its spec or on its port) has it. A
+  reservation left by a VM or NIC that is gone, not yet freed, is taken
+  over. A VM stored with a taken MAC before this check still saves; that
+  NIC gets no address of its own until one of the two changes.
 - Each reservation becomes the logical port's `addresses = "<mac>
   <ip>"` and `port_security = "<mac> <ip>"`. This is the port security
   13-metering.md §16 lists as future work, for cluster networks.
