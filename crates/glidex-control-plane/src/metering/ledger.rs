@@ -1321,21 +1321,40 @@ impl Ledger {
 
     /// Delete rows keyed by time before `cutoff` (unix s) from `table`.
     fn prune(&self, table: crate::store::Def, cutoff: u64) -> Result<usize, MeteringError> {
-        let txn = self.db.begin(crate::store::Origin::Metering)?;
-        let n;
-        {
-            let mut t = txn.open_table(table)?;
-            let keys: Vec<String> = t
-                .range(..format!("{cutoff:010}/").as_str())?
+        let keys: Vec<String> = {
+            let txn = self.db.begin_read()?;
+            let t = match txn.open_table(table) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+                Err(e) => return Err(e.into()),
+            };
+            t.range(..format!("{cutoff:010}/").as_str())?
                 .map(|r| r.map(|(k, _)| k.value().to_string()))
-                .collect::<Result<_, _>>()?;
-            n = keys.len();
-            for k in keys {
-                t.remove(k.as_str())?;
+                .collect::<Result<_, _>>()?
+        };
+        self.remove_in_writes(table, &keys)?;
+        Ok(keys.len())
+    }
+
+    /// Remove `keys` from `table` in writes of at most [`WRITE_BUDGET`]
+    /// bytes each: how many keys expire at once has no bound (a day of
+    /// slots, a backlog's duplicates guards), a write set has.
+    fn remove_in_writes(
+        &self,
+        table: crate::store::Def,
+        keys: &[String],
+    ) -> Result<(), MeteringError> {
+        for chunk in budgeted(keys, |k| op_bytes(k.len(), 0)) {
+            let txn = self.db.begin(crate::store::Origin::Metering)?;
+            {
+                let mut t = txn.open_table(table)?;
+                for k in chunk {
+                    t.remove(k.as_str())?;
+                }
             }
+            txn.commit()?;
         }
-        txn.commit()?;
-        Ok(n)
+        Ok(())
     }
 
     pub fn prune_slots_before(&self, cutoff: u64) -> Result<usize, MeteringError> {
@@ -1598,8 +1617,40 @@ impl Shipped {
 /// where late samples may still merge into them.
 const SLOT_KEEP_SECS: u64 = 3 * 3600;
 /// `ledger_inbox` rows older than this are forgotten (a retransmission
-/// can't be this late).
-const INBOX_KEEP_SECS: u64 = 7 * 86400;
+/// can't be this late), by the daily upkeep ([`Ledger::prune_inbox`]).
+pub const INBOX_KEEP_SECS: u64 = 7 * 86400;
+
+/// The most a metering write to the replicated store carries, by
+/// [`op_bytes`]: half the store's entry limit
+/// ([`crate::store::MAX_WRITE_SET_BYTES`]), so whatever else shares the
+/// write (a cursor, the completeness rows) fits beside it.
+pub const WRITE_BUDGET: usize = crate::store::MAX_WRITE_SET_BYTES / 2;
+
+/// About the most one operation adds to a write set's encoding: key and
+/// value in base64, and the operation's JSON around them (table name
+/// included). Errs on the large side.
+pub fn op_bytes(key: usize, value: usize) -> usize {
+    (key + value).div_ceil(3) * 4 + 8 + 96
+}
+
+/// `items` in consecutive runs whose `cost` adds up to at most
+/// [`WRITE_BUDGET`]; an item over the budget goes alone.
+fn budgeted<T>(items: &[T], cost: impl Fn(&T) -> usize) -> Vec<&[T]> {
+    let mut runs = Vec::new();
+    let (mut start, mut size) = (0, 0);
+    for (i, item) in items.iter().enumerate() {
+        let c = cost(item);
+        if i > start && size + c > WRITE_BUDGET {
+            runs.push(&items[start..i]);
+            (start, size) = (i, 0);
+        }
+        size += c;
+    }
+    if start < items.len() {
+        runs.push(&items[start..]);
+    }
+    runs
+}
 
 impl Ledger {
     pub fn can_write(&self) -> bool {
@@ -1698,53 +1749,97 @@ impl Ledger {
     /// the only writer of its subjects). Completeness (`closed_through`) is
     /// the least any live node has closed; a part with `more` to come
     /// leaves the node's cursor as it is.
+    ///
+    /// The rows go in writes of at most [`WRITE_BUDGET`] each, each hourly
+    /// row with its duplicates guard; the node's cursor and completeness
+    /// follow in a last write, once every row is in. A merge cut short is
+    /// sent again whole, and its rows already in are skipped (hourly) or
+    /// rewritten as they are (slots).
     pub fn import(&self, node: &str, e: &Export) -> Result<usize, MeteringError> {
         let now = now_ms() / 1000;
         let mut added = 0;
+        let mut hourly_rows = Vec::with_capacity(e.hourly.len());
+        for (k, row) in &e.hourly {
+            let value = serde_json::to_vec(row)?.len();
+            let key = hour_key(
+                row.hour,
+                row.subject.project_key(),
+                &row.subject.key(),
+                u16::MAX,
+            )
+            .len();
+            // The row (its sequence number may take more digits) and its guard.
+            let cost = op_bytes(key, value + 8) + op_bytes(node.len() + 1 + k.len(), 20);
+            hourly_rows.push(((k, row), cost));
+        }
+        for chunk in budgeted(&hourly_rows, |(_, c)| *c) {
+            self.db.write(
+                crate::store::Origin::Metering,
+                |tx| -> Result<(), MeteringError> {
+                    let mut inbox =
+                        tx.open_table(crate::store::TableId::LedgerInbox.definition())?;
+                    let mut hourly = tx.open_table(HOURLY)?;
+                    for ((k, row), _) in chunk {
+                        let ik = format!("{node}/{k}");
+                        if inbox.get(ik.as_str())?.is_some() {
+                            continue;
+                        }
+                        let prefix = format!(
+                            "{:010}/{}/{}/",
+                            row.hour,
+                            row.subject.project_key(),
+                            row.subject.key()
+                        );
+                        let seq = match hourly
+                            .range(prefix.as_str()..format!("{prefix}~").as_str())?
+                            .next_back()
+                        {
+                            Some(r) => {
+                                let (k, _) = r?;
+                                k.value()
+                                    .rsplit('/')
+                                    .next()
+                                    .and_then(|s| s.parse::<u16>().ok())
+                                    .map_or(0, |s| s + 1)
+                            }
+                            None => 0,
+                        };
+                        let mut row = (*row).clone();
+                        row.seq = seq;
+                        hourly.insert(
+                            hour_key(row.hour, row.subject.project_key(), &row.subject.key(), seq)
+                                .as_str(),
+                            serde_json::to_vec(&row)?.as_slice(),
+                        )?;
+                        inbox.insert(ik.as_str(), now.to_string().as_bytes())?;
+                        added += 1;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
+        let mut slot_rows = Vec::with_capacity(e.slots.len());
+        for (k, row) in &e.slots {
+            let value = serde_json::to_vec(row)?;
+            let cost = op_bytes(k.len(), value.len());
+            slot_rows.push(((k, value), cost));
+        }
+        for chunk in budgeted(&slot_rows, |(_, c)| *c) {
+            self.db.write(
+                crate::store::Origin::Metering,
+                |tx| -> Result<(), MeteringError> {
+                    let mut slots = tx.open_table(RATE5)?;
+                    for ((k, value), _) in chunk {
+                        slots.insert(k.as_str(), value.as_slice())?;
+                    }
+                    Ok(())
+                },
+            )?;
+        }
         self.db.write(
             crate::store::Origin::Metering,
             |tx| -> Result<(), MeteringError> {
                 let mut inbox = tx.open_table(crate::store::TableId::LedgerInbox.definition())?;
-                let mut hourly = tx.open_table(HOURLY)?;
-                for (k, row) in &e.hourly {
-                    let ik = format!("{node}/{k}");
-                    if inbox.get(ik.as_str())?.is_some() {
-                        continue;
-                    }
-                    let prefix = format!(
-                        "{:010}/{}/{}/",
-                        row.hour,
-                        row.subject.project_key(),
-                        row.subject.key()
-                    );
-                    let seq = match hourly
-                        .range(prefix.as_str()..format!("{prefix}~").as_str())?
-                        .next_back()
-                    {
-                        Some(r) => {
-                            let (k, _) = r?;
-                            k.value()
-                                .rsplit('/')
-                                .next()
-                                .and_then(|s| s.parse::<u16>().ok())
-                                .map_or(0, |s| s + 1)
-                        }
-                        None => 0,
-                    };
-                    let mut row = row.clone();
-                    row.seq = seq;
-                    hourly.insert(
-                        hour_key(row.hour, row.subject.project_key(), &row.subject.key(), seq)
-                            .as_str(),
-                        serde_json::to_vec(&row)?.as_slice(),
-                    )?;
-                    inbox.insert(ik.as_str(), now.to_string().as_bytes())?;
-                    added += 1;
-                }
-                let mut slots = tx.open_table(RATE5)?;
-                for (k, row) in &e.slots {
-                    slots.insert(k.as_str(), serde_json::to_vec(row)?.as_slice())?;
-                }
                 // The cursor changes only when what is read of it does (D29):
                 // its third field, the time of the merge, is not read.
                 let cursor = format!("cursor/{node}");
@@ -1758,23 +1853,6 @@ impl Ledger {
                         cursor.as_str(),
                         serde_json::to_vec(&(e.closed_through, e.started_at_ms, now))?.as_slice(),
                     )?;
-                }
-                // Forget old duplicates guards.
-                let cutoff = now.saturating_sub(INBOX_KEEP_SECS);
-                let old: Vec<String> = inbox
-                    .iter()?
-                    .filter_map(|r| r.ok())
-                    .filter(|(k, v)| {
-                        !k.value().starts_with("cursor/")
-                            && std::str::from_utf8(v.value())
-                                .ok()
-                                .and_then(|s| s.parse::<u64>().ok())
-                                .is_some_and(|t| t < cutoff)
-                    })
-                    .map(|(k, _)| k.value().to_string())
-                    .collect();
-                for k in old {
-                    inbox.remove(k.as_str())?;
                 }
                 // Completeness: the least any live node has closed.
                 let live: BTreeSet<String> = {
@@ -1818,6 +1896,35 @@ impl Ledger {
             },
         )?;
         Ok(added)
+    }
+
+    /// On the leader: forget the duplicates guards of `ledger_inbox` older
+    /// than `cutoff` (unix s), in bounded writes. Nodes' cursors stay.
+    /// Returns how many went.
+    pub fn prune_inbox(&self, cutoff: u64) -> Result<usize, MeteringError> {
+        let table = crate::store::TableId::LedgerInbox.definition();
+        let old: Vec<String> = {
+            let txn = self.db.begin_read()?;
+            let inbox = match txn.open_table(table) {
+                Ok(t) => t,
+                Err(redb::TableError::TableDoesNotExist(_)) => return Ok(0),
+                Err(e) => return Err(e.into()),
+            };
+            let mut old = Vec::new();
+            for r in inbox.iter()? {
+                let (k, v) = r?;
+                let expired = std::str::from_utf8(v.value())
+                    .ok()
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .is_some_and(|t| t < cutoff);
+                if expired && !k.value().starts_with("cursor/") {
+                    old.push(k.value().to_string());
+                }
+            }
+            old
+        };
+        self.remove_in_writes(table, &old)?;
+        Ok(old.len())
     }
 }
 
@@ -2785,6 +2892,180 @@ mod tests {
         assert_eq!(
             (rows[0].subject.id.as_str(), rows[0].meters["vm.running"]),
             ("b", 3600)
+        );
+    }
+
+    /// Issue #495: a leader whose `ledger_inbox` holds many expired
+    /// duplicates guards (a backlog merged a week ago), merging another
+    /// large backlog. Every write set stays under the store's entry limit,
+    /// the merge is exact, and the daily upkeep forgets the old guards in
+    /// bounded writes, keeping the cursors and the recent guards.
+    #[test]
+    fn a_large_inbox_and_backlog_merge_in_bounded_writes() {
+        let central_dir = tempfile::TempDir::new().unwrap();
+        let central_db = Arc::new(Db::create(central_dir.path().join("c.db")).unwrap());
+        let central = Ledger::attach(central_db.clone());
+        let node = "aaaaaaaa-0000-4000-8000-000000000001";
+        let n = crate::node::Node::new(
+            node,
+            crate::node::NodeSpec {
+                name: "a".into(),
+                role: crate::node::NodeRole::Server,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
+            },
+        );
+        crate::node::NodeStore::new(central_db.clone())
+            .put(&n)
+            .unwrap();
+        let now = now_ms() / 1000;
+        let subject = |i: u64| {
+            let id = format!("00000000-0000-4000-8000-{i:012}");
+            let mut s = Subject::new(
+                SubjectKind::Vm,
+                &id,
+                format!("vm-{i}"),
+                Some("bbbbbbbb-0000-4000-8000-000000000000".into()),
+            );
+            s.vm_id = Some(id);
+            s
+        };
+        let row = |hour: u64, i: u64| UsageRecord {
+            hour,
+            subject: subject(i),
+            seq: 0,
+            meters: BTreeMap::from([("cpu.used".to_string(), 1000 + i)]),
+            flags: BTreeSet::new(),
+            written_at: hour + 3600,
+        };
+        let key = |r: &UsageRecord| hour_key(r.hour, r.subject.project_key(), &r.subject.key(), 0);
+        // 80,000 guards from eight days ago (about 17 MB of deletes, the
+        // cluster's 16 MB), 1,000 recent ones, and a cursor. Written
+        // directly: a store without a replicator checks no size.
+        let old_hour = (now - 8 * 86400) / 3600 * 3600;
+        let txn = central_db.begin(crate::store::Origin::Metering).unwrap();
+        {
+            let mut inbox = txn
+                .open_table(crate::store::TableId::LedgerInbox.definition())
+                .unwrap();
+            for i in 0..81_000u64 {
+                let r = if i < 80_000 {
+                    row(old_hour - (i / 100) * 3600, i % 100)
+                } else {
+                    row(now / 3600 * 3600 - 3600, i)
+                };
+                let at = if i < 80_000 {
+                    now - 8 * 86400
+                } else {
+                    now - 3600
+                };
+                let k = format!("{node}/{}", key(&r));
+                inbox.insert(k.as_str(), at.to_string().as_bytes()).unwrap();
+            }
+            inbox
+                .insert(
+                    format!("cursor/{node}").as_str(),
+                    serde_json::to_vec(&(0u64, 1u64, now - 9 * 86400))
+                        .unwrap()
+                        .as_slice(),
+                )
+                .unwrap();
+        }
+        txn.commit().unwrap();
+
+        // A backlog of 48 hours of 200 subjects: hourly and slot rows, about
+        // 4 MB, merged as one export and again in shipped parts.
+        let first = now / 3600 * 3600 - 49 * 3600;
+        let mut hourly = Vec::new();
+        let mut slots = Vec::new();
+        for h in 0..48u64 {
+            for i in 0..200u64 {
+                let r = row(first + h * 3600, 1000 + i);
+                let k = key(&r);
+                slots.push((
+                    k.clone(),
+                    SlotRow {
+                        subject: Some(r.subject.clone()),
+                        present: 0xfff,
+                        interpolated: 0,
+                        series: BTreeMap::from([("cpu.used".to_string(), [i; SLOTS_PER_HOUR])]),
+                    },
+                ));
+                hourly.push((k, r));
+            }
+        }
+        let export = Export {
+            started_at_ms: 1,
+            closed_through: first + 48 * 3600,
+            hourly,
+            slots,
+            more: false,
+        };
+        let limit = crate::store::MAX_WRITE_SET_BYTES;
+        let check = |what: &str| {
+            let journal = central_db.journal();
+            assert!(!journal.is_empty(), "{what}: nothing written");
+            for ws in journal {
+                let size = serde_json::to_vec(&ws).unwrap().len();
+                assert!(size <= limit, "{what}: a write set of {size} bytes");
+            }
+            central_db.journal_writes();
+        };
+        central_db.journal_writes();
+        let parts = export.clone().split(SHIP_PART_BYTES).unwrap();
+        assert!(parts.len() > 8, "a backlog of many parts");
+        let mut added = 0;
+        for part in &parts {
+            added += central.import(node, part).unwrap();
+        }
+        check("the parts");
+        assert_eq!(added, export.hourly.len());
+        // The whole backlog as one export: already merged, nothing added.
+        assert_eq!(central.import(node, &export).unwrap(), 0);
+        let rows = central.scan(0, u64::MAX / 10, None).unwrap();
+        assert_eq!(rows.len(), export.hourly.len(), "each row once");
+        assert_eq!(
+            central.complete_through().unwrap(),
+            export.closed_through,
+            "the cursor moved with the last part"
+        );
+
+        // An export the size of the whole backlog, never split, from a node
+        // the leader hasn't seen: still in bounded writes.
+        let mut other = export.clone();
+        for (k, r) in other.hourly.iter_mut() {
+            r.subject.id.push('x');
+            *k = key(r);
+        }
+        central_db.journal_writes();
+        assert_eq!(
+            central.import("another", &other).unwrap(),
+            other.hourly.len()
+        );
+        check("an unsplit backlog");
+
+        // The daily upkeep forgets the expired guards, in bounded writes.
+        central_db.journal_writes();
+        assert_eq!(central.prune_inbox(now - INBOX_KEEP_SECS).unwrap(), 80_000);
+        check("pruning");
+        let txn = central_db.begin_read().unwrap();
+        let inbox = txn
+            .open_table(crate::store::TableId::LedgerInbox.definition())
+            .unwrap();
+        let left: Vec<String> = inbox
+            .iter()
+            .unwrap()
+            .map(|r| r.unwrap().0.value().to_string())
+            .collect();
+        assert!(left.contains(&format!("cursor/{node}")), "the cursor stays");
+        assert_eq!(
+            left.len(),
+            1_000 + 2 * export.hourly.len() + 2,
+            "recent guards, the new ones and the cursors stay"
         );
     }
 }
