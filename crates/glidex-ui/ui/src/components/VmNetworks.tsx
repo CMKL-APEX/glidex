@@ -81,6 +81,11 @@ export default function VmNetworks({
                 port security off
               </span>
             )}
+            {(nic.allowed_addresses?.length ?? 0) > 0 && (
+              <span className="text-xs font-sans text-gray-500" title="Addresses this NIC may also send from">
+                also {nic.allowed_addresses!.join(", ")}
+              </span>
+            )}
             {canDetach && (
               <button className={`${button} font-sans`} disabled={busy !== null || !!vm.deleting} onClick={() => detach(nic)}>
                 {busy === nic.mac ? "Removing…" : "Detach"}

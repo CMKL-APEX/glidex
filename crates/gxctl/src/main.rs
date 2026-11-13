@@ -638,7 +638,7 @@ fn help_text() -> String {
     );
     line!(
         "  {} - Give a VM a NIC on one more network; on a running VM from the next start",
-        "attach-network <name|id> <network> [--mac <mac>] [--no-port-security]".cyan()
+        "attach-network <name|id> <network> [--mac <mac>] [--no-port-security] [--allow <addr>,...]".cyan()
     );
     line!(
         "  {} - Remove a VM's NIC on a network; on a running VM at the next start",

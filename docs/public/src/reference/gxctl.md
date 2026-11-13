@@ -108,7 +108,7 @@ See [Logging in](../user-guide/logging-in.md).
 | `detach-device <vm> <path>` | Detach a PCI device |
 | `attach-disk <vm> <disk>` | Attach a data disk; on a running VM from its next start |
 | `detach-disk <vm> <disk>` | Detach a data disk, which is kept; on a running VM at its next start |
-| `attach-network <vm> <network> [--mac <mac>] [--no-port-security]` | Add a NIC on a network; on a running VM from its next start. `--no-port-security`: no port checks on it (a project owner's, see [Networks](../user-guide/networks.md#port-security)) |
+| `attach-network <vm> <network> [--mac <mac>] [--no-port-security] [--allow <addr>,...]` | Add a NIC on a network; on a running VM from its next start. `--no-port-security`: no port checks on it (a project owner's); `--allow`: addresses or prefixes it may also send from. See [Networks](../user-guide/networks.md#port-security) |
 | `detach-network <vm> <network> [--mac <mac>]` | Remove the VM's NIC on a network (the MAC picks one of several); on a running VM at its next start |
 | `watch [kinds]` | Follow changes until Ctrl-C; kinds are `vms,disks,images,networks` (the default), also `nodes`, `imports`, `cluster`, `policy`, `datastores` |
 

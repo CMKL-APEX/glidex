@@ -97,6 +97,18 @@ impl NatState {
         mac: &str,
         leases: &BTreeMap<Ipv4Addr, String>,
     ) -> Result<Ipv4Addr, OvsError> {
+        self.allocate_excluding(mac, leases, |_| false)
+    }
+
+    /// Like [`allocate_avoiding`](Self::allocate_avoiding), and a new
+    /// reservation is never an address `excluded` names (one another
+    /// port's `allowed_addresses` cover, spec/09-networking.md decision 20).
+    pub fn allocate_excluding(
+        &mut self,
+        mac: &str,
+        leases: &BTreeMap<Ipv4Addr, String>,
+        excluded: impl Fn(Ipv4Addr) -> bool,
+    ) -> Result<Ipv4Addr, OvsError> {
         validate_mac(mac)?;
         let mac = mac.to_ascii_lowercase();
         if let Some(ip) = self.reservations.get(&mac) {
@@ -106,7 +118,7 @@ impl NatState {
             self.reservations.values().copied().collect();
         let free: Vec<Ipv4Addr> = (u32::from(self.pool_start)..=u32::from(self.pool_end))
             .map(Ipv4Addr::from)
-            .filter(|ip| !used.contains(ip))
+            .filter(|ip| !used.contains(ip) && !excluded(*ip))
             .collect();
         let leased_elsewhere = |ip: &Ipv4Addr| leases.get(ip).is_some_and(|m| *m != mac);
         let pick = free

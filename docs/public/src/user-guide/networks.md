@@ -234,6 +234,33 @@ turn their checks off. Cluster networks refuse it. The VM's NICs show
 `port_security` (`gxctl get` prints **port security off**). Like other
 NIC changes, on a running VM it applies at the next start.
 
+### Allowed addresses
+
+A NIC can carry a second address, such as a virtual IP that moves
+between VMs (keepalived), without turning its checks off: list it in
+`allowed_addresses`, up to 16 IPv4 or IPv6 addresses or prefixes.
+
+```bash
+gxctl attach-network web1 lab --allow 10.88.0.200
+```
+
+```json
+{ "networks": [ { "network": "lab", "allowed_addresses": ["10.88.0.200", "10.88.0.208/29"] } ] }
+```
+
+- **NAT**: the NIC sends from its own address and the listed ones. NAT
+  networks are IPv4 only, and each entry must be inside the network's
+  subnet, and cover neither the gateway nor another NIC's address.
+- **Isolated and bridged**: with a list, the NIC sends IP and ARP only
+  from the listed addresses (and DHCP requests), and IPv6 only from
+  listed addresses, link-local addresses and `::`; neighbour
+  advertisements only for those. Without a list, only the MAC is checked.
+
+Two VMs' lists may not overlap on one network. A list that doesn't fit
+is refused with `422`. Changing it is part of editing the VM's networks
+(an `editor`'s); it needs no other permission. Cluster networks refuse a
+list.
+
 ## The host from a NAT network
 
 Guests of a single-host NAT network reach the outside world, but on

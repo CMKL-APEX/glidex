@@ -1018,11 +1018,63 @@ impl Netd {
                 existing.port, existing.spec.bridge
             )));
         }
+        let allowed = glidex_ovs::port_security::parse_allowed(&spec.allowed_addresses)?;
+        let nat = self.store.get::<NatState>(NAT, &spec.bridge)?;
+        // On a NAT bridge, the addresses glidex hands out are the
+        // reservations: another port's `allowed_addresses` must not cover
+        // one of them, nor the gateway (spec decision 20).
+        let others: Vec<glidex_ovs::port_security::AllowedAddress> = self
+            .vm_ports()?
+            .into_iter()
+            .filter(|r| {
+                r.spec.bridge == spec.bridge
+                    && store::vm_port_key(&r.spec.vm_id, r.spec.nic_index) != key
+            })
+            .flat_map(|r| {
+                glidex_ovs::port_security::parse_allowed(&r.spec.allowed_addresses)
+                    .unwrap_or_default()
+            })
+            .collect();
+        if let Some(state) = &nat {
+            let mine = spec.mac.to_ascii_lowercase();
+            for a in &allowed {
+                if !a.within(&state.subnet) {
+                    return Err(OvsError::invalid(format!(
+                        "allowed address {a} is outside {}'s subnet {}",
+                        spec.bridge, state.subnet
+                    )));
+                }
+                if a.contains(state.gateway.into()) {
+                    return Err(OvsError::conflict(format!(
+                        "allowed address {a} covers the gateway {}",
+                        state.gateway
+                    )));
+                }
+                if let Some((m, ip)) = state
+                    .reservations
+                    .iter()
+                    .find(|(m, ip)| **m != mine && a.contains((**ip).into()))
+                {
+                    return Err(OvsError::conflict(format!(
+                        "allowed address {a} covers {ip}, the address of {m}"
+                    )));
+                }
+            }
+        }
+        if let Some(a) = allowed
+            .iter()
+            .find(|a| others.iter().any(|b| a.overlaps(b)))
+        {
+            return Err(OvsError::conflict(format!(
+                "allowed address {a} overlaps another port's on {}",
+                spec.bridge
+            )));
+        }
         let caps = host::probe(self.ex(), &self.config.probe);
         let binding = vm_port::attach(self.ex(), &caps, &spec, owner_uid)?;
         let port = spec.port_name()?;
 
-        let ipv4 = match self.store.get::<NatState>(NAT, &spec.bridge)? {
+        let ipv4 = match nat {
             Some(mut state) => {
                 // Unreadable/missing lease file: nothing leased yet.
                 let now = std::time::SystemTime::now()
@@ -1033,7 +1085,9 @@ impl Netd {
                     .read_file(&state.lease_path())
                     .map(|l| nat::active_leases(&l, now))
                     .unwrap_or_default();
-                let ip = state.allocate_avoiding(&spec.mac, &leases)?;
+                let ip = state.allocate_excluding(&spec.mac, &leases, |ip| {
+                    others.iter().any(|a| a.contains(ip.into()))
+                })?;
                 nat::write_dnsmasq_files(self.ex(), &state)?;
                 self.store.put(NAT, &state.bridge, &state)?;
                 self.supervisor.reload(&state.bridge);
@@ -1211,6 +1265,7 @@ impl Netd {
         Ok(Some(Checks {
             mode,
             mac: spec.mac.to_ascii_lowercase(),
+            allowed: glidex_ovs::port_security::parse_allowed(&spec.allowed_addresses)?,
         }))
     }
 

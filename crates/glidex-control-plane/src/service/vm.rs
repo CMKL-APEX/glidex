@@ -159,6 +159,7 @@ fn attachment_of(a: &pb::NetworkAttachment) -> m::NetworkAttachment {
         mac: a.mac.clone(),
         queue_pairs: a.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
         port_security: a.port_security.unwrap_or(true),
+        allowed_addresses: a.allowed_addresses.clone(),
     }
 }
 
@@ -208,6 +209,7 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
                     port: live.and_then(|n| n.port.clone()),
                     ipv4: live.and_then(|n| n.ipv4).map(|ip| ip.to_string()),
                     port_security: Some(a.port_security),
+                    allowed_addresses: a.allowed_addresses.clone(),
                     ..Default::default()
                 }
             })
@@ -1757,6 +1759,7 @@ pub async fn attach_network(call: &Call, req: pb::AttachNetworkRequest) -> Servi
         mac: req.mac,
         queue_pairs: req.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
         port_security: req.port_security.unwrap_or(true),
+        allowed_addresses: req.allowed_addresses,
     };
     let vm = call
         .manager()

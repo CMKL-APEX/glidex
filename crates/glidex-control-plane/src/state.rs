@@ -2283,6 +2283,7 @@ impl VmManager {
         &self,
         project: &str,
         networks: &mut [NetworkAttachment],
+        nat_subnets: &BTreeMap<String, glidex_ovs::net::Ipv4Net>,
     ) -> Result<(), VmManagerError> {
         if networks.len() > glidex_ovs::names::MAX_NICS as usize {
             return Err(invalid(format!(
@@ -2330,6 +2331,12 @@ impl VmManager {
                         att.network
                     )));
                 }
+                Some(n) if !att.allowed_addresses.is_empty() => {
+                    let here = n.node.as_deref().is_none_or(|x| x == self.local_node_id());
+                    let none = BTreeMap::new();
+                    let subnets = if here { nat_subnets } else { &none };
+                    Self::check_allowed_addresses(&n, &att.allowed_addresses, subnets)?;
+                }
                 Some(_) => {}
             }
             if let Some(mac) = &att.mac {
@@ -2345,6 +2352,110 @@ impl VmManager {
             }
         }
         Ok(())
+    }
+
+    /// A NIC's `allowed_addresses` (spec/09-networking.md decision 20): at
+    /// most 16 addresses or prefixes, none overlapping; on a NAT network
+    /// IPv4 only and, where this host's netd has the network
+    /// (`nat_subnets`: bridge → subnet, of this host's networks), inside
+    /// its subnet. netd checks the
+    /// subnet again at attach, on whichever host the VM runs. Cluster
+    /// networks refuse a list: OVN keeps their port security.
+    fn check_allowed_addresses(
+        n: &crate::network::Network,
+        list: &[String],
+        nat_subnets: &BTreeMap<String, glidex_ovs::net::Ipv4Net>,
+    ) -> Result<(), VmManagerError> {
+        let refused = |m: String| VmManagerError::Network(NetError::AddressRefused(m));
+        if n.scope == crate::network::NetworkScope::Cluster {
+            return Err(refused(format!(
+                "allowed_addresses apply only to a host's networks, not to cluster network '{}'",
+                n.name
+            )));
+        }
+        let parsed =
+            glidex_ovs::port_security::parse_allowed(list).map_err(|e| refused(e.to_string()))?;
+        if n.mode == crate::network::NetworkMode::Nat {
+            if let Some(a) = parsed.iter().find(|a| a.addr.is_ipv6()) {
+                return Err(refused(format!(
+                    "allowed address {a}: NAT network '{}' is IPv4 only",
+                    n.name
+                )));
+            }
+            if let Some(subnet) = nat_subnets.get(&n.bridge)
+                && let Some(a) = parsed.iter().find(|a| !a.within(subnet))
+            {
+                return Err(refused(format!(
+                    "allowed address {a} is outside network '{}' ({subnet})",
+                    n.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// No two VMs' `allowed_addresses` overlap on one network, and none
+    /// covers the address another VM's NIC there has (decision 20).
+    /// Checked under the VM write lock, as MACs are.
+    fn refuse_overlapping_addresses(
+        vms: &HashMap<String, Vm>,
+        vm_id: &str,
+        networks: &[NetworkAttachment],
+    ) -> Result<(), VmManagerError> {
+        use glidex_ovs::port_security::{AllowedAddress, parse_allowed};
+        let refused = |m: String| VmManagerError::Network(NetError::AddressRefused(m));
+        for att in networks.iter().filter(|a| !a.allowed_addresses.is_empty()) {
+            let mine = parse_allowed(&att.allowed_addresses).map_err(|e| refused(e.to_string()))?;
+            for v in vms.values().filter(|v| v.id != vm_id) {
+                let theirs: Vec<AllowedAddress> = v
+                    .config()
+                    .networks
+                    .iter()
+                    .filter(|b| b.network == att.network)
+                    .flat_map(|b| parse_allowed(&b.allowed_addresses).unwrap_or_default())
+                    .collect();
+                if let Some(a) = mine.iter().find(|a| theirs.iter().any(|b| a.overlaps(b))) {
+                    return Err(refused(format!(
+                        "allowed address {a} overlaps VM {}'s on network {}",
+                        v.name, att.network
+                    )));
+                }
+                if let Some((a, ip)) = v
+                    .status
+                    .nics
+                    .iter()
+                    .filter(|x| x.network == att.network)
+                    .filter_map(|x| x.ipv4)
+                    .find_map(|ip| mine.iter().find(|a| a.contains(ip.into())).map(|a| (a, ip)))
+                {
+                    return Err(refused(format!(
+                        "allowed address {a} covers {ip}, VM {}'s address on network {}",
+                        v.name, att.network
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The subnets of this host's NAT networks, by bridge, when `networks`
+    /// gives any NIC `allowed_addresses` (else none: netd isn't asked).
+    async fn nat_subnets_for(
+        &self,
+        networks: &[NetworkAttachment],
+    ) -> BTreeMap<String, glidex_ovs::net::Ipv4Net> {
+        if networks.iter().all(|a| a.allowed_addresses.is_empty()) {
+            return BTreeMap::new();
+        }
+        let netd = self.netd.clone();
+        tokio::task::spawn_blocking(move || netd.call::<Vec<NatInfo>>(Op::ListNat))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| (n.state.bridge, n.state.subnet))
+            .collect()
     }
 
     /// A VM other than `vm_id` with a NIC of `mac` on `network`, in its
@@ -2583,7 +2694,8 @@ impl VmManager {
         Self::check_options(&opts)?;
         self.check_paths(&config)?;
         self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
-        self.check_networks(project, &mut config.networks)?;
+        let nat_subnets = self.nat_subnets_for(&config.networks).await;
+        self.check_networks(project, &mut config.networks, &nat_subnets)?;
 
         let mut vms = self.vms.write().await;
 
@@ -2704,6 +2816,7 @@ impl VmManager {
             Self::mac_holder(&vms, &id, n, m).is_some()
         });
         Self::refuse_taken_macs(&vms, &id, &vm.spec.config.networks, None)?;
+        Self::refuse_overlapping_addresses(&vms, &id, &vm.spec.config.networks)?;
 
         // Managed disks. Checked under the VM write lock, so no other VM
         // can claim the same disk in between.
@@ -3343,6 +3456,11 @@ impl VmManager {
             stop_grace_secs: patch.stop_grace_secs,
             ..Default::default()
         })?;
+        // Asked before the lock: it may call netd.
+        let nat_subnets = match patch.config.as_ref().and_then(|c| c.networks.as_ref()) {
+            Some(nets) => self.nat_subnets_for(nets).await,
+            None => BTreeMap::new(),
+        };
         let mut vms = self.vms.write().await;
         let cur = Self::writable(&vms, vm_id, if_match)?.clone();
         let project = cur.project.clone();
@@ -3503,11 +3621,12 @@ impl VmManager {
             }
             if let Some(nets) = c.networks {
                 let mut nets = nets;
-                self.check_networks(&project, &mut nets)?;
+                self.check_networks(&project, &mut nets, &nat_subnets)?;
                 fill_macs(vm_id, &mut nets, |n, m| {
                     Self::mac_holder(&vms, vm_id, n, m).is_some()
                 });
                 Self::refuse_taken_macs(&vms, vm_id, &nets, Some(&cur))?;
+                Self::refuse_overlapping_addresses(&vms, vm_id, &nets)?;
                 vm.spec.config.networks = nets;
             }
             if let Some(keys) = c.data_disks {
@@ -6307,12 +6426,14 @@ mod tests {
                 mac: None,
                 queue_pairs: None,
                 port_security: true,
+                allowed_addresses: vec![],
             },
             NetworkAttachment {
                 network: "b".into(),
                 mac: None,
                 queue_pairs: None,
                 port_security: true,
+                allowed_addresses: vec![],
             },
         ];
         let first = derived(0);

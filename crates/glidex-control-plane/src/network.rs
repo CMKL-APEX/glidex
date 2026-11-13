@@ -231,6 +231,10 @@ pub enum NetError {
     Ambiguous(String),
     #[error("{0}")]
     Conflict(String),
+    /// A NIC's `allowed_addresses` that don't fit its network, or overlap
+    /// another VM's (spec/09-networking.md decision 20): `422`.
+    #[error("{0}")]
+    AddressRefused(String),
     #[error("the external address pool has no free address")]
     ExternalPoolExhausted,
     #[error("network storage error: {0}")]

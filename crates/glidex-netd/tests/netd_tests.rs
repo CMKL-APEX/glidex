@@ -99,6 +99,7 @@ fn port_spec() -> VmPortSpec {
         queue_pairs: 1,
         ovn_lport: None,
         port_security: true,
+        allowed_addresses: vec![],
     }
 }
 
@@ -2158,6 +2159,119 @@ fn a_port_without_port_security_gets_no_checks() {
     exec.clear_calls();
     let pass = netd.repair_rules();
     assert!(pass.applied.is_empty(), "{pass:?}");
+}
+
+/// Decision 20: `allowed_addresses` on a NAT bridge fit its subnet, cover
+/// neither the gateway nor another port's reservation or list, and new
+/// reservations pass over them; the checks carry them.
+#[test]
+fn allowed_addresses_on_a_nat_bridge() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    let with = |list: &[&str]| VmPortSpec {
+        allowed_addresses: list.iter().map(|s| s.to_string()).collect(),
+        ..port_spec()
+    };
+    let code = |r: Result<serde_json::Value, glidex_ovs::OvsError>| r.unwrap_err().code();
+    // VM's NIC 0 holds 10.88.0.2 (its reservation); another VM attaches first.
+    let vm2 = "2b3c4d5e-5e6f-4a1b-9c2d-0123456789ab";
+    let other = |list: &[&str]| VmPortSpec {
+        vm_id: vm2.into(),
+        mac: names::mac_address(vm2, 0).unwrap(),
+        allowed_addresses: list.iter().map(|s| s.to_string()).collect(),
+        ..port_spec()
+    };
+    netd.handle(Op::AttachVmPort(other(&["10.88.0.2/31"])), &peer())
+        .unwrap();
+    // Its own list doesn't keep it from an address in it.
+    let ports: Vec<VmPortRecord> =
+        serde_json::from_value(netd.handle(Op::ListVmPorts, &peer()).unwrap()).unwrap();
+    assert_eq!(ports[0].ipv4, Some("10.88.0.2".parse().unwrap()));
+
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.99.0.5"])), &peer())),
+        "invalid_argument"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.88.0.1"])), &peer())),
+        "conflict"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.88.0.2"])), &peer())),
+        "conflict"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.88.0.3"])), &peer())),
+        "conflict"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["fd00::1"])), &peer())),
+        "invalid_argument"
+    );
+
+    exec.clear_calls();
+    let res: AttachResult = serde_json::from_value(
+        netd.handle(
+            Op::AttachVmPort(with(&["10.88.0.100", "10.88.0.128/28"])),
+            &peer(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // .2 is taken and .3 is in the other port's list.
+    assert_eq!(res.ipv4, Some("10.88.0.4".parse().unwrap()));
+    let checks = checks_call(&exec.calls(), "gxbr-nat");
+    let mac = names::mac_address(VM, 0).unwrap();
+    for a in ["10.88.0.4", "10.88.0.100", "10.88.0.128/28"] {
+        assert!(
+            checks.contains(&format!("ip,dl_src={mac},nw_src={a},actions=NORMAL")),
+            "{a}: {checks}"
+        );
+    }
+}
+
+/// Decision 20 on an isolated bridge: the list is the only IP sources.
+#[test]
+fn allowed_addresses_on_an_isolated_bridge() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_isolated(&netd);
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            bridge: "gxbr-iso".into(),
+            allowed_addresses: vec!["192.168.7.10".into(), "fd00:7::10".into()],
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let checks = checks_call(&exec.calls(), "gxbr-iso");
+    for want in [
+        "nw_src=192.168.7.10,actions=NORMAL",
+        "ipv6_src=fd00:7::10,actions=NORMAL",
+        "nd_target=fd00:7::10,actions=NORMAL",
+        "priority=140,in_port=5,ipv6,actions=drop",
+    ] {
+        assert!(checks.contains(want), "missing {want}: {checks}");
+    }
+    // A bad entry is refused before anything is done.
+    exec.clear_calls();
+    assert!(
+        netd.handle(
+            Op::AttachVmPort(VmPortSpec {
+                bridge: "gxbr-iso".into(),
+                allowed_addresses: vec!["192.168.7.9/24".into()],
+                ..port_spec()
+            }),
+            &peer(),
+        )
+        .is_err()
+    );
+    assert!(!exec.calls().iter().any(|c| c.starts_with("ovs-ofctl")));
 }
 
 #[test]
