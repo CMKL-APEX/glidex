@@ -21,21 +21,33 @@ const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
 /// `firmware_asset`.
 const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
 /// Pylon release (github.com/CMKL-APEX/pylon/releases), verified against
-/// `PYLON_ASSETS` (the release's SHA256SUMS). Bump together. Installed only
-/// with `--with-pylon` (spec/30-pylon.md P10, P11).
+/// `PYLON_ASSETS` (the release's SHA256SUMS, and GitHub's digest for the
+/// guest agent, which SHA256SUMS doesn't list). Bump together. Installed
+/// only with `--with-pylon` (spec/30-pylon.md P10, P11, P19).
 const PYLON_VERSION: &str = "v0.0.8-rc2";
-/// Each Pylon release asset, the name it is installed under in `BIN_DIR`,
-/// and its sha256. x86_64 only.
-const PYLON_ASSETS: [(&str, &str, &str); 2] = [
+/// Where the guest agent goes: the control plane puts it in Pylon VMs'
+/// seed disks (spec/30-pylon.md P19).
+const PYLON_GUEST_AGENT: &str = "/usr/local/share/glidex/pylon-guest-agent";
+/// Each Pylon release asset, where it is installed, its mode and its
+/// sha256. x86_64 only.
+const PYLON_ASSETS: [(&str, &str, &str, &str); 3] = [
     (
         "pylon-x86_64",
-        "pylon",
+        "/usr/local/bin/pylon",
+        "0755",
         "191ec88528b6b92ba1ffc5967c0e06cb86c9ca32b6e6a04682b01e84790e8a30",
     ),
     (
         "pylond-x86_64",
-        "pylond",
+        "/usr/local/bin/pylond",
+        "0755",
         "230504314ef2304d68cc5e4609728486e75c1b3c07cd1b851c96065831ce89b0",
+    ),
+    (
+        "pylon-guest-agent-static",
+        PYLON_GUEST_AGENT,
+        "0644",
+        "ba4047c9a66b3c1a77642f3d6092b1ebbf4e26a13b86ce68ef590a8d1533c7af",
     ),
 ];
 /// rustup-init from `static.rust-lang.org/rustup/archive/<version>/<target>/`,
@@ -2306,9 +2318,8 @@ fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> 
         );
     }
     let tmp = TempDir::new()?;
-    for (asset, name, sha256) in PYLON_ASSETS {
-        let dst = format!("{}/{}", BIN_DIR, name);
-        if file_sha256(Path::new(&dst)).ok().as_deref() == Some(sha256) {
+    for (asset, dst, mode, sha256) in PYLON_ASSETS {
+        if file_sha256(Path::new(dst)).ok().as_deref() == Some(sha256) {
             println!("{} {} ({})", "Up to date:".green(), dst, PYLON_VERSION);
             continue;
         }
@@ -2316,11 +2327,11 @@ fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> 
             "https://github.com/CMKL-APEX/pylon/releases/download/{}/{}",
             PYLON_VERSION, asset
         );
-        let download_path = tmp.path().join(name);
+        let download_path = tmp.path().join(asset);
         download_verified(&url, &download_path, sha256)?;
-        install_if_changed(&download_path, &dst, "0755")?;
+        install_if_changed(&download_path, dst, mode)?;
         println!("{} {} ({})", "Installed:".green(), dst, PYLON_VERSION);
-        if name == "pylond" {
+        if dst.ends_with("/pylond") {
             changed.pylond = true;
         }
     }
@@ -4700,10 +4711,23 @@ mod tests {
     #[test]
     fn pylon_assets_are_pinned() {
         assert!(PYLON_VERSION.starts_with('v'));
-        let names: Vec<_> = PYLON_ASSETS.iter().map(|(_, n, _)| *n).collect();
-        assert_eq!(names, ["pylon", "pylond"]);
-        for (asset, _, sha256) in PYLON_ASSETS {
-            assert!(asset.ends_with("-x86_64"), "{asset}");
+        let dests: Vec<_> = PYLON_ASSETS.iter().map(|(_, d, _, _)| *d).collect();
+        assert_eq!(
+            dests,
+            [
+                "/usr/local/bin/pylon",
+                "/usr/local/bin/pylond",
+                "/usr/local/share/glidex/pylon-guest-agent"
+            ]
+        );
+        for (asset, dst, mode, sha256) in PYLON_ASSETS {
+            // The x86_64 host binaries, and the static (musl) x86_64 agent.
+            assert!(
+                asset.ends_with("-x86_64") || asset == "pylon-guest-agent-static",
+                "{asset}"
+            );
+            // The agent is read, not run, on the host.
+            assert_eq!(mode == "0644", dst == PYLON_GUEST_AGENT, "{dst}");
             assert!(
                 sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()),
                 "{asset}: {sha256}"

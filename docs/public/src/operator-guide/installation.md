@@ -183,6 +183,7 @@ An agent installs `ovn-host` only; servers and standalone hosts also get
 | `/usr/local/bin/glidex-metad` | The metadata endpoint for guests (unless `--no-networking` or `--no-services`). |
 | `/usr/local/bin/cloud-hypervisor` | The pinned Cloud Hypervisor. |
 | `/usr/local/bin/pylon`, `/usr/local/bin/pylond` | Pylon and its core arbiter, with `--with-pylon`. |
+| `/usr/local/share/glidex/pylon-guest-agent` | Pylon's guest agent, with `--with-pylon`, for Pylon VMs' seed disks. |
 | `/usr/local/share/glidex/ui/` | The built web UI. |
 | `/etc/systemd/system/glidex-*.service`, `glidex-authd.socket`, `glidex-vm@.service`, `glidex-vms.slice` | The systemd units (see [Operator guide](README.md#components)). |
 | `/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf`, `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf` | With `--tailscale-cert`: the drop-ins that turn the UI's Tailscale certificate on and let `glidex-ui` fetch it. |
@@ -205,11 +206,13 @@ own `~/.glidex/`, for a control plane you run by hand.
 
 ## Pylon
 
-With `--with-pylon`, the installer downloads `pylon-x86_64` and
-`pylond-x86_64` from the
+With `--with-pylon`, the installer downloads `pylon-x86_64`,
+`pylond-x86_64` and `pylon-guest-agent-static` from the
 [Pylon release](https://github.com/CMKL-APEX/pylon/releases) this
 Glidex pins (`v0.0.8-rc2`), checks each against its pinned SHA-256, and
-installs them as `/usr/local/bin/pylon` and `/usr/local/bin/pylond`.
+installs them as `/usr/local/bin/pylon`, `/usr/local/bin/pylond` and
+`/usr/local/share/glidex/pylon-guest-agent` (the agent Glidex puts in
+Pylon guests).
 A file is replaced only when its SHA-256 differs; a new `pylond`
 restarts `glidex-pylond`.
 
