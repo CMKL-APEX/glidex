@@ -24,27 +24,11 @@ const PERSIST_EVERY: Duration = Duration::from_secs(5);
 /// Attempts per download, resuming with `Range` when the server allows.
 const ATTEMPTS: u32 = 4;
 
-/// Loopback, link-local, RFC 1918, CGNAT, ULA and unspecified addresses.
+/// Any address that isn't on the public internet: loopback, private,
+/// link-local, CGNAT, unique-local, reserved and the rest
+/// ([`crate::public_net::is_public`]).
 pub fn is_private(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_private(IpAddr::V4(v4));
-            }
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-        }
-    }
+    !crate::public_net::is_public(ip)
 }
 
 /// Whether `host` is, or resolves to, any private address. Unresolvable
@@ -99,13 +83,18 @@ pub fn http_client(allow_private: bool) -> Result<reqwest::Client, ImageError> {
             Err(e) => attempt.error(format!("redirect refused: {}", e)),
         }
     });
-    reqwest::Client::builder()
+    let mut b = reqwest::Client::builder()
         .redirect(policy)
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(120))
-        .user_agent(concat!("glidex/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| ImageError::Download(e.to_string()))
+        .user_agent(concat!("glidex/", env!("CARGO_PKG_VERSION")));
+    // check_url looked the name up once, to refuse early with a clear
+    // message; the connection looks it up again, so it may only reach
+    // public addresses too.
+    if !allow_private {
+        b = b.dns_resolver(std::sync::Arc::new(crate::public_net::PublicOnly));
+    }
+    b.build().map_err(|e| ImageError::Download(e.to_string()))
 }
 
 /// sha256 of `data`, lower-case hex.
@@ -1652,6 +1641,28 @@ mod tests {
         for ip in ["8.8.8.8", "91.189.91.1", "2606:4700::1111"] {
             assert!(!is_private(ip.parse().unwrap()), "{}", ip);
         }
+    }
+
+    #[tokio::test]
+    async fn the_client_connects_only_to_public_addresses_unless_allowed() {
+        // A name that resolves to loopback, asked for after check_url: the
+        // connection resolves it again and must refuse it too.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut s, _)) = listener.accept().await {
+                let _ = s.read(&mut [0u8; 1024]).await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let url = format!("http://localhost:{port}/x.img");
+        let strict = http_client(false).unwrap();
+        assert!(strict.get(&url).send().await.is_err());
+        let lan = http_client(true).unwrap();
+        assert_eq!(lan.get(&url).send().await.unwrap().status(), 200);
     }
 
     #[test]
