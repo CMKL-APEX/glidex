@@ -800,6 +800,12 @@ each closed billing month's per-subject p95 figures are written to
 §8.5) when the month becomes final. They are kept as long as
 `usage_daily`.
 
+On a cluster's leader, the same daily task forgets the `ledger_inbox`
+keys that guard shipped hourly rows against duplicates once they are 7
+days old (14-clustering.md §13.1); the nodes' cursors stay. Every
+deletion of this task goes in writes of at most 512 KiB, half a write
+set, however much expires at once.
+
 ## 8. Aggregation and queries
 
 ### 8.1 Dimensions

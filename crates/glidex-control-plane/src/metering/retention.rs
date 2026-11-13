@@ -1,7 +1,7 @@
 //! Daily upkeep (spec/13-metering.md §7.3, §8.5.1): final monthly
 //! percentiles, hourly → daily roll-up, and expiry.
 
-use super::ledger::{Ledger, MeteringError, SlotRow, SubjectKind};
+use super::ledger::{INBOX_KEEP_SECS, Ledger, MeteringError, SlotRow, SubjectKind};
 use super::query::{Granularity, GroupKey, Tz, bucket};
 use super::rates::{bandwidth_p95, compute_p95, disk_io_p95, group_slots};
 use crate::config::MeteringConfig;
@@ -104,6 +104,8 @@ pub fn run(ledger: &Ledger, cfg: &MeteringConfig, tz: &Tz, now: u64) -> Result<(
     ledger.prune_slots_before(now.saturating_sub(cfg.retention_rate_days * DAY))?;
     ledger.prune_daily_before(now.saturating_sub(cfg.retention_daily_days * DAY))?;
     ledger.prune_month_rates_before(now.saturating_sub(cfg.retention_daily_days * DAY))?;
+    // 5. The leader's duplicates guards of shipped rows (spec/14-clustering.md §13.1).
+    ledger.prune_inbox(now.saturating_sub(INBOX_KEEP_SECS))?;
     ledger.set_meta("retention_day", &today)
 }
 

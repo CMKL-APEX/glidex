@@ -1629,8 +1629,9 @@ every 30 s with nothing but cursors in it. Instead:
 - When an hour closes (13-metering.md §6.5), the node ships its closed
   rows to `POST /cluster/v1/ledger`, keyed `node/subject/meter/hour`.
   The leader writes them to `ledger_inbox`, then merges them into
-  `usage_hourly`, `rate_5m`, the daily and monthly rows in the same
-  write. A key already merged is acknowledged and not merged again.
+  `usage_hourly`, `rate_5m`, the daily and monthly rows; each hourly row
+  is merged in the same write as its `ledger_inbox` key. A key already
+  merged is acknowledged and not merged again.
 - The node marks the hour as shipped only after the acknowledgement.
   Shipping is at-least-once, and applying is idempotent by key, so the
   ledger stays **exactly once** (13-metering.md D8).
@@ -1648,6 +1649,13 @@ every 30 s with nothing but cursors in it. Instead:
   cursor moves only with the last, so the ledger is never complete past
   rows that haven't arrived. The node forgets a part's hourly rows when it
   is acknowledged, so a backlog shrinks even if a later part fails.
+- **Every merge write is bounded** (#495). The leader merges a shipment in
+  writes of at most half a write set (512 KiB by an upper estimate of
+  their encoding), however many rows it carries; the node's cursor and
+  completeness follow in a last write, once every row is in. A merge cut
+  short is sent again whole and skips what is in. The `ledger_inbox` keys
+  that guard against duplicates are forgotten after 7 days by the daily
+  upkeep (13-metering.md §7.3), also in bounded writes, not by the merge.
 - **Nothing new, nothing shipped** (C9, D29): a node ships only when it
   has rows to send or its closed hour or start time moved; the leader's
   cursor for a node holds just those two, and the store makes no entry
@@ -2256,6 +2264,8 @@ Built (tests in `cluster/store_writes.rs`, `glidex-raftstore` `log_store.rs`):
 What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_transition_at`. The reconcile round clears that condition (`controller/vm.rs`, after observing the instance) and later sets it again, so it is a new condition with a new transition time every round, and the status never equals the stored one. That is §6.7's unexplained VM writes, and the fix for D27.
 
 **Found by the first measurement after C9** (2026-11-04, from log index 46,134): gpu-dev2's usage had not reached the cluster since 2026-11-03 09:12 +07, just after that morning's outage. Its backlog was more than one request holds, and the leader refused it every minute (`413 Payload Too Large`; a request that fit would still have been a write set over 1 MiB). Not acknowledged, the rows stayed, so the backlog only grew (`meter.db` 71 MB against under 0.5 MB on the other servers). Shipping now goes in parts (§13.1, `Export::split`; test `a_backlog_ships_in_parts`: the parts' sizes and order, no completeness before the last part, totals exact, an acknowledged part not sent again).
+
+**Found on 2026-11-12** (#495): from 04:02 +07, every merge on the leader failed with `write set of 14183495 bytes exceeds the store's entry limit`, so no node's usage reached the cluster; the size then grew by about 12.7 KB each hour, to 16.3 MB on 2026-11-13. The merge also forgot `ledger_inbox` keys older than 7 days, all of them in its own write. The backlog of the server above had drained on 2026-11-05 from 03:47 +07, within minutes, so seven days later one merge had to delete its tens of thousands of keys at once (about 220 bytes of write set each), and failed; failed, it deleted none, and each hour's newly expired keys (merges come once an hour, when hours close, D29) were added to the next attempt. The keys are now forgotten by the daily upkeep in writes of at most 512 KiB, and a merge's rows go in writes of the same bound (§13.1). Test: `a_large_inbox_and_backlog_merge_in_bounded_writes` (80,000 expired keys and a 9,600-row backlog, as shipped parts and as one unsplit export: every write set under 1 MiB, each row once, the cursor moved; then the upkeep's pruning, bounded, keeps the cursors and the recent keys).
 
 The same measurement found why one network's 5-minute rows (`rate_5m`) for about 70 past hours were written again every minute. Metering forgets the cursors of subjects that are gone, and it looked networks up by name, while a network's subject is keyed by its id (spec/19-tenancy.md D24). So every other round dropped all of a network's cursors, and the next round counted its VM ports again from each VM's launch, which rewrote every hour since. The cluster's merge takes each hourly row once, so the re-counts added nothing to hours already closed; but the hour still open got its share of every re-count, so the network's `bridge.bytes` is overcounted in the hours since its VMs launched, and its slot rows were replaced every minute. Live subjects now use the network's id (test `a_networks_cursors_survive_rounds`). With it: on a gateway that also runs one of a network's VMs, pruning the ports that are gone also dropped the network's conntrack parts, so external inbound never reached `bridge.bytes` there. Pruning now leaves them (test `a_gateway_with_vm_ports_keeps_the_networks_inbound`).
 
