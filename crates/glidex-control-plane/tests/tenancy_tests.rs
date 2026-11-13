@@ -880,6 +880,161 @@ async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
     assert_eq!(v["pools"][0]["used"], 1, "{v}");
 }
 
+/// D24: a project of another tenant answers as a missing one does, by id
+/// or by name, on every request that names a project (and before a
+/// `gpus` request looks at its pools); a name means the caller's own
+/// project of that name.
+#[tokio::test]
+async fn a_project_of_another_tenant_answers_like_a_missing_one() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let h = harness_with(|c| {
+        c.pci.pools = vec![PciPool {
+            name: "a100".into(),
+            class: Some("gpu".into()),
+            matches: PoolMatch {
+                vendor_id: Some("0x10de".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+            per_device: None,
+            bar_mib: None,
+        }];
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec![],
+            tenants: vec!["lab".into()],
+            node: None,
+        }];
+    });
+    let at = h.session(&h.admin("ada"));
+    let mut tenants = std::collections::HashMap::new();
+    for slug in ["acme", "lab"] {
+        let (_, v) = h
+            .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+            .await;
+        tenants.insert(slug, v["tenant"]["id"].as_str().unwrap().to_string());
+    }
+    let (alice, bob) = (h.user("alice"), h.user("bob"));
+    for (slug, who) in [("acme", &alice), ("lab", &bob)] {
+        let (s, _) = h
+            .rest(
+                "POST",
+                &format!("/tenants/{}/bindings", tenants[slug]),
+                Some(json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": who } })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+    }
+    let (a, b) = (h.token(&alice), h.token(&bob));
+    let mut ids = Vec::new();
+    for (tok, name, tenant) in [
+        (&a, "web", "acme"),
+        (&b, "web", "lab"),
+        (&b, "secret", "lab"),
+    ] {
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/projects",
+                Some(json!({ "name": name, "tenant": tenant })),
+                tok,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        ids.push(v["project"]["id"].as_str().unwrap().to_string());
+    }
+    let (web, lab_web, secret) = (&ids[0], &ids[1], &ids[2]);
+
+    // Each request, for a key: the other tenant's project (by id and by
+    // name) answers exactly as a project that doesn't exist.
+    type Req = Box<dyn Fn(&str) -> (String, Option<Value>)>;
+    let requests: Vec<(&str, Req)> = vec![
+        (
+            "list VMs",
+            Box::new(|k| (format!("/vms?project={k}"), None)),
+        ),
+        (
+            "list disks",
+            Box::new(|k| (format!("/disks?project={k}"), None)),
+        ),
+        (
+            "pools",
+            Box::new(|k| (format!("/pci-pools?project={k}"), None)),
+        ),
+        ("read", Box::new(|k| (format!("/projects/{k}"), None))),
+        (
+            "create VM",
+            Box::new(|k| ("/vms".into(), Some(vm_body("v", k)))),
+        ),
+        (
+            "create a GPU VM",
+            Box::new(|k| {
+                let mut b = vm_body("v", k);
+                b["gpus"] = json!({ "count": 1 });
+                ("/vms".into(), Some(b))
+            }),
+        ),
+        (
+            "create a GPU VM from a pool",
+            Box::new(|k| {
+                let mut b = vm_body("v", k);
+                b["gpus"] = json!({ "count": 1, "pool": "a100" });
+                ("/vms".into(), Some(b))
+            }),
+        ),
+        (
+            "preview a GPU VM",
+            Box::new(|k| {
+                (
+                    "/scheduler/preview".into(),
+                    Some(
+                        json!({ "project": k, "vcpu_count": 1, "mem_size_mib": 128, "gpus": { "count": 1 } }),
+                    ),
+                )
+            }),
+        ),
+    ];
+    let missing = "00000000-0000-0000-0000-000000000000";
+    for (what, req) in &requests {
+        let method = |b: &Option<Value>| if b.is_some() { "POST" } else { "GET" };
+        let (path, body) = req(missing);
+        let (s, gone) = h.rest(method(&body), &path, body, &a).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{what}: {gone}");
+        let gone = gone.to_string().replace(missing, "KEY");
+        for key in [secret.as_str(), "secret"] {
+            let (path, body) = req(key);
+            let (s, v) = h.rest(method(&body), &path, body, &a).await;
+            assert_eq!(s, StatusCode::NOT_FOUND, "{what} {key}: {v}");
+            assert_eq!(v.to_string().replace(key, "KEY"), gone, "{what} {key}");
+        }
+        // Its own tenant still sees it.
+        let (path, body) = req(secret);
+        let (s, v) = h.rest(method(&body), &path, body, &b).await;
+        assert_ne!(s, StatusCode::NOT_FOUND, "{what}, bob: {v}");
+    }
+
+    // A name means the caller's own project of that name.
+    for (tok, id) in [(&a, web), (&b, lab_web)] {
+        let (s, v) = h.rest("GET", "/projects/web", None, tok).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["project"]["id"], id.as_str(), "{v}");
+    }
+    // Who sees both names one by its id.
+    let (s, v) = h.rest("GET", "/vms?project=web", None, &at).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("ambiguous")),
+        "{v}"
+    );
+    let (s, v) = h
+        .rest("GET", &format!("/vms?project={web}"), None, &at)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
 #[tokio::test]
 async fn migration_keeps_an_existing_system_admin_whole() {
     let dir = TempDir::new().unwrap();

@@ -1957,6 +1957,16 @@ Closed out after T1 (the T0 parts):
   ones are `gx-<id>`, and new node networks' bridges are `gxbr-<first 8
   of the id>`. An import gives a network a new id if one here has it.
   Metering rows from before keep the name as the network's subject id.
+- **Projects named in a request (D24)**: `Caller::find_project` (used
+  by `target_project` and the project routes) looks a key up as an id,
+  else as a name among the projects the caller sees (`readProject`, or a
+  link to the project, its tenant or the cluster); a name it sees
+  several projects have is `409 ambiguous`. A project it can't see
+  answers the same `404` (status and body) as a missing one, also on
+  `GET /pci-pools?project=`. `POST /vms` and `POST /scheduler/preview`
+  check the project (`createVm`, and admission on create) before a
+  `gpus` request looks at its pools. Tests:
+  `tenancy_tests.rs::a_project_of_another_tenant_answers_like_a_missing_one`.
 
 Left for later, and why:
 - **Per-cluster project quotas** and **guest credentials apart from the

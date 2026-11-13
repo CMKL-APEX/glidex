@@ -2483,16 +2483,17 @@ impl Caller {
     /// The project a new resource goes into: the requested one (id or
     /// name), else the caller's default project, else the only project
     /// the caller has a link in.
+    ///
+    /// A project the caller can't see answers as a missing one does
+    /// (spec/19-tenancy.md D24, [`Self::find_project`]).
     pub fn target_project(&self, requested: Option<&str>) -> Result<String, ApiErr> {
-        let projects = self.manager().projects();
-        let resolve = |k: &str| {
-            projects.resolve(k).map(|p| p.id).map_err(|_| {
-                err(
-                    StatusCode::NOT_FOUND,
-                    "not_found",
-                    format!("project {} not found", k),
-                )
-            })
+        let resolve = |k: &str| match self.find_project(k)? {
+            Some(p) => Ok(p.id),
+            None => Err(err(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("project {} not found", k),
+            )),
         };
         if let Some(r) = requested {
             return resolve(r);
@@ -2511,6 +2512,65 @@ impl Caller {
                 "name a project (\"project\" field or ?project=); you have no default project",
             )),
         }
+    }
+
+    /// The project `key` (an id, or a name) among those the caller can
+    /// see: `None` when there is no such project or the caller can't see
+    /// it, so that both answer alike (spec/19-tenancy.md D24). Names are
+    /// unique per tenant only: a name the caller sees several projects
+    /// have is `409 ambiguous`, as for networks.
+    pub fn find_project(&self, key: &str) -> Result<Option<crate::tenancy::Project>, ApiErr> {
+        let projects = self.manager().projects();
+        let store_err = |e: crate::tenancy::TenancyError| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "persistence_error",
+                e.to_string(),
+            )
+        };
+        let candidates = match projects.get(key).map_err(store_err)? {
+            Some(p) => vec![p],
+            None => projects.named(key).map_err(store_err)?,
+        };
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let mut linked = None;
+        let mut seen = Vec::new();
+        for p in candidates {
+            if self.sees_project(&p.id, &mut linked)? {
+                seen.push(p);
+            }
+        }
+        if seen.is_empty() {
+            self.audit.0.lock().unwrap().denied = true;
+            return Ok(None);
+        }
+        if seen.len() > 1 {
+            return Err(err(
+                StatusCode::CONFLICT,
+                "ambiguous",
+                format!("several projects you can see are named {key}: give the project's id"),
+            ));
+        }
+        Ok(seen.pop())
+    }
+
+    /// Whether the caller can see project `id`: it may read it, or has a
+    /// link to it, its tenant or the cluster ([`Self::visible_projects`]).
+    fn sees_project(
+        &self,
+        id: &str,
+        linked: &mut Option<auth::LinkedProjects>,
+    ) -> Result<bool, ApiErr> {
+        if self.allowed("readProject", Ent::Project(id.into()), project_entities(id)) {
+            return Ok(true);
+        }
+        let l = match linked {
+            Some(l) => l,
+            None => linked.insert(self.visible_projects()?),
+        };
+        Ok(l.contains(id))
     }
 
     /// Whether the caller may go over `project`'s quotas.

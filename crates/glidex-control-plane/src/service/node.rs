@@ -157,7 +157,7 @@ pub async fn list_pci_pools(
                 "readProject",
                 Ent::Project(pid.clone()),
                 crate::api::project_entities(&pid),
-                "project",
+                &format!("project {key}"),
             )?;
             Some(pid)
         }

@@ -704,6 +704,12 @@ pub async fn preview_placement(
     mut req: pb::PreviewPlacementRequest,
 ) -> ServiceResult<pb::PreviewPlacementResponse> {
     let project = call.target_project(req.project.as_deref())?;
+    call.require_action(
+        "createVm",
+        Ent::Project(project.clone()),
+        project_entities(&project),
+        &[],
+    )?;
     if let Some(g) = req.gpus.as_option() {
         let x = expand_gpus(call, &project, g)?;
         apply_gpus(
@@ -716,12 +722,6 @@ pub async fn preview_placement(
             &mut req.mem_size_mib,
         )?;
     }
-    call.require_action(
-        "createVm",
-        Ent::Project(project.clone()),
-        project_entities(&project),
-        &[],
-    )?;
     let hypervisor = hypervisor_of(req.hypervisor.as_known().unwrap_or_default());
     let mut pool_requests = device_requests_of(&req.devices);
     resolve_tenant_pools(call, &project, &mut pool_requests)?;
@@ -800,6 +800,12 @@ fn names_host_path(req: &pb::CreateVmRequest) -> bool {
 pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResult<VmReply> {
     let project = call.target_project(req.project.as_deref())?;
     call.set_project(&project);
+    let pent = Ent::Project(project.clone());
+    let pes = project_entities(&project);
+    call.require(pent.clone(), pes.clone())?;
+    call.require_admitted(&project)?;
+    // Only after the project's own check: what pools it may use is the
+    // project's business.
     let gpus = match req.gpus.as_option() {
         Some(g) => {
             let x = expand_gpus(call, &project, g)?;
@@ -816,10 +822,6 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         }
         None => None,
     };
-    let pent = Ent::Project(project.clone());
-    let pes = project_entities(&project);
-    call.require(pent.clone(), pes.clone())?;
-    call.require_admitted(&project)?;
     let with_project: &[(&'static str, Ent)] = &[("project", pent.clone())];
 
     for key in req.data_disks.iter().chain(req.root_disk.iter()) {

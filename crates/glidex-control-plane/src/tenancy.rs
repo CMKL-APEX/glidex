@@ -361,7 +361,19 @@ impl ProjectStore {
         Ok(out)
     }
 
-    /// A project by id, or by name.
+    /// The projects named `name`: names are unique per tenant only
+    /// (spec/19-tenancy.md D24), so there may be one in each tenant.
+    pub fn named(&self, name: &str) -> Result<Vec<Project>, TenancyError> {
+        Ok(self
+            .list()?
+            .into_iter()
+            .filter(|p| p.name == name)
+            .collect())
+    }
+
+    /// A project by id, or by name. A name may match a project in each
+    /// tenant and this takes the first: API requests look projects up
+    /// with `Caller::find_project`, which sees only the caller's.
     pub fn resolve(&self, key: &str) -> Result<Project, TenancyError> {
         if let Some(p) = self.get(key)? {
             return Ok(p);
