@@ -105,6 +105,7 @@ Non-goals for this revision (each in §18):
 | D33 | **Every node checks a peer's certificate against the cluster's revocations, servers and agents alike.** An agent's cache holds `node_denylist` and `issued_certs` (serial, node, issuer and expiry: nothing secret), and `check_peer` reads them there as a server does. A certificate with the server role is accepted only from a node that the `nodes` table lists as a server and not as a tombstone. The rule "no registry yet, accept any CA-signed certificate" holds only until a node's first full list (§8.2). | Agents take requests from servers: relayed host actions, consoles and stats. A certificate stays valid for the CA until it expires, and the deny list is what ends it, so a node that lacks the list can't honour a removal. The `nodes` check covers the time before a new deny-list row reaches an agent, because removing or forgetting a node changes its row in the same write. An agent cut off from every server keeps its last copy, as it does for the rest of its cache. |
 | D34 | **A node's cluster address (`status.advertise`) is written only by the servers**, when the node joins, rejoins or is imported. A node's own status write may not change it, just as it may not change `phase`, `departed_ids` or `raft_id`. To change an address, the node rejoins. | Servers and other nodes dial a node at this address on behalf of users, so it is part of the node's identity, not a report from the node. No agent path changes it today. |
 | D35 | **A connection to a known node checks that node's identity**, not just the CA. When a server or agent dials a node it knows by id (relayed host actions, consoles and stats, image copies), the client requires the peer certificate's node id (its CN) to be that id, and refuses another node's certificate even when the address and the CA match. Dialling a seed address or a server whose id isn't known yet (join, the agent's server list) checks only the role. A relayed host request also names its target node in a header, and the receiver refuses one that names another node. | An address can move or be reused (DHCP, a rebuilt host, a mistaken `advertise`), and an IP SAN proves only that the CA signed that address for some node. The host action's authorization is for one node, so the node that runs it has to be that node. The header is a second check on the receiver's side, so it doesn't depend on every client path using the pinned dial. |
+| D36 | **A node certificate names only the node's own address, and a dial to "a server" takes only a server's certificate.** The CA signs a CSR only if every address it names is the node's: its `advertise` address at first server, join, rejoin and import, and the address the cluster records for it at renewal. A CSR naming another address or a DNS name is refused. A dial to an address that should be a server's, whichever one (the leader, a seed, the agent's server list, Raft), requires a server certificate (`OU=server`); a dial to a known node checks its id (D35). | An IP SAN is what a client checks when it doesn't know which node to expect, so it has to mean this node's address. A node's address changes only through rejoin (D34), which records the new one before the certificate is signed. D35 left the unpinned dials with the CA check alone; the role check closes that gap for the dials that only servers should answer. |
 
 ## 4. Topology
 
@@ -1534,7 +1535,10 @@ with `X-Glidex-Principal`, or relay consoles.
 Every node, agents included, refuses a revoked certificate and a server
 certificate of a node that isn't a current server (D33). A node's address
 is set by the servers, not by the node (D34), and a connection to a node
-known by id checks that the certificate is that node's (D35).
+known by id checks that the certificate is that node's (D35). A node
+certificate names only its node's own address, and a connection that
+should reach a server, whichever one, takes only a server's certificate
+(D36).
 
 ### 12.4 Audit
 
@@ -2322,7 +2326,7 @@ the commit. A further gain would come from there, not the apply.
 
 ### C11: peer identity
 
-Built: tasks 1–4. Decisions D33–D35.
+Built: tasks 1–5. Decisions D33–D36.
 
 | | |
 |---|---|
@@ -2334,6 +2338,8 @@ Built: tasks 1–4. Decisions D33–D35.
 | Tests | `a_request_to_a_known_node_checks_its_certificate`: the agent is answered when the agent is expected; at the agent's address, expecting the server or another id fails on identity; an address alone is answered |
 | Spec \| Code | Task 4 (D35): a relayed host request carries `x-glidex-relayed-to` with the node it was authorized for (`api::relay::RELAYED_TO_HEADER`). `accept_authorized` refuses one naming another node with `409 wrong_node`; a request without the header, from a server too old to send it, runs as before |
 | Tests | `a_relayed_host_request_runs_only_on_the_node_it_names`: the agent refuses a host request naming another node, and doesn't refuse one naming itself. Relayed host actions in the other cluster tests carry the header |
+| Spec \| Code | Task 5 (D36): `Ca::sign_node` takes the addresses the node may name and refuses a CSR naming any other, or a DNS name: `advertise` at first server, join, rejoin and import; the recorded `status.advertise` at renewal. `Target::server(addr)` requires `OU=server` in the peer certificate: the leader (writes, forwarding, read-index, console tickets, the UI gate, departure and import calls), seeds and the agent's server list, join and rejoin, and Raft's RPCs. CA rotation and the hand-over of the CA key to a new server dial the node by id (D35) |
+| Tests | `cluster::pki::tests::a_node_cert_names_only_the_nodes_own_address`: its own address is signed and named; another node's address, alone or beside its own, and a DNS name are refused. `a_request_to_a_known_node_checks_its_certificate`: a dial for a server is answered by the server and refused at the agent's address |
 | Not yet | Refusing a relayed host request without the header, once every server sends it (the next feature level) |
 
 ### Validation against real OVN and conntrack (after C8)

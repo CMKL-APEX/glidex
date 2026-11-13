@@ -142,7 +142,7 @@ impl Transport for HttpTransport {
         let r = self
             .client
             .request(
-                addr,
+                crate::cluster::net::Target::server(addr),
                 hyper::Method::POST,
                 rpc.path(),
                 &[("content-type", "application/json".into())],
@@ -358,7 +358,7 @@ impl Cluster {
         let r = self
             .client
             .request(
-                &addr,
+                crate::cluster::net::Target::server(&addr),
                 hyper::Method::POST,
                 "/cluster/v1/console-ticket",
                 &[("content-type", "application/json".into())],
@@ -411,7 +411,7 @@ impl Cluster {
             let r = self
                 .client
                 .request_timeout(
-                    &addr,
+                    crate::cluster::net::Target::server(&addr),
                     hyper::Method::POST,
                     path,
                     &[("content-type", "application/json".into())],
@@ -484,7 +484,7 @@ impl Cluster {
                     let r = me
                         .client
                         .request(
-                            &addr,
+                            crate::cluster::net::Target::server(&addr),
                             hyper::Method::POST,
                             "/cluster/v1/read-index",
                             &[],
@@ -591,7 +591,7 @@ impl LeaderForwarder {
             let r = c
                 .client
                 .request(
-                    &addr,
+                    crate::cluster::net::Target::server(&addr),
                     hyper::Method::POST,
                     &path,
                     &[("content-type", "application/json".into())],

@@ -208,7 +208,7 @@ impl Cluster {
             let r = self
                 .client
                 .request(
-                    &addr.to_string(),
+                    crate::cluster::net::Target::node(&n.meta.id, addr),
                     hyper::Method::PUT,
                     "/cluster/v1/secrets-key",
                     &[("content-type", "application/json".into())],
@@ -262,7 +262,7 @@ impl Cluster {
             let r = self
                 .client
                 .request(
-                    &addr.to_string(),
+                    crate::cluster::net::Target::node(&n.meta.id, addr),
                     hyper::Method::PUT,
                     "/cluster/v1/ca",
                     &[("content-type", "application/json".into())],
@@ -391,7 +391,7 @@ impl Cluster {
                 match self
                     .client
                     .request_timeout(
-                        &addr,
+                        crate::cluster::net::Target::server(&addr),
                         hyper::Method::POST,
                         path,
                         &[("content-type", "application/json".into())],

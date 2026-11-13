@@ -190,7 +190,13 @@ pub async fn init(
     let ca = Ca::generate(&cluster_id)?;
     let key = NodeKey::generate()?;
     let csr = key.csr(&[advertise.ip()], &[])?;
-    let (cert_pem, info) = ca.sign_node(&csr, &node_id, true, pki::NODE_VALIDITY_DAYS)?;
+    let (cert_pem, info) = ca.sign_node(
+        &csr,
+        &node_id,
+        true,
+        pki::NODE_VALIDITY_DAYS,
+        &[advertise.ip()],
+    )?;
     let identity = Identity {
         cluster_id: cluster_id.clone(),
         node_id: node_id.clone(),
@@ -355,7 +361,7 @@ pub async fn join(
     for _ in 0..2 {
         let r = trusting
             .request(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/join",
                 &[("content-type", "application/json".into())],
@@ -432,7 +438,7 @@ pub async fn join(
         let r = cluster
             .client
             .request_timeout(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/join/ready",
                 &[],
@@ -535,7 +541,7 @@ pub async fn rejoin(
     for _ in 0..2 {
         let r = trusting
             .request(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/rejoin",
                 &[("content-type", "application/json".into())],
@@ -606,7 +612,7 @@ pub async fn rejoin(
         let r = cluster
             .client
             .request_timeout(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/join/ready",
                 &[],
@@ -1071,7 +1077,7 @@ pub async fn leave_removed_offline(
             for s in &servers {
                 let Ok(r) = client
                     .request_timeout(
-                        s,
+                        crate::cluster::net::Target::server(s),
                         hyper::Method::GET,
                         "/cluster/v1/list",
                         &[],
@@ -1174,7 +1180,7 @@ pub async fn join_import(
     for _ in 0..2 {
         let r = trusting
             .request_timeout(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/import",
                 &[("content-type", "application/json".into())],
@@ -1214,7 +1220,7 @@ pub async fn join_import(
     let result = loop {
         let r = trusting
             .request(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::GET,
                 &format!("/cluster/v1/import/{plan}"),
                 &[("x-import-secret", secret.clone())],
@@ -1244,7 +1250,7 @@ pub async fn join_import(
             // committed in the meantime, go ahead and switch.
             let r = trusting
                 .request(
-                    &target,
+                    crate::cluster::net::Target::server(&target),
                     hyper::Method::POST,
                     &format!("/cluster/v1/import/{plan}/cancel"),
                     &[("x-import-secret", secret.clone())],
@@ -1359,7 +1365,7 @@ async fn await_pinned(trusting: &PeerClient, server: &str) -> Result<(), Cluster
     loop {
         match trusting
             .request(
-                server,
+                crate::cluster::net::Target::server(server),
                 hyper::Method::GET,
                 "/cluster/v1/ca",
                 &[],
