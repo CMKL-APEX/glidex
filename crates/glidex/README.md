@@ -18,6 +18,7 @@ This crate gathers Glidex's libraries under one name, each behind a feature:
 | `raftstore` | `glidex::raftstore` | A replicated ReDB store on openraft |
 | `tls` | `glidex::tls` | HTTPS listeners, certificates and client trust |
 | `topology` | `glidex::topology` | A host's NUMA, PCIe and network ports from sysfs |
+| `trust` | `glidex::trust` | A cluster's side of trust with another organization's directory: offers, signed peer requests, the feed, reports and directory tokens; a fake directory for tests (feature `glidex-trust/fake`) |
 | `full` | | All of the above |
 
 ```toml

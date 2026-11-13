@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// The `typ` of an access token (RFC 9068).
-pub const ACCESS_TYP: &str = "at+jwt";
+pub const ACCESS_TYP: &str = glidex_trust::tokens::ACCESS_TYP;
 /// How long an ID token is good for.
 const ID_TOKEN_SECS: u64 = 3600;
 
@@ -721,7 +721,7 @@ pub fn access_principal(
         return None;
     }
     // A directory this cluster trusts (D69), by its token's issuer.
-    if let Some(iss) = unverified_issuer(jwt)
+    if let Some(iss) = glidex_trust::tokens::unverified_issuer(jwt)
         && let Ok(Some(d)) = app.auth.trust.directory_by_issuer(&iss)
     {
         return trusted_access_principal(app, jwt, &d, transport, ip);
@@ -773,17 +773,6 @@ pub fn access_principal(
     })
 }
 
-/// A JWT's `iss`, unverified: only to pick the keys to verify it with.
-fn unverified_issuer(jwt: &str) -> Option<String> {
-    use base64::Engine as _;
-    let payload = jwt.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let v: Value = serde_json::from_slice(&bytes).ok()?;
-    v["iss"].as_str().map(String::from)
-}
-
 /// The principal for an access token of trusted directory `d` (D69):
 /// signed with a key of its last feed, for this cluster, its user in the
 /// replica and enabled.
@@ -794,16 +783,7 @@ fn trusted_access_principal(
     transport: Transport,
     ip: Option<std::net::IpAddr>,
 ) -> Option<Principal> {
-    let header = jsonwebtoken::decode_header(jwt).ok()?;
-    let set: jsonwebtoken::jwk::JwkSet = serde_json::from_value(d.jwks.clone()).ok()?;
-    let jwk = set.find(header.kid.as_deref()?)?;
-    let dk = jsonwebtoken::DecodingKey::from_jwk(jwk).ok()?;
-    let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
-    v.set_audience(&[cluster_id(app)]);
-    v.set_issuer(&[d.issuer.as_str()]);
-    v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-    v.leeway = 30;
-    let c = jsonwebtoken::decode::<Value>(jwt, &dk, &v).ok()?.claims;
+    let c = glidex_trust::tokens::verify_access_token(jwt, d, &cluster_id(app))?;
     let user = app.auth.store.user(c["sub"].as_str()?).ok()??;
     if user.disabled || user.directory_id != d.id {
         return None;

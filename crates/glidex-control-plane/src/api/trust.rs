@@ -11,14 +11,13 @@
 use super::{AppState, err};
 use crate::directory::issuer::CLUSTER_OWNER;
 use crate::directory::{op, peer};
-use crate::trust::{self, RemoteTenant, TrustedDirectory};
+use crate::trust::{self, TrustedDirectory};
 use axum::{
     Json,
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
 };
-use serde::Deserialize;
 use serde_json::{Value, json};
 
 fn now() -> u64 {
@@ -44,23 +43,11 @@ fn refused(app: &AppState, action: &str, why: &str) -> Response {
     .into_response()
 }
 
-#[derive(Deserialize)]
-pub struct Redeem {
-    offer: String,
-    secret: String,
-    issuer: String,
-    directory: String,
-    tenant: RemoteTenant,
-    jwks: Value,
-    api: String,
-    tls_sha256: String,
-}
-
 /// `POST /trust/v1/redeem`, at the cluster (D65).
 pub async fn redeem(
     State(app): State<AppState>,
     headers: HeaderMap,
-    Json(b): Json<Redeem>,
+    Json(b): Json<glidex_trust::RedeemRequest>,
 ) -> Response {
     const ACTION: &str = "redeemOffer";
     let t = now();
@@ -68,70 +55,34 @@ pub async fn redeem(
         return refused(&app, ACTION, "no assertion");
     };
     let offers = app.auth.tenants.offers().unwrap_or_default();
-    let Some(mut offer) = offers.into_iter().find(|o| o.id == b.offer) else {
-        return refused(&app, ACTION, "no such offer");
-    };
-    if !offer.is_open(t) {
-        return refused(&app, ACTION, "the offer was redeemed, or expired");
-    }
-    if !crate::auth::constant_eq(
-        &crate::auth::sha256_hex(b.secret.as_bytes()),
-        &offer.secret_hash,
-    ) {
-        return refused(&app, ACTION, "the wrong secret");
-    }
-    let Some(issuer) = trust::normalize_issuer(&b.issuer) else {
-        return refused(&app, ACTION, "not an issuer URL");
-    };
-    if issuer != offer.directory {
-        return refused(&app, ACTION, "another directory than the offer's");
-    }
-    if b.tenant.slug != offer.tenant || b.tenant.id.is_empty() {
-        return refused(&app, ACTION, "another tenant than the offer's");
-    }
-    let Some(pin) = glidex_tls::Trust::normalize_pin(&b.tls_sha256) else {
-        return refused(&app, ACTION, "no certificate fingerprint");
-    };
+    let mut offer = offers.into_iter().find(|o| o.id == b.offer);
     let cluster = super::op::cluster_id(&app);
-    if let Err(e) = peer::verify(
+    let checked = glidex_trust::cluster::check_redeem(
         &assertion,
-        &b.jwks,
-        &issuer,
+        &b,
+        offer.as_ref().map(|o| glidex_trust::cluster::Offer {
+            open: o.is_open(t),
+            secret_hash: &o.secret_hash,
+            directory: &o.directory,
+            tenant: &o.tenant,
+        }),
         &cluster,
-        trust::REDEEM,
         &app.auth.peer_replays,
         t,
-    ) {
-        return refused(&app, ACTION, &e.to_string());
-    }
+    );
+    let (r, mut offer) = match (checked, offer.take()) {
+        (Ok(r), Some(o)) => (r, o),
+        (Err(why), _) => return refused(&app, ACTION, &why),
+        (Ok(_), None) => return refused(&app, ACTION, "no such offer"),
+    };
+    let issuer = r.issuer.clone();
     // Once: the offer is spent before anything else is written.
     offer.redeemed_at = Some(t);
     if let Err(e) = app.auth.tenants.put_offer(&offer) {
         return err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()).into_response();
     }
-    let mut d = app
-        .auth
-        .trust
-        .directory_by_issuer(&issuer)
-        .ok()
-        .flatten()
-        .unwrap_or_else(|| TrustedDirectory {
-            id: trust::trusted_id(&issuer),
-            issuer: issuer.clone(),
-            directory: b.directory.clone(),
-            api: String::new(),
-            tls_sha256: String::new(),
-            jwks: json!({ "keys": [] }),
-            tenants: Vec::new(),
-            created_at: t,
-            max_staleness_minutes: None,
-        });
-    d.directory = b.directory.clone();
-    d.api = b.api.clone();
-    d.tls_sha256 = pin;
-    d.jwks = b.jwks.clone();
-    d.tenants.retain(|x| x.id != b.tenant.id);
-    d.tenants.push(b.tenant.clone());
+    let existing = app.auth.trust.directory_by_issuer(&issuer).ok().flatten();
+    let d = glidex_trust::cluster::redeemed_directory(existing, &b, &r, t);
     let by = format!("offer:{}", offer.id);
     let done = app
         .auth
@@ -175,41 +126,29 @@ pub async fn redeem(
         .into_response()
 }
 
-#[derive(Deserialize)]
-pub struct EndAtCluster {
-    issuer: String,
-    tenant: String,
-}
-
 /// `POST /trust/v1/end`, at the cluster: a trusted directory ends a
 /// tenant's trust (D66).
 pub async fn end_at_cluster(
     State(app): State<AppState>,
     headers: HeaderMap,
-    Json(b): Json<EndAtCluster>,
+    Json(b): Json<glidex_trust::EndAtCluster>,
 ) -> Response {
     const ACTION: &str = "endTrust";
     let Some(assertion) = peer::from_headers(&headers) else {
         return refused(&app, ACTION, "no assertion");
     };
-    let Some(issuer) = trust::normalize_issuer(&b.issuer) else {
-        return refused(&app, ACTION, "not an issuer URL");
-    };
-    let Ok(Some(mut d)) = app.auth.trust.directory_by_issuer(&issuer) else {
-        return refused(&app, ACTION, "not a trusted directory");
-    };
     let cluster = super::op::cluster_id(&app);
-    if let Err(e) = peer::verify(
+    let mut d = match glidex_trust::cluster::check_end(
         &assertion,
-        &d.jwks,
-        &issuer,
+        &b,
+        |iss| app.auth.trust.directory_by_issuer(iss).ok().flatten(),
         &cluster,
-        trust::END,
         &app.auth.peer_replays,
         now(),
     ) {
-        return refused(&app, ACTION, &e.to_string());
-    }
+        Ok(d) => d,
+        Err(why) => return refused(&app, ACTION, &why),
+    };
     forget_tenant_here(&app, &mut d, &b.tenant);
     StatusCode::OK.into_response()
 }
@@ -228,19 +167,13 @@ pub fn forget_tenant_here(app: &AppState, d: &mut TrustedDirectory, tenant: &str
     };
 }
 
-#[derive(Deserialize)]
-pub struct EndAtDirectory {
-    cluster_id: String,
-    tenant: String,
-}
-
 /// `POST /d/{dir}/trust/v1/end`, at the directory: a trusted cluster
 /// stops admitting one of its tenants (D66).
 pub async fn end_at_directory(
     State(app): State<AppState>,
     Path(dir): Path<String>,
     headers: HeaderMap,
-    Json(b): Json<EndAtDirectory>,
+    Json(b): Json<glidex_trust::EndAtDirectory>,
 ) -> Response {
     const ACTION: &str = "endTrust";
     let Some(assertion) = peer::from_headers(&headers) else {
@@ -283,26 +216,8 @@ pub async fn end_at_directory(
 /// (D66); best effort: it also finds out when it is next refused.
 pub async fn tell_directory_ended(app: &AppState, d: &TrustedDirectory, tenant: &str) {
     let cluster = super::op::cluster_id(app);
-    let Ok(a) = peer::assertion(
-        &app.auth.connectors,
-        CLUSTER_OWNER,
-        &cluster,
-        &d.issuer,
-        trust::END,
-        now(),
-    ) else {
-        return;
-    };
-    let path = format!("/d/{}/trust/v1/end", d.directory);
-    if let Err(e) = peer::post(
-        &d.api,
-        &d.tls_sha256,
-        &path,
-        &a,
-        &json!({ "cluster_id": cluster, "tenant": tenant }),
-    )
-    .await
-    {
+    let key = peer::cluster_key(&app.auth.connectors);
+    if let Err(e) = glidex_trust::client::end_trust(&key, &cluster, d, tenant, now()).await {
         tracing::warn!(directory = %d.issuer, "telling the directory trust ended: {}", e);
     }
 }
@@ -559,20 +474,13 @@ pub fn localize(
     })
 }
 
-#[derive(Deserialize)]
-pub struct FeedAsk {
-    cluster_id: String,
-    #[serde(default)]
-    revision: String,
-}
-
 /// `POST /d/{dir}/feed/v1 {cluster_id, revision}`, at the directory (D67):
 /// the snapshot for that cluster, or `304` when its revision is current.
 pub async fn feed(
     State(app): State<AppState>,
     Path(dir): Path<String>,
     headers: HeaderMap,
-    Json(b): Json<FeedAsk>,
+    Json(b): Json<glidex_trust::FeedAsk>,
 ) -> Response {
     const ACTION: &str = "readFeed";
     let Some(assertion) = peer::from_headers(&headers) else {
@@ -619,37 +527,16 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
         .trust
         .feed_state(&d.id)
         .map_err(|e| e.to_string())?;
-    let a = peer::assertion(
-        &app.auth.connectors,
-        CLUSTER_OWNER,
-        &cluster,
-        &d.issuer,
-        trust::FEED,
-        t,
-    )
-    .map_err(|e| e.to_string())?;
-    let path = format!("/d/{}/feed/v1", d.directory);
-    let (status, v) = peer::post(
-        &d.api,
-        &d.tls_sha256,
-        &path,
-        &a,
-        &json!({ "cluster_id": cluster, "revision": state.revision }),
-    )
-    .await?;
-    match status {
-        304 => {
+    let key = peer::cluster_key(&app.auth.connectors);
+    match glidex_trust::client::pull_feed(&key, &cluster, d, &state.revision, t).await? {
+        glidex_trust::client::Feed::Unchanged => {
             app.auth
                 .trust
                 .mark_checked(&d.id, t)
                 .map_err(|e| e.to_string())?;
             Ok(false)
         }
-        200 => {
-            let snap: trust::Snapshot = serde_json::from_value(v).map_err(|e| e.to_string())?;
-            if trust::revision_of(&snap.jwks, &snap.rows, &snap.ended_sids) != snap.revision {
-                return Err("a feed whose revision doesn't match its content".into());
-            }
+        glidex_trust::client::Feed::Changed(snap) => {
             let local = localize(d, &snap, &cluster)?;
             app.auth
                 .trust
@@ -686,7 +573,6 @@ pub async fn pull_feed(app: &AppState, d: &TrustedDirectory) -> Result<bool, Str
             }
             Ok(true)
         }
-        s => Err(format!("the directory answered {s}")),
     }
 }
 
@@ -740,31 +626,11 @@ pub async fn report_for(
 pub async fn push_report(app: &AppState, d: &TrustedDirectory) -> Result<(), String> {
     let cluster = super::op::cluster_id(app);
     let report = report_for(app, d).await?;
-    let a = peer::assertion(
-        &app.auth.connectors,
-        CLUSTER_OWNER,
-        &cluster,
-        &d.issuer,
-        trust::REPORT,
-        now(),
-    )
-    .map_err(|e| e.to_string())?;
-    let path = format!("/d/{}/feed/v1/report", d.directory);
     // The callback as it is now, should the web UI's address have changed (D73).
     let ui_callback = super::trusted_login::callback_url(app, &d.id);
-    let body = json!({ "cluster_id": cluster, "report": report, "ui_callback": ui_callback });
-    match peer::post(&d.api, &d.tls_sha256, &path, &a, &body).await? {
-        (204, _) | (200, _) => Ok(()),
-        (s, _) => Err(format!("the directory answered {s}")),
-    }
-}
-
-#[derive(Deserialize)]
-pub struct ReportBody {
-    cluster_id: String,
-    report: trust::ClusterReport,
-    #[serde(default)]
-    ui_callback: Option<String>,
+    let key = peer::cluster_key(&app.auth.connectors);
+    glidex_trust::client::push_report(&key, &cluster, d, &report, ui_callback.as_deref(), now())
+        .await
 }
 
 /// `POST /d/{dir}/feed/v1/report {cluster_id, report, ui_callback}`, at
@@ -774,7 +640,7 @@ pub async fn report(
     State(app): State<AppState>,
     Path(dir): Path<String>,
     headers: HeaderMap,
-    Json(b): Json<ReportBody>,
+    Json(b): Json<glidex_trust::ReportBody<trust::ClusterReport>>,
 ) -> Response {
     const ACTION: &str = "reportFeed";
     let Some(assertion) = peer::from_headers(&headers) else {
@@ -830,10 +696,7 @@ pub async fn report(
     }
 }
 
-/// A web UI callback a cluster may register: an `http(s)` URL.
-pub fn valid_callback(u: &str) -> bool {
-    url::Url::parse(u).is_ok_and(|u| matches!(u.scheme(), "https" | "http"))
-}
+pub use glidex_trust::valid_callback;
 
 // ---- logouts (D72) -----------------------------------------------------------------
 
@@ -850,33 +713,12 @@ pub async fn end_chains(app: &AppState) {
         let Some(d) = dirs.iter().find(|d| d.id == id) else {
             continue;
         };
-        let sent = async {
-            let a = peer::assertion(
-                &app.auth.connectors,
-                CLUSTER_OWNER,
-                &cluster,
-                &d.issuer,
-                trust::LOGOUT,
-                now(),
-            )
-            .map_err(|e| e.to_string())?;
-            let path = format!("/d/{}/trust/v1/logout", d.directory);
-            let body = json!({ "cluster_id": cluster, "sid": sid });
-            match peer::post(&d.api, &d.tls_sha256, &path, &a, &body).await? {
-                (204, _) | (200, _) => Ok(()),
-                (s, _) => Err(format!("the directory answered {s}")),
-            }
-        };
+        let key = peer::cluster_key(&app.auth.connectors);
+        let sent = glidex_trust::client::logout(&key, &cluster, d, &sid, now());
         if let Err(e) = sent.await {
             tracing::warn!(directory = %d.issuer, "ending a logged-out session's chain: {}", e);
         }
     }
-}
-
-#[derive(Deserialize)]
-pub struct LogoutBody {
-    cluster_id: String,
-    sid: String,
 }
 
 /// `POST /d/{dir}/trust/v1/logout {cluster_id, sid}`, at the directory
@@ -886,7 +728,7 @@ pub async fn logout_at_directory(
     State(app): State<AppState>,
     Path(dir): Path<String>,
     headers: HeaderMap,
-    Json(b): Json<LogoutBody>,
+    Json(b): Json<glidex_trust::LogoutBody>,
 ) -> Response {
     const ACTION: &str = "endClusterSession";
     let Some(assertion) = peer::from_headers(&headers) else {
@@ -942,9 +784,7 @@ pub async fn logout_at_directory(
 
 // ---- staleness (D13) ---------------------------------------------------------------
 
-/// A trusted directory's replica counts as behind past this: three
-/// missed pulls.
-pub const BEHIND_SECS: u64 = 90;
+pub use glidex_trust::cluster::BEHIND_SECS;
 
 /// Whether trusted directory `id`'s credentials are still good here
 /// (D13): `Ok(lag)` in seconds, or `Err(lag)` past its `max_staleness`
@@ -963,18 +803,18 @@ pub fn freshness(app: &AppState, id: &str) -> Option<Result<u64, u64>> {
     let Some(d) = d else {
         return Some(Err(u64::MAX));
     };
-    let Ok(lag) = app.auth.trust.lag(&d, now()) else {
+    let Ok(st) = app.auth.trust.feed_state(&d.id) else {
         return Some(Err(u64::MAX));
     };
-    let max = d
-        .max_staleness_minutes
-        .unwrap_or(app.auth.config.trust.default_max_staleness_minutes)
-        * 60;
-    Some(if lag > max { Err(lag) } else { Ok(lag) })
+    Some(glidex_trust::cluster::freshness(
+        &d,
+        &st,
+        app.auth.config.trust.default_max_staleness_minutes,
+        now(),
+    ))
 }
 
-/// How often a cluster pulls its trusted directories' feeds.
-const FEED_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+use glidex_trust::cluster::FEED_EVERY;
 
 /// The task that pulls every trusted directory's feed: on a standalone
 /// host, or the cluster's leader (where writes go). And, on every server,

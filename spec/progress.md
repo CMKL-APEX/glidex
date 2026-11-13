@@ -42,6 +42,7 @@ don't conflict over it:
 | Host page | [28-host-page.md](28-host-page.md) | W1–W6 (#127–#129); W8, the `/cluster/v1/ui/…` relay route removed from servers (#492) | — | §7 Tasks |
 | Tailscale certificates | [21-tailscale-tls.md](21-tailscale-tls.md) | TS0–TS2; certificates shared by the node (#171) | TS3 waits on tailscale-rs | §10 Milestones |
 
-Shared code split out recently: `glidex-auth` (#163) and
-`@glidex/ui-kit` (#164), which hyperstor's services reuse, and
+Shared code split out recently: `glidex-auth` (#163),
+`@glidex/ui-kit` (#164) and `glidex-trust` (the cluster side of trust,
+D84 in 19-tenancy.md), which hyperstor's services reuse, and
 `glidex-raftstore` (#141).
