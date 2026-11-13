@@ -1276,6 +1276,16 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    // The server answers at once; the agent serves the relay from its own
+    // copy, which follows a moment later.
+    wait_for("the agent's copy of the VM, placed", || async {
+        agent
+            .manager
+            .get_vm(&id)
+            .await
+            .is_ok_and(|v| v.status.placement.is_some())
+    })
+    .await;
 
     // The log lives on the agent's disk (here, the same machine).
     let paths = glidex_control_plane::paths::vm_paths(&id);
@@ -1451,6 +1461,16 @@ async fn a_server_relays_live_stats_with_the_nodes_open_hour() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    // The server answers at once; the agent serves the relay from its own
+    // copy, which follows a moment later.
+    wait_for("the agent's copy of the VM, placed", || async {
+        agent
+            .manager
+            .get_vm(&id)
+            .await
+            .is_ok_and(|v| v.status.placement.is_some())
+    })
+    .await;
 
     let (s, stats) = call(&server, "GET", &format!("/vms/{id}/stats"), None, &[]).await;
     assert_eq!(s, StatusCode::OK, "{stats}");
