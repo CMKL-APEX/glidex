@@ -332,8 +332,20 @@ async fn create_project(cp: &Cp, name: &str) -> (StatusCode, Value) {
     }
 }
 
+/// GET /projects, read through the leader (linearizable). Retries a 503:
+/// the leader confirms its leadership with a heartbeat round before it
+/// answers, and on a loaded runner that round can time out (100 ms here),
+/// so the read answers `cluster_unavailable` and asks for a retry.
 async fn project_names(cp: &Cp) -> Vec<String> {
-    let (s, v) = call(cp, "GET", "/projects", None, &[]).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let (s, v) = loop {
+        let (s, v) = call(cp, "GET", "/projects", None, &[]).await;
+        if s == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        break (s, v);
+    };
     assert_eq!(s, StatusCode::OK, "{v}");
     v["projects"]
         .as_array()
