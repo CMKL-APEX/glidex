@@ -1327,6 +1327,94 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
     );
 }
 
+/// H26, H27 (spec/22-host-topology.md): a host network's grant names its
+/// project by id, `<tenant>/<project>` or a bare name only one project
+/// has.
+#[tokio::test(flavor = "multi_thread")]
+async fn host_network_grants_name_one_project() {
+    let h = harness(true);
+    let mut ids = Vec::new();
+    for slug in ["acme", "lab"] {
+        let (status, t) = request(&h.app, "POST", "/tenants", Some(json!({"slug": slug}))).await;
+        assert_eq!(status, StatusCode::CREATED, "{t}");
+        ids.push(t["tenant"]["id"].as_str().unwrap().to_string());
+    }
+    let (acme, lab) = (ids[0].clone(), ids[1].clone());
+    let projects = h.manager.projects();
+    let acme_web = projects
+        .create_in(&acme, "web", String::new(), None)
+        .unwrap()
+        .id;
+    let lab_web = projects
+        .create_in(&lab, "web", String::new(), None)
+        .unwrap()
+        .id;
+    let only = projects
+        .create_in(&lab, "only", String::new(), None)
+        .unwrap()
+        .id;
+
+    // A bare name two projects have is refused, saying how to name one.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "grants": ["web"]})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::CONFLICT, Some("ambiguous")),
+        "{body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("<tenant>/<project>"),
+        "{body}"
+    );
+
+    // `<tenant>/<project>`, and a bare name only one project has.
+    let (status, net) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "grants": ["acme/web", "only"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{net}");
+    let mut granted: Vec<String> = net["network"]["grants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g.as_str().unwrap().to_string())
+        .collect();
+    granted.sort();
+    let mut want = vec![acme_web.clone(), only.clone()];
+    want.sort();
+    assert_eq!(granted, want);
+
+    // Regranting checks the same way.
+    let (status, body) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/grants",
+        Some(json!({"grants": ["web"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, net) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/grants",
+        Some(json!({"grants": [format!("{lab}/web")]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{net}");
+    assert_eq!(net["network"]["grants"], json!([lab_web]));
+}
+
 /// D24 (spec/19-tenancy.md): networks are keyed by id; a project network's
 /// name is unique in its tenant, a host network's on the cluster. A name
 /// several networks have is ambiguous where both are in view; a VM's NIC

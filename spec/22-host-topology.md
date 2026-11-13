@@ -68,6 +68,7 @@ and pools for GPUs, DPUs and NICs.
 | H24 | Discovered NICs | Network controllers (class `02xx`: Ethernet, InfiniBand) form discovered pools too, class `nic`: every function, the host's own ports among them, named as H21's (`15b3-1021`). A NIC's SR-IOV VFs form a pool per PF model, `<vendor>-<device>-vf` of the PF (`15b3-1021-vf`), matching `vf_of`. Discovery still binds nothing: a port on its host driver, and a PF whose VFs are enabled, are listed as not ready (§5), and adopting with `prepare: true` binds them. Only NICs' VFs are discovered. | The user's call (2026-11-09): every NIC function, the VF slug, and no binding by discovery. Taking a host's port stays impossible without an operator: discovery never prepares, and H22 keeps the pools to host roles until adopted or granted. |
 | H25 | Tenant pools bind the tenant's grant | Once a tenant has tenant pools on a cluster pool, its tenant grant (`tenant_grants`) lets its projects use the cluster pool only through those tenant pools: a request naming the cluster pool itself is refused (`403`), `GET /pci-pools?project=` leaves it out, and `gpus` without a pool picks the tenant pool. A grant made to the project itself (`pci.allow` with `projects`) and host roles with `usePciPool` (`host.devices`) still allow it directly. VMs created before keep their requests. | Otherwise a tenant pool's `max` and project list bind nothing: any project of the tenant could ask for the cluster pool by name. |
 | H26 | A grant names one project | A device grant's project (`pci.allow` `projects`, for a device or a pool) is a project id, `<tenant>/<project>` (the tenant by id or slug), or a bare project name. A bare name grants only while exactly one project has it: the control plane refuses to start when `control-plane.json`'s grants in force name a project that several projects have, `PUT /cluster/settings/pci` refuses one (`400`), and creating a project whose name such a grant uses while a project of that name exists is refused (`409 name_in_device_grant`). A bare name that names several anyway (written by an older build) grants none of them, with a warning in the log. | Project names are unique per tenant only (spec/19-tenancy.md D24); a bare name used to grant the first match, which could be another tenant's project. |
+| H27 | Operator grants name tenants in `local` | An operator's grant (`pci.allow` for a device or a pool, a host network's grants) names a tenant by id or by its slug in the `local` directory, whoever asks; a tenant of another directory is named by id. This holds for `tenants` and for the tenant of `<tenant>/<project>`. A host network's project grant follows H26: an id, `<tenant>/<project>`, or a bare name only one project has; a bare name that several have is refused (`409 ambiguous`), naming `<tenant>/<project>` or the id. Network grants are stored as ids, so no start-up check is needed. | Tenant slugs are unique per directory only (spec/19-tenancy.md D24), and a directory's users may create tenants (D78): a slug looked up in the caller's directory meant another tenant to a caller of another directory. Host-network grants already read slugs as `local`'s; a bare project name there took the first project of that name. |
 
 ## 3. Model
 
@@ -1150,6 +1151,14 @@ Where HT2 differs from the design above, and why:
   have, checked at start (`VmManager::check_pci_grant_names`), on
   `PUT /cluster/settings/pci` and on project creation. Tested by
   `tenancy_tests::a_device_grant_names_one_project`.
+- **H27**: `ProjectStore::resolve_grant` (tenancy.rs) resolves a grant's
+  project key for device grants (`grant_project`) and host-network
+  grants (`service/network.rs::resolve_projects`, `409 ambiguous`);
+  tenant slugs go through `TenantStore::resolve` (`local`'s) in
+  `pool_tenant_grants`, `pci_entities` and the resolver. Tested by
+  `tenancy_tests::a_device_grant_slug_is_the_local_directorys` (a
+  second directory's tenant of the same slug gets no grant until named
+  by id) and `network_tests::host_network_grants_name_one_project`.
   `service/vm.rs::check_pools` (create and update) refuses with `403
   forbidden` naming the tenant pools; `expand_gpus` and `GET
   /pci-pools?project=` use the same decision (`may_use_pool_directly`).

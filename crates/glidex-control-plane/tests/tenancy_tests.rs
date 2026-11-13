@@ -1358,6 +1358,117 @@ async fn a_device_grant_names_one_project() {
     assert!(!granted(lab_web, &b).await);
 }
 
+/// H27 (spec/22-host-topology.md): a device grant's tenant slug is the
+/// `local` directory's, whoever asks; another directory's tenant of the
+/// same slug is named by id.
+#[tokio::test]
+async fn a_device_grant_slug_is_the_local_directorys() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let pool = |name: &str, vendor: &str| PciPool {
+        name: name.into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some(vendor.into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+        per_device: None,
+        bar_mib: None,
+    };
+    let grant = |pool: &str, projects: &[&str], tenants: &[&str]| PciGrant {
+        bdf: None,
+        pool: Some(pool.into()),
+        projects: projects.iter().map(|p| p.to_string()).collect(),
+        tenants: tenants.iter().map(|t| t.to_string()).collect(),
+        node: None,
+    };
+    let h = harness_with(|c| {
+        c.pci.pools = vec![pool("a100", "0x10de"), pool("t4", "0x1002")];
+        c.pci.allow = vec![
+            grant("a100", &[], &["acme"]),
+            grant("t4", &["acme/gpu"], &[]),
+        ];
+    });
+    let tenants = &h.app.auth.tenants;
+    let local_acme = tenants.create("acme", "Acme".into(), false).unwrap().id;
+    tenants
+        .create_directory("beta", "Beta", "beta-admin")
+        .unwrap();
+    let beta_acme = tenants
+        .create_in("beta", "acme", "Acme".into(), false)
+        .unwrap()
+        .id;
+    let projects = h.app.manager.projects();
+    let local_gpu = projects
+        .create_in(&local_acme, "gpu", String::new(), None)
+        .unwrap()
+        .id;
+    let beta_gpu = projects
+        .create_in(&beta_acme, "gpu", String::new(), None)
+        .unwrap()
+        .id;
+    // alice owns local acme's project; bob, of directory beta, beta's.
+    let (alice, bob) = (h.user("alice"), h.user("bob"));
+    let mut u = h.app.auth.store.user(&bob).unwrap().unwrap();
+    u.directory_id = "beta".into();
+    h.app.auth.store.put_user(&u).unwrap();
+    for (user, project) in [(&alice, &local_gpu), (&bob, &beta_gpu)] {
+        h.app
+            .auth
+            .add_link(
+                "role.owner",
+                Ent::User(user.clone()),
+                Ent::Project(project.clone()),
+                "test",
+            )
+            .unwrap();
+    }
+    let (a, b) = (h.token(&alice), h.token(&bob));
+    let pools = |project: String, tok: &String| {
+        let tok = tok.clone();
+        let h = &h;
+        async move {
+            let (s, v) = h
+                .rest("GET", &format!("/pci-pools?project={project}"), None, &tok)
+                .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            let mut names: Vec<String> = v["pools"]
+                .as_array()
+                .map(|p| {
+                    p.iter()
+                        .map(|p| p["name"].as_str().unwrap().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        }
+    };
+    assert_eq!(pools(local_gpu.clone(), &a).await, ["a100", "t4"]);
+    assert!(pools(beta_gpu.clone(), &b).await.is_empty());
+
+    // Beta's tenant is named by id.
+    let ada = h.admin("ada");
+    let at = h.session(&ada);
+    let body = json!({
+        "pools": [
+            { "name": "a100", "class": "gpu", "match": { "vendor_id": "0x10de" } },
+            { "name": "t4", "class": "gpu", "match": { "vendor_id": "0x1002" } },
+        ],
+        "allow": [
+            { "pool": "a100", "tenants": [beta_acme] },
+            { "pool": "t4", "projects": [format!("{beta_acme}/gpu")] },
+        ],
+    });
+    let (s, v) = h
+        .rest("PUT", "/cluster/settings/pci", Some(body), &at)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(pools(beta_gpu, &b).await, ["a100", "t4"]);
+    assert!(pools(local_gpu, &a).await.is_empty());
+}
+
 #[tokio::test]
 async fn migration_keeps_an_existing_system_admin_whole() {
     let dir = TempDir::new().unwrap();

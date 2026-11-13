@@ -152,6 +152,11 @@ gxctl> network grant lab --tenant acme
 gxctl> network grant lab --all-projects
 ```
 
+A project is named by its id, as `<tenant>/<project>`, or by a bare name
+only one project has; a name that projects of several tenants have is
+refused (`409 ambiguous`). A tenant is named by its id or by its slug in
+the `local` directory.
+
 ## Share a project network
 
 A project's owner offers a share to another project, whose owner

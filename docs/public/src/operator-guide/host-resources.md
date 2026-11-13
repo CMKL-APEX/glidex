@@ -259,7 +259,9 @@ or grants.
 
 A `pci.allow` entry with `pool` grants the pool to projects (ids,
 `<tenant>/<project>`, or names) or tenants (ids or slugs), like device grants (see
-[Who may use a device](pci-passthrough.md#who-may-use-a-device)).
+[Who may use a device](pci-passthrough.md#who-may-use-a-device)). A slug
+names a tenant of the `local` directory; a tenant of another directory
+is named by its id.
 `net-admin` and `system-admin` may use any pool. In policies the
 permission is `usePciPool`.
 

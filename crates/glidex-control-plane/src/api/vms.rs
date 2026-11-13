@@ -435,32 +435,18 @@ pub(crate) fn may_use_pool_directly(c: &Caller, name: &str, project: &str) -> bo
 }
 
 /// The project a device grant's project key names (`pci.allow`;
-/// spec/22-host-topology.md H26): an id, `<tenant>/<name>` with the tenant
-/// by id or slug, or a bare name only one project has. A bare name that
-/// several projects have names none.
+/// spec/22-host-topology.md H26, H27): an id, `<tenant>/<name>` with the
+/// tenant by id or `local` slug, or a bare name only one project has. A
+/// bare name that several projects have names none.
 fn grant_project(c: &Caller, key: &str) -> Option<String> {
-    let projects = c.manager().projects();
-    if let Ok(Some(p)) = projects.get(key) {
-        return Some(p.id);
-    }
-    match key.split_once('/') {
-        Some((tenant, name)) => {
-            let t = c
-                .auth()
-                .tenants
-                .resolve_in(c.p.directory_id(), tenant)
-                .ok()?;
-            projects
-                .named(name)
-                .ok()?
-                .into_iter()
-                .find(|p| p.tenant_id == t.id)
-                .map(|p| p.id)
-        }
-        None => match projects.named(key).ok()?.as_slice() {
-            [p] => Some(p.id.clone()),
-            _ => None,
-        },
+    match c
+        .manager()
+        .projects()
+        .resolve_grant(&c.auth().tenants, key)
+        .ok()?
+    {
+        crate::tenancy::GrantProject::Found(p) => Some(p.id),
+        _ => None,
     }
 }
 
@@ -505,11 +491,8 @@ pub(crate) fn pool_tenant_grants(c: &Caller, name: &str) -> Vec<String> {
         .iter()
         .flat_map(|g| g.tenants.iter())
         .filter_map(|t| {
-            c.auth()
-                .tenants
-                .resolve_in(c.p.directory_id(), t)
-                .ok()
-                .map(|t| t.id)
+            // `local`'s slugs, as for host networks (H27).
+            c.auth().tenants.resolve(t).ok().map(|t| t.id)
         })
         .collect()
 }
@@ -548,11 +531,8 @@ pub(crate) fn pci_entities(c: &Caller, node: &str, bdf: &str) -> (Ent, EntitySet
         .iter()
         .flat_map(|g| g.tenants.iter())
         .filter_map(|t| {
-            c.auth()
-                .tenants
-                .resolve_in(c.p.directory_id(), t)
-                .ok()
-                .map(|t| t.id)
+            // `local`'s slugs, as for host networks (H27).
+            c.auth().tenants.resolve(t).ok().map(|t| t.id)
         })
         .collect();
     let mut es = EntitySet::new();

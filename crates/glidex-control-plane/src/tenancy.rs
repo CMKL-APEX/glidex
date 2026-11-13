@@ -275,6 +275,15 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
+/// What an operator's grant key names ([`ProjectStore::resolve_grant`]).
+#[derive(Debug, Clone, PartialEq)]
+pub enum GrantProject {
+    Found(Box<Project>),
+    /// A bare name that this many projects have.
+    Ambiguous(usize),
+    NotFound,
+}
+
 pub struct ProjectStore {
     db: Arc<Db>,
 }
@@ -373,7 +382,8 @@ impl ProjectStore {
 
     /// A project by id, or by name. A name may match a project in each
     /// tenant and this takes the first: API requests look projects up
-    /// with `Caller::find_project`, which sees only the caller's.
+    /// with `Caller::find_project`, which sees only the caller's, and an
+    /// operator's grants with [`ProjectStore::resolve_grant`].
     pub fn resolve(&self, key: &str) -> Result<Project, TenancyError> {
         if let Some(p) = self.get(key)? {
             return Ok(p);
@@ -382,6 +392,41 @@ impl ProjectStore {
             .into_iter()
             .find(|p| p.name == key)
             .ok_or_else(|| TenancyError::NotFound(key.to_string()))
+    }
+
+    /// The project an operator's grant names by `key` (a device grant's
+    /// or a host network's; spec/22-host-topology.md H26, H27): an id,
+    /// `<tenant>/<name>` with the tenant by id or by the `local`
+    /// directory's slug, or a bare name. A bare name that several projects
+    /// have is [`GrantProject::Ambiguous`].
+    pub fn resolve_grant(
+        &self,
+        tenants: &crate::tenants::TenantStore,
+        key: &str,
+    ) -> Result<GrantProject, TenancyError> {
+        if let Some(p) = self.get(key)? {
+            return Ok(GrantProject::Found(Box::new(p)));
+        }
+        let mut named = match key.split_once('/') {
+            Some((tenant, name)) => {
+                let t = match tenants.resolve(tenant) {
+                    Ok(t) => t,
+                    Err(crate::tenants::TenantError::NotFound(_)) => {
+                        return Ok(GrantProject::NotFound);
+                    }
+                    Err(e) => return Err(TenancyError::Storage(e.to_string())),
+                };
+                let mut named = self.named(name)?;
+                named.retain(|p| p.tenant_id == t.id);
+                named
+            }
+            None => self.named(key)?,
+        };
+        Ok(match named.len() {
+            0 => GrantProject::NotFound,
+            1 => GrantProject::Found(Box::new(named.remove(0))),
+            n => GrantProject::Ambiguous(n),
+        })
     }
 
     /// The bare names among a device grant's project `keys` (`pci.allow`;
