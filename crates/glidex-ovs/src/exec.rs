@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 pub enum Program {
     OvsVsctl,
     OvsAppctl,
-    /// OpenFlow rules for the metadata endpoint (spec/29-workload-identity.md §7.1).
+    /// OpenFlow rules: VM port checks (spec/09-networking.md §9.1) and the
+    /// metadata endpoint (spec/29-workload-identity.md §7.1).
     OvsOfctl,
     OvsVswitchd,
     OvnNbctl,

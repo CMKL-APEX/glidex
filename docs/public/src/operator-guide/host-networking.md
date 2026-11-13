@@ -263,6 +263,8 @@ gxctl network-add lab-fast --vhost-user        # vhost-user NICs (needs the dpdk
 - The gateway is the subnet's first address; DHCP hands out the rest.
   The subnet must be a /29 or larger.
 - A VM keeps its address across restarts (a reservation per MAC).
+  dnsmasq answers only MACs with a reservation (a `static` DHCP range):
+  anything else on the bridge gets no address.
 - Node NAT networks come from `10.88.0.0/16` by default. To use another
   range, set `nat_supernet` in `/etc/glidex/netd.json` (see
   [Configuration](configuration.md)).
@@ -285,6 +287,29 @@ drop forwarded NAT traffic. `glidex-netd` adds its own nftables table
 guest traffic, its own chains (`GLIDEX-FORWARD`, `GLIDEX-INPUT`). If
 guests still get no address or can't get out, allow the NAT subnets in
 your firewall.
+
+## Port rules
+
+Each VM port on a glidex bridge gets OpenFlow rules that check what it
+sends (OVN ports have OVN's port security instead):
+
+| Mode | A port sends only |
+|---|---|
+| NAT | from its own MAC; IPv4 and ARP from its reservation (DHCP from `0.0.0.0` passes); no DHCP server replies (UDP source port 67), no IPv6 router advertisements |
+| Isolated | from its own MAC; no DHCP server replies, no IPv6 router advertisements |
+| Bridged | from its own MAC |
+
+`glidex-netd` adds the rules with the port and removes them with it.
+OVS keeps no OpenFlow rules across a restart of `ovs-vswitchd`: netd
+puts them back at its start and, within seconds, when they are gone.
+To see a port's rules:
+
+```bash
+ovs-ofctl dump-flows gxbr-nat | grep 'in_port=<ofport>'   # ofport: ovs-vsctl get Interface <port> ofport
+```
+
+Every port's rules carry a cookie starting `0x7073`; the metadata
+endpoint's start `0x6d`.
 
 ## Bridged networks
 

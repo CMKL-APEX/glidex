@@ -200,6 +200,12 @@ list. See [Virtual machines](vms.md#networks).
   in the guest.
 - **Isolated** (single host): no DHCP; configure addresses in the guest.
 
+On a single host's networks, a NIC sends only from its own MAC. On NAT
+networks it also sends only from its own address (DHCP before it has
+one passes). On NAT and isolated networks a guest can't answer DHCP
+for other guests or send IPv6 router advertisements. Traffic that
+doesn't pass is dropped at the VM's port.
+
 NAT networks are IPv4 only. The address of each NIC shows in the VM's
 details: **Network** on its page in the web UI, `NIC <n>` in
 `gxctl get <vm>`, `nics[].ipv4` in the API.

@@ -1061,7 +1061,6 @@ impl Netd {
                         })?
                     }
                 };
-                glidex_ovs::metadata::add_flow(self.ex(), &spec.bridge, &port, index)?;
                 Some(index)
             }
             None => None,
@@ -1074,6 +1073,7 @@ impl Netd {
             owner_uid,
             metadata_index,
         };
+        self.install_rules(&record)?;
         self.store.put(VM_PORTS, &key, &record)?;
         if metadata_index.is_some() {
             glidex_ovs::metadata::ensure_address(self.ex())?;
@@ -1105,6 +1105,7 @@ impl Netd {
             if let Some(i) = old.metadata_index {
                 glidex_ovs::metadata::del_flow(self.ex(), &old.spec.bridge, i)?;
             }
+            self.remove_rules(&old)?;
             self.store.delete(VM_PORTS, &key)?;
         }
         self.attach(spec, owner_uid)
@@ -1141,12 +1142,13 @@ impl Netd {
         vm_port::detach(self.ex(), vm_id, nic_index)?;
         // The NAT reservation is kept: the VM gets the same address next start.
         self.store.delete(VM_PORTS, &key)?;
-        if let Some(r) = old
-            && let Some(i) = r.metadata_index
-        {
-            // Its bridge may be gone already: the rule went with it.
-            let _ = glidex_ovs::metadata::del_flow(self.ex(), &r.spec.bridge, i);
-            self.apply_firewall(&self.nats()?)?;
+        if let Some(r) = old {
+            // Its bridge may be gone already: the rules went with it.
+            let _ = self.remove_rules(&r);
+            if let Some(i) = r.metadata_index {
+                let _ = glidex_ovs::metadata::del_flow(self.ex(), &r.spec.bridge, i);
+                self.apply_firewall(&self.nats()?)?;
+            }
         }
         tracing::info!(vm = %vm_id, nic = nic_index, "VM port detached");
         Ok(())
@@ -1186,6 +1188,104 @@ impl Netd {
         }
         self.apply_meter(&self.nats()?);
         Ok(())
+    }
+
+    // ---- port rules (spec §9.1) ----------------------------------------
+
+    /// What `record`'s port is checked against: `None` for an OVN port
+    /// (OVN's own `port_security` covers it, spec/14-clustering.md §11.4).
+    fn port_checks(
+        &self,
+        record: &VmPortRecord,
+    ) -> Result<Option<glidex_ovs::port_security::Checks>, OvsError> {
+        use glidex_ovs::port_security::{Checks, Mode};
+        let spec = &record.spec;
+        if spec.ovn_lport.is_some() {
+            return Ok(None);
+        }
+        let mode = match record.ipv4 {
+            Some(address) => Mode::Nat { address },
+            None if self.require_bridge(&spec.bridge)?.isolated => Mode::Isolated,
+            None => Mode::Bridged,
+        };
+        Ok(Some(Checks {
+            mode,
+            mac: spec.mac.to_ascii_lowercase(),
+        }))
+    }
+
+    /// Put `record`'s OpenFlow rules on its bridge: its checks, then the
+    /// metadata rule behind them. Idempotent.
+    fn install_rules(&self, record: &VmPortRecord) -> Result<(), OvsError> {
+        let spec = &record.spec;
+        let checks = self.port_checks(record)?;
+        if let Some(c) = &checks {
+            let cookie = glidex_ovs::port_security::cookie(&spec.vm_id, spec.nic_index)?;
+            glidex_ovs::port_security::apply(self.ex(), &spec.bridge, &record.port, cookie, c)?;
+        }
+        if let Some(i) = record.metadata_index {
+            let mac = spec.mac.to_ascii_lowercase();
+            let source = match (&checks, record.ipv4) {
+                (Some(_), Some(ip)) => Some((mac.as_str(), ip)),
+                _ => None,
+            };
+            glidex_ovs::metadata::add_flow(self.ex(), &spec.bridge, &record.port, i, source)?;
+        }
+        Ok(())
+    }
+
+    /// Take `record`'s checks off its bridge (none there: fine).
+    fn remove_rules(&self, record: &VmPortRecord) -> Result<(), OvsError> {
+        if record.spec.ovn_lport.is_some() {
+            return Ok(());
+        }
+        let cookie = glidex_ovs::port_security::cookie(&record.spec.vm_id, record.spec.nic_index)?;
+        glidex_ovs::port_security::remove(self.ex(), &record.spec.bridge, cookie)
+    }
+
+    /// Put back the rules of ports whose rules are gone from OVS (after a
+    /// restart of `ovs-vswitchd`, which keeps none): netd runs this every
+    /// few seconds. Returns what it repaired and what failed; a bridge OVS
+    /// can't list (OVS stopped) is skipped.
+    pub fn repair_rules(&self) -> RulesPass {
+        use glidex_ovs::port_security::{self as ps, BASE};
+        let _guard = self.mutate.lock().unwrap();
+        let mut pass = RulesPass::default();
+        let ports = self.vm_ports().unwrap_or_default();
+        let mut cookies: std::collections::BTreeMap<
+            String,
+            Option<std::collections::BTreeSet<u64>>,
+        > = Default::default();
+        for r in ports {
+            let checks = match self.port_checks(&r) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let mut want = Vec::new();
+            if checks.is_some()
+                && let Ok(c) = ps::cookie(&r.spec.vm_id, r.spec.nic_index)
+            {
+                want.extend([c, c | BASE]);
+            }
+            if let Some(i) = r.metadata_index {
+                want.push(u64::from(glidex_ovs::metadata::mark(i)));
+            }
+            if want.is_empty() {
+                continue;
+            }
+            let have = cookies
+                .entry(r.spec.bridge.clone())
+                .or_insert_with(|| ps::installed_cookies(self.ex(), &r.spec.bridge).ok());
+            let Some(have) = have else { continue };
+            if want.iter().all(|c| have.contains(c)) {
+                continue;
+            }
+            match self.install_rules(&r) {
+                Ok(()) => pass.applied.push(format!("rules of {}", r.port)),
+                Err(e) => pass.errors.push(format!("rules of {}: {e}", r.port)),
+            }
+        }
+        pass
     }
 
     // ---- reconciliation ------------------------------------------------
@@ -1282,8 +1382,9 @@ impl Netd {
                 Err(e) => report.errors.push(format!("nat {}: {}", state.bridge, e)),
             }
         }
-        // OVS keeps no OpenFlow rules across a restart: the metadata
-        // endpoint's, again (spec/29-workload-identity.md §7.1).
+        // OVS keeps no OpenFlow rules across a restart: each port's checks
+        // (spec §9.1) and the metadata endpoint's rule
+        // (spec/29-workload-identity.md §7.1), again.
         let ports = self.vm_ports().unwrap_or_default();
         if ports.iter().any(|r| r.metadata_index.is_some())
             && let Err(e) = glidex_ovs::metadata::ensure_address(ex)
@@ -1291,13 +1392,12 @@ impl Netd {
             report.errors.push(format!("metadata address: {e}"));
         }
         for r in ports {
-            if let Some(i) = r.metadata_index {
-                match glidex_ovs::metadata::add_flow(ex, &r.spec.bridge, &r.port, i) {
-                    Ok(()) => report.repaired.push(format!("metadata rule of {}", r.port)),
-                    Err(e) => report
-                        .errors
-                        .push(format!("metadata rule of {}: {e}", r.port)),
-                }
+            if r.spec.ovn_lport.is_some() {
+                continue;
+            }
+            match self.install_rules(&r) {
+                Ok(()) => report.repaired.push(format!("rules of {}", r.port)),
+                Err(e) => report.errors.push(format!("rules of {}: {e}", r.port)),
             }
         }
         // Without NAT networks nothing above rebuilt the table: fence the
@@ -1324,6 +1424,14 @@ impl Netd {
         }
         report
     }
+}
+
+/// What one pass of [`Netd::repair_rules`] did (spec §9.1).
+#[derive(Debug, Default)]
+pub struct RulesPass {
+    /// The ports whose rules were put back.
+    pub applied: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 /// What one source-route pass did (spec §8.6.4).

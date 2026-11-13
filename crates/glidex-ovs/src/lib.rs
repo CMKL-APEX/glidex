@@ -23,6 +23,7 @@ pub mod nat_meter;
 pub mod net;
 pub mod nic;
 pub mod ovn;
+pub mod port_security;
 pub mod source_build;
 pub mod srcroute;
 pub mod sriov;
