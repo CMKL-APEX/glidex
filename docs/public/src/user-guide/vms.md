@@ -886,7 +886,11 @@ How the range is used depends on the hypervisor:
   demand, between `min_vcpus` and `max_vcpus`, in microseconds and
   without CPU hotplug. It learns the guest's demand from
   `pylon-guest-agent` in the guest; without the agent every vCPU keeps
-  running and `pylond` manages none of them. So an elastic Pylon VM's
+  running and `pylond` manages none of them. Glidex installs the agent
+  through cloud-init at the VM's first boot (`/usr/local/sbin/pylon-guest-agent`,
+  service `pylon-guest-agent`). For an image without cloud-init, copy
+  the agent from the host (`/usr/local/share/glidex/pylon-guest-agent`)
+  into the guest and run it as root with `--cpu 0`. So an elastic Pylon VM's
   `vcpu_count` is always its `max_vcpus`: Glidex sets it, and the web UI
   and `gxctl` show it so. `lscpu` in the guest shows `max_vcpus` CPUs.
 - **Cloud Hypervisor and QEMU.** The guest boots with `vcpu_count`

@@ -40,6 +40,10 @@ pub fn pylon_vm_id(api_socket: &str) -> u64 {
 /// Default pylond socket path on the host.
 pub const DEFAULT_PYLOND_SOCKET: &str = "/run/pylon/pylond.sock";
 
+/// Pylon's guest agent, installed by `glidex-install --with-pylon`; it goes
+/// into Pylon guests' seed disks (spec/30-pylon.md P19).
+pub const PYLON_GUEST_AGENT: &str = "/usr/local/share/glidex/pylon-guest-agent";
+
 /// Where the kernel says which `sched_ext` scheduler is attached.
 const SCHED_EXT_SYSFS: &str = "/sys/kernel/sched_ext";
 

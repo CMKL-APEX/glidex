@@ -1253,6 +1253,17 @@ impl VmManager {
                 growpart_disk = root.as_ref().map(|(_, d)| d.id.clone());
                 growpart_seq = root.as_ref().map(|(_, d)| d.applied_extend_root_seq);
             }
+            if vm.hypervisor() == HypervisorType::Pylon {
+                let path = crate::hypervisor::pylon::PYLON_GUEST_AGENT;
+                seed.pylon_guest_agent = blocking(move || std::fs::read(path))
+                    .await
+                    .map_err(before_intent)?
+                    .ok()
+                    .map(std::sync::Arc::new);
+                if seed.pylon_guest_agent.is_none() {
+                    tracing::warn!(vm_id = %vm.id, path, "no Pylon guest agent on this host; pylond won't see the guest's demand");
+                }
+            }
             if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
                 tracing::info!(vm_id = %vm.id, "VM has no login credential; the guest has no way to log in");
             }
