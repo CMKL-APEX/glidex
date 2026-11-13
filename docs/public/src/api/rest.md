@@ -15,7 +15,9 @@
   resolves VM names for you.
 - **Projects**: VMs, disks, guest credentials and project networks
   belong to a project. Creates take `project` (id or name) and default to
-  your default project; lists take `?project=`.
+  your default project; lists take `?project=`. A project name is
+  looked up among the projects you can see, and a project you can't see
+  answers `404` exactly as one that doesn't exist.
 - **Status codes**: `200` OK, `201` created, `202` accepted (the
   controller is still working on it), `204` no content (gone).
 

@@ -267,9 +267,10 @@ async fn project_isolation_and_not_found() {
     // `{vms: [...]}`; proto3 JSON leaves an empty list out.
     assert!(list.is_object(), "{list}");
     assert_eq!(list["vms"].as_array().map_or(0, |l| l.len()), 0, "{list}");
-    // Nor create in a project it has no role in.
+    // Nor create in a project it has no role in: a project it can't read
+    // answers as a missing one (spec/11-security.md §7.4).
     let (s, _, _) = h.call("POST", "/vms", Some(vm_body("v2", "pa")), &b).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(s, StatusCode::NOT_FOUND);
 
     // A viewer sees it but can't operate it.
     let (s, _, _) = h.call("GET", &format!("/vms/{id}"), None, &c).await;

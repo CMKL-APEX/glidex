@@ -393,10 +393,8 @@ pub fn create_project(
 
 fn visible_project(call: &Call, key: &str) -> ServiceResult<crate::tenancy::Project> {
     let p = call
-        .manager()
-        .projects()
-        .resolve(key)
-        .map_err(|_| not_found("project"))?;
+        .find_project(key)?
+        .ok_or_else(|| not_found("project"))?;
     call.set_project(&p.id);
     call.set_target(format!("project:{}", p.id));
     call.require_visible(
