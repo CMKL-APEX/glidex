@@ -281,7 +281,10 @@ default:
 
 `projects` takes project ids, `<tenant>/<project>` (the tenant's id or
 slug, then the project's name), or bare project names; `tenants` takes
-tenant ids or slugs. Project names are unique within a tenant only, so
+tenant ids or slugs. A slug is that of a tenant in the `local`
+directory, whoever asks; name a tenant of another directory by its id
+(slugs are unique within a directory only). Project names are unique
+within a tenant only, so
 on a host with several tenants name projects as `<tenant>/<project>`. A
 bare name grants only while one project has it: the control plane
 refuses to start when a grant's bare name matches projects in more than
