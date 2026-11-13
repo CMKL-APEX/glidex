@@ -22,7 +22,7 @@ use crate::key::{ClusterKey, Signer, jwks};
 use crate::peer::{self, Replays};
 use crate::wire::{
     self, EndAtCluster, OfferToken, RedeemAnswer, RedeemRequest, RemoteTenant, Row, Snapshot,
-    normalize_issuer,
+    StorageReport, normalize_issuer,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -216,6 +216,9 @@ pub struct FakeCluster {
     pub ui_callback: Option<String>,
     /// Its last report, as it sent it.
     pub report: Option<Value>,
+    /// The storage each tenant's entry of that report carried (D85), by
+    /// tenant id.
+    pub storage: HashMap<String, StorageReport>,
 }
 
 struct Code {
@@ -369,6 +372,7 @@ impl FakeDirectory {
                 tenants: Vec::new(),
                 ui_callback: None,
                 report: None,
+                storage: HashMap::new(),
             });
         c.jwks = answer.cluster_key.clone();
         c.ui_callback = answer
@@ -613,9 +617,22 @@ impl Inner {
             ("POST", "/token") => self.token(&req.fields()),
             ("POST", "/feed/v1") => self.peer(&req, wire::FEED, |me, c, b| me.feed(c, b)),
             ("POST", "/feed/v1/report") => self.peer(&req, wire::REPORT, |me, c, b| {
+                // As a directory reads it: storage, where an entry has it,
+                // must read as such (D85).
+                let mut storage = HashMap::new();
+                for t in b["report"]["tenants"].as_array().into_iter().flatten() {
+                    let (Some(id), Some(s)) = (t["tenant"].as_str(), t.get("storage")) else {
+                        continue;
+                    };
+                    match serde_json::from_value::<StorageReport>(s.clone()) {
+                        Ok(s) => storage.insert(id.to_string(), s),
+                        Err(_) => return Reply::status(422),
+                    };
+                }
                 let mut st = me.state.lock().unwrap();
                 if let Some(c) = st.clusters.get_mut(c) {
                     c.report = Some(b["report"].clone());
+                    c.storage = storage;
                     if let Some(u) = b["ui_callback"]
                         .as_str()
                         .filter(|u| wire::valid_callback(u))

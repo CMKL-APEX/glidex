@@ -507,6 +507,10 @@ Once trust is set up:
   (and their GiB) and networks. The tenant's administrators see it on
   the tenant's page under *Clusters of other organizations*, and in
   `gxctl tenant clusters acme`, with the time the directory received it.
+  A storage cluster (hyperstor) reports the tenant's storage instead:
+  volumes with their provisioned size and the space they actually use,
+  buckets with the space their objects take, and S3 keys. The page
+  shows them in a *Storage* column.
 
 - **When the directory is out of reach.** VMs keep running, and the
   tenant's people keep working with the sessions and tokens they have.

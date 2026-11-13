@@ -59,19 +59,32 @@ pub struct ClusterReport {
     pub tenants: Vec<TenantReport>,
 }
 
+/// One tenant's entry in a report (D70). The VM counts default to zero, so
+/// a storage cluster sends only `storage` (D85).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TenantReport {
     /// The tenant's id (the same at both).
     pub tenant: String,
     /// Admitted, or suspended (D9).
+    #[serde(default)]
     pub suspended: bool,
+    #[serde(default)]
     pub cap: crate::tenancy::Quotas,
+    #[serde(default)]
     pub projects: u64,
+    #[serde(default)]
     pub vms: u64,
+    #[serde(default)]
     pub running_vms: u64,
+    #[serde(default)]
     pub disks: u64,
+    #[serde(default)]
     pub disk_gib: u64,
+    #[serde(default)]
     pub networks: u64,
+    /// What a storage cluster holds of the tenant, as totals (D85).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<glidex_trust::StorageReport>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -327,6 +340,36 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_read_with_or_without_storage() {
+        // A storage cluster's: only storage (D85).
+        let r: ClusterReport = serde_json::from_value(serde_json::json!({
+            "at": 5,
+            "tenants": [{ "tenant": "t1", "storage": {
+                "volumes": 2, "volume_gib": 100, "volume_used_bytes": 7, "buckets": 1,
+                "bucket_bytes": 9, "s3_keys": 3,
+            } }],
+        }))
+        .unwrap();
+        let t = &r.tenants[0];
+        assert_eq!((t.vms, t.disks, t.suspended), (0, 0, false));
+        assert_eq!(t.cap, crate::tenancy::Quotas::default());
+        let s = t.storage.as_ref().unwrap();
+        assert_eq!((s.volume_gib, s.volume_used_bytes, s.s3_keys), (100, 7, 3));
+        // A glidex cluster's, as clusters sent them before storage.
+        let old: ClusterReport = serde_json::from_value(serde_json::json!({
+            "at": 5,
+            "tenants": [{ "tenant": "t1", "suspended": true, "cap": {}, "projects": 1, "vms": 2,
+                          "running_vms": 1, "disks": 3, "disk_gib": 40, "networks": 1 }],
+        }))
+        .unwrap();
+        assert_eq!(old.tenants[0].vms, 2);
+        assert!(old.tenants[0].storage.is_none());
+        // And it is written as before: no `storage` key.
+        let v = serde_json::to_value(&old).unwrap();
+        assert!(v["tenants"][0].get("storage").is_none());
+    }
 
     #[test]
     fn a_feed_never_overwrites_this_hosts_records() {

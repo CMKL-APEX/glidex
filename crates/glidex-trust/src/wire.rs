@@ -307,6 +307,48 @@ pub struct ReportBody<R> {
     pub ui_callback: Option<String>,
 }
 
+/// What a storage cluster holds of one tenant, as totals (D85): a
+/// tenant's entry in a report may carry it, and the directory shows it on
+/// the tenant's page beside the VM counts.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageReport {
+    #[serde(default)]
+    pub volumes: u64,
+    /// The volumes' provisioned size.
+    #[serde(default)]
+    pub volume_gib: u64,
+    /// The space they actually take.
+    #[serde(default)]
+    pub volume_used_bytes: u64,
+    #[serde(default)]
+    pub buckets: u64,
+    /// The space the buckets' objects take.
+    #[serde(default)]
+    pub bucket_bytes: u64,
+    #[serde(default)]
+    pub s3_keys: u64,
+}
+
+/// A storage cluster's entry for one tenant in its report (D70, D85): the
+/// VM counts a glidex cluster sends default to zero at the directory, so
+/// a storage cluster sends only these.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageTenantReport {
+    /// The tenant's id (the same at both).
+    pub tenant: String,
+    /// Admitted, or suspended (D9).
+    #[serde(default)]
+    pub suspended: bool,
+    pub storage: StorageReport,
+}
+
+/// A cluster's report (D70): when, and one entry per admitted tenant.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ClusterReport<T> {
+    pub at: u64,
+    pub tenants: Vec<T>,
+}
+
 /// `POST /d/<dir>/trust/v1/logout`'s body (D72).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LogoutBody {
@@ -346,6 +388,18 @@ mod tests {
             Some("https://id.acme.example/d/acme")
         );
         assert_eq!(normalize_issuer("http://id.acme.example/d/acme"), None);
+    }
+
+    #[test]
+    fn storage_reports_read_with_any_field_missing() {
+        let t: StorageTenantReport = serde_json::from_value(serde_json::json!({
+            "tenant": "t1", "storage": { "volumes": 2, "volume_used_bytes": 5 },
+        }))
+        .unwrap();
+        assert_eq!(t.storage.volumes, 2);
+        assert_eq!(t.storage.volume_used_bytes, 5);
+        assert_eq!(t.storage.buckets, 0);
+        assert!(!t.suspended);
     }
 
     #[test]

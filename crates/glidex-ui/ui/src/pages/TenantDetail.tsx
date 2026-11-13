@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
 import type { Binding, PrincipalInput, Tenant, TenantBinding, TenantMember } from "../types";
-import { TENANT_ROLES, entityLabel, formatTimestamp, isOidcKind } from "../types";
+import { TENANT_ROLES, entityLabel, formatBytes, formatTimestamp, isOidcKind } from "../types";
 import Modal from "../components/Modal";
 import ConfirmDialog from "../components/ConfirmDialog";
 import AddBindingForm, { typedPrincipal } from "../components/AddBindingForm";
@@ -54,6 +54,26 @@ type Cap = (typeof CAPS)[number];
 
 /** The tenant's shares of cluster device pools, split among its projects
  *  (spec/22-host-topology.md §9.1a). */
+/** A storage cluster's totals for the tenant (spec/19-tenancy.md D85):
+ *  volumes with their provisioned and used space side by side, then
+ *  buckets and S3 keys. */
+function StorageCell({ s }: { s: NonNullable<NonNullable<api.TenantCluster["report"]>["storage"]> }) {
+  const used = formatBytes(s.volume_used_bytes);
+  return (
+    <div className="space-y-0.5">
+      <div>
+        {s.volumes ?? 0} volumes{" "}
+        <span className="text-xs text-gray-500">
+          ({s.volume_gib ?? 0} GiB provisioned · {used} used)
+        </span>
+      </div>
+      <div>
+        {s.buckets ?? 0} buckets <span className="text-xs text-gray-500">({formatBytes(s.bucket_bytes)})</span> · {s.s3_keys ?? 0} S3 keys
+      </div>
+    </div>
+  );
+}
+
 /** The clusters of other organizations the tenant uses, and what each last
  *  reported of it (spec/19-tenancy.md D70). */
 function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
@@ -62,6 +82,8 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
   const [offer, setOffer] = useState("");
   const [busy, setBusy] = useState(false);
   const [leaving, setLeaving] = useState<api.TenantCluster | null>(null);
+  // A storage cluster's totals (D85) get a column once any cluster sent them.
+  const anyStorage = (clusters ?? []).some((c) => c.report?.storage);
   const refresh = useCallback(() => {
     api
       .listTenantClusters(tenant.id)
@@ -122,6 +144,7 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
                 <th className="py-1 pr-3 font-medium">VMs</th>
                 <th className="py-1 pr-3 font-medium">Disks</th>
                 <th className="py-1 pr-3 font-medium">Networks</th>
+                {anyStorage && <th className="py-1 pr-3 font-medium">Storage</th>}
                 <th className="py-1 font-medium">Reported</th>
                 {canManage && <th className="py-1" />}
               </tr>
@@ -148,10 +171,15 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
                           {Number(r.disk_gib ?? 0) > 0 && <span className="text-xs text-gray-500"> ({r.disk_gib} GiB)</span>}
                         </td>
                         <td className="py-1.5 pr-3">{r.networks ?? 0}</td>
+                        {anyStorage && (
+                          <td className="py-1.5 pr-3" data-testid="tenant-cluster-storage">
+                            {r.storage ? <StorageCell s={r.storage} /> : "—"}
+                          </td>
+                        )}
                         <td className="py-1.5 text-xs text-gray-500">{r.reported_at ? new Date(r.reported_at).toLocaleString() : "—"}</td>
                       </>
                     ) : (
-                      <td colSpan={6} className="py-1.5 text-xs text-gray-500">
+                      <td colSpan={anyStorage ? 7 : 6} className="py-1.5 text-xs text-gray-500">
                         No report yet
                       </td>
                     )}

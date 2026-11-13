@@ -1381,6 +1381,19 @@ fn tenant_cluster_pb(c: &crate::trust::TrustedCluster, tenant: &str) -> pb::Tena
             disks: t.disks,
             disk_gib: t.disk_gib,
             networks: t.networks,
+            storage: t
+                .storage
+                .as_ref()
+                .map(|s| pb::TenantStorageReport {
+                    volumes: s.volumes,
+                    volume_gib: s.volume_gib,
+                    volume_used_bytes: s.volume_used_bytes,
+                    buckets: s.buckets,
+                    bucket_bytes: s.bucket_bytes,
+                    s3_keys: s.s3_keys,
+                    ..Default::default()
+                })
+                .into(),
             ..Default::default()
         })
     });

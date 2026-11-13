@@ -607,6 +607,7 @@ pub async fn report_for(
             disks: 0,
             disk_gib: 0,
             networks: 0,
+            storage: None,
         };
         for p in projects.iter().filter(|p| p.tenant_id == rt.id) {
             let u = app.manager.usage(&p.id).await.map_err(|e| e.to_string())?;

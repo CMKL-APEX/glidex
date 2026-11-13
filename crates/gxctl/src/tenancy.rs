@@ -410,6 +410,18 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                                     rep.disk_gib,
                                     rep.networks
                                 );
+                                // A storage cluster's totals (D85).
+                                if let Some(st) = rep.storage.as_option() {
+                                    println!(
+                                        "      {} volumes ({} GiB provisioned, {} used), {} buckets ({}), {} S3 keys",
+                                        st.volumes,
+                                        st.volume_gib,
+                                        crate::format_bytes(st.volume_used_bytes),
+                                        st.buckets,
+                                        crate::format_bytes(st.bucket_bytes),
+                                        st.s3_keys
+                                    );
+                                }
                             }
                             None => println!("      {}", "no report yet".dimmed()),
                         }

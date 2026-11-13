@@ -8,8 +8,8 @@ use glidex_trust::fake::{FakeDirectory, Handler, Reply, serve_https};
 use glidex_trust::feed::{self, Entity};
 use glidex_trust::key::{self, ClusterKey};
 use glidex_trust::{
-    EndAtCluster, FeedState, OfferToken, RedeemAnswer, RedeemRequest, Replays, TrustedDirectory,
-    peer, tokens,
+    ClusterReport, EndAtCluster, FeedState, OfferToken, RedeemAnswer, RedeemRequest, Replays,
+    StorageReport, StorageTenantReport, TrustedDirectory, peer, tokens,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -182,12 +182,43 @@ async fn a_cluster_trusts_the_fake_directory() {
             .is_err()
     );
 
-    // A report.
-    let report = json!({ "at": now, "tenants": [{ "tenant": "t1", "volumes": 2 }] });
+    // A storage cluster's report: only storage, as tenant totals (D85).
+    let storage = StorageReport {
+        volumes: 2,
+        volume_gib: 100,
+        volume_used_bytes: 7 << 30,
+        buckets: 1,
+        bucket_bytes: 12_345,
+        s3_keys: 3,
+    };
+    let report = ClusterReport {
+        at: now,
+        tenants: vec![StorageTenantReport {
+            tenant: "t1".into(),
+            suspended: false,
+            storage: storage.clone(),
+        }],
+    };
     client::push_report(&c.key, CLUSTER, &d, &report, Some(CALLBACK), now)
         .await
         .unwrap();
-    assert_eq!(dir.cluster(CLUSTER).unwrap().report, Some(report));
+    let seen = dir.cluster(CLUSTER).unwrap();
+    assert_eq!(seen.report, Some(serde_json::to_value(&report).unwrap()));
+    assert_eq!(seen.storage.get("t1"), Some(&storage));
+    // A report without storage (a VM cluster's) is taken too, and one whose
+    // storage doesn't read is refused.
+    let vms = json!({ "at": now, "tenants": [{ "tenant": "t1", "vms": 2 }] });
+    client::push_report(&c.key, CLUSTER, &d, &vms, None, now)
+        .await
+        .unwrap();
+    assert!(dir.cluster(CLUSTER).unwrap().storage.is_empty());
+    let bad =
+        json!({ "at": now, "tenants": [{ "tenant": "t1", "storage": { "volumes": "two" } }] });
+    assert!(
+        client::push_report(&c.key, CLUSTER, &d, &bad, None, now)
+            .await
+            .is_err()
+    );
 
     // Access tokens and API tokens for the cluster.
     let at = dir.access_token("u1", CLUSTER, "s0").unwrap();
