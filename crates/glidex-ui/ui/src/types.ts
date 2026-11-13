@@ -946,6 +946,14 @@ export function unscheduledReason(vm: VmResponse): string | null {
   return s.message || s.reason || null;
 }
 
+/** Why pylond doesn't manage a running Pylon VM's cores, when it doesn't
+ * (the `PylonManaged` condition, spec/30-pylon.md P16). */
+export function pylonUnmanagedReason(vm: VmResponse): string | null {
+  const c = vm.conditions?.find((c) => c.kind === "PylonManaged");
+  if (!c || conditionStatus(c) !== "False") return null;
+  return c.message || c.reason || "pylond doesn't manage this VM";
+}
+
 export function notReadyReason(vm: VmResponse): string | null {
   const ready = notReady(vm.conditions);
   if (!ready) return null;

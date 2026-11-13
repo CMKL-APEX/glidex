@@ -265,7 +265,8 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
   `park=kvm` when `scx_pylon` is attached on its host, and `park=vmm`
   otherwise: `pylond` refuses a VM that parks in KVM without
   `scx_pylon`. A VM keeps its mode until it restarts.
-- **Is a VM managed?** `gxctl get <vm>` shows `Pylon: not managed` when
+- **Is a VM managed?** `gxctl get <vm>` shows `Pylon: not managed`, and
+  the VM's page *Not managed by pylond* under its vCPUs, when
   `pylond` has no registration for a running Pylon VM: it refused the
   VM (the VMM writes why in the VM's console log, `gxctl log <vm>`), or
   `pylond` restarted after the VM started. The VM still runs, with all
