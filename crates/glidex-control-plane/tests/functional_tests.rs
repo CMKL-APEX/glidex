@@ -402,6 +402,7 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
         passwd_hash: Some("$6$salt$hash".into()),
         nic_macs: Vec::new(),
         growpart: false,
+        pylon_guest_agent: None,
     };
 
     cloud_init::write_seed_image(image.to_str().unwrap(), &seed).unwrap();
@@ -427,6 +428,26 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(leftovers, vec![std::ffi::OsString::from("seed.img")]);
+}
+
+/// A Pylon VM's seed carries the guest agent (spec/30-pylon.md P19): the
+/// release's agent is 1.6 MB, about 2.1 MB in base64, in the 8 MiB volume.
+#[test]
+fn seed_image_holds_the_pylon_guest_agent() {
+    let tmp = TempDir::new().unwrap();
+    let image = tmp.path().join("seed.img");
+    let agent: Vec<u8> = (0..1_700_000u32).map(|i| (i % 251) as u8).collect();
+    let seed = SeedConfig {
+        instance_id: "vm-pylon".into(),
+        hostname: "pylon".into(),
+        pylon_guest_agent: Some(std::sync::Arc::new(agent)),
+        ..Default::default()
+    };
+    cloud_init::write_seed_image(image.to_str().unwrap(), &seed).unwrap();
+    let user_data = mtype(&image, "user-data");
+    assert_eq!(user_data, seed.user_data());
+    assert!(user_data.len() > 2_200_000, "{}", user_data.len());
+    assert!(user_data.contains("pylon-guest-agent.service"));
 }
 
 #[test]
