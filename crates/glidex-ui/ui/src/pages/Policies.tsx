@@ -24,7 +24,7 @@ const ACTIONS = [
   "attachDisk", "attachDevice", "useDisk", "useCredential", "usePciDevice", "useHostPath",
   "listDisks", "readDisk", "createDisk", "deleteDisk", "resizeDisk",
   "listCredentials", "readCredential", "createCredential", "updateCredential", "deleteCredential",
-  "attachNetwork", "useNetwork", "createProjectNetwork", "deleteProjectNetwork",
+  "attachNetwork", "useNetwork", "createProjectNetwork", "deleteProjectNetwork", "setPortSecurity", "setHostPortSecurity",
   "offerNetworkShare", "acceptNetworkShare", "createNetwork", "grantNetwork",
   "readProject", "readBindings", "manageBindings", "updateProject", "deleteProject", "createProject",
   "manageSystemBindings", "exceedQuota", "pullImage", "deleteImage", "readImage",

@@ -98,6 +98,7 @@ fn port_spec() -> VmPortSpec {
         mtu: None,
         queue_pairs: 1,
         ovn_lport: None,
+        port_security: true,
     }
 }
 
@@ -2112,6 +2113,51 @@ fn an_isolated_port_is_checked_by_mac_and_a_bridged_one_too() {
             names::mac_address(vm2, 0).unwrap()
         )
     );
+}
+
+/// Decision 19: `port_security: false` takes every check off the port,
+/// also when it had them; the metadata rule stays, without the source match.
+#[test]
+fn a_port_without_port_security_gets_no_checks() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    checks_call(&exec.calls(), "gxbr-nat");
+
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            port_security: false,
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let calls = exec.calls();
+    assert!(
+        !calls.iter().any(|c| c.starts_with("ovs-ofctl add-flows")),
+        "{calls:#?}"
+    );
+    let off = format!("ovs-ofctl del-flows gxbr-nat cookie={PS_COOKIE}/0xffffffffffffff00");
+    assert!(calls.contains(&off), "{calls:#?}");
+    assert!(
+        calls.iter().any(|c| c == "ovs-ofctl add-flow gxbr-nat cookie=0x6d000001,priority=200,in_port=5,tcp,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000001->pkt_mark,NORMAL"),
+        "{calls:#?}"
+    );
+    let ports: Vec<VmPortRecord> =
+        serde_json::from_value(netd.handle(Op::ListVmPorts, &peer()).unwrap()).unwrap();
+    assert!(!ports[0].spec.port_security);
+
+    // The repair pass looks for the metadata rule only.
+    exec.on(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::ok(" cookie=0x6d000001, priority=200\n"),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert!(pass.applied.is_empty(), "{pass:?}");
 }
 
 #[test]

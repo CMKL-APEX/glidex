@@ -427,7 +427,7 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
     }
     for (i, nic) in vm.nics.iter().enumerate() {
         println!(
-            "  NIC {}:      {} {} {}{}",
+            "  NIC {}:      {} {} {}{}{}",
             i,
             nic.network_name.as_deref().unwrap_or(&nic.network).cyan(),
             nic.mac,
@@ -438,7 +438,12 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
             nic.port
                 .as_deref()
                 .map(|p| format!(" ({})", p))
-                .unwrap_or_default()
+                .unwrap_or_default(),
+            if nic.port_security == Some(false) {
+                " port security off".yellow().to_string()
+            } else {
+                String::new()
+            }
         );
     }
 }
@@ -2111,12 +2116,14 @@ pub async fn disk(client: &ApiClient, attach: bool, args: &[&str]) {
     }
 }
 
-/// `attach-network <name|id> <network> [--mac <mac>]` and
-/// `detach-network <name|id> <network> [--mac <mac>]`: a NIC, by its
+/// `attach-network <name|id> <network> [--mac <mac>] [--no-port-security]`
+/// and `detach-network <name|id> <network> [--mac <mac>]`: a NIC, by its
 /// network's name or id (and its MAC, among several on one network).
+/// `--no-port-security`: no checks on the new NIC's port
+/// (spec/09-networking.md decision 19).
 pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
     let u = if attach {
-        "Usage: attach-network <name|id> <network> [--mac <mac>]"
+        "Usage: attach-network <name|id> <network> [--mac <mac>] [--no-port-security]"
     } else {
         "Usage: detach-network <name|id> <network> [--mac <mac>]"
     };
@@ -2124,6 +2131,7 @@ pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
         return usage(u);
     }
     let mac = flag_value(args, "--mac").map(String::from);
+    let no_port_security = attach && has_flag(args, "--no-port-security");
     let pos = crate::admin::positional(args, &["--mac"]);
     let (Some(net), 2) = (pos.get(1).copied(), pos.len()) else {
         return usage(u);
@@ -2140,6 +2148,7 @@ pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
             id: vm_id,
             network: net.to_string(),
             mac,
+            port_security: no_port_security.then_some(false),
             ..Default::default()
         })
         .await

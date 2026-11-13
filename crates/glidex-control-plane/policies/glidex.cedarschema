@@ -295,6 +295,11 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Vm, Project], context: Ctx };
   action useNetwork in ["shared"]  // in no group: who may attach is `attachNetwork`
     appliesTo { principal: [User, Token], resource: [Network], context: ProjectCtx };
+  // Lifting or putting back a NIC's port-security checks
+  // (spec/09-networking.md decision 19): on the VM (the project, at create)
+  // and on a project network; a host network's side is setHostPortSecurity.
+  action setPortSecurity in ["network.manage", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Vm, Project, Network], context: Ctx };
   action createProjectNetwork in ["network.manage", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action deleteProjectNetwork in ["network.manage", "tenant-scoped"]
@@ -319,7 +324,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, createBridge, ensureUplink in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
-  action deleteNetwork, grantNetwork, setNetworkHostApi in ["host.network", "host-scoped"]
+  action deleteNetwork, grantNetwork, setNetworkHostApi, setHostPortSecurity in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
   action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink, deleteBridge in ["host.network.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };

@@ -267,6 +267,29 @@ pub struct NetworkAttachment {
     pub mac: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queue_pairs: Option<u8>,
+    /// `false`: no port-security rules on this NIC's port
+    /// (spec/09-networking.md decision 19); setting it is `setPortSecurity`.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub port_security: bool,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
+}
+
+impl Default for NetworkAttachment {
+    fn default() -> Self {
+        Self {
+            network: String::new(),
+            mac: None,
+            queue_pairs: None,
+            port_security: true,
+        }
+    }
 }
 
 /// What the hypervisor needs for one NIC.

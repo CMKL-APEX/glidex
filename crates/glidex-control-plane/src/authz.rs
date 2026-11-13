@@ -1120,6 +1120,71 @@ mod tests {
         assert!(e.check(&own).denied_by("base.share-elsewhere"));
     }
 
+    /// spec/09-networking.md decision 19: lifting a NIC's port security is
+    /// a project owner's, on the VM and again on the network: its own
+    /// project's network, or a host network with host.network.
+    #[test]
+    fn port_security_is_an_owners_and_the_networks() {
+        let e = engine_with(&[
+            link(
+                "link.1",
+                "role.owner",
+                Ent::User("o".into()),
+                Ent::Project("pa".into()),
+            ),
+            link(
+                "link.2",
+                "role.editor",
+                Ent::User("o".into()),
+                Ent::Project("pb".into()),
+            ),
+            link(
+                "link.3",
+                "role.net-admin",
+                Ent::User("n".into()),
+                Ent::Cluster,
+            ),
+        ]);
+        let mut es = base_entities();
+        es.user("o", false, &[]).user("n", false, &[]);
+        es.in_project(Ent::Vm("va".into()), "pa");
+        es.in_project(Ent::Vm("vb".into()), "pb");
+        es.network("pnet", Some("pa"), false, &[], &[], &[]);
+        es.network("bnet", Some("pb"), false, &[], &[], &[]);
+        es.network("hostnet", None, true, &[], &[], &[]);
+        let q = |p: &str, a: &str, r: Ent| tq(Ent::User(p.into()), a, r, auth(0), es.clone());
+        let ok = |p: &str, a: &str, r: Ent| e.check(&q(p, a, r)).allowed;
+        // On the VM (or the project, at create): the owner, not an editor.
+        assert!(ok("o", "setPortSecurity", Ent::Vm("va".into())));
+        assert!(ok("o", "setPortSecurity", Ent::Project("pa".into())));
+        assert!(!ok("o", "setPortSecurity", Ent::Vm("vb".into())));
+        assert!(!ok("o", "setPortSecurity", Ent::Project("pb".into())));
+        // On the network: its own project's owner only.
+        assert!(ok("o", "setPortSecurity", Ent::Network("pnet".into())));
+        assert!(!ok("o", "setPortSecurity", Ent::Network("bnet".into())));
+        // A host network: never with a project role; host.network's.
+        assert!(
+            e.check(&q("o", "setPortSecurity", Ent::Network("hostnet".into())))
+                .denied_by("base.port-security-project-network")
+        );
+        assert!(!ok(
+            "o",
+            "setHostPortSecurity",
+            Ent::Network("hostnet".into())
+        ));
+        assert!(ok(
+            "n",
+            "setHostPortSecurity",
+            Ent::Network("hostnet".into())
+        ));
+        assert!(
+            e.check(&q("n", "setHostPortSecurity", Ent::Network("pnet".into())))
+                .denied_by("base.project-network-private")
+        );
+        // A net-admin alone doesn't set it on a VM.
+        assert!(!ok("n", "setPortSecurity", Ent::Vm("va".into())));
+    }
+
     /// D25: host networks and devices granted to a tenant reach each of its
     /// projects; project networks are shared within their tenant only.
     #[test]

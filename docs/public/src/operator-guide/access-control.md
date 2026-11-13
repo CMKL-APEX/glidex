@@ -98,7 +98,7 @@ Given on one project. Each includes the one above it.
 | `viewer` | See the project, its VMs, disks and usage. |
 | `operator` | Also start, stop and pause VMs, and open their consoles. |
 | `editor` | Also create, change and delete VMs and disks, manage credentials, and attach networks. |
-| `owner` | Also manage the project's bindings and service-account tokens, give a VM one of its service accounts, manage its networks and network sharing, and read its audit log. |
+| `owner` | Also manage the project's bindings and service-account tokens, give a VM one of its service accounts, manage its networks and network sharing, turn a NIC's port security off, and read its audit log. |
 
 ### Host roles
 
@@ -519,6 +519,8 @@ Actions of these features, and who has them out of the box:
 | `manageTenantDevicePools` | `Glidex::Tenant` | `tenant-admin`. |
 | `syncConnector` | the directory | `directory-admin`. |
 | `confirmConnectorSync` | the directory | `directory-admin`, with a recent login; applying a sync the safety stop blocked needs it as well as `syncConnector`. |
+| `setPortSecurity` | `Glidex::Vm` (the project, at create), and the project's own `Glidex::Network` | `owner` of the VM's project and of the network's. Checked when a NIC's `port_security` is set to `false`, or changed (see [Port security](../user-guide/networks.md#port-security)). On a host network it is refused (base policy `base.port-security-project-network`): that side is `setHostPortSecurity`. |
+| `setHostPortSecurity` | a host `Glidex::Network` | `net-admin`. With `setPortSecurity` on the VM, for a NIC on a host network. Refused on a project network (base policy `base.project-network-private`). |
 | `useServiceAccount` | `Glidex::Project` (the service account's) | `owner` of that project (so `tenant-admin` and `system-admin` too); `context.project` is the VM's. Checked when a VM is given a service account (see [Workload identity](../user-guide/vms.md#workload-identity)). One of another tenant is always refused (base policy `base.service-account-same-tenant`). |
 
 `system-admin` has every host role above. A PCI device is

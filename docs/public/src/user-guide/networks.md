@@ -200,15 +200,39 @@ list. See [Virtual machines](vms.md#networks).
   in the guest.
 - **Isolated** (single host): no DHCP; configure addresses in the guest.
 
-On a single host's networks, a NIC sends only from its own MAC. On NAT
-networks it also sends only from its own address (DHCP before it has
-one passes). On NAT and isolated networks a guest can't answer DHCP
-for other guests or send IPv6 router advertisements. Traffic that
-doesn't pass is dropped at the VM's port.
 
 NAT networks are IPv4 only. The address of each NIC shows in the VM's
 details: **Network** on its page in the web UI, `NIC <n>` in
 `gxctl get <vm>`, `nics[].ipv4` in the API.
+
+## Port security
+
+On a single host's networks, a NIC sends only from its own MAC. On NAT
+networks it also sends only from its own address (DHCP before it has
+one passes). On NAT and isolated networks a guest can't answer DHCP
+for other guests or send IPv6 router advertisements. Traffic that
+doesn't pass is dropped at the VM's port. (Cluster networks have OVN's
+port security: a NIC sends only from its own MAC and address.)
+
+A VM that forwards other hosts' traffic, such as a router or a
+firewall, needs a NIC without these checks: `port_security: false` on
+the NIC.
+
+```bash
+gxctl attach-network fw lab --no-port-security
+```
+
+```json
+{ "networks": [ { "network": "lab", "port_security": false } ] }
+```
+
+Setting it to `false`, or changing it on a VM's NIC, takes
+`setPortSecurity`: an `owner` of the VM's project, and, for a project
+network, of the network's project as well; for a host network, also
+`net-admin` (`setHostPortSecurity`). An `editor` attaches NICs but can't
+turn their checks off. Cluster networks refuse it. The VM's NICs show
+`port_security` (`gxctl get` prints **port security off**). Like other
+NIC changes, on a running VM it applies at the next start.
 
 ## The host from a NAT network
 
