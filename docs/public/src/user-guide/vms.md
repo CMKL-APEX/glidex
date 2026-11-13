@@ -880,17 +880,18 @@ elastic.
 
 How the range is used depends on the hypervisor:
 
-- **Pylon.** The guest has all `max_vcpus` and keeps them, but starts
-  with only `min_vcpus` running (at least 1). `pylond`, the host's core
-  arbiter, parks the vCPUs the guest doesn't need and wakes them on
-  demand, between `min_vcpus` and `max_vcpus`, in microseconds and
-  without CPU hotplug. It learns the guest's demand from
-  `pylon-guest-agent` in the guest; without the agent every vCPU keeps
-  running and `pylond` manages none of them. Glidex installs the agent
-  through cloud-init at the VM's first boot (`/usr/local/sbin/pylon-guest-agent`,
-  service `pylon-guest-agent`). For an image without cloud-init, copy
-  the agent from the host (`/usr/local/share/glidex/pylon-guest-agent`)
-  into the guest and run it as root with `--cpu 0`. So an elastic Pylon VM's
+- **Pylon.** The guest has all `max_vcpus` and keeps them. `pylond`,
+  the host's core arbiter, parks the vCPUs the guest doesn't need and
+  wakes them on demand, between `min_vcpus` and `max_vcpus`, in
+  microseconds and without CPU hotplug. It does so only on a host where
+  Pylon's `scx_pylon` scheduler runs, where a parked vCPU wakes when the
+  guest sends it an interrupt: there the guest starts with `min_vcpus`
+  running (at least 1), and Glidex installs `pylon-guest-agent`, which
+  tells `pylond` the guest's demand, through cloud-init at the first
+  boot (`/usr/local/sbin/pylon-guest-agent`, service
+  `pylon-guest-agent`). On other hosts every vCPU runs all the time and
+  `pylond` manages none of them: a guest stalls on vCPUs parked without
+  that wake-up. So an elastic Pylon VM's
   `vcpu_count` is always its `max_vcpus`: Glidex sets it, and the web UI
   and `gxctl` show it so. `lscpu` in the guest shows `max_vcpus` CPUs.
 - **Cloud Hypervisor and QEMU.** The guest boots with `vcpu_count`
