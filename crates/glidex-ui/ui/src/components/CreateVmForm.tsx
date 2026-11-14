@@ -3,7 +3,7 @@ import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPoo
 import type { PciPoolJson } from "../gen/glidex/cluster/v1/cluster_pb";
 import { Link } from "react-router-dom";
 import type { ApiToken, CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwareFor, formatBytes, imageState, isDiskImage, isKernel, networkModeLabel, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwareFor, formatBytes, imageState, isDiskImage, isClusterNetwork, isKernel, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
 import { hostOf, useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
@@ -53,6 +53,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [serviceAccounts, setServiceAccounts] = useState<ApiToken[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
+  /** Selected networks whose NIC gets no port security (decision 19). */
+  const [unchecked, setUnchecked] = useState<string[]>([]);
   const [kernelPath, setKernelPath] = useState("");
   const [initrdPath, setInitrdPath] = useState("");
   const [kernelSource, setKernelSource] = useState<KernelSource>("image");
@@ -293,7 +295,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         credential: seeded && credential ? credential : undefined,
         service_account: serviceAccount || undefined,
         networks:
-          selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
+          selectedNetworks.length > 0
+            ? selectedNetworks.map((network) =>
+                unchecked.includes(network) ? { network, port_security: false } : { network },
+              )
+            : undefined,
         rootfs_path: rootSource === "path" ? rootfsPath : undefined,
         image: rootSource === "image" ? image : undefined,
         root_disk_size_gib: rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
@@ -669,6 +675,29 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               </label>
             ))}
           </div>
+          {selectedNetworks.some((id) => networks.some((n) => n.id === id && !isClusterNetwork(n))) && (
+            <div className="mt-2 flex flex-wrap gap-3">
+              {networks
+                .filter((n) => selectedNetworks.includes(n.id) && !isClusterNetwork(n))
+                .map((n) => (
+                  <label key={n.id} className="flex items-center space-x-2 text-xs text-gray-600">
+                    <input
+                      type="checkbox"
+                      checked={unchecked.includes(n.id)}
+                      onChange={(e) =>
+                        setUnchecked((cur) =>
+                          e.target.checked ? [...cur, n.id] : cur.filter((x) => x !== n.id),
+                        )
+                      }
+                    />
+                    <span>
+                      No port security on <span className="font-mono">{n.name}</span> (a router or firewall VM;
+                      a project owner's)
+                    </span>
+                  </label>
+                ))}
+            </div>
+          )}
           <p className="mt-1 text-xs text-gray-500">
             One NIC per selected network, in this order. Manage networks on the
             Networking page.

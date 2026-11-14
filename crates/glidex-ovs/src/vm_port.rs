@@ -35,10 +35,22 @@ pub struct VmPortSpec {
     /// (spec/14-clustering.md §11.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ovn_lport: Option<String>,
+    /// `false`: no port-security rules on this port (spec/09-networking.md
+    /// decision 19), for a VM that forwards others' traffic.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub port_security: bool,
 }
 
 fn default_queue_pairs() -> u8 {
     1
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl VmPortSpec {
@@ -297,6 +309,7 @@ mod tests {
             mtu: None,
             queue_pairs: 1,
             ovn_lport: None,
+            port_security: true,
         }
     }
 

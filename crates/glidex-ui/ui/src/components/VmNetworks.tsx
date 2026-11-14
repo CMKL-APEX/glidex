@@ -73,6 +73,14 @@ export default function VmNetworks({
             </span>
             <span className="text-gray-500">{nic.mac}</span>
             <span className={nic.ipv4 ? "text-green-700" : "text-gray-400"}>{nic.ipv4 ?? "no address"}</span>
+            {nic.port_security === false && (
+              <span
+                className="px-1.5 py-0.5 text-xs font-sans text-amber-800 bg-amber-50 rounded"
+                title="This NIC's port isn't checked: it may send from any MAC or address"
+              >
+                port security off
+              </span>
+            )}
             {canDetach && (
               <button className={`${button} font-sans`} disabled={busy !== null || !!vm.deleting} onClick={() => detach(nic)}>
                 {busy === nic.mac ? "Removing…" : "Detach"}

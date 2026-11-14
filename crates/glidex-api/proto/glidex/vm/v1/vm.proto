@@ -285,6 +285,10 @@ message NetworkAttachment {
   // Filled in at create time (derived from the VM id) if absent.
   optional string mac = 2;
   optional uint32 queue_pairs = 3 [json_name = "queue_pairs"];
+  // Absent: true. False takes the port-security checks off this NIC's port
+  // on a host network (spec/09-networking.md decision 19); setting it or
+  // changing it needs `setPortSecurity`.
+  optional bool port_security = 4 [json_name = "port_security"];
 }
 
 // A NIC as last seen.
@@ -296,6 +300,8 @@ message Nic {
   optional string ipv4 = 4;
   // The network's name, when the caller can see the network.
   optional string network_name = 5 [json_name = "network_name"];
+  // Whether the NIC's port is checked (spec/09-networking.md decision 19).
+  optional bool port_security = 6 [json_name = "port_security"];
 }
 
 message Vm {
@@ -741,6 +747,9 @@ message AttachNetworkRequest {
   optional string mac = 3;
   optional uint32 queue_pairs = 4 [json_name = "queue_pairs"];
   optional uint32 wait_secs = 5 [json_name = "wait_secs"];
+  // False: no port-security checks on the new NIC's port; needs
+  // `setPortSecurity`.
+  optional bool port_security = 6 [json_name = "port_security"];
 }
 message AttachNetworkResponse {
   Vm vm = 1;

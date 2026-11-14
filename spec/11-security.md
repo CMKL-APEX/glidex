@@ -632,6 +632,10 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action deleteProjectNetwork in ["network.manage"]
     appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
+  // A NIC's port security off or changed (09-networking.md decision 19):
+  // on the VM (the project, at create) and on a project network.
+  action setPortSecurity in ["network.manage"]
+    appliesTo { principal: [User, Token], resource: [Vm, Project, Network], context: Ctx };
   // Source side, on the network; context.project is the target project.
   action offerNetworkShare, unshareNetwork in ["network.share"]
     appliesTo { principal: [User, Token], resource: [Network], context: ProjectCtx };
@@ -647,8 +651,8 @@ namespace Glidex {
   // readSystemStatus: GET /system/reconcile (12-reconciliation.md §12.5).
   action readOvsStatus, listBridges, listUplinks, listPciDevices, readSystemStatus in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
-  action createNetwork, deleteNetwork, grantNetwork, createBridge, ensureUplink
-    in ["host.network"]
+  action createNetwork, deleteNetwork, grantNetwork, createBridge, ensureUplink,
+         setHostPortSecurity in ["host.network"]
     appliesTo { principal: [User, Token], resource: [Host, Network], context: Ctx };
   action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink,
          deleteBridge in ["host.network.critical"]
@@ -703,11 +707,11 @@ Rules for the schema:
 | `credential.read` · `credential.write` | project | Guest credentials (SSH keys are only returned with `credential.read`) |
 | `network.use` | project | Attach VMs to networks granted to the project |
 | `project.members` | project | Role links and service-account tokens in the project |
-| `network.manage` | project | Create and delete the project's own NAT and isolated networks |
+| `network.manage` | project | Create and delete the project's own NAT and isolated networks; turn a NIC's port security off (`setPortSecurity`, 09-networking.md decision 19) |
 | `network.share` | project | Offer and end shares of the project's networks; accept and leave shares offered to the project (§6.2.1) |
 | `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /host/topology` and `GET /nodes/{id}/topology` (`readHostTopology`), `GET /system/reconcile` (`readSystemStatus`) |
 | `host.devices` | host | `usePciDevice`, `usePciPool` (a `PciPool` in the cluster, granted by `pci.allow` entries with `pool`, policy `base.pci-pool-grant`); `prepareDevice`, `releaseDevice`, `cordonDevice` (`POST /nodes/{id}/devices/{address}/prepare|release|cordon|uncordon`, 22-host-topology.md §5.3–5.4); `setSriovVfs` (`POST /nodes/{id}/devices/{pf}/sriov`, §10.1) |
-| `host.network` | host | Host networks (create, delete, grant), bridges, uplinks |
+| `host.network` | host | Host networks (create, delete, grant), bridges, uplinks; a NIC's port security off on a host network (`setHostPortSecurity`) |
 | `host.network.critical` | host | OVS install, DPDK init, confirmed uplinks (IP migration), uplink commit and delete, bridge delete. Subject to step-up. |
 | `host.devices` | host | PCI grants, any PCI device regardless of grants |
 | `host.paths` | host | Boot and disk paths outside managed directories (§7.4) |
@@ -826,8 +830,13 @@ when { resource.grants.contains(context.project) };
 // Project networks are never opened up by net-admin grants; sharing
 // them takes the two-sided offer/accept of §6.2.1.
 @id("base.project-network-private")
-forbid (principal, action == Glidex::Action::"grantNetwork", resource)
+forbid (principal, action in [Glidex::Action::"grantNetwork",
+                              Glidex::Action::"setHostPortSecurity"], resource)
 when { resource has project };
+// A project role lifts port security on its own networks only.
+@id("base.port-security-project-network")
+forbid (principal, action == Glidex::Action::"setPortSecurity", resource is Glidex::Network)
+unless { resource has project };
 @id("base.project-network-only")
 forbid (principal, action in [Glidex::Action::"deleteProjectNetwork",
                               Glidex::Action::"offerNetworkShare",
@@ -873,12 +882,12 @@ allow.**
 
 | API call | Cedar requests |
 |---|---|
-| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `useServiceAccount` on the service account's project if one is given; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
+| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `useServiceAccount` on the service account's project if one is given; `attachNetwork` on the Project and `useNetwork` on each network if any; for a NIC with `port_security: false`, `setPortSecurity` on the Project and on its network (a host network: `setHostPortSecurity`); `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/extract-kernel` | `readVm`, then `updateVm` on the Vm (23-kernel-boot.md §10.5) |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
-| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `name` → `updateVm` (an owned root disk renamed with it needs nothing more, 12-reconciliation.md §7.7); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
-| `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
+| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`, a NIC whose `port_security` differs from the VM's (a new NIC: from `true`) → `setPortSecurity` on the Vm and on its network (a host network: `setHostPortSecurity`); `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `name` → `updateVm` (an owned root disk renamed with it needs nothing more, 12-reconciliation.md §7.7); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
+| `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network; with `port_security: false`, `setPortSecurity` on the Vm and on the network (a host network: `setHostPortSecurity`) |
 | `DELETE /vms/{id}/networks/{network}` | `detachNetwork` on the Vm |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 

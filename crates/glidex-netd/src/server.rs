@@ -1200,7 +1200,7 @@ impl Netd {
     ) -> Result<Option<glidex_ovs::port_security::Checks>, OvsError> {
         use glidex_ovs::port_security::{Checks, Mode};
         let spec = &record.spec;
-        if spec.ovn_lport.is_some() {
+        if spec.ovn_lport.is_some() || !spec.port_security {
             return Ok(None);
         }
         let mode = match record.ipv4 {
@@ -1219,9 +1219,14 @@ impl Netd {
     fn install_rules(&self, record: &VmPortRecord) -> Result<(), OvsError> {
         let spec = &record.spec;
         let checks = self.port_checks(record)?;
-        if let Some(c) = &checks {
-            let cookie = glidex_ovs::port_security::cookie(&spec.vm_id, spec.nic_index)?;
-            glidex_ovs::port_security::apply(self.ex(), &spec.bridge, &record.port, cookie, c)?;
+        match &checks {
+            Some(c) => {
+                let cookie = glidex_ovs::port_security::cookie(&spec.vm_id, spec.nic_index)?;
+                glidex_ovs::port_security::apply(self.ex(), &spec.bridge, &record.port, cookie, c)?;
+            }
+            // `port_security: false` (decision 19): none, also when the
+            // port had them before.
+            None => self.remove_rules(record)?,
         }
         if let Some(i) = record.metadata_index {
             let mac = spec.mac.to_ascii_lowercase();

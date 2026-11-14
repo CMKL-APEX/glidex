@@ -158,6 +158,7 @@ fn attachment_of(a: &pb::NetworkAttachment) -> m::NetworkAttachment {
         network: a.network.clone(),
         mac: a.mac.clone(),
         queue_pairs: a.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
+        port_security: a.port_security.unwrap_or(true),
     }
 }
 
@@ -206,6 +207,7 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
                     mac: a.mac.clone().unwrap_or_default(),
                     port: live.and_then(|n| n.port.clone()),
                     ipv4: live.and_then(|n| n.ipv4).map(|ip| ip.to_string()),
+                    port_security: Some(a.port_security),
                     ..Default::default()
                 }
             })
@@ -860,6 +862,9 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
                 let mut es = pes.clone();
                 let e = crate::api::add_network(&mut es, &n);
                 call.require_action("useNetwork", e, es, with_project)?;
+                if att.port_security == Some(false) {
+                    require_port_security(call, pent.clone(), pes.clone(), &n)?;
+                }
             }
         }
     }
@@ -1215,6 +1220,27 @@ fn check_service_account(
     Ok(())
 }
 
+/// A NIC's port security lifted or put back (spec/09-networking.md
+/// decision 19, §9.1): `setPortSecurity` on the VM (`vm`: the project, at
+/// create), and again on the network: on its project for a project
+/// network, `setHostPortSecurity` for a host network. A project can't
+/// lift the checks on a network another project owns.
+fn require_port_security(
+    call: &Call,
+    vm: Ent,
+    vm_es: EntitySet,
+    n: &crate::network::Network,
+) -> ServiceResult<()> {
+    call.require_action("setPortSecurity", vm, vm_es, &[])?;
+    let mut es = EntitySet::new();
+    let e = crate::api::add_network(&mut es, n);
+    match &n.project {
+        Some(_) => call.require_action("setPortSecurity", e, es, &[])?,
+        None => call.require_action("setHostPortSecurity", e, es, &[])?,
+    }
+    Ok(())
+}
+
 /// Authorized per changed field (§12.1): power → start/stop/pauseVm,
 /// devices → attach/detachDevice + usePciDevice, data disks →
 /// attach/detachDisk + useDisk, networks → attach/detachNetwork +
@@ -1367,6 +1393,26 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
                 .any(|b| !new.iter().any(|(id, _)| id == &b.network))
             {
                 call.require_action("detachNetwork", e.clone(), es.clone(), &[])?;
+            }
+            // A NIC whose port security differs from what the VM has (a
+            // new NIC: from the default, on): `setPortSecurity`. A NIC is
+            // the same one by network and MAC.
+            for (a, (id, n)) in nets.iter().zip(&new) {
+                let had = cur
+                    .networks
+                    .iter()
+                    .find(|b| {
+                        &b.network == id
+                            && a.mac.is_some()
+                            && b.mac.as_deref().map(str::to_ascii_lowercase)
+                                == a.mac.as_deref().map(str::to_ascii_lowercase)
+                    })
+                    .is_none_or(|b| b.port_security);
+                if a.port_security != had
+                    && let Some(n) = n
+                {
+                    require_port_security(call, e.clone(), es.clone(), n)?;
+                }
             }
         }
     }
@@ -1702,10 +1748,15 @@ pub async fn attach_network(call: &Call, req: pb::AttachNetworkRequest) -> Servi
         es,
         &[("project", Ent::Project(vm.project.clone()))],
     )?;
+    if req.port_security == Some(false) {
+        let (ve, ves) = vm_entities(&vm);
+        require_port_security(call, ve, ves, &n)?;
+    }
     let att = m::NetworkAttachment {
         network: n.id,
         mac: req.mac,
         queue_pairs: req.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
+        port_security: req.port_security.unwrap_or(true),
     };
     let vm = call
         .manager()

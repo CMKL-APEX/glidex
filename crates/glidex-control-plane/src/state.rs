@@ -2319,6 +2319,17 @@ impl VmManager {
                         att.network
                     )));
                 }
+                // OVN sets a cluster port's port security
+                // (spec/14-clustering.md §11.4); decision 19 lifts only
+                // the host bridges' rules (spec/09-networking.md §9.1).
+                Some(n)
+                    if !att.port_security && n.scope == crate::network::NetworkScope::Cluster =>
+                {
+                    return Err(invalid(format!(
+                        "port_security can be turned off only on a host's networks, not on cluster network '{}'",
+                        att.network
+                    )));
+                }
                 Some(_) => {}
             }
             if let Some(mac) = &att.mac {
@@ -6295,11 +6306,13 @@ mod tests {
                 network: "a".into(),
                 mac: None,
                 queue_pairs: None,
+                port_security: true,
             },
             NetworkAttachment {
                 network: "b".into(),
                 mac: None,
                 queue_pairs: None,
+                port_security: true,
             },
         ];
         let first = derived(0);

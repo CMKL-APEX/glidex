@@ -1814,3 +1814,232 @@ async fn a_node_network_may_be_made_for_another_node() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
+
+/// spec/09-networking.md decision 19: `port_security: false` on a NIC
+/// needs `setPortSecurity` (a project owner's) and, on a host network,
+/// `setHostPortSecurity` (a net-admin's); an editor attaches NICs but
+/// can't lift their checks. The VM shows the value on its NICs.
+#[tokio::test(flavor = "multi_thread")]
+async fn port_security_off_needs_its_permission() {
+    use glidex_control_plane::api::App;
+    use glidex_control_plane::auth::{AuthService, store::TokenKind};
+    use glidex_control_plane::authz::Ent;
+    use glidex_control_plane::config::Config;
+
+    let h = harness(true);
+    let pa = h
+        .manager
+        .projects()
+        .create("pa", String::new(), None)
+        .unwrap()
+        .id;
+    // As the local administrator (the unauthenticated test router).
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab", "all_projects": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pa}/networks"),
+        Some(json!({"name": "pnet", "mode": "NETWORK_MODE_ISOLATED"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let dir = TempDir::new().unwrap();
+    let mut cfg = Config::default();
+    cfg.authz.policy_files_dir = dir.path().join("policies");
+    let auth = AuthService::new(h.manager.database(), cfg).unwrap();
+    let app = Arc::new(App {
+        manager: h.manager.clone(),
+        auth,
+    });
+    let router = glidex_control_plane::api::router(app.clone());
+    let user = |name: &str| {
+        let id = app
+            .auth
+            .store
+            .user_for_identity("pam", name, name, None, true)
+            .unwrap()
+            .unwrap()
+            .id;
+        let token = app
+            .auth
+            .create_token(
+                "t",
+                TokenKind::Personal { owner: id.clone() },
+                &id,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .0;
+        (id, token)
+    };
+    let link = |role: &str, who: &str, on: Ent| {
+        if on == Ent::Cluster {
+            app.auth
+                .tenants
+                .add_member(
+                    glidex_control_plane::tenants::ADMIN_TENANT,
+                    Ent::User(who.into()),
+                    "test",
+                )
+                .unwrap();
+        }
+        app.auth
+            .add_link(role, Ent::User(who.into()), on, "test")
+            .unwrap();
+    };
+    let (owner, ot) = user("owner");
+    let (editor, et) = user("editor");
+    link("role.owner", &owner, Ent::Project(pa.clone()));
+    link("role.editor", &editor, Ent::Project(pa.clone()));
+    for u in [&owner, &editor] {
+        link("grant.host-paths", u, Ent::Cluster);
+    }
+    let call = |method: &'static str, path: String, body: Value, token: String| {
+        let router = router.clone();
+        async move {
+            let req = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let body = |name: &str, net: &str, ps: Option<bool>| {
+        let mut nic = json!({"network": net});
+        if let Some(ps) = ps {
+            nic["port_security"] = json!(ps);
+        }
+        let mut b = vm(name, json!([nic]));
+        b["project"] = json!(pa);
+        b
+    };
+
+    // An editor attaches NICs, checked as usual, but can't lift the checks.
+    let (s, v) = call("POST", "/vms".into(), body("e1", "pnet", None), et.clone()).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(vm_of(&v)["nics"][0]["port_security"], json!(true), "{v}");
+    let e1 = vm_id(&v);
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("e2", "pnet", Some(false)),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v.to_string().contains("setPortSecurity"), "{v}");
+
+    // The owner, on the project's own network.
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("o1", "pnet", Some(false)),
+        ot.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(vm_of(&v)["nics"][0]["port_security"], json!(false), "{v}");
+    let o1 = vm_id(&v);
+
+    // A host network takes host.network too.
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("o2", "lab", Some(false)),
+        ot.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v.to_string().contains("setHostPortSecurity"), "{v}");
+    link("role.net-admin", &owner, Ent::Cluster);
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("o2", "lab", Some(false)),
+        ot.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // Edits: changing the value is asked for; keeping it isn't.
+    let mac = |v: &Value| vm_of(v)["nics"][0]["mac"].as_str().unwrap().to_string();
+    let (_, cur) = request(&h.app, "GET", &format!("/vms/{e1}"), None).await;
+    let e1_mac = cur["vm"]["nics"][0]["mac"].as_str().unwrap().to_string();
+    let patch = |ps: bool, m: &str| json!({"change": {"networks": [{"network": "pnet", "mac": m, "port_security": ps}]}});
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{e1}"),
+        patch(false, &e1_mac),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{e1}"),
+        patch(true, &e1_mac),
+        et.clone(),
+    )
+    .await;
+    assert!(s.is_success(), "unchanged: {v}");
+    let (_, cur) = request(&h.app, "GET", &format!("/vms/{o1}"), None).await;
+    let o1_mac = mac(&cur);
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{o1}"),
+        patch(true, &o1_mac),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "putting the checks back is a change too: {v}"
+    );
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{o1}"),
+        patch(false, &o1_mac),
+        et.clone(),
+    )
+    .await;
+    assert!(s.is_success(), "unchanged: {v}");
+
+    // Attaching one more NIC without checks: the same.
+    let (s, v) = call(
+        "POST",
+        format!("/vms/{e1}/networks"),
+        json!({"network": "pnet", "port_security": false}),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = call(
+        "POST",
+        format!("/vms/{e1}/networks"),
+        json!({"network": "pnet", "port_security": false}),
+        ot.clone(),
+    )
+    .await;
+    assert!(s.is_success(), "{v}");
+    assert_eq!(vm_of(&v)["nics"][1]["port_security"], json!(false), "{v}");
+}
