@@ -230,7 +230,7 @@ fn port_spec(
     nic: u8,
     mac: String,
     queue_pairs: u8,
-    port_security: bool,
+    att: &crate::models::NetworkAttachment,
 ) -> VmPortSpec {
     let cluster = net.scope == crate::network::NetworkScope::Cluster;
     VmPortSpec {
@@ -248,7 +248,8 @@ fn port_spec(
         mtu: net.mtu,
         queue_pairs,
         ovn_lport: cluster.then(|| glidex_ovs::names::port_name(vm_id, nic).unwrap_or_default()),
-        port_security,
+        port_security: att.port_security,
+        allowed_addresses: att.allowed_addresses.clone(),
     }
 }
 
@@ -1616,14 +1617,7 @@ impl VmManager {
             }
             let queue_pairs =
                 nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
-            let spec = port_spec(
-                &vm.id,
-                &net,
-                i as u8,
-                mac.clone(),
-                queue_pairs,
-                att.port_security,
-            );
+            let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs, att);
             let netd = self.netd.clone();
             let res: AttachResult = blocking(move || netd.call(Op::AttachVmPort(spec))).await??;
             if let Some(n) = st.nics.iter_mut().find(|n| n.nic_index as usize == i) {
@@ -2213,7 +2207,7 @@ impl VmManager {
                 nic.nic_index,
                 nic.mac.clone(),
                 nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count),
-                att.port_security,
+                att,
             );
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();

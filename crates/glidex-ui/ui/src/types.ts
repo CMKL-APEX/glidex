@@ -154,6 +154,8 @@ export interface NicState {
   ipv4?: string;
   /** False: the NIC's port isn't checked (spec/09-networking.md decision 19). */
   port_security?: boolean;
+  /** Addresses it may also send from (decision 20). */
+  allowed_addresses?: string[];
 }
 
 /** A NIC's network for display: its name, else its id. */
@@ -295,7 +297,7 @@ export interface CreateVmRequest {
   /** A service account (token id) for its workload identity (spec/29-workload-identity.md W5). */
   service_account?: string;
   /** `port_security: false` needs `setPortSecurity` (spec/09-networking.md decision 19). */
-  networks?: { network: string; port_security?: boolean }[];
+  networks?: { network: string; port_security?: boolean; allowed_addresses?: string[] }[];
   rootfs_path?: string;
   /** Image id/name: glidex creates and owns a root disk from it. */
   image?: string;

@@ -3480,6 +3480,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
                 mac: None,
                 queue_pairs: None,
                 port_security: true,
+                allowed_addresses: vec![],
             },
         )
         .await
@@ -3596,6 +3597,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
                 mac: Some(new_mac.into()),
                 queue_pairs: None,
                 port_security: true,
+                allowed_addresses: vec![],
             },
         )
         .await

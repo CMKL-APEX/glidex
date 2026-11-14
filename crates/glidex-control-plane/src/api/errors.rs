@@ -149,6 +149,10 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
             StatusCode::CONFLICT,
             Json(ApiError::new("conflict", error.to_string())),
         ),
+        VmManagerError::Network(NetError::AddressRefused(_)) => (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Json(ApiError::new("address_refused", error.to_string())),
+        ),
         VmManagerError::Network(NetError::Ambiguous(_)) => (
             StatusCode::CONFLICT,
             Json(ApiError::new("ambiguous", error.to_string())),

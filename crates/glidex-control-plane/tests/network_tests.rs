@@ -2043,3 +2043,82 @@ async fn port_security_off_needs_its_permission() {
     assert!(s.is_success(), "{v}");
     assert_eq!(vm_of(&v)["nics"][1]["port_security"], json!(false), "{v}");
 }
+
+/// spec/09-networking.md decision 20: a NIC's `allowed_addresses` fit its
+/// network (a NAT network's subnet, IPv4 only), no two VMs' lists overlap
+/// on one network, and the VM shows them; refused with `422`.
+#[tokio::test(flavor = "multi_thread")]
+async fn allowed_addresses_fit_the_network_and_dont_overlap() {
+    let h = harness(true);
+    for (name, mode) in [
+        ("lab", "NETWORK_MODE_NAT"),
+        ("iso", "NETWORK_MODE_ISOLATED"),
+    ] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/networks",
+            Some(json!({"name": name, "mode": mode, "bridge": format!("gxbr-{name}")})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let nic = |net: &str, list: &[&str]| json!([{"network": net, "allowed_addresses": list}]);
+    let (s, v) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", nic("lab", &["10.88.0.100"]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        vm_of(&v)["nics"][0]["allowed_addresses"],
+        json!(["10.88.0.100"]),
+        "{v}"
+    );
+    let v1 = vm_id(&v);
+
+    for (list, why) in [
+        (&["10.88.0.96/28"][..], "overlaps"),
+        (&["10.99.0.1"][..], "outside"),
+        (&["fd00::1"][..], "IPv4 only"),
+        (&["10.88.0.7/24"][..], "host bits"),
+    ] {
+        let (s, v) = request(&h.app, "POST", "/vms", Some(vm("v2", nic("lab", list)))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{list:?}: {v}");
+        assert!(v.to_string().contains(why), "{why}: {v}");
+    }
+    // Another network is another space.
+    let (s, v) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v2", nic("iso", &["10.88.0.96/28", "fd00::/64"]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, v) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v3", nic("iso", &["fd00::9"]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+
+    // Edited with the VM's networks: no other permission (decision 20).
+    let (s, v) = request(
+        &h.app,
+        "PATCH",
+        &format!("/vms/{v1}"),
+        Some(json!({"change": {"networks": [{"network": "lab", "allowed_addresses": ["10.88.0.96/28"]}]}})),
+    )
+    .await;
+    assert!(s.is_success(), "{s} {v}");
+    assert_eq!(
+        vm_of(&v)["nics"][0]["allowed_addresses"],
+        json!(["10.88.0.96/28"]),
+        "{v}"
+    );
+}

@@ -271,6 +271,10 @@ pub struct NetworkAttachment {
     /// (spec/09-networking.md decision 19); setting it is `setPortSecurity`.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub port_security: bool,
+    /// Addresses or prefixes the NIC may send from besides its own
+    /// (spec/09-networking.md decision 20); empty: none given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_addresses: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -288,6 +292,7 @@ impl Default for NetworkAttachment {
             mac: None,
             queue_pairs: None,
             port_security: true,
+            allowed_addresses: Vec::new(),
         }
     }
 }

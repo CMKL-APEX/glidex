@@ -427,7 +427,7 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
     }
     for (i, nic) in vm.nics.iter().enumerate() {
         println!(
-            "  NIC {}:      {} {} {}{}{}",
+            "  NIC {}:      {} {} {}{}{}{}",
             i,
             nic.network_name.as_deref().unwrap_or(&nic.network).cyan(),
             nic.mac,
@@ -443,6 +443,11 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
                 " port security off".yellow().to_string()
             } else {
                 String::new()
+            },
+            if nic.allowed_addresses.is_empty() {
+                String::new()
+            } else {
+                format!(" allows {}", nic.allowed_addresses.join(", "))
             }
         );
     }
@@ -2116,14 +2121,15 @@ pub async fn disk(client: &ApiClient, attach: bool, args: &[&str]) {
     }
 }
 
-/// `attach-network <name|id> <network> [--mac <mac>] [--no-port-security]`
-/// and `detach-network <name|id> <network> [--mac <mac>]`: a NIC, by its
-/// network's name or id (and its MAC, among several on one network).
-/// `--no-port-security`: no checks on the new NIC's port
-/// (spec/09-networking.md decision 19).
+/// `attach-network <name|id> <network> [--mac <mac>] [--no-port-security]
+/// [--allow <addr>[,<addr>…]]` and `detach-network <name|id> <network>
+/// [--mac <mac>]`: a NIC, by its network's name or id (and its MAC, among
+/// several on one network). `--no-port-security`: no checks on the new
+/// NIC's port (spec/09-networking.md decision 19); `--allow`: its
+/// `allowed_addresses` (decision 20).
 pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
     let u = if attach {
-        "Usage: attach-network <name|id> <network> [--mac <mac>] [--no-port-security]"
+        "Usage: attach-network <name|id> <network> [--mac <mac>] [--no-port-security] [--allow <addr>[,<addr>...]]"
     } else {
         "Usage: detach-network <name|id> <network> [--mac <mac>]"
     };
@@ -2132,7 +2138,20 @@ pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
     }
     let mac = flag_value(args, "--mac").map(String::from);
     let no_port_security = attach && has_flag(args, "--no-port-security");
-    let pos = crate::admin::positional(args, &["--mac"]);
+    if attach && has_flag(args, "--allow") && flag_value(args, "--allow").is_none() {
+        return usage(u);
+    }
+    let allowed_addresses: Vec<String> = flag_value(args, "--allow")
+        .filter(|_| attach)
+        .map(|v| {
+            v.split(',')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(String::from)
+                .collect()
+        })
+        .unwrap_or_default();
+    let pos = crate::admin::positional(args, &["--mac", "--allow"]);
     let (Some(net), 2) = (pos.get(1).copied(), pos.len()) else {
         return usage(u);
     };
@@ -2149,6 +2168,7 @@ pub async fn network(client: &ApiClient, attach: bool, args: &[&str]) {
             network: net.to_string(),
             mac,
             port_security: no_port_security.then_some(false),
+            allowed_addresses,
             ..Default::default()
         })
         .await

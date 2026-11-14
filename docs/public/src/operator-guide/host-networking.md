@@ -299,6 +299,11 @@ sends (OVN ports have OVN's port security instead):
 | Isolated | from its own MAC; no DHCP server replies, no IPv6 router advertisements |
 | Bridged | from its own MAC |
 
+A NIC's `allowed_addresses` add addresses on NAT networks and, on
+isolated and bridged ones, make IP, ARP and IPv6 neighbour
+advertisements checked against the list. A NIC with `port_security:
+false` gets no rules. See [Port security](../user-guide/networks.md#port-security).
+
 `glidex-netd` adds the rules with the port and removes them with it.
 OVS keeps no OpenFlow rules across a restart of `ovs-vswitchd`: netd
 puts them back at its start and, within seconds, when they are gone.

@@ -16,8 +16,10 @@
 use crate::OvsError;
 use crate::exec::{Cmd, Exec, Program};
 use crate::names;
+use crate::net::Ipv4Net;
 use std::collections::BTreeSet;
-use std::net::Ipv4Addr;
+use std::fmt;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 /// The top 16 bits of every port-security cookie ("ps").
 pub const COOKIE_PREFIX: u64 = 0x7073 << 48;
@@ -28,6 +30,8 @@ pub const PORT_MASK: u64 = !0xff;
 
 /// Priorities, highest first. The metadata rule is at 200.
 const PRIO_DENY: u16 = 320;
+const PRIO_ALLOW_ND: u16 = 160;
+const PRIO_DENY_ND: u16 = 155;
 const PRIO_ALLOW_ADDR: u16 = 150;
 const PRIO_DENY_ADDR: u16 = 140;
 const PRIO_ALLOW_MAC: u16 = 130;
@@ -50,6 +54,137 @@ pub struct Checks {
     pub mode: Mode,
     /// The NIC's MAC, lower case.
     pub mac: String,
+    /// The NIC's `allowed_addresses` (decision 20); empty: none given.
+    pub allowed: Vec<AllowedAddress>,
+}
+
+/// At most this many `allowed_addresses` per NIC.
+pub const MAX_ALLOWED: usize = 16;
+
+/// One entry of a NIC's `allowed_addresses`: an IPv4 or IPv6 address, or
+/// a prefix (`10.0.0.0/29`), with no host bits set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AllowedAddress {
+    pub addr: IpAddr,
+    pub prefix: u8,
+}
+
+impl AllowedAddress {
+    pub fn parse(s: &str) -> Result<Self, OvsError> {
+        let bad = |why: &str| OvsError::invalid(format!("allowed address '{s}': {why}"));
+        let (a, p) = match s.split_once('/') {
+            Some((a, p)) => (a, Some(p)),
+            None => (s, None),
+        };
+        let addr: IpAddr = a.parse().map_err(|_| bad("not an IP address"))?;
+        let max = if addr.is_ipv4() { 32 } else { 128 };
+        let prefix = match p {
+            Some(p) => p
+                .parse::<u8>()
+                .ok()
+                .filter(|p| *p <= max)
+                .ok_or_else(|| bad("bad prefix length"))?,
+            None => max,
+        };
+        let me = Self { addr, prefix };
+        if me.network() != addr {
+            return Err(bad("host bits are set"));
+        }
+        if addr.is_unspecified() || addr.is_multicast() || addr.is_loopback() {
+            return Err(bad("not a unicast address"));
+        }
+        Ok(me)
+    }
+
+    fn bits(&self) -> u128 {
+        match self.addr {
+            IpAddr::V4(a) => u128::from(u32::from(a)),
+            IpAddr::V6(a) => u128::from(a),
+        }
+    }
+
+    fn width(&self) -> u8 {
+        if self.addr.is_ipv4() { 32 } else { 128 }
+    }
+
+    fn mask(&self) -> u128 {
+        let w = u32::from(self.width());
+        let host = w - u32::from(self.prefix);
+        let all = if w == 128 {
+            u128::MAX
+        } else {
+            (1u128 << w) - 1
+        };
+        all & !(if host == 128 {
+            u128::MAX
+        } else {
+            (1u128 << host) - 1
+        })
+    }
+
+    fn network(&self) -> IpAddr {
+        let n = self.bits() & self.mask();
+        match self.addr {
+            IpAddr::V4(_) => IpAddr::V4(Ipv4Addr::from(n as u32)),
+            IpAddr::V6(_) => IpAddr::V6(Ipv6Addr::from(n)),
+        }
+    }
+
+    /// Whether the two share an address.
+    pub fn overlaps(&self, other: &AllowedAddress) -> bool {
+        if self.addr.is_ipv4() != other.addr.is_ipv4() {
+            return false;
+        }
+        let m = self.mask() & other.mask();
+        self.bits() & m == other.bits() & m
+    }
+
+    pub fn contains(&self, ip: IpAddr) -> bool {
+        self.overlaps(&AllowedAddress {
+            addr: ip,
+            prefix: if ip.is_ipv4() { 32 } else { 128 },
+        })
+    }
+
+    /// Whether it lies inside `net` (an IPv6 entry never does).
+    pub fn within(&self, net: &Ipv4Net) -> bool {
+        match self.addr {
+            IpAddr::V4(a) => self.prefix >= net.prefix() && net.contains(a),
+            IpAddr::V6(_) => false,
+        }
+    }
+}
+
+impl fmt::Display for AllowedAddress {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if self.prefix == self.width() {
+            write!(f, "{}", self.addr)
+        } else {
+            write!(f, "{}/{}", self.addr, self.prefix)
+        }
+    }
+}
+
+/// A NIC's `allowed_addresses`, parsed: at most [`MAX_ALLOWED`], no two
+/// overlapping.
+pub fn parse_allowed(list: &[String]) -> Result<Vec<AllowedAddress>, OvsError> {
+    if list.len() > MAX_ALLOWED {
+        return Err(OvsError::invalid(format!(
+            "at most {MAX_ALLOWED} allowed addresses per NIC"
+        )));
+    }
+    let v: Vec<AllowedAddress> = list
+        .iter()
+        .map(|s| AllowedAddress::parse(s.trim()))
+        .collect::<Result<_, _>>()?;
+    for (i, a) in v.iter().enumerate() {
+        if let Some(b) = v[i + 1..].iter().find(|b| a.overlaps(b)) {
+            return Err(OvsError::invalid(format!(
+                "allowed addresses {a} and {b} overlap"
+            )));
+        }
+    }
+    Ok(v)
 }
 
 /// The checks cookie of `vm_id`'s NIC `nic`: the prefix, the 32 bits of
@@ -83,25 +218,75 @@ pub fn flows(ofport: u32, cookie: u64, checks: &Checks) -> Vec<String> {
         v.push(rule(PRIO_DENY, "udp,tp_src=67,", "drop"));
         v.push(rule(PRIO_DENY, "icmp6,icmp_type=134,", "drop"));
     }
+    // The IPv4 sources: on NAT the reservation and the list; elsewhere
+    // the list, when there is one (decision 20).
+    let listed = !checks.allowed.is_empty();
+    let mut v4: Vec<String> = Vec::new();
     if let Mode::Nat { address } = checks.mode {
-        v.push(rule(
-            PRIO_ALLOW_ADDR,
-            &format!("ip,dl_src={mac},nw_src={address},"),
-            "NORMAL",
-        ));
+        v4.push(address.to_string());
+    }
+    let v6: Vec<String> = checks
+        .allowed
+        .iter()
+        .filter(|a| a.addr.is_ipv6())
+        .map(|a| a.to_string())
+        .collect();
+    v4.extend(
+        checks
+            .allowed
+            .iter()
+            .filter(|a| a.addr.is_ipv4())
+            .map(|a| a.to_string()),
+    );
+    let ipv6_checked = listed && !matches!(checks.mode, Mode::Nat { .. });
+    if ipv6_checked {
+        // A neighbour advertisement claims only its own addresses (and
+        // link-local ones, which ND needs).
+        for t in v6.iter().map(String::as_str).chain(["fe80::/10"]) {
+            v.push(rule(
+                PRIO_ALLOW_ND,
+                &format!("icmp6,icmp_type=136,icmp_code=0,dl_src={mac},nd_target={t},"),
+                "NORMAL",
+            ));
+        }
+        v.push(rule(PRIO_DENY_ND, "icmp6,icmp_type=136,", "drop"));
+    }
+    if !v4.is_empty() || listed {
+        for a in &v4 {
+            v.push(rule(
+                PRIO_ALLOW_ADDR,
+                &format!("ip,dl_src={mac},nw_src={a},"),
+                "NORMAL",
+            ));
+        }
         // DHCP before the lease.
         v.push(rule(
             PRIO_ALLOW_ADDR,
             &format!("udp,dl_src={mac},nw_src=0.0.0.0,tp_dst=67,"),
             "NORMAL",
         ));
-        v.push(rule(
-            PRIO_ALLOW_ADDR,
-            &format!("arp,dl_src={mac},arp_spa={address},arp_sha={mac},"),
-            "NORMAL",
-        ));
+        for a in &v4 {
+            v.push(rule(
+                PRIO_ALLOW_ADDR,
+                &format!("arp,dl_src={mac},arp_spa={a},arp_sha={mac},"),
+                "NORMAL",
+            ));
+        }
+        if ipv6_checked {
+            // Link-local sources, and `::` for duplicate address detection.
+            for a in v6.iter().map(String::as_str).chain(["fe80::/10", "::"]) {
+                v.push(rule(
+                    PRIO_ALLOW_ADDR,
+                    &format!("ipv6,dl_src={mac},ipv6_src={a},"),
+                    "NORMAL",
+                ));
+            }
+        }
         v.push(rule(PRIO_DENY_ADDR, "ip,", "drop"));
         v.push(rule(PRIO_DENY_ADDR, "arp,", "drop"));
+        if ipv6_checked {
+            v.push(rule(PRIO_DENY_ADDR, "ipv6,", "drop"));
+        }
     }
     v.push(rule(PRIO_ALLOW_MAC, &format!("dl_src={mac},"), "NORMAL"));
     v
@@ -178,6 +363,7 @@ mod tests {
         Checks {
             mode,
             mac: MAC.into(),
+            allowed: vec![],
         }
     }
 
@@ -246,6 +432,113 @@ mod tests {
         );
     }
 
+    fn allowed(list: &[&str]) -> Vec<AllowedAddress> {
+        parse_allowed(&list.iter().map(|s| s.to_string()).collect::<Vec<_>>()).unwrap()
+    }
+
+    #[test]
+    fn allowed_addresses_parse_and_overlap() {
+        let a = |s: &str| AllowedAddress::parse(s);
+        assert_eq!(a("10.0.0.5").unwrap().to_string(), "10.0.0.5");
+        assert_eq!(a("10.0.0.8/29").unwrap().to_string(), "10.0.0.8/29");
+        assert_eq!(a("10.0.0.5/32").unwrap().to_string(), "10.0.0.5");
+        assert_eq!(a("fd00::5").unwrap().to_string(), "fd00::5");
+        assert_eq!(a("fd00::/64").unwrap().to_string(), "fd00::/64");
+        for bad in [
+            "10.0.0.9/29",
+            "10.0.0.0/33",
+            "nope",
+            "0.0.0.0",
+            "224.0.0.1",
+            "::1",
+            "fd00::1/64",
+            "",
+        ] {
+            assert!(a(bad).is_err(), "{bad}");
+        }
+        assert!(a("10.0.0.8/29").unwrap().overlaps(&a("10.0.0.12").unwrap()));
+        assert!(!a("10.0.0.8/29").unwrap().overlaps(&a("10.0.0.16").unwrap()));
+        assert!(a("fd00::/64").unwrap().overlaps(&a("fd00::9").unwrap()));
+        assert!(!a("fd00::/64").unwrap().overlaps(&a("10.0.0.1").unwrap()));
+        let net: Ipv4Net = "10.88.0.0/24".parse().unwrap();
+        assert!(a("10.88.0.64/26").unwrap().within(&net));
+        assert!(!a("10.88.0.0/23").unwrap().within(&net));
+        assert!(!a("10.89.0.1").unwrap().within(&net));
+        assert!(!a("fd00::1").unwrap().within(&net));
+        assert!(
+            a("10.0.0.8/29")
+                .unwrap()
+                .contains("10.0.0.9".parse().unwrap())
+        );
+        // A list: at most 16, none overlapping.
+        let many: Vec<String> = (1..=17).map(|i| format!("10.0.1.{i}")).collect();
+        assert!(parse_allowed(&many).is_err());
+        assert!(parse_allowed(&many[..16]).is_ok());
+        assert!(parse_allowed(&["10.0.0.8/29".into(), "10.0.0.9".into()]).is_err());
+    }
+
+    #[test]
+    fn nat_with_a_list_adds_its_addresses_to_the_reservation() {
+        let f = flows(
+            7,
+            C,
+            &Checks {
+                allowed: allowed(&["10.88.0.200", "10.88.0.208/29"]),
+                ..checks(Mode::Nat {
+                    address: Ipv4Addr::new(10, 88, 0, 2),
+                })
+            },
+        );
+        let has = |m: &str| f.iter().any(|x| x.contains(m));
+        for a in ["10.88.0.2", "10.88.0.200", "10.88.0.208/29"] {
+            assert!(
+                has(&format!("ip,dl_src={MAC},nw_src={a},actions=NORMAL")),
+                "{f:#?}"
+            );
+            assert!(
+                has(&format!("arp,dl_src={MAC},arp_spa={a},arp_sha={MAC},")),
+                "{f:#?}"
+            );
+        }
+        // IPv6 stays checked by MAC only on a NAT network.
+        assert!(!has("ipv6") && !has("nd_target"), "{f:#?}");
+    }
+
+    #[test]
+    fn isolated_and_bridged_with_a_list_check_ip_arp_and_nd() {
+        for mode in [Mode::Isolated, Mode::Bridged] {
+            let f = flows(
+                7,
+                C,
+                &Checks {
+                    allowed: allowed(&["192.168.1.10", "fd00::10"]),
+                    ..checks(mode)
+                },
+            );
+            let rules: Vec<&str> = f
+                .iter()
+                .map(|x| x.strip_prefix("cookie=0x70731a2b3c4d0100,").unwrap())
+                .collect();
+            let want = [
+                "priority=160,in_port=7,icmp6,icmp_type=136,icmp_code=0,dl_src=02:aa:bb:cc:dd:ee,nd_target=fd00::10,actions=NORMAL",
+                "priority=160,in_port=7,icmp6,icmp_type=136,icmp_code=0,dl_src=02:aa:bb:cc:dd:ee,nd_target=fe80::/10,actions=NORMAL",
+                "priority=155,in_port=7,icmp6,icmp_type=136,actions=drop",
+                "priority=150,in_port=7,ip,dl_src=02:aa:bb:cc:dd:ee,nw_src=192.168.1.10,actions=NORMAL",
+                "priority=150,in_port=7,udp,dl_src=02:aa:bb:cc:dd:ee,nw_src=0.0.0.0,tp_dst=67,actions=NORMAL",
+                "priority=150,in_port=7,arp,dl_src=02:aa:bb:cc:dd:ee,arp_spa=192.168.1.10,arp_sha=02:aa:bb:cc:dd:ee,actions=NORMAL",
+                "priority=150,in_port=7,ipv6,dl_src=02:aa:bb:cc:dd:ee,ipv6_src=fd00::10,actions=NORMAL",
+                "priority=150,in_port=7,ipv6,dl_src=02:aa:bb:cc:dd:ee,ipv6_src=fe80::/10,actions=NORMAL",
+                "priority=150,in_port=7,ipv6,dl_src=02:aa:bb:cc:dd:ee,ipv6_src=::,actions=NORMAL",
+                "priority=140,in_port=7,ip,actions=drop",
+                "priority=140,in_port=7,arp,actions=drop",
+                "priority=140,in_port=7,ipv6,actions=drop",
+                "priority=130,in_port=7,dl_src=02:aa:bb:cc:dd:ee,actions=NORMAL",
+            ];
+            let skip = if mode == Mode::Isolated { 2 } else { 0 };
+            assert_eq!(rules[skip..], want, "{mode:?}");
+        }
+    }
+
     #[test]
     fn upper_case_macs_are_matched_lower_case() {
         let f = flows(
@@ -254,6 +547,7 @@ mod tests {
             &Checks {
                 mode: Mode::Bridged,
                 mac: MAC.to_ascii_uppercase(),
+                allowed: vec![],
             },
         );
         assert!(f[0].contains("dl_src=02:aa:bb:cc:dd:ee"), "{f:?}");
@@ -331,7 +625,7 @@ mod tests {
     /// With the NAT checks, port A reaches B from its own MAC and address
     /// and not from another of either; a DHCP server reply and a router
     /// advertisement from A hit their drop rules; with the bridged checks
-    /// another address passes; without rules everything passes. Not run yet.
+    /// another address passes; without rules everything passes.
     #[test]
     #[ignore = "needs root and a running Open vSwitch; adds a bridge for the test"]
     fn with_open_vswitch() {
@@ -407,6 +701,7 @@ mod tests {
                 address: Ipv4Addr::new(10, 77, 0, 2),
             },
             mac: mac_a.into(),
+            allowed: vec![],
         };
 
         assert!(ping(), "no rules yet");
@@ -460,6 +755,7 @@ mod tests {
             &Checks {
                 mode: Mode::Bridged,
                 mac: mac_a.into(),
+                allowed: vec![],
             },
         )
         .unwrap();

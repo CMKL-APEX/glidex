@@ -289,6 +289,10 @@ message NetworkAttachment {
   // on a host network (spec/09-networking.md decision 19); setting it or
   // changing it needs `setPortSecurity`.
   optional bool port_security = 4 [json_name = "port_security"];
+  // IPv4 and IPv6 addresses or prefixes the NIC may send from besides its
+  // own (spec/09-networking.md decision 20), at most 16. Each must fit the
+  // network's subnet, and no two VMs' lists may overlap on one network.
+  repeated string allowed_addresses = 5 [json_name = "allowed_addresses"];
 }
 
 // A NIC as last seen.
@@ -302,6 +306,7 @@ message Nic {
   optional string network_name = 5 [json_name = "network_name"];
   // Whether the NIC's port is checked (spec/09-networking.md decision 19).
   optional bool port_security = 6 [json_name = "port_security"];
+  repeated string allowed_addresses = 7 [json_name = "allowed_addresses"];
 }
 
 message Vm {
@@ -750,6 +755,7 @@ message AttachNetworkRequest {
   // False: no port-security checks on the new NIC's port; needs
   // `setPortSecurity`.
   optional bool port_security = 6 [json_name = "port_security"];
+  repeated string allowed_addresses = 7 [json_name = "allowed_addresses"];
 }
 message AttachNetworkResponse {
   Vm vm = 1;
