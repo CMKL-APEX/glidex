@@ -67,8 +67,8 @@ glidex-api = { path = "../glidex-api" }
 # The hyperstor datastore driver (spec/24-storage.md §11.2): hyperstor's
 # cluster API client and its certificate helpers, from hyperstor's
 # repository, pinned (as hyperstor pins glidex's crates).
-hyperstor-api = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "1215411195212c09699396167dc8f3f9a5411f1d", features = ["client"] }
-hyperstor-pki = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "1215411195212c09699396167dc8f3f9a5411f1d" }
+hyperstor-api = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "bbf869c395d22c1e33fddf10efe5c12e61b5834d", features = ["client"] }
+hyperstor-pki = { git = "https://github.com/CMKL-APEX/hyperstor", rev = "bbf869c395d22c1e33fddf10efe5c12e61b5834d" }
 connectrpc = { version = "=0.9.1", default-features = false, features = ["json", "gzip", "axum", "client", "client-tls"] }
 connectrpc-health = "=0.9.0"
 # Server reflection on api.sock (spec/18-grpc.md §3), for grpcurl and buf curl.
@@ -96,6 +96,8 @@ time = "0.3"
 # The console WebSocket's tests (the browser's console).
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 glidex-api = { path = "../glidex-api", features = ["client"] }
+# A hyperstor cluster's API over pinned HTTPS for the storage relay's tests.
+glidex-trust = { path = "../glidex-trust", features = ["fake"] }
 mime = "0.3"
 
 [[bin]]

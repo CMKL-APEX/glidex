@@ -2123,6 +2123,7 @@ mod tests {
                 map: "m:1".into(),
                 pool: 1,
                 identity: None,
+                mgmt_url: None,
                 node_paths: Default::default(),
             },
             nodes: Vec::new(),

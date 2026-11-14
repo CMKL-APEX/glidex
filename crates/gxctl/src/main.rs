@@ -787,12 +787,12 @@ fn help_text() -> String {
     );
     line!(
         "  {} - Register a directory under /srv/glidex",
-        "datastore create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
+        "datastore create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F [--mgmt-url URL]) [--node-path NODE=P] [--nodes N,M] [--default] [--no-overcommit]"
             .cyan()
     );
     line!(
-        "  {} - Change paths, nodes, the default, overcommit",
-        "datastore set <name|id> [--node-path NODE=P] [--nodes N,M|--all-nodes] [--default|--no-default] [--overcommit|--no-overcommit]"
+        "  {} - Change paths, nodes, the default, overcommit, a hyperstor datastore's management UI",
+        "datastore set <name|id> [--node-path NODE=P] [--nodes N,M|--all-nodes] [--default|--no-default] [--overcommit|--no-overcommit] [--mgmt-url URL]"
             .cyan()
     );
     line!(

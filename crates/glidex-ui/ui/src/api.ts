@@ -1483,6 +1483,58 @@ export type TenantDevicePool = TenantDevicePoolJson;
 /** Another organization's cluster the tenant uses, with its last report
  *  (spec/19-tenancy.md D65, D70). */
 export type TenantCluster = TenantClusterJson;
+
+/** A hyperstor cluster's storage as the relay gives it (spec/19-tenancy.md
+ *  D86): its own messages, as Connect's JSON. Only the fields shown. */
+export interface HsVolume {
+  id?: string;
+  name?: string;
+  pool?: number;
+  size?: U64;
+  tenant?: number;
+  project?: number;
+  project_name?: string;
+  attached_by?: string;
+}
+export interface HsBucket {
+  name?: string;
+  tenant?: number;
+  project?: number;
+  project_name?: string;
+  counted?: boolean;
+  objects?: U64;
+  bytes?: U64;
+}
+export interface HsKey {
+  id?: string;
+  tenant?: number;
+  description?: string;
+  project?: number;
+}
+export interface HsProject {
+  id?: number;
+  name?: string;
+  glidex_id?: string;
+  is_default?: boolean;
+}
+export interface HsTenant {
+  id?: number;
+  name?: string;
+  glidex_id?: string;
+  default_project?: number;
+  projects?: HsProject[];
+}
+/** The calls the relay forwards; nothing else. */
+export type StorageCall =
+  | "hyperstor.v1.ClusterService/ListVolumes"
+  | "hyperstor.v1.S3Service/ListS3Buckets"
+  | "hyperstor.v1.S3Service/ListS3Keys"
+  | "hyperstor.v1.TenantService/ListTenants"
+  | "auth/whoami";
+/** One call to cluster `cluster` through this server's storage relay, as
+ *  the signed-in person (D86): the browser never talks to the cluster. */
+export const storageCall = <T>(tenant: string, cluster: string, call: StorageCall, body: unknown = {}) =>
+  request<T>("POST", `/tenants/${encodeURIComponent(tenant)}/clusters/${encodeURIComponent(cluster)}/storage/${call}`, body);
 export const listTenantClusters = (id: string) =>
   rpc(TenantService.method.listTenantClusters, { id }).then((r) => (r.clusters ?? []) as TenantCluster[]);
 /** Opt the tenant in to another organization's cluster with the offer its

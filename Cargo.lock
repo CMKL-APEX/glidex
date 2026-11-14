@@ -1947,7 +1947,7 @@ dependencies = [
 [[package]]
 name = "hyperstor-api"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/hyperstor?rev=1215411195212c09699396167dc8f3f9a5411f1d#1215411195212c09699396167dc8f3f9a5411f1d"
+source = "git+https://github.com/CMKL-APEX/hyperstor?rev=bbf869c395d22c1e33fddf10efe5c12e61b5834d#bbf869c395d22c1e33fddf10efe5c12e61b5834d"
 dependencies = [
  "buffa",
  "buffa-types",
@@ -1960,7 +1960,7 @@ dependencies = [
 [[package]]
 name = "hyperstor-pki"
 version = "0.1.0"
-source = "git+https://github.com/CMKL-APEX/hyperstor?rev=1215411195212c09699396167dc8f3f9a5411f1d#1215411195212c09699396167dc8f3f9a5411f1d"
+source = "git+https://github.com/CMKL-APEX/hyperstor?rev=bbf869c395d22c1e33fddf10efe5c12e61b5834d#bbf869c395d22c1e33fddf10efe5c12e61b5834d"
 dependencies = [
  "rcgen",
  "ring",

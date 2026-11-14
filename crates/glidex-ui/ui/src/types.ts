@@ -797,6 +797,8 @@ export interface Datastore {
   hyperstor_pool?: number;
   hyperstor_identity?: string;
   hyperstor_identity_expires?: string;
+  /** `hyperstor`: its management UI, linked as "Manage cluster" (spec/24-storage.md S33). */
+  hyperstor_mgmt_url?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */
@@ -826,6 +828,8 @@ export interface DatastoreInput {
   hyperstor_api?: string[];
   hyperstor_pool?: number;
   hyperstor_token?: string;
+  /** A hyperstor datastore's management UI, `https://host[:port]`; empty clears it. */
+  hyperstor_mgmt_url?: string;
   volume_group?: string;
   thin_pool?: string;
   path?: string;
