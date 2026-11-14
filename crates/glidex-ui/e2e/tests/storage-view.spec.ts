@@ -1,8 +1,8 @@
 // A tenant's storage on a trusted hyperstor cluster (spec/19-tenancy.md
-// D86): the tenant page opens it from the cluster's row, and the browser
-// reads it only through this server's storage relay, never from the
-// cluster. The cluster list, the datastores and the relay are mocked: one
-// host has no hyperstor cluster to trust.
+// D86, D87): the tenant page opens it from the cluster's row, and the
+// browser reads it only through this server's storage relay, never from
+// the cluster. The cluster list and the relay are mocked: one host has no
+// hyperstor cluster to trust.
 import { expect, rpcRoute, test } from "../fixtures";
 
 test.use({ ignoredConsoleErrors: /status of 502/ });
@@ -26,19 +26,6 @@ test("the tenant page shows a storage cluster's volumes, buckets and keys per pr
             status: "ADMISSION_STATUS_ADMITTED",
             storage: { volumes: "2", volume_gib: "30", buckets: "1", bucket_bytes: "2048", s3_keys: "1" },
           },
-        },
-      ],
-    },
-  }));
-  await rpcRoute(page, "glidex.storage.v1.DatastoreService/ListDatastores", () => ({
-    message: {
-      datastores: [
-        {
-          id: "ds-hs",
-          name: "hs",
-          driver: "DATASTORE_DRIVER_HYPERSTOR",
-          hyperstor_pool: 3,
-          hyperstor_identity: `hyperstor://${CLUSTER}/mgmt/glidex`,
         },
       ],
     },
@@ -72,7 +59,8 @@ test("the tenant page shows a storage cluster's volumes, buckets and keys per pr
           ],
         });
       case "hyperstor.v1.ClusterService/ListVolumes":
-        expect(req.postDataJSON()).toEqual({ pool: 3 });
+        // Pool 0: every pool the person reaches (hyperstor I401).
+        expect(req.postDataJSON()).toEqual({ pool: 0 });
         return json({
           volumes: [
             { id: "a1", name: "web-root", pool: 3, size: String(20 * 2 ** 30), tenant: TENANT, project: 71 },

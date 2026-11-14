@@ -18,8 +18,6 @@ interface Loaded {
   volumes: api.HsVolume[];
   buckets: api.HsBucket[];
   keys: api.HsKey[];
-  /** Pools of this cluster known here (from glidex's datastores). */
-  pools: number[];
 }
 
 /** Per project: what it holds on the cluster. */
@@ -48,29 +46,24 @@ export default function StorageView({ tenant, cluster }: { tenant: Tenant; clust
     const call = <T,>(c: api.StorageCall, body: unknown = {}) => api.storageCall<T>(tenant.id, id, c, body);
     (async () => {
       try {
-        // Volumes are listed per pool: the pools of glidex's datastores on
-        // this cluster. Glidex's own projects name the rows.
-        const [tenants, buckets, keys, stores, mine] = await Promise.all([
+        // Pool 0: every pool the person reaches there (hyperstor I401),
+        // each volume naming its own. Glidex's own projects name the rows.
+        const [tenants, volumes, buckets, keys, mine] = await Promise.all([
           call<{ tenants?: api.HsTenant[] }>("hyperstor.v1.TenantService/ListTenants"),
+          call<{ volumes?: api.HsVolume[] }>("hyperstor.v1.ClusterService/ListVolumes", { pool: 0 }),
           call<{ buckets?: api.HsBucket[] }>("hyperstor.v1.S3Service/ListS3Buckets"),
           call<{ keys?: api.HsKey[] }>("hyperstor.v1.S3Service/ListS3Keys"),
-          api.listDatastores().catch(() => [] as Datastore[]),
           api.listProjects().catch(() => [] as ProjectView[]),
         ]);
-        const pools = [...new Set(stores.filter((d) => datastoreCluster(d) === id && d.hyperstor_pool).map((d) => Number(d.hyperstor_pool)))].sort(
-          (a, b) => a - b,
-        );
-        const lists = await Promise.all(pools.map((pool) => call<{ volumes?: api.HsVolume[] }>("hyperstor.v1.ClusterService/ListVolumes", { pool })));
         const mineThere = (tenants.tenants ?? []).find((t) => t.glidex_id === tenant.id) ?? null;
         const ours = <T extends { tenant?: number }>(xs: T[]) => (mineThere ? xs.filter((x) => (x.tenant ?? 0) === mineThere.id) : xs);
         if (!live) return;
         setProjects(mine);
         setData({
           tenant: mineThere,
-          volumes: ours(lists.flatMap((l) => l.volumes ?? [])),
+          volumes: ours(volumes.volumes ?? []),
           buckets: ours(buckets.buckets ?? []),
           keys: ours(keys.keys ?? []),
-          pools,
         });
       } catch (e) {
         if (live) setError(errorMessage(e));
@@ -154,9 +147,7 @@ export default function StorageView({ tenant, cluster }: { tenant: Tenant; clust
       </section>
       <section>
         <h3 className="text-sm font-semibold text-gray-700 mb-1">Volumes</h3>
-        {data.pools.length === 0 ? (
-          <p className="text-sm text-gray-500">No datastore here uses a pool of this cluster, so its volumes aren't listed.</p>
-        ) : data.volumes.length === 0 ? (
+        {data.volumes.length === 0 ? (
           <p className="text-sm text-gray-500">No volumes.</p>
         ) : (
           <table className="w-full text-sm" data-testid="storage-volumes">

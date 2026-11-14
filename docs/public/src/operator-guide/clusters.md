@@ -517,8 +517,7 @@ Once trust is set up:
   from the cluster for the person, with a short-lived token it never
   hands to the browser, so the browser only ever talks to Glidex. The
   cluster shows each person what their own roles there let them see.
-  Volumes are listed for the pools of your hyperstor datastores on that
-  cluster. Read-only: the cluster's own management UI administers it
+  Read-only: the cluster's own management UI administers it
   (the datastore's *Manage cluster* link).
 
 - **When the directory is out of reach.** VMs keep running, and the

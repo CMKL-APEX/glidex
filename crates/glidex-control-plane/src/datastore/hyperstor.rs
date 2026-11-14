@@ -69,6 +69,51 @@ pub struct HyperstorDriver {
     node: String,
 }
 
+/// The glidex project a disk's volume names to hyperstor (S33): its
+/// project's id, which hyperstor resolves through the feed's link; none
+/// for a disk an old record left without one.
+fn project_of(disk: &Disk) -> Option<&str> {
+    Some(disk.project.as_str()).filter(|p| !p.is_empty())
+}
+
+/// `CreateVolume` for volume `id`, in glidex project `project` when given
+/// (`directory_project`, S33); without one hyperstor puts it in `default`.
+fn create_request(
+    pool: u32,
+    id: &str,
+    name: &str,
+    size: u64,
+    project: Option<&str>,
+) -> pb::CreateVolumeRequest {
+    pb::CreateVolumeRequest {
+        pool,
+        size,
+        name: name.to_string(),
+        id: id.to_string(),
+        directory_project: project.unwrap_or_default().to_string(),
+        ..Default::default()
+    }
+}
+
+/// `CloneVolume` of `origin`'s snapshot `epoch` as `new_id`, in glidex
+/// project `project` (S33).
+fn clone_request(
+    origin: &str,
+    epoch: u64,
+    name: &str,
+    new_id: &str,
+    project: Option<&str>,
+) -> pb::CloneVolumeRequest {
+    pb::CloneVolumeRequest {
+        id: origin.to_string(),
+        epoch,
+        name: name.to_string(),
+        new_id: new_id.to_string(),
+        directory_project: project.unwrap_or_default().to_string(),
+        ..Default::default()
+    }
+}
+
 /// `hyperstor-vhost`'s directory on this node.
 pub fn vhost_dir() -> PathBuf {
     std::env::var_os("GLIDEX_HYPERSTOR_VHOST_DIR")
@@ -541,21 +586,19 @@ impl HyperstorDriver {
         Ok(self.volumes()?.into_iter().find(|v| v.id == id))
     }
 
-    fn create(&self, id: &str, name: &str, size: u64) -> Result<(), ImageError> {
-        let (pool, id, name) = (self.pool, id.to_string(), name.to_string());
+    /// Make volume `id`; a disk's names its glidex project (S33), an
+    /// image's names none.
+    fn create(
+        &self,
+        id: &str,
+        name: &str,
+        size: u64,
+        project: Option<&str>,
+    ) -> Result<(), ImageError> {
+        let req = create_request(self.pool, id, name, size, project);
         self.call(|c| {
-            let (id, name) = (id.clone(), name.clone());
-            async move {
-                c.create_volume(pb::CreateVolumeRequest {
-                    pool,
-                    size,
-                    name,
-                    id,
-                    ..Default::default()
-                })
-                .await
-                .map(|_| ())
-            }
+            let req = req.clone();
+            async move { c.create_volume(req).await.map(|_| ()) }
         })
     }
 
@@ -695,6 +738,7 @@ impl HyperstorDriver {
         name: &str,
         file: &Path,
         size: u64,
+        project: Option<&str>,
     ) -> Result<(), ImageError> {
         // Converted first, so that the volume exists only while it is
         // written (holding its lease: another worker sees it filling).
@@ -704,7 +748,7 @@ impl HyperstorDriver {
             .map_err(|e| ImageError::Io(format!("temporary directory: {e}")))?;
         let raw = tmp.path().join("image.raw");
         qemu_img::convert(file, DiskFormat::Qcow2, &raw, DiskFormat::Raw)?;
-        self.create(id, name, size)?;
+        self.create(id, name, size, project)?;
         let r = write_region_with(
             &self.ctl,
             Path::new(&tool_path(&self.map, id)),
@@ -764,7 +808,15 @@ impl HyperstorDriver {
                 None => {
                     // Free if a deleted one is still in the trash.
                     self.free_id(&id)?;
-                    match self.fill_from_image(&id, &self.image_volume_name(image_id), file, size) {
+                    // Shared by every project's disks: in hyperstor's
+                    // `default` (S33).
+                    match self.fill_from_image(
+                        &id,
+                        &self.image_volume_name(image_id),
+                        file,
+                        size,
+                        None,
+                    ) {
                         Ok(()) => {}
                         // Another worker made it first.
                         Err(ImageError::Io(m)) if m.contains("exists") => continue,
@@ -1022,12 +1074,18 @@ impl StorageDriver for HyperstorDriver {
         // disk's until this returns).
         self.free_id(&id)?;
         let made = match source {
-            VolumeSource::Blank => self.create(&id, &disk.name, size),
+            VolumeSource::Blank => self.create(&id, &disk.name, size, project_of(disk)),
             VolumeSource::Image {
                 path,
                 size_bytes,
                 linked: false,
-            } => self.fill_from_image(&id, &disk.name, path, size.max(size_bytes)),
+            } => self.fill_from_image(
+                &id,
+                &disk.name,
+                path,
+                size.max(size_bytes),
+                project_of(disk),
+            ),
             VolumeSource::Image {
                 path,
                 size_bytes,
@@ -1037,20 +1095,10 @@ impl StorageDriver for HyperstorDriver {
                     return Err(ImageError::invalid_disk("a linked disk names its image"));
                 };
                 let (origin, epoch) = self.image_volume(image_id, path, size_bytes)?;
-                let (new_id, name) = (id.clone(), disk.name.clone());
+                let req = clone_request(&origin, epoch, &disk.name, &id, project_of(disk));
                 self.call(|c| {
-                    let (origin, new_id, name) = (origin.clone(), new_id.clone(), name.clone());
-                    async move {
-                        c.clone_volume(pb::CloneVolumeRequest {
-                            id: origin,
-                            epoch,
-                            name,
-                            new_id,
-                            ..Default::default()
-                        })
-                        .await
-                        .map(|_| ())
-                    }
+                    let req = req.clone();
+                    async move { c.clone_volume(req).await.map(|_| ()) }
                 })
                 .and_then(|()| {
                     if size > size_bytes {
@@ -1370,6 +1418,33 @@ mod tests {
         );
         d.phase = DiskPhase::Pending;
         d
+    }
+
+    /// A disk's volume names its glidex project to hyperstor, made or
+    /// cloned (S33); an image's shared volume, and a disk an old record
+    /// left without a project, name none.
+    #[test]
+    fn disks_name_their_project_and_image_volumes_none() {
+        let mut d = disk("d1");
+        d.project = "p-web".into();
+        let made = create_request(4, &volume_id(&d), &d.name, 1 << 30, project_of(&d));
+        assert_eq!(made.directory_project, "p-web");
+        assert_eq!((made.pool, made.project, made.tenant), (4, 0, 0));
+        let cloned = clone_request("img-vol", 7, &d.name, &volume_id(&d), project_of(&d));
+        assert_eq!(cloned.directory_project, "p-web");
+        assert_eq!(
+            (cloned.id.as_str(), cloned.epoch, cloned.project),
+            ("img-vol", 7, 0)
+        );
+        let image = create_request(4, "img-vol", "image", 1 << 30, None);
+        assert!(image.directory_project.is_empty());
+        let old = disk("d2");
+        assert_eq!(project_of(&old), None);
+        assert!(
+            create_request(4, "v", "old", 1, project_of(&old))
+                .directory_project
+                .is_empty()
+        );
     }
 
     /// Two datastores on one hyperstor cluster each have their own image
