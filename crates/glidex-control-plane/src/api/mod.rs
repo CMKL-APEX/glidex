@@ -28,6 +28,7 @@ pub mod relay;
 mod rpc;
 mod scim;
 mod storage;
+mod storage_relay;
 mod tenants;
 pub mod trust;
 mod trusted_login;
@@ -1533,6 +1534,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/tenants/{id}/clusters/{cluster}",
         "manageTenantClusters",
         delete(tenants::opt_out_cluster),
+    )
+    .add(
+        "POST",
+        "/tenants/{id}/clusters/{cluster}/storage/{*call}",
+        AUTHENTICATED,
+        post(storage_relay::relay),
     )
     .add(
         "DELETE",

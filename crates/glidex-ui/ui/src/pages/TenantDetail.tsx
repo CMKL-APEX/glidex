@@ -27,6 +27,7 @@ import {
 import { useCan, useTenantLabel } from "../session";
 import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 import { AdmissionBadge, TenantFlags } from "./Tenants";
+import StorageView from "../components/StorageView";
 
 /** What the page offers, each checked on the tenant. */
 const CAPS = [
@@ -82,6 +83,8 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
   const [offer, setOffer] = useState("");
   const [busy, setBusy] = useState(false);
   const [leaving, setLeaving] = useState<api.TenantCluster | null>(null);
+  // The storage cluster whose volumes, buckets and keys are open (D86).
+  const [open, setOpen] = useState<string | null>(null);
   // A storage cluster's totals (D85) get a column once any cluster sent them.
   const anyStorage = (clusters ?? []).some((c) => c.report?.storage);
   const refresh = useCallback(() => {
@@ -173,7 +176,20 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
                         <td className="py-1.5 pr-3">{r.networks ?? 0}</td>
                         {anyStorage && (
                           <td className="py-1.5 pr-3" data-testid="tenant-cluster-storage">
-                            {r.storage ? <StorageCell s={r.storage} /> : "—"}
+                            {r.storage ? (
+                              <>
+                                <StorageCell s={r.storage} />
+                                <button
+                                  type="button"
+                                  className="mt-1 text-xs text-blue-600 hover:underline"
+                                  onClick={() => setOpen(open === c.cluster_id ? null : (c.cluster_id ?? null))}
+                                >
+                                  {open === c.cluster_id ? "Close storage" : "Open storage"}
+                                </button>
+                              </>
+                            ) : (
+                              "—"
+                            )}
                           </td>
                         )}
                         <td className="py-1.5 text-xs text-gray-500">{r.reported_at ? new Date(r.reported_at).toLocaleString() : "—"}</td>
@@ -197,6 +213,11 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
           </table>
         </div>
       )}
+      {open &&
+        (() => {
+          const c = (clusters ?? []).find((x) => x.cluster_id === open);
+          return c ? <StorageView key={open} tenant={tenant} cluster={c} /> : null;
+        })()}
       {leaving && (
         <ConfirmDialog
           title="Opt Out"

@@ -96,6 +96,8 @@ time = "0.3"
 # The console WebSocket's tests (the browser's console).
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 glidex-api = { path = "../glidex-api", features = ["client"] }
+# A hyperstor cluster's API over pinned HTTPS for the storage relay's tests.
+glidex-trust = { path = "../glidex-trust", features = ["fake"] }
 mime = "0.3"
 
 [[bin]]

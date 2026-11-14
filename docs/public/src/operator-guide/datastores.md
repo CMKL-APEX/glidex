@@ -629,6 +629,12 @@ gxctl datastore create hs1 --hyperstor 192.0.2.21:8850,192.0.2.22:8850 --pool 1 
   server that takes the request: it makes a key, gets a certificate for
   the identity the token names, and keeps the key sealed with the
   cluster's secrets key. The token is used up and isn't kept.
+- `--mgmt-url URL`, optional: the cluster's management UI,
+  `https://host[:port]`. The datastore links to it as *Manage cluster*
+  (in `gxctl datastore show` and on the **Datastores** page); without
+  it, the page links to the address the cluster gave when one of your
+  tenants opted in to it, if any. Change it with
+  `gxctl datastore set hs1 --mgmt-url URL` (`""` removes it).
 - `--nodes`, `--default` and `--no-overcommit` work as for a directory.
   With `--no-overcommit`, a disk larger than the pool's free space is
   refused (`507 insufficient_storage`).
@@ -642,11 +648,12 @@ trash, adding a device) lets it finish. Disks already there keep
 working. A nearly full pool is a warning only.
 
 **Web UI:** **Datastores**, **Add Datastore**, *hyperstor cluster*: the
-**Name**, the **Cluster API** addresses, the **Pool** and the **Token**.
+**Name**, the **Cluster API** addresses, the **Pool**, the **Token**,
+and optionally the **Management UI**.
 
 Over the API: `POST /datastores` with `driver`
 `DATASTORE_DRIVER_HYPERSTOR`, `hyperstor_api`, `hyperstor_pool` and
-`hyperstor_token`, and no `path`. `gxctl datastore show` prints the
+`hyperstor_token` (and optionally `hyperstor_mgmt_url`), and no `path`. `gxctl datastore show` prints the
 identity and when its certificate expires; the leader renews it when a
 third of its life is left.
 

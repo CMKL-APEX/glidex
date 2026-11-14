@@ -511,6 +511,15 @@ Once trust is set up:
   volumes with their provisioned size and the space they actually use,
   buckets with the space their objects take, and S3 keys. The page
   shows them in a *Storage* column.
+- **A tenant's storage on a hyperstor cluster.** *Open storage* in that
+  column shows, for the tenant's members, the tenant's volumes, buckets
+  and S3 keys there, and usage per project. Glidex's server reads them
+  from the cluster for the person, with a short-lived token it never
+  hands to the browser, so the browser only ever talks to Glidex. The
+  cluster shows each person what their own roles there let them see.
+  Volumes are listed for the pools of your hyperstor datastores on that
+  cluster. Read-only: the cluster's own management UI administers it
+  (the datastore's *Manage cluster* link).
 
 - **When the directory is out of reach.** VMs keep running, and the
   tenant's people keep working with the sessions and tokens they have.

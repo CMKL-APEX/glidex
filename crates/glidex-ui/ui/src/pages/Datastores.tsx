@@ -8,6 +8,7 @@ import Modal from "../components/Modal";
 import { LoadingCard } from "../components/Loading";
 import NodeName from "../components/NodeName";
 import { useNodes } from "../nodes";
+import { datastoreCluster } from "../components/StorageView";
 
 const inputClass =
   "mt-1 w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent";
@@ -71,6 +72,7 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   const [hsApi, setHsApi] = useState("");
   const [hsPool, setHsPool] = useState("1");
   const [hsToken, setHsToken] = useState("");
+  const [hsMgmt, setHsMgmt] = useState("");
   const [overcommit, setOvercommit] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -90,6 +92,7 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
               hyperstor_api: hsApi.split(",").map((a) => a.trim()).filter(Boolean),
               hyperstor_pool: Number(hsPool),
               hyperstor_token: hsToken.trim(),
+              hyperstor_mgmt_url: hsMgmt.trim() || undefined,
             }
           : lvm
             ? { lvm: true, volume_group: vg, thin_pool: pool }
@@ -163,6 +166,20 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
           <div>
             <label className="block text-sm font-medium text-gray-700">Token</label>
             <input className={`${inputClass} font-mono`} required type="password" autoComplete="off" placeholder="hsj1-…" value={hsToken} onChange={(e) => setHsToken(e.target.value)} />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700" htmlFor="hs-mgmt">
+              Management UI <span className="font-normal text-gray-500">(optional, linked as Manage cluster)</span>
+            </label>
+            <input
+              id="hs-mgmt"
+              className={`${inputClass} font-mono`}
+              type="url"
+              pattern="https://.*"
+              placeholder="https://storage.example.org"
+              value={hsMgmt}
+              onChange={(e) => setHsMgmt(e.target.value)}
+            />
           </div>
         </div>
       ) : lvm ? (
@@ -241,6 +258,41 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
   );
 }
 
+/** Where a hyperstor datastore's cluster is administered (S33): its own
+ *  `hyperstor_mgmt_url`, else the address the cluster gave when a tenant
+ *  this person reads opted in to it. */
+function ManageLink({ d }: { d: Datastore }) {
+  const [url, setUrl] = useState<string | null>(d.hyperstor_mgmt_url || null);
+  useEffect(() => {
+    if (d.hyperstor_mgmt_url) return setUrl(d.hyperstor_mgmt_url);
+    const cluster = datastoreCluster(d);
+    if (!cluster) return;
+    let live = true;
+    (async () => {
+      const tenants = await api.listTenants().catch(() => []);
+      for (const t of tenants) {
+        const cs = await api.listTenantClusters(t.id).catch(() => []);
+        const c = cs.find((x) => x.cluster_id === cluster && x.api?.startsWith("https://"));
+        if (c) {
+          if (live) setUrl(c.api ?? null);
+          return;
+        }
+      }
+    })();
+    return () => {
+      live = false;
+    };
+  }, [d]);
+  if (!url) return null;
+  return (
+    <div>
+      <a href={url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline" data-testid="manage-cluster">
+        Manage cluster
+      </a>
+    </div>
+  );
+}
+
 function Detail({ d }: { d: Datastore }) {
   const dir = useNodes();
   const rows = d.node_status ?? [];
@@ -260,6 +312,7 @@ function Detail({ d }: { d: Datastore }) {
                     {d.hyperstor_identity_expires && <>, certificate until {new Date(d.hyperstor_identity_expires).toLocaleString()}</>}
                   </div>
                 )}
+                <ManageLink d={d} />
               </>
             ) : d.driver === "DATASTORE_DRIVER_LVM" ? (
               <>

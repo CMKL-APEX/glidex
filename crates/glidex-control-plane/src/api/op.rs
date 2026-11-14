@@ -271,6 +271,44 @@ fn token_response(
     no_store(out)
 }
 
+/// The longest access token the web UI gets for a trusted cluster (D86).
+pub const UI_CLUSTER_TOKEN_SECS: u64 = 15 * 60;
+/// The `client_id` those tokens name.
+pub const UI_CLIENT: &str = "glidex-ui";
+
+/// An access token for trusted cluster `c`, for browser session `p`'s user
+/// (D86): the web UI calls the cluster's API with it. As `token_response`
+/// makes one, but for at most [`UI_CLUSTER_TOKEN_SECS`], with the session's
+/// own login (`auth_time`, `amr`) and a `sid` derived from the session, so
+/// it never names the session's id. Who may have one is the caller's to
+/// check. `(token, expires_at)`.
+pub fn ui_cluster_token(
+    app: &AppState,
+    c: &TrustedCluster,
+    p: &Principal,
+) -> Result<(String, u64), super::ApiErr> {
+    let internal = || {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "no browser session",
+        )
+    };
+    let g = grant_of(p).ok_or_else(internal)?;
+    let session = p.session_hash.as_deref().ok_or_else(internal)?;
+    let t = now();
+    let exp = t + access_ttl(app).min(UI_CLUSTER_TOKEN_SECS);
+    let sid = crate::auth::sha256_hex(format!("{UI_CLIENT}:{session}").as_bytes());
+    let claims = json!({
+        "sub": g.user_id, "aud": c.cluster_id, "client_id": UI_CLIENT, "iat": t, "nbf": t,
+        "exp": exp, "jti": crate::auth::random_token(16), "sid": &sid[..32],
+        "auth_time": g.auth_time, "amr": g.amr, "scope": "openid",
+        "glidex": { "directory": c.directory_id, "mfa": g.mfa },
+    });
+    let jwt = super::issuer::sign(app, &c.directory_id, ACCESS_TYP, claims)?;
+    Ok((jwt, exp))
+}
+
 // ---- authorize -------------------------------------------------------------
 
 /// `GET /d/{dir}/authorize` (RFC 6749 §4.1, RFC 7636, RFC 8252).

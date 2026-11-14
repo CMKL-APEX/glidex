@@ -1428,6 +1428,59 @@ pub fn list_tenant_clusters(
     })
 }
 
+/// The trusted cluster `cluster` that tenant `tenant` uses, for the browser
+/// session's person to reach through the storage relay (D86): only from a
+/// browser session, only for a member of the tenant from its own directory,
+/// while the tenant isn't suspended (as D69 gives a directory's access
+/// tokens). The cluster checks the person's grants itself.
+pub fn relayed_cluster(
+    call: &Call,
+    tenant: &str,
+    cluster: &str,
+) -> ServiceResult<crate::trust::TrustedCluster> {
+    let forbidden = |code: &str, m: &str| ServiceError::new(StatusCode::FORBIDDEN, code, m);
+    let not_found = || {
+        ServiceError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "the tenant doesn't use that cluster",
+        )
+    };
+    let p = &call.p;
+    let Some(user) = p.user.as_ref().filter(|_| p.session_hash.is_some()) else {
+        return Err(forbidden(
+            "session_required",
+            "a cluster's storage is reached from a browser session",
+        ));
+    };
+    let t = call
+        .auth()
+        .tenants
+        .resolve_in(p.directory_id(), tenant)
+        .map_err(|_| not_found())?;
+    call.set_target(format!("tenant:{}", t.id));
+    let member = t.directory_id == user.directory_id
+        && call
+            .auth()
+            .is_member(&Ent::User(user.id.clone()), &t.id)
+            .map_err(auth_error)?;
+    if !member {
+        return Err(forbidden(
+            "not_member",
+            "only the tenant's members reach its clusters",
+        ));
+    }
+    if t.suspended {
+        return Err(forbidden("tenant_suspended", "the tenant is suspended"));
+    }
+    call.auth()
+        .trust
+        .cluster(&t.directory_id, cluster)
+        .map_err(trust_err)?
+        .filter(|c| c.tenants.contains(&t.id))
+        .ok_or_else(not_found)
+}
+
 /// Redeem a cluster's offer for tenant `id` (D65): this directory signs a
 /// redeem to the cluster, pinning its certificate, and records the
 /// cluster it answers for.

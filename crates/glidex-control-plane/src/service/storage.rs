@@ -1031,23 +1031,26 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
             pb::DatastoreTopology::DATASTORE_TOPOLOGY_SHARED,
         ),
     };
-    let (hyperstor_api, hyperstor_pool, hyperstor_identity, expires) = match &d.driver {
-        DriverSpec::Hyperstor {
-            api,
-            pool,
-            identity,
-            ..
-        } => (
-            api.clone(),
-            *pool,
-            identity
-                .as_ref()
-                .map(|i| i.name.clone())
-                .unwrap_or_default(),
-            identity.as_ref().map(|i| i.not_after),
-        ),
-        _ => (Vec::new(), 0, String::new(), None),
-    };
+    let (hyperstor_api, hyperstor_pool, hyperstor_identity, expires, hyperstor_mgmt_url) =
+        match &d.driver {
+            DriverSpec::Hyperstor {
+                api,
+                pool,
+                identity,
+                mgmt_url,
+                ..
+            } => (
+                api.clone(),
+                *pool,
+                identity
+                    .as_ref()
+                    .map(|i| i.name.clone())
+                    .unwrap_or_default(),
+                identity.as_ref().map(|i| i.not_after),
+                mgmt_url.clone().unwrap_or_default(),
+            ),
+            _ => (Vec::new(), 0, String::new(), None, String::new()),
+        };
     let (path, volume_group, thin_pool) = match &d.driver {
         DriverSpec::Lvm { vg, thin_pool, .. } => (String::new(), vg.clone(), thin_pool.clone()),
         _ => (path.clone(), String::new(), String::new()),
@@ -1089,8 +1092,25 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
         hyperstor_pool,
         hyperstor_identity,
         hyperstor_identity_expires: crate::service::common::ts_opt(expires.unwrap_or(0)).into(),
+        hyperstor_mgmt_url,
         ..Default::default()
     }
+}
+
+/// A hyperstor datastore's management UI from a request: empty is none.
+fn mgmt_url_of(s: &str) -> ServiceResult<Option<String>> {
+    if s.trim().is_empty() {
+        return Ok(None);
+    }
+    crate::datastore::record::web_origin(s)
+        .map(Some)
+        .map_err(|e| {
+            ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_datastore",
+                format!("hyperstor_mgmt_url: {e}"),
+            )
+        })
 }
 
 fn require_datastore(call: &Call, id: &str) -> ServiceResult<()> {
@@ -1155,6 +1175,7 @@ pub async fn create_datastore(
                 api: req.hyperstor_api.clone(),
                 pool: req.hyperstor_pool,
                 token: zeroize::Zeroizing::new(req.hyperstor_token.clone()),
+                mgmt_url: mgmt_url_of(&req.hyperstor_mgmt_url)?,
             });
             (true, None)
         }
@@ -1218,12 +1239,13 @@ pub async fn update_datastore(
                 ch.default_for_disks = Some(req.default_for_disks.unwrap_or(false))
             }
             "overcommit" => ch.overcommit = Some(req.overcommit.unwrap_or(true)),
+            "hyperstor_mgmt_url" => ch.mgmt_url = Some(mgmt_url_of(&req.hyperstor_mgmt_url)?),
             other => {
                 return Err(ServiceError::new(
                     StatusCode::BAD_REQUEST,
                     "invalid",
                     format!(
-                        "can't update {other}: node_paths, nodes, default_for_disks or overcommit"
+                        "can't update {other}: node_paths, nodes, default_for_disks, overcommit or hyperstor_mgmt_url"
                     ),
                 ));
             }
