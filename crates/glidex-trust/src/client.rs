@@ -69,8 +69,28 @@ pub async fn push_report<R: Serialize>(
     ui_callback: Option<&str>,
     now: u64,
 ) -> Result<(), String> {
+    push_report_announcing(key, cluster_id, d, report, ui_callback, None, now).await
+}
+
+/// `push_report`, also announcing `next_tls_sha256`, the pin of the
+/// certificate the cluster will serve next (D88). A cluster keeps serving
+/// its current one until the directory has had a report with it, or that
+/// certificate's expiry is near.
+pub async fn push_report_announcing<R: Serialize>(
+    key: &dyn Signer,
+    cluster_id: &str,
+    d: &TrustedDirectory,
+    report: &R,
+    ui_callback: Option<&str>,
+    next_tls_sha256: Option<&str>,
+    now: u64,
+) -> Result<(), String> {
     let a = peer::assertion(key, cluster_id, &d.issuer, wire::REPORT, now)?;
-    let body = json!({ "cluster_id": cluster_id, "report": report, "ui_callback": ui_callback });
+    let mut body =
+        json!({ "cluster_id": cluster_id, "report": report, "ui_callback": ui_callback });
+    if let Some(p) = next_tls_sha256 {
+        body["next_tls_sha256"] = p.into();
+    }
     match peer::post(
         &d.api,
         &d.tls_sha256,

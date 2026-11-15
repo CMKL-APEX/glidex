@@ -111,7 +111,7 @@ pub async fn relay(
     c.set_target(format!("cluster:{}", target.cluster_id));
     let token = token_for(&c, &target)?;
     let body = if method == "GET" { Bytes::new() } else { body };
-    let (status, answer) = forward(&target.api, &target.tls_sha256, method, path, &token, body)
+    let (status, answer, seen) = forward(&target.api, &target.pins(), method, path, &token, body)
         .await
         .map_err(|e| {
             tracing::info!(cluster = %target.cluster_id, "storage relay: {e}");
@@ -121,6 +121,13 @@ pub async fn relay(
                 format!("cluster {} didn't answer: {e}", target.name),
             )
         })?;
+    if let Err(e) = c
+        .auth()
+        .trust
+        .saw_pin(&target.directory_id, &target.cluster_id, &seen)
+    {
+        tracing::warn!(cluster = %target.cluster_id, "keeping its renewed pin: {e}");
+    }
     // The cluster refusing the token isn't this session ending.
     let status = if status == StatusCode::UNAUTHORIZED {
         StatusCode::FORBIDDEN
@@ -137,16 +144,16 @@ pub async fn relay(
     Ok(r)
 }
 
-/// One call to the cluster at `base`, its certificate pinned to `pin`:
-/// its status and body.
+/// One call to the cluster at `base`, its certificate pinned to any of
+/// `pins` (D88): its status, body and the pin of the certificate it showed.
 pub async fn forward(
     base: &str,
-    pin: &str,
+    pins: &[&str],
     method: &str,
     path: &str,
     token: &str,
     body: Bytes,
-) -> Result<(StatusCode, Bytes), String> {
+) -> Result<(StatusCode, Bytes, String), String> {
     let uri: http::Uri = base.parse().map_err(|e| format!("{base}: {e}"))?;
     if uri.scheme_str() != Some("https") {
         return Err(format!("{base}: not an https address"));
@@ -157,10 +164,13 @@ pub async fn forward(
         .trim_matches(['[', ']'])
         .to_string();
     let port = uri.port_u16().unwrap_or(443);
-    let pin = glidex_tls::Trust::normalize_pin(pin).ok_or("no pinned certificate")?;
+    let pins = pins
+        .iter()
+        .map(|p| glidex_tls::Trust::normalize_pin(p).ok_or("no pinned certificate"))
+        .collect::<Result<Vec<_>, _>>()?;
     let tls = glidex_tls::ClientTls::with_trust(
         &glidex_tls::Trust {
-            pins: vec![pin],
+            pins,
             // As glidex-trust's calls to the cluster: the pin is its
             // identity, whatever names its certificate lists.
             verify_host: false,
@@ -178,6 +188,7 @@ pub async fn forward(
             .connect(name, tcp)
             .await
             .map_err(|e| format!("TLS: {e}"))?;
+        let seen = glidex_trust::peer::presented_pin(&s).ok_or("no certificate presented")?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(s))
             .await
             .map_err(|e| e.to_string())?;
@@ -203,7 +214,7 @@ pub async fn forward(
             .await
             .map_err(|e| format!("its answer: {e}"))?
             .to_bytes();
-        Ok::<_, String>((status, bytes))
+        Ok::<_, String>((status, bytes, seen))
     };
     tokio::time::timeout(TIMEOUT, run)
         .await

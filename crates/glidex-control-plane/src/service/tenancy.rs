@@ -1574,6 +1574,7 @@ pub async fn opt_in_cluster(
             name: token.cluster_name.clone(),
             api: token.api.clone(),
             tls_sha256: token.tls_sha256.clone(),
+            next_tls_sha256: None,
             jwks: serde_json::json!({ "keys": [] }),
             tenants: Vec::new(),
             created_at: now,
@@ -1585,7 +1586,9 @@ pub async fn opt_in_cluster(
         .as_str()
         .filter(|u| crate::api::trust::valid_callback(u))
         .map(String::from);
+    // The offer's pin is the cluster's word now (D88).
     c.tls_sha256 = token.tls_sha256.clone();
+    c.next_tls_sha256 = None;
     c.jwks = answer["cluster_key"].clone();
     if !c.tenants.contains(&t.id) {
         c.tenants.push(t.id.clone());
@@ -1648,16 +1651,26 @@ pub async fn opt_out_cluster(
             crate::trust::END,
             crate::tenancy::now(),
         )
-        && let Err(e) = crate::directory::peer::post(
+    {
+        // Either pin: the cluster may have renewed its certificate (D88).
+        match crate::directory::peer::post_any(
             &c.api,
-            &c.tls_sha256,
+            &c.pins(),
             "/trust/v1/end",
             &a,
             &serde_json::json!({ "issuer": iss, "tenant": t.id }),
         )
         .await
-    {
-        tracing::warn!(cluster = %c.cluster_id, "telling the cluster trust ended: {}", e);
+        {
+            Ok((_, _, seen)) => {
+                if let Err(e) = call.auth().trust.saw_pin(&dir, &c.cluster_id, &seen) {
+                    tracing::warn!(cluster = %c.cluster_id, "keeping its renewed pin: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(cluster = %c.cluster_id, "telling the cluster trust ended: {}", e)
+            }
+        }
     }
     Ok(pb::OptOutClusterResponse::default())
 }

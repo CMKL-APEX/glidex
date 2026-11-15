@@ -110,7 +110,32 @@ pub struct Https {
     pub base: String,
     /// Its certificate's SHA-256, as offers and pins write it.
     pub pin: String,
+    slot: Arc<glidex_tls::CertSlot>,
     task: tokio::task::JoinHandle<()>,
+}
+
+impl Https {
+    /// A new self-signed certificate, served from now on: a renewal
+    /// (D88). Its pin is then `pin`.
+    pub fn renew(&mut self) -> Result<(), String> {
+        let (ck, pin) = self_signed()?;
+        self.slot.set(ck);
+        self.pin = pin;
+        Ok(())
+    }
+}
+
+/// A new self-signed certificate for loopback, and its pin.
+fn self_signed() -> Result<(Arc<tokio_rustls::rustls::sign::CertifiedKey>, String), String> {
+    let names = glidex_tls::LocalNames {
+        dns: vec!["localhost".into()],
+        ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
+    };
+    let (cert, key) = glidex_tls::generate(&names)?;
+    let ck = glidex_tls::certified_key_pem(format!("{cert}{key}").as_bytes())?;
+    let pin = glidex_tls::Trust::normalize_pin(&glidex_tls::fingerprint_certified(&ck))
+        .ok_or("the certificate's fingerprint")?;
+    Ok((ck, pin))
 }
 
 impl Drop for Https {
@@ -122,18 +147,9 @@ impl Drop for Https {
 /// HTTPS on a free loopback port with a new self-signed certificate,
 /// answering with `handler`: a test's stand-in for either side.
 pub async fn serve_https(handler: Handler) -> Result<Https, String> {
-    let names = glidex_tls::LocalNames {
-        dns: vec!["localhost".into()],
-        ips: vec![std::net::Ipv4Addr::LOCALHOST.into()],
-    };
-    let (cert, key) = glidex_tls::generate(&names)?;
-    let ck = glidex_tls::certified_key_pem(format!("{cert}{key}").as_bytes())?;
-    let pin = glidex_tls::Trust::normalize_pin(&glidex_tls::fingerprint_certified(&ck))
-        .ok_or("the certificate's fingerprint")?;
-    let cfg = glidex_tls::resolver_config(
-        glidex_tls::Resolver::new(glidex_tls::CertSlot::new(ck)),
-        &[b"http/1.1"],
-    )?;
+    let (ck, pin) = self_signed()?;
+    let slot = glidex_tls::CertSlot::new(ck);
+    let cfg = glidex_tls::resolver_config(glidex_tls::Resolver::new(slot.clone()), &[b"http/1.1"])?;
     let acceptor = tokio_rustls::TlsAcceptor::from(cfg);
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
@@ -203,6 +219,7 @@ pub async fn serve_https(handler: Handler) -> Result<Https, String> {
     Ok(Https {
         base: format!("https://127.0.0.1:{port}"),
         pin,
+        slot,
         task,
     })
 }
@@ -214,6 +231,8 @@ pub struct FakeCluster {
     pub cluster_id: String,
     pub api: String,
     pub tls_sha256: String,
+    /// The pin its reports announced for its next certificate (D88).
+    pub next_tls_sha256: Option<String>,
     /// Its key, as the redeem's answer brought it.
     pub jwks: Value,
     /// The tenant ids opted in to it.
@@ -409,12 +428,16 @@ impl FakeDirectory {
                 cluster_id: t.cluster_id.clone(),
                 api: t.api.clone(),
                 tls_sha256: t.tls_sha256.clone(),
+                next_tls_sha256: None,
                 jwks: Value::Null,
                 tenants: Vec::new(),
                 ui_callback: None,
                 report: None,
                 storage: HashMap::new(),
             });
+        // The offer's pin is the cluster's word now.
+        c.tls_sha256 = t.tls_sha256.clone();
+        c.next_tls_sha256 = None;
         c.jwks = answer.cluster_key.clone();
         c.ui_callback = answer
             .ui_callback
@@ -427,7 +450,8 @@ impl FakeDirectory {
     }
 
     /// Tenant `tenant` stops using cluster `cluster_id` (D66): forgotten
-    /// here, and the cluster told. The cluster's status.
+    /// here, and the cluster told, its certificate pinned as a directory
+    /// pins it, the announced one too (D88). The cluster's status.
     pub async fn end_trust(&self, cluster_id: &str, tenant: &str) -> Result<u16, String> {
         let c = {
             let mut st = self.inner.state.lock().unwrap();
@@ -450,14 +474,24 @@ impl FakeDirectory {
             issuer: self.inner.issuer.clone(),
             tenant: tenant.into(),
         };
-        let (s, _) = peer::post(
+        let (s, _, seen) = peer::post_any(
             &c.api,
-            &c.tls_sha256,
+            &wire::accepted_pins(&c.tls_sha256, c.next_tls_sha256.as_deref()),
             wire::END_PATH,
             &a,
             &serde_json::to_value(&body).map_err(|e| e.to_string())?,
         )
         .await?;
+        if let Some(c) = self
+            .inner
+            .state
+            .lock()
+            .unwrap()
+            .clusters
+            .get_mut(cluster_id)
+        {
+            wire::promote_pin(&mut c.tls_sha256, &mut c.next_tls_sha256, &seen);
+        }
         Ok(s)
     }
 
@@ -712,6 +746,11 @@ impl Inner {
                 if let Some(c) = st.clusters.get_mut(c) {
                     c.report = Some(b["report"].clone());
                     c.storage = storage;
+                    wire::announce_pin(
+                        &c.tls_sha256,
+                        &mut c.next_tls_sha256,
+                        b["next_tls_sha256"].as_str(),
+                    );
                     if let Some(u) = b["ui_callback"]
                         .as_str()
                         .filter(|u| wire::valid_callback(u))

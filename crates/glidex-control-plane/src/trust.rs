@@ -37,6 +37,10 @@ pub struct TrustedCluster {
     pub name: String,
     pub api: String,
     pub tls_sha256: String,
+    /// The pin of the certificate it will serve next, as its reports
+    /// announced it (D88): accepted next to `tls_sha256` until a call sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_tls_sha256: Option<String>,
     /// The cluster's key (a JWKS): its assertions and client assertions.
     pub jwks: Value,
     /// The tenants of this directory opted in to it.
@@ -49,6 +53,13 @@ pub struct TrustedCluster {
     /// What it last reported of the opted-in tenants (D70).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<ClusterReport>,
+}
+
+impl TrustedCluster {
+    /// The pins its certificate may have (D88).
+    pub fn pins(&self) -> Vec<&str> {
+        glidex_trust::accepted_pins(&self.tls_sha256, self.next_tls_sha256.as_deref())
+    }
 }
 
 /// A cluster's report to a trusted directory (D70): per tenant, its
@@ -200,6 +211,19 @@ impl TrustStore {
 
     pub fn remove_cluster(&self, directory: &str, id: &str) -> Result<(), StoreError> {
         self.put::<TrustedCluster>(TRUSTED_CLUSTERS, &format!("{directory}/{id}"), None)
+    }
+
+    /// A call to cluster `id` saw certificate `seen` (D88): the announced
+    /// pin, once seen, becomes the cluster's pin.
+    pub fn saw_pin(&self, directory: &str, id: &str, seen: &str) -> Result<(), StoreError> {
+        let Some(mut c) = self.cluster(directory, id)? else {
+            return Ok(());
+        };
+        if glidex_trust::promote_pin(&mut c.tls_sha256, &mut c.next_tls_sha256, seen) {
+            tracing::info!(cluster = %id, "a renewed certificate's pin is now the cluster's");
+            self.put_cluster(&c)?;
+        }
+        Ok(())
     }
 }
 

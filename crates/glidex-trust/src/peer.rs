@@ -194,6 +194,12 @@ pub fn fingerprint_of(der: &[u8]) -> String {
     crate::sha256_hex(der)
 }
 
+/// The pin of the certificate the server of `s` presented.
+pub fn presented_pin<IO>(s: &tokio_rustls::client::TlsStream<IO>) -> Option<String> {
+    let (_, conn) = s.get_ref();
+    Some(fingerprint_of(conn.peer_certificates()?.first()?))
+}
+
 /// `POST <base><path>` with `body`, the server's certificate pinned to
 /// `pin` (64 hex digits, its leaf's SHA-256), carrying `assertion`. The
 /// status and JSON answer.
@@ -204,7 +210,21 @@ pub async fn post(
     assertion: &str,
     body: &Value,
 ) -> Result<(u16, Value), String> {
-    exchange(base, pin, path, Some(assertion), body).await
+    let (s, v, _) = exchange(base, &[pin], path, Some(assertion), body).await?;
+    Ok((s, v))
+}
+
+/// `post` to a peer that may have renewed its certificate (D88): any of
+/// `pins` is accepted. Also the pin of the certificate it presented, for
+/// the caller to keep.
+pub async fn post_any(
+    base: &str,
+    pins: &[&str],
+    path: &str,
+    assertion: &str,
+    body: &Value,
+) -> Result<(u16, Value, String), String> {
+    exchange(base, pins, path, Some(assertion), body).await
 }
 
 /// `post` without a peer assertion: a token request authenticated by the
@@ -215,16 +235,17 @@ pub async fn post_unsigned(
     path: &str,
     body: &Value,
 ) -> Result<(u16, Value), String> {
-    exchange(base, pin, path, None, body).await
+    let (s, v, _) = exchange(base, &[pin], path, None, body).await?;
+    Ok((s, v))
 }
 
 async fn exchange(
     base: &str,
-    pin: &str,
+    pins: &[&str],
     path: &str,
     assertion: Option<&str>,
     body: &Value,
-) -> Result<(u16, Value), String> {
+) -> Result<(u16, Value, String), String> {
     let uri: http::Uri = base.parse().map_err(|e| format!("{base}: {e}"))?;
     if uri.scheme_str() != Some("https") {
         return Err(format!("{base}: a peer is reached over https"));
@@ -235,10 +256,13 @@ async fn exchange(
         .trim_matches(['[', ']'])
         .to_string();
     let port = uri.port_u16().unwrap_or(443);
-    let pin = glidex_tls::Trust::normalize_pin(pin).ok_or("not a SHA-256 fingerprint")?;
+    let pins = pins
+        .iter()
+        .map(|p| glidex_tls::Trust::normalize_pin(p).ok_or("not a SHA-256 fingerprint"))
+        .collect::<Result<Vec<_>, _>>()?;
     let tls = glidex_tls::ClientTls::with_trust(
         &glidex_tls::Trust {
-            pins: vec![pin],
+            pins,
             // The pin is the server's identity; its name may be an address
             // its certificate doesn't list.
             verify_host: false,
@@ -256,6 +280,7 @@ async fn exchange(
             .connect(name, tcp)
             .await
             .map_err(|e| format!("{host}:{port}: TLS: {e}"))?;
+        let seen = presented_pin(&s).ok_or("no certificate presented")?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(s))
             .await
             .map_err(|e| e.to_string())?;
@@ -285,6 +310,7 @@ async fn exchange(
         Ok::<_, String>((
             status,
             serde_json::from_slice(&bytes).unwrap_or(Value::Null),
+            seen,
         ))
     };
     tokio::time::timeout(TIMEOUT, run)
