@@ -9,8 +9,18 @@ use glidex_api::proto::glidex::system::v1::{
     EntityRef, GetServerInfoResponse, LoginMethods, ProjectRole, WhoAmIResponse,
 };
 
-/// The SHA-256 of the API's certificate, `AB:CD:…` (`None` without TLS).
+/// The SHA-256 of the API's certificate, `AB:CD:…` (`None` without TLS):
+/// the one served, which a renewal on disk may not be yet (D90).
 pub fn api_fingerprint(app: &App) -> Option<String> {
+    if let (Some(pin), _) = app.manager.api_pins() {
+        return Some(
+            pin.as_bytes()
+                .chunks(2)
+                .map(|c| String::from_utf8_lossy(c).to_uppercase())
+                .collect::<Vec<_>>()
+                .join(":"),
+        );
+    }
     match &app.auth.config.tls {
         crate::config::TlsSetting::Mode(crate::config::TlsMode::Off) => None,
         crate::config::TlsSetting::Mode(crate::config::TlsMode::Auto) => {

@@ -132,6 +132,9 @@ tables! {
     // Which new tenants of each hosted directory this cluster admits by
     // itself, with their default cap (spec/19-tenancy.md D79).
     AutoAdmissions = 64 => "auto_admissions",
+    // What each trusted directory knows of this cluster's API certificate
+    // (spec/19-tenancy.md D90).
+    TrustedDirectoryPins = 65 => "trusted_directory_pins",
 }
 
 /// Whose a table's records are (spec/19-tenancy.md §4): a directory's (they

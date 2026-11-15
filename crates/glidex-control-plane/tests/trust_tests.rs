@@ -27,6 +27,8 @@ struct Cp {
     router: Router,
     app: AppState,
     base: String,
+    /// Its API certificate's files, served through a slot, renewable.
+    cert: std::sync::Mutex<glidex_tls::FileCert>,
     _dir: TempDir,
 }
 
@@ -41,7 +43,9 @@ async fn cp() -> Cp {
     );
     let (cert, key) = glidex_tls::generate(&glidex_tls::LocalNames::default()).unwrap();
     let cert_path = dir.path().join("api.crt");
+    let key_path = dir.path().join("api.key");
     std::fs::write(&cert_path, &cert).unwrap();
+    std::fs::write(&key_path, &key).unwrap();
     let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
@@ -50,25 +54,22 @@ async fn cp() -> Cp {
     cfg.auth.issuer_base = Some(base.clone());
     cfg.cluster.api_url = Some(base.clone());
     cfg.tls = TlsSetting::Files(TlsConfig {
-        cert: cert_path,
+        cert: cert_path.clone(),
         key: None,
     });
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
     let router = api::router(app.clone());
-    // HTTPS for the other control plane's calls.
-    use rustls_pki_types::pem::PemObject as _;
-    let certs = vec![rustls_pki_types::CertificateDer::from_pem_slice(cert.as_bytes()).unwrap()];
-    let key = rustls_pki_types::PrivateKeyDer::from_pem_slice(key.as_bytes()).unwrap();
-    let tls = tokio_rustls::rustls::ServerConfig::builder_with_provider(Arc::new(
-        tokio_rustls::rustls::crypto::ring::default_provider(),
-    ))
-    .with_safe_default_protocol_versions()
-    .unwrap()
-    .with_no_client_auth()
-    .with_single_cert(certs, key)
+    // HTTPS for the other control plane's calls, from a slot as the
+    // control plane serves it.
+    let files = glidex_tls::FileCert::load(&cert_path, &key_path).unwrap();
+    glidex_control_plane::api_cert::serving(&app, &files.slot.get());
+    let tls = glidex_tls::resolver_config(
+        glidex_tls::Resolver::new(files.slot.clone()),
+        &[b"http/1.1"],
+    )
     .unwrap();
-    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(tls));
+    let acceptor = tokio_rustls::TlsAcceptor::from(tls);
     let served = router.clone();
     tokio::spawn(async move {
         loop {
@@ -95,6 +96,7 @@ async fn cp() -> Cp {
         router,
         app,
         base,
+        cert: std::sync::Mutex::new(files),
         _dir: dir,
     }
 }
@@ -337,6 +339,128 @@ async fn an_offer_is_redeemed_between_two_control_planes() {
     );
     let (_, v) = north.rest("GET", "/admissions", None, &op).await;
     assert!(!v.to_string().contains(&tenant), "{v}");
+}
+
+/// D90: a renewed API certificate is held while the directory pins the
+/// old one, announced in a report, served once the directory has taken
+/// it; the directory's calls reach the cluster through the switch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_renewed_api_certificate_is_held_until_the_directory_knows_it() {
+    use glidex_control_plane::api_cert;
+    let Admitted {
+        north,
+        acme,
+        issuer,
+        ..
+    } = admitted().await;
+    let cluster = glidex_control_plane::api::op::cluster_id(&north.app);
+    let served = |cp: &Cp| api_cert::pin_of(&cp.cert.lock().unwrap().slot.get());
+    let old = served(&north);
+    let node_pins = || {
+        let n = north.app.manager.nodes().list().unwrap();
+        n.first()
+            .map(|n| (n.status.api_pin.clone(), n.status.api_pin_pending.clone()))
+    };
+    wait_for(|| node_pins() == Some((Some(old.clone()), None))).await;
+    let acme_pins = || {
+        let c = acme
+            .app
+            .auth
+            .trust
+            .cluster("local", &cluster)
+            .unwrap()
+            .unwrap();
+        (c.tls_sha256, c.next_tls_sha256)
+    };
+    assert_eq!(acme_pins(), (old.clone(), None));
+    // A round finds which node the API address reaches.
+    glidex_control_plane::api::trust::feed_round(&north.app).await;
+    let d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    let known = |id: &str| {
+        north
+            .app
+            .auth
+            .trust
+            .directory_pins()
+            .unwrap()
+            .into_iter()
+            .find(|(i, _)| i == id)
+            .map(|(_, p)| p)
+    };
+    assert_eq!(
+        known(&d.id),
+        Some(glidex_control_plane::trust::DirectoryPins {
+            seen: old.clone(),
+            accepted: None
+        })
+    );
+
+    // Renewed: held, and published as pending.
+    let dir = north._dir.path();
+    let (cert, key) = glidex_tls::generate(&glidex_tls::LocalNames::default()).unwrap();
+    std::fs::write(dir.join("api.key.new"), &key).unwrap();
+    std::fs::write(dir.join("api.crt.new"), &cert).unwrap();
+    std::fs::rename(dir.join("api.key.new"), dir.join("api.key")).unwrap();
+    std::fs::rename(dir.join("api.crt.new"), dir.join("api.crt")).unwrap();
+    let new =
+        glidex_tls::Trust::normalize_pin(&glidex_tls::fingerprint_pem(cert.as_bytes()).unwrap())
+            .unwrap();
+    let poll = || {
+        north
+            .cert
+            .lock()
+            .unwrap()
+            .poll_gated(|n, o| api_cert::gate(&north.app, n, o))
+            .unwrap()
+    };
+    assert!(!poll());
+    assert_eq!(served(&north), old);
+    wait_for(|| node_pins() == Some((Some(old.clone()), Some(new.clone())))).await;
+    assert!(!poll(), "held until the directory knows it");
+
+    // The next round announces it; acme takes it, and north records that.
+    glidex_control_plane::api::trust::feed_round(&north.app).await;
+    assert_eq!(acme_pins(), (old.clone(), Some(new.clone())));
+    assert_eq!(known(&d.id).unwrap().accepted, Some(new.clone()));
+
+    // Now served.
+    assert!(poll());
+    api_cert::serving(&north.app, &north.cert.lock().unwrap().slot.get());
+    assert_eq!(served(&north), new);
+    wait_for(|| node_pins() == Some((Some(new.clone()), None))).await;
+
+    // acme's call to end trust meets the new certificate, and takes it as
+    // the pin.
+    let admin = acme.admin();
+    let (s, v) = acme
+        .rest(
+            "DELETE",
+            &format!("/tenants/acme/clusters/{cluster}"),
+            None,
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    assert!(
+        north.app.auth.trust.directories().unwrap().is_empty(),
+        "the cluster was told"
+    );
+}
+
+async fn wait_for(f: impl Fn() -> bool) {
+    for _ in 0..100 {
+        if f() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert!(f(), "timed out");
 }
 
 /// A redeem with the offer's secret but no assertion (as a thief of the

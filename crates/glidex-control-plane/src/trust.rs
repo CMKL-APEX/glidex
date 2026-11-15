@@ -19,6 +19,19 @@ const TRUSTED_DIRECTORIES: TableDefinition<&str, &[u8]> =
 const TRUSTED_CLUSTERS: TableDefinition<&str, &[u8]> = TableDefinition::new("trusted_clusters");
 
 const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_state");
+/// Per trusted directory, what it knows of this cluster's API certificate
+/// (D90): `DirectoryPins`, keyed by the directory's id.
+const DIRECTORY_PINS: TableDefinition<&str, &[u8]> = TableDefinition::new("trusted_directory_pins");
+
+/// What a trusted directory knows of this cluster's API certificate
+/// (D90), as the leader last found: the pin of the certificate its API
+/// address presented, and the renewed pin a report it accepted announced.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryPins {
+    pub seen: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted: Option<String>,
+}
 
 fn table(name: &str) -> Option<TableDefinition<'static, &'static str, &'static [u8]>> {
     FEED_TABLES
@@ -202,7 +215,28 @@ impl TrustStore {
     }
 
     pub fn remove_directory(&self, id: &str) -> Result<(), StoreError> {
+        self.put::<DirectoryPins>(DIRECTORY_PINS, id, None)?;
         self.put::<TrustedDirectory>(TRUSTED_DIRECTORIES, id, None)
+    }
+
+    /// Each trusted directory's `DirectoryPins`, by its id.
+    pub fn directory_pins(&self) -> Result<Vec<(String, DirectoryPins)>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(DIRECTORY_PINS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for e in t.iter()? {
+            let (k, v) = e?;
+            out.push((k.value().to_string(), serde_json::from_slice(v.value())?));
+        }
+        Ok(out)
+    }
+
+    pub fn put_directory_pins(&self, id: &str, p: &DirectoryPins) -> Result<(), StoreError> {
+        self.put(DIRECTORY_PINS, id, Some(p))
     }
 
     pub fn clusters(&self, directory: &str) -> Result<Vec<TrustedCluster>, StoreError> {
