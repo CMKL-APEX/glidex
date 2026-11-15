@@ -1613,10 +1613,10 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T4** pull sync and attributes | §8.2 for Google Workspace (D44–D47): runs, the safety stop, status; SSH keys from Google | Pull tests against a mock Directory API; manual checks against a real Workspace. |
 | **T4b** more sources | LDAP (login and pull; AD, FreeIPA, OpenLDAP, JumpCloud LDAP), Microsoft Graph and GitHub (after T2b), on T4's runs | LDAP against OpenLDAP in CI. |
 | **T5** workload federation | §9 and D48–D51, kind `jwt`: federations per tenant, `POST /auth/exchange`, federated tokens; `aws` later | Federation tests against a mock issuer; a GitHub Actions job exchanges its OIDC token and calls glidex without a stored token. |
-| **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider (D52–D57), access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, gxctl `auth login --directory`, `trust`, UI; standby and promote moved to **T6b** | §17 trust tests (but the standby's); a check with two organizations' directories and two clusters across a real network link: gpu-dev2 with prism1, and spark-1 made a cluster of its own. Can start once T1 has landed. |
+| **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider (D52–D57), access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, gxctl `auth login --directory`, `trust`, UI; standby and promote moved to **T6b** | §17 trust tests (but the standby's); a check with two organizations' directories and two clusters across a real network link: the R9700 host with the HGX host, and a standalone host made a cluster of its own. Can start once T1 has landed. |
 | **T6b** directory standby | §12.1 "Losing a directory": streaming to a standby, `gxctl directory promote`, epochs | The §17 promote test. Not scheduled. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
-| **T9** self-service tenants | §11.1, D78–D82: directory settings, `createOwnTenant`, limits, pending tenants and approval, a tenant at first sign-in, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the prism cluster with the Google connector. |
+| **T9** self-service tenants | §11.1, D78–D82: directory settings, `createOwnTenant`, limits, pending tenants and approval, a tenant at first sign-in, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the three-server test cluster with the Google connector. |
 | **T10** members by email | §6.4, D83: a user named by a verified email where members and roles are added; identities record whether their address was verified | Service tests; gxctl and the forms take an address. |
 
 **T0 tasks** (files):
@@ -1801,8 +1801,9 @@ useful on one host first):
    - UI: Trusted directories and clusters, offers, the directory picker
      at login;
    - the operator guide;
-   - 20-idp-checks.md's T6 row: spark-1 made a cluster with its own
-     directory, its tenant admitted on gpu-dev2's cluster, its users
+   - 20-idp-checks.md's T6 row: a standalone host made a cluster with its
+     own directory, its tenant admitted on the R9700 host's cluster, its
+     users
      logging in from there.
 
 T7 gets its own task list when it starts; per-protocol code under
@@ -1856,7 +1857,8 @@ order):
    (or an `open` flag); tests (a VM and a tenant pool from an open
    pool; capped by `devices.<pool>`), docs; the note in
    22-host-topology.md §9.1.
-5. **The real check** (spec/20-idp-checks.md): on the prism cluster,
+5. **The real check** (spec/20-idp-checks.md): on the three-server test
+   cluster,
    with the Google connector: a user creates a lab, invites a member,
    runs a VM from the open pool, and is refused past the limit.
 6. **A tenant at first sign-in** (D82): `self_service.auto_create`
@@ -2384,7 +2386,7 @@ Task 8a, the UI and gxctl for another organization's cluster:
 | Tests | UI e2e `trust.spec.ts` (the Admissions page's cards, an offer refused without TLS, a token that isn't an offer refused on the tenant page); `gxctl config::a_directory_login_reads_with_or_without_via` |
 | Not yet | the real check with two organizations (8b) |
 
-Task 8b, the real check: spec/20-idp-checks.md "Two organizations (T6)", passed on 2026-10-22 between gpu-dev2's cluster and spark-1 as a standalone host with its own directory. It found three bugs, fixed in the same PR: `gxctl auth logout --revoke` now ends a directory login's chain (and takes the session's profile); server-info's `token_audience` (a standalone host's `standalone-…` id, which gxctl's directory login now asks tokens for) and `AuthService::linked_projects` counting tenant links (a tenant admin without project roles listed none of its projects). gxctl also says when a pinned certificate doesn't name the host dialled, instead of calling it a pin mismatch.
+Task 8b, the real check: spec/20-idp-checks.md "Two organizations (T6)", passed on 2026-10-22 between the R9700 host's cluster and a standalone host with its own directory. It found three bugs, fixed in the same PR: `gxctl auth logout --revoke` now ends a directory login's chain (and takes the session's profile); server-info's `token_audience` (a standalone host's `standalone-…` id, which gxctl's directory login now asks tokens for) and `AuthService::linked_projects` counting tenant links (a tenant admin without project roles listed none of its projects). gxctl also says when a pinned certificate doesn't name the host dialled, instead of calling it a pin mismatch.
 
 T8, verified addresses and pre-added users:
 
@@ -2396,7 +2398,7 @@ T8, verified addresses and pre-added users:
 | Tests (D76) | `connector_tests::an_oidc_allowlist_picks_who_gets_an_account`; UI e2e `connectors.spec.ts` (the same OIDC test) |
 | D77: pre-added users (§6.3) | `auth::store::User.pending_login` (`PendingLogin`), `IdentityStore::take_pending_login`; `AuthService::external_login_invited` (binds before the allowlist and JIT); `service::access::create_user` → `preadd_user` (`invitations::may_give_role`, `usable_connector`); proto `CreateUserRequest.pending` (`PendingUser`), `User.pending_connector`; gxctl `user add`, `user list`; the Access page's **Add user** and *not signed in yet* |
 | Tests (D77) | `connector_tests::a_pre_added_user_is_taken_by_its_first_verified_login` (role there before the login; refused twice, outside the domains, not an address, with identities, an unknown or provisioned connector; unverified, another connector and another subject take nothing; taken once, JIT off); UI e2e `access.spec.ts` "users: add one by email before they sign in" |
-| Real check | passed on 2026-11-03 on the prism cluster (`72b9d7f`) with the Google Workspace connector, through `glidex.cmkl.ai`: [20-idp-checks.md](20-idp-checks.md) "Verified addresses and pre-added users (T8)" |
+| Real check | passed on 2026-11-03 on the three-server test cluster (`72b9d7f`) with the Google Workspace connector, through the cluster's public name (a Cloudflare tunnel): [20-idp-checks.md](20-idp-checks.md) "Verified addresses and pre-added users (T8)" |
 
 T9, self-service tenants (§11.1):
 
@@ -2414,7 +2416,7 @@ T9, self-service tenants (§11.1):
 | Tests (task 6) | `tenancy_tests::a_user_in_no_tenant_gets_one_at_first_sign_in` (off, named from the address or the display name, the user its admin, once and not again after deleting it, a taken slug, a tenant member gets none, the connector's default tenant aside, over a limit none and made at the next sign-in). Not through a real connector login: the call is the same after each |
 | T10: members by email (D83) | `Identity.email_verified`, `IdentityStore::{record_identity_email (at each connector sign-in, on the leader, when changed), users_by_email}`; `EntityRef.email`; `service::common::{email_of, user_by_email}` used by `AddMember`, `AddBinding` (`tenancy::member_principal`) and `AddProjectBinding`, after the caller's right to add; gxctl `user:<email>`; the member and role forms take an id or an email, and the tenant page offers an invitation for an address with no user |
 | Tests (T10) | `tenancy_tests::members_and_roles_by_verified_email` (a verified address in any case, pre-added and provisioned users, an unverified address, another directory's user, a disabled one and nobody as an unknown id, two users `409 ambiguous`, a caller who may not add refused first, a tenant and a project role, a sign-in recording the address); gxctl `parse_principal`. No UI e2e: the harness signs in as a directory administrator, who picks users from a list |
-| Real check | task 5 passed on 2026-11-05 on the prism cluster (`6e61817`, then `2c05489`) with the Google Workspace connector, members added by email (D83) included: [20-idp-checks.md](20-idp-checks.md) "Self-service tenants (T9) and members by email (T10)" |
+| Real check | task 5 passed on 2026-11-05 on the three-server test cluster (`6e61817`, then `2c05489`) with the Google Workspace connector, members added by email (D83) included: [20-idp-checks.md](20-idp-checks.md) "Self-service tenants (T9) and members by email (T10)" |
 | Not yet | Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |
 
 `glidex-trust`, the cluster side of trust as a crate (§12.3, D84):

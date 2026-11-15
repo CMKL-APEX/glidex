@@ -8,12 +8,13 @@
   memory.** Your auto-memory is private to one user's sessions; other
   sessions and people don't see it. What another session needs to know
   goes where AGENTS.md says: a decision in the area's spec, in a PR; work
-  in flight, a host's state, a check waiting on a person or a known flake
-  in a GitHub issue labelled `in-flight`, `host`, `check` or `flake`.
+  in flight, a check waiting on a person or a known flake in a GitHub
+  issue labelled `in-flight`, `check` or `flake`; a host's state in its
+  `host` issue in CMKL-APEX/glidex-apex.
   Memory is for how *you* work with this user.
 - **At the start of a session**: read [spec/progress.md](spec/progress.md),
   then `git fetch origin main`, `gh pr list`, `gh issue list -l in-flight`
-  (and `-l host` before touching a host) and `git worktree list`, to see
+  (and `gh issue list -R CMKL-APEX/glidex-apex -l host` before touching a host) and `git worktree list`, to see
   what has moved and who is working where. Create your worktree
   before editing anything.
 - **Long runs in the background.** Workspace tests, clippy, release
