@@ -15,7 +15,8 @@ Read first, and don't repeat them here:
 | How the pieces fit at run time, and why they are shaped so | [developer-guide/architecture.md](docs/public/src/developer-guide/architecture.md), [design-decisions.md](docs/public/src/developer-guide/design-decisions.md) |
 | The design of an area: invariants, decisions, milestones, what is built | [spec/](spec/README.md), one numbered file per area (`27-gpu-vms.md`) |
 | What is built and next, across all areas | **[spec/progress.md](spec/progress.md)** |
-| What is in flight, the test hosts, checks waiting on a person, known flakes | GitHub: open PRs, and issues labelled `in-flight`, `host`, `check`, `flake` |
+| What is in flight, checks waiting on a person, known flakes | GitHub: open PRs, and issues labelled `in-flight`, `check`, `flake` |
+| The test hosts: what each is and runs, full logs of checks on them | The internal [CMKL-APEX/glidex-apex](https://github.com/CMKL-APEX/glidex-apex): issues labelled `host`, and `clusters/apex/glidex-records/` |
 
 ## Ground rules
 
@@ -28,6 +29,11 @@ Read first, and don't repeat them here:
   and real-host results ([spec/20-idp-checks.md](spec/20-idp-checks.md)) name
   no accounts and quote no tokens. Don't print a credential while
   checking one: pass it through files and stdin.
+- **No deployment details here.** This repository is public. Specs,
+  docs, PRs and issues name no real host, address, cluster id or public
+  name of a deployment: say what a host is ("the HGX host", "the
+  R9700 host", "the three-server test cluster"); examples use
+  `node-a`, `example.com`. Those details go to glidex-apex.
 - **Ask before anything shared or hard to undo.** Merging a PR,
   installing on a host, changing a cluster's membership, deleting data,
   or anything visible to other people needs the go-ahead of whoever
@@ -66,7 +72,9 @@ Read first, and don't repeat them here:
 6. **Real checks.** What only a real host or a real identity provider can
    show is written as a check in [spec/20-idp-checks.md](spec/20-idp-checks.md)
    (or the area's spec) and run on the hosts when the person steering
-   agrees; the result row gives the date, the build and pass/fail.
+   agrees; the result row gives the date, the build, the hosts by role
+   and pass/fail. The full log, with host names, goes to glidex-apex
+   (`clusters/apex/glidex-records/`, one file per spec).
 7. **Finish.** When the PRs merge: the milestone's row on the board
    moves on, an `in-flight` issue is closed, branches and worktrees are
    deleted.
@@ -130,7 +138,8 @@ sudo -n -g glidex -u $USER env HOME=$HOME PATH=$PATH GLIDEX_E2E_GROUP=glidex-adm
   sessions' builds), and remember `pgrep -f` over ssh matches its own
   shell.
 - **Hosts are shared state.** Each test host has an issue labelled
-  `host` that says what it is and runs (`gh issue list -l host`).
+  `host` in glidex-apex that says what it is and runs
+  (`gh issue list -R CMKL-APEX/glidex-apex -l host`).
   Install or reconfigure one only when asked; when you do, edit the
   issue's body to its new state and add a comment: what changed, when,
   the build, and what you checked. Name no accounts and quote no

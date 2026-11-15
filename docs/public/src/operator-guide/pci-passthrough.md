@@ -473,12 +473,12 @@ configuration file's `pci` section. Unknown fields are refused.
       "per_device": { "vcpus": 8, "memory_mib": 32768 } },
     { "name": "cx7-vfs", "class": "nic", "prepare": true,
       "match": { "vf_of": { "vendor_id": "0x15b3", "device_id": "0x1021" } },
-      "nodes": ["prism1"] }
+      "nodes": ["node-a"] }
   ],
   "allow": [
     { "pool": "r9700", "projects": ["lab"], "tenants": ["acme"] },
     { "pool": "cx7-vfs", "tenants": ["*"] },
-    { "bdf": "0000:41:00.0", "node": "prism2", "projects": ["ml"] }
+    { "bdf": "0000:41:00.0", "node": "node-b", "projects": ["ml"] }
   ]
 }
 ```

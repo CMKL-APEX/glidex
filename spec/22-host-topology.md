@@ -1,6 +1,6 @@
 # Host topology and device placement
 
-Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools, with discovered NICs, H24) implemented, its acceptance run on gpu-dev2 passed (2026-11-09)** (§15). §17 records
+Status: **design; HT0, HT0b, HT1, HT1b, HT2, HT3 and most of HT4 implemented; HT6 (replicated and discovered pools, with discovered NICs, H24) implemented, its acceptance run on the R9700 host passed (2026-11-09)** (§15). §17 records
 where the implementation differs from the design. Extends
 [14-clustering.md](14-clustering.md) §9.1 (scheduler),
 [04-hypervisors.md](04-hypervisors.md) (command lines),
@@ -61,7 +61,7 @@ and pools for GPUs, DPUs and NICs.
 | H18 | Device health | Each node reports device errors (AER counters, link changes, reset failures, devices gone from the bus) and shows them on the device and on the VM holding it (§5.4). Reporting only: the scheduler does not refuse a device for its error history. An operator can cordon a device by hand. |
 | H19 | Hugepages | Hugepages are accounted as their own resource, per page size and NUMA node: what the node reserved, what OVS-DPDK takes, and what placed VMs hold. They are never overcommitted and don't count as ordinary memory. The scheduler, not the node at start, decides when a vhost-user VM gets hugepages implicitly (§8a). |
 | H14 | Refresh | A node reads its topology at start, on a udev `pci`/`vfio` event batch (debounced 5 s), on `gxctl node topology refresh`, and every ten minutes with the rest of node status. A status write happens only when the summary changes. |
-| H20 | Where pools live | Cluster pools and grants (`pci.allow`, by pool and by address) are a **replicated cluster setting** (`Meta` key `pci_settings`, §9.1), written through the API, gxctl and the UI, so every server answers a request the same way. A server's `control-plane.json` keeps only what concerns that host (H23). The leader copies a file's `pci.pools` and `pci.allow` into the setting once; after that, file pools and grants are ignored with a warning. | The user's call (2026-11-09). HT4 read pools and grants from each server's file, so a pool set up on one server was unknown when another server led (`gpus: no device pool r9700` on gpu-dev2 with prism2 leading, 27-gpu-vms.md §12). The same migration as the OVN setting (16-clustering-ui.md §8a). |
+| H20 | Where pools live | Cluster pools and grants (`pci.allow`, by pool and by address) are a **replicated cluster setting** (`Meta` key `pci_settings`, §9.1), written through the API, gxctl and the UI, so every server answers a request the same way. A server's `control-plane.json` keeps only what concerns that host (H23). The leader copies a file's `pci.pools` and `pci.allow` into the setting once; after that, file pools and grants are ignored with a warning. | The user's call (2026-11-09). HT4 read pools and grants from each server's file, so a pool set up on one server was unknown when another server led (`gpus: no device pool r9700` on the R9700 host with the single-A100 host leading, 27-gpu-vms.md §12). The same migration as the OVN setting (16-clustering-ui.md §8a). |
 | H21 | Discovered pools | Devices of class `gpu` or `accelerator` that no defined pool covers and no host excludes form a **discovered pool** per vendor and device id, across every node that has one, named `<vendor>-<device>` (`amd-7551`, `nvidia-2330`; §9.1b). Discovery only groups devices: it never binds a driver, and a device is ready as before (§5). NVMe drives and DPUs aren't discovered: they are mostly the host's own (NICs are, since H24). Nor are BMCs' display controllers (ASPEED `0x1a03`, Matrox `0x102b`): the server's console. | The user's call (2026-11-09): a GPU should be usable without writing config first. The slug is stable and unique, unlike a marketing name from `pci.ids`, which depends on the host's copy. |
 | H22 | Who uses a discovered pool | Only holders of a host role with `usePciPool` (`host.devices`) until an operator grants or adopts it. A tenant never sees or gets a device because a card was plugged in. | The user's call (2026-11-09). |
 | H23 | Host overrides | Each server's file may keep devices out of discovery and every pool on that host (`pci.exclude`), and set a pool's `bar_mib` and `prepare` for that host (`pci.overrides`). The node marks the devices it keeps `excluded` in its status, so the leader never reads another server's file. | The user's call (2026-11-09): the file overrides discovery and availability. Per host because what it covers is: a card kept for host work, and G17's safe window, which depends on the host's memory. |
@@ -987,7 +987,7 @@ is a device of class `dpu`:
 | **HT4** Pools | §9: cluster pools, `devices` requests, `same_switch`, grants and quotas by pool, `device.alloc` metering, UI | Scheduler tests for pools across nodes and switches; quota refusal; metering ledger rows per pool. |
 | **HT4b** Tenant pools | §9.1a: tenant pools over cluster pools, their API, CLI and UI | Admission tests: a tenant pool's `max`, membership, and the tenant's own cap all apply. |
 | **HT5** SR-IOV VFs | §10.1 VF enumeration, `sriov_numvfs` through netd, VF pools | Host test with an SR-IOV NIC: enable VFs, a pool of VFs, two VMs each with one, NUMA-aligned. |
-| **HT6** Replicated and discovered pools | H20–H23: `pci_settings` with its API, gxctl and Cluster page card; the file's migration; discovered pools; `exclude` and `overrides` and their summary fields; the installer's `--vfio-devices` through the setting | Unit tests: the migration writes once and a differing file is ignored; every server resolves the same pools from the same summaries; a defined pool, an exclude and a slug clash each remove a device from discovery; a tenant can't see or request a discovered pool, a host role can; a rename with VMs requesting the pool is refused. Cluster test: a pool set on the leader is requested through a follower and after a leader change. On gpu-dev2 in the three-server cluster: `amd-7551` discovered with both R9700s, adopted as `r9700`, a 1-GPU VM created while prism2 leads. |
+| **HT6** Replicated and discovered pools | H20–H23: `pci_settings` with its API, gxctl and Cluster page card; the file's migration; discovered pools; `exclude` and `overrides` and their summary fields; the installer's `--vfio-devices` through the setting | Unit tests: the migration writes once and a differing file is ignored; every server resolves the same pools from the same summaries; a defined pool, an exclude and a slug clash each remove a device from discovery; a tenant can't see or request a discovered pool, a host role can; a rename with VMs requesting the pool is refused. Cluster test: a pool set on the leader is requested through a follower and after a leader change. On the R9700 host in the three-server test cluster: `amd-7551` discovered with both R9700s, adopted as `r9700`, a 1-GPU VM created while the single-A100 host leads. |
 
 HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
@@ -999,14 +999,14 @@ of §17). HT2's acceptance test (`numa_placement_e2e`,
 `qemu_numa_placement_e2e`) passes on a two-socket host with eight NUMA
 nodes and A100 GPUs, for both hypervisors.
 
-HT6's acceptance run on gpu-dev2, in the three-server prism cluster
-with prism2 leading (term 1052), main at `5b56b25` on the three servers:
+HT6's acceptance run on the R9700 host, in the three-server test
+cluster with the single-A100 host leading (term 1052), main at `5b56b25` on the three servers:
 
 | Date | Check | Result |
 |---|---|---|
-| 2026-11-09 | Discovery with no pools set up (`gxctl pci settings`: source the file, empty) | **pass**: `gxctl pci pools` from prism1 lists `amd-7551` (gpu, discovered, host roles only) with `03:00.0` and `43:00.0` on gpu-dev2, both free; and `nvidia-20b0` with prism1's and prism2's A100s |
-| 2026-11-09 | Adopt, from prism1: `gxctl pci pool adopt amd-7551 --name r9700`, then `pci pool set` with `bar_mib: 16384` | **pass**: the setting (source `cluster`) holds `r9700`; prism2, the leader, lists `r9700` with both cards free and no discovered `amd-7551` |
-| 2026-11-09 | A 1-GPU VM created through prism1 while prism2 leads (`POST /vms`, `gpus: {count: 1, pool: r9700}`, 4 vCPUs, 4 GiB, `ubuntu-26.04`, Cloud Hypervisor) | **pass**: placed on gpu-dev2 with `03:00.0`, started and running; see 27-gpu-vms.md §12 for the passthrough |
+| 2026-11-09 | Discovery with no pools set up (`gxctl pci settings`: source the file, empty) | **pass**: `gxctl pci pools` from the HGX host lists `amd-7551` (gpu, discovered, host roles only) with `03:00.0` and `43:00.0` on the R9700 host, both free; and `nvidia-20b0` with the A100s of the HGX host and the single-A100 host |
+| 2026-11-09 | Adopt, from the HGX host: `gxctl pci pool adopt amd-7551 --name r9700`, then `pci pool set` with `bar_mib: 16384` | **pass**: the setting (source `cluster`) holds `r9700`; the single-A100 host, the leader, lists `r9700` with both cards free and no discovered `amd-7551` |
+| 2026-11-09 | A 1-GPU VM created through the HGX host while the single-A100 host leads (`POST /vms`, `gpus: {count: 1, pool: r9700}`, 4 vCPUs, 4 GiB, `ubuntu-26.04`, Cloud Hypervisor) | **pass**: placed on the R9700 host with `03:00.0`, started and running; see 27-gpu-vms.md §12 for the passthrough |
 
 ## 16. Open questions
 
@@ -1239,19 +1239,19 @@ Where HT2 differs from the design above, and why:
   one and, for a discovered pool, adopts it under its slug in the same
   write. Device (`bdf`) grants stay with the JSON editor and gxctl. The
   pool and grant reference is in the PCI passthrough guide. The
-  acceptance run on gpu-dev2 passed on 2026-11-09 (§15).
+  acceptance run on the R9700 host passed on 2026-11-09 (§15).
 - **Launch time and the host kernel** (2026-11-10). Before its API
   answers, Cloud Hypervisor maps the VM's memory into the IOMMU, then each
   device's memory BARs. Traced with `strace` on Cloud Hypervisor v53, 16
   vCPUs, 4 GiB:
-  - prism2, Linux 6.8.0-138, an A100 40 GB (64 GiB BAR 1) and a
+  - The single-A100 host, Linux 6.8.0-138, an A100 40 GB (64 GiB BAR 1) and a
     ConnectX-6: one 27.2 s `VFIO_IOMMU_MAP_DMA` for the A100's BAR, 31 s
     in all.
-  - gpu-dev2, Linux 7.0.0-42, R9700s (16 GiB BAR 0): no map call over
+  - The R9700 host, Linux 7.0.0-42, R9700s (16 GiB BAR 0): no map call over
     0.3 s besides the guest memory's 2.2 s; 6.0 s in all with one card,
     6.7 s with two.
 
-  After prism2 moved to Linux 6.17.0-42 (2026-11-10), the A100's map
+  After the single-A100 host moved to Linux 6.17.0-42 (2026-11-10), the A100's map
   was still 27 s, done twice: once at launch and once after the guest's
   UEFI firmware moves the BAR. A kernel profile showed vfio-pci's fault
   handler inserting 4 KiB entries (`vfio_pci_mmap_huge_fault` →
@@ -1266,6 +1266,6 @@ Where HT2 differs from the design above, and why:
 
   7.0 needs neither. 6.8 wasn't tried with either. So a passthrough host with large-BAR GPUs runs 6.17 with
   Pylon #76 or transparent hugepages `always`, or 7.0
-  (pci-passthrough.md, *Host kernel*). prism2's NVIDIA OFED, 2607.0.100,
+  (pci-passthrough.md, *Host kernel*). The single-A100 host's NVIDIA OFED, 2607.0.100,
   builds on 6.17 but not on 7.0 (`xsk_buff_get_metadata`). The launch
   deadline (12-reconciliation.md D22) covers the slow mapping.

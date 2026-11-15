@@ -1915,7 +1915,7 @@ load test (`metering/bench.rs`) now also times the CPU and memory p95:
 bandwidth. A round still takes 49 ms. VM slot rows add about 20 % to
 `rate_5m`.
 
-**Host acceptance, 2026-11-07** (prism2, main at `e5ab686`, Cloud
+**Host acceptance, 2026-11-07** (the single-A100 host, main at `e5ab686`, Cloud
 Hypervisor, a 2-vCPU 2 GiB `ubuntu-24.04` VM on the node NAT network;
 slot rows read once the hour had shipped):
 
@@ -1939,7 +1939,7 @@ slot rows read once the hour had shipped):
   routes group them; a standalone meter gives no `open_hour`.
 - A cluster test: a server relaying `stats` for a VM on a node gets
   the node's `open_hour`.
-- *(host)* On the prism cluster, a VM on a node other than the one the
+- *(host)* On the three-server test cluster, a VM on a node other than the one the
   page reached shows the current hour's points minutes after they are
   sampled, not after the hour closes.
 

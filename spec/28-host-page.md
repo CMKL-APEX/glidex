@@ -43,9 +43,9 @@ for browsers.
 glidex-ui reports itself on `ui.sock`, at start and every 30 seconds:
 
 ```
-PUT /ui/self {"url": "https://gpu-dev2.example.ts.net:5173"}
+PUT /ui/self {"url": "https://node-a.example.ts.net:5173"}
 → 200 {"redirect": "https://glidex.example.com",   // only on an agent
-       "home": "/hosts/prism1",                     // with redirect
+       "home": "/hosts/node-b",                     // with redirect
        "extra_hosts": ["glidex.example.com"],       // W4, on a server
        "servers": ["10.0.0.11:8842", …]}            // for the 503 page
 ```
@@ -99,10 +99,10 @@ NIC carries the node's advertise address.
     old address leading to it;
   - **Mocked two-node directory:** the Hosts list, and requests carrying
     the target node.
-- **On the host pair** (gpu-dev2 server, prism1 agent):
-  - opening prism1's UI lands on gpu-dev2's `/hosts/prism1`;
+- **On a host pair** (the R9700 host a server, the HGX host an agent):
+  - opening the agent's UI lands on the server's `/hosts/<agent id>`;
   - SSO works there;
-  - prism1's bridges are listed from gpu-dev2.
+  - the agent's bridges are listed from the server.
 
 ## 7. Tasks
 
