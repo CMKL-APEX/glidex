@@ -357,10 +357,10 @@ async fn a_write_that_no_leader_commits_gives_up() {
             .unwrap();
         assert!(res.is_err(), "the {name} write can't commit, got {res:?}");
     }
-    // The majority carries on.
+    // The majority carries on, through whichever of it leads: under load
+    // its leadership can move between finding the leader and writing.
     let rest: Vec<_> = c.ids().into_iter().filter(|i| *i != old).collect();
-    let new = c.leader(&rest).await;
-    c.put(new, "fresh", "2").unwrap();
+    c.put_on_leader(&rest, "fresh", "2").await;
 }
 
 /// A leader cut off with a write it can't commit says its log stalled,
