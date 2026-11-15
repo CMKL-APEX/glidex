@@ -371,6 +371,25 @@ pub struct StorageTenantReport {
     #[serde(default)]
     pub suspended: bool,
     pub storage: StorageReport,
+    /// The same, per project of the tenant that holds any (D89): the
+    /// directory refuses deleting a project while it holds storage here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_storage: Vec<StorageProjectReport>,
+}
+
+/// What a storage cluster holds of one project, as totals (D89).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StorageProjectReport {
+    /// The project's id at the directory.
+    pub project: String,
+    pub storage: StorageReport,
+}
+
+impl StorageReport {
+    /// Something is still held: a volume, a bucket or an S3 key.
+    pub fn holds_any(&self) -> bool {
+        self.volumes > 0 || self.buckets > 0 || self.s3_keys > 0
+    }
 }
 
 /// A cluster's report (D70): when, and one entry per admitted tenant.
@@ -461,6 +480,26 @@ mod tests {
         assert_eq!(t.storage.volume_used_bytes, 5);
         assert_eq!(t.storage.buckets, 0);
         assert!(!t.suspended);
+        assert!(t.project_storage.is_empty());
+        // Per project, where a cluster sends it (D89); empty, it isn't written.
+        let t: StorageTenantReport = serde_json::from_value(serde_json::json!({
+            "tenant": "t1", "storage": { "buckets": 1 },
+            "project_storage": [{ "project": "p1", "storage": { "buckets": 1 } }],
+        }))
+        .unwrap();
+        assert_eq!(t.project_storage[0].project, "p1");
+        assert!(t.project_storage[0].storage.holds_any());
+        assert!(!StorageReport::default().holds_any());
+        let mut written = serde_json::to_value(&t).unwrap();
+        assert!(written.get("project_storage").is_some());
+        written.as_object_mut().unwrap().remove("project_storage");
+        let none: StorageTenantReport = serde_json::from_value(written).unwrap();
+        assert!(
+            serde_json::to_value(&none)
+                .unwrap()
+                .get("project_storage")
+                .is_none()
+        );
     }
 
     #[test]

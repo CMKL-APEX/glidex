@@ -27,7 +27,7 @@ use crate::key::{ClusterKey, Signer, jwks};
 use crate::peer::{self, Replays};
 use crate::wire::{
     self, EndAtCluster, OfferToken, RedeemAnswer, RedeemRequest, RemoteTenant, Row, Snapshot,
-    StorageReport, normalize_issuer,
+    StorageProjectReport, StorageReport, normalize_issuer,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -243,6 +243,8 @@ pub struct FakeCluster {
     /// The storage each tenant's entry of that report carried (D85), by
     /// tenant id.
     pub storage: HashMap<String, StorageReport>,
+    /// The per-project storage those entries carried (D89), by project id.
+    pub project_storage: HashMap<String, StorageReport>,
 }
 
 struct Code {
@@ -434,6 +436,7 @@ impl FakeDirectory {
                 ui_callback: None,
                 report: None,
                 storage: HashMap::new(),
+                project_storage: HashMap::new(),
             });
         // The offer's pin is the cluster's word now.
         c.tls_sha256 = t.tls_sha256.clone();
@@ -733,7 +736,15 @@ impl Inner {
                 // As a directory reads it: storage, where an entry has it,
                 // must read as such (D85).
                 let mut storage = HashMap::new();
+                let mut project_storage = HashMap::new();
                 for t in b["report"]["tenants"].as_array().into_iter().flatten() {
+                    if let Some(ps) = t.get("project_storage") {
+                        match serde_json::from_value::<Vec<StorageProjectReport>>(ps.clone()) {
+                            Ok(ps) => project_storage
+                                .extend(ps.into_iter().map(|p| (p.project, p.storage))),
+                            Err(_) => return Reply::status(422),
+                        }
+                    }
                     let (Some(id), Some(s)) = (t["tenant"].as_str(), t.get("storage")) else {
                         continue;
                     };
@@ -751,6 +762,7 @@ impl Inner {
                         &mut c.next_tls_sha256,
                         b["next_tls_sha256"].as_str(),
                     );
+                    c.project_storage = project_storage;
                     if let Some(u) = b["ui_callback"]
                         .as_str()
                         .filter(|u| wire::valid_callback(u))

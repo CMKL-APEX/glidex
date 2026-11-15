@@ -9,7 +9,7 @@ use glidex_trust::feed::{self, Entity};
 use glidex_trust::key::{self, ClusterKey};
 use glidex_trust::{
     ClusterReport, EndAtCluster, FeedState, OfferToken, RedeemAnswer, RedeemRequest, Replays,
-    StorageReport, StorageTenantReport, TrustedDirectory, peer, tokens,
+    StorageProjectReport, StorageReport, StorageTenantReport, TrustedDirectory, peer, tokens,
 };
 use serde_json::json;
 use std::sync::{Arc, Mutex};
@@ -197,6 +197,11 @@ async fn a_cluster_trusts_the_fake_directory() {
             tenant: "t1".into(),
             suspended: false,
             storage: storage.clone(),
+            // And per project (D89).
+            project_storage: vec![StorageProjectReport {
+                project: "p1".into(),
+                storage: storage.clone(),
+            }],
         }],
     };
     client::push_report(&c.key, CLUSTER, &d, &report, Some(CALLBACK), now)
@@ -205,6 +210,7 @@ async fn a_cluster_trusts_the_fake_directory() {
     let seen = dir.cluster(CLUSTER).unwrap();
     assert_eq!(seen.report, Some(serde_json::to_value(&report).unwrap()));
     assert_eq!(seen.storage.get("t1"), Some(&storage));
+    assert_eq!(seen.project_storage.get("p1"), Some(&storage));
     // A report without storage (a VM cluster's) is taken too, and one whose
     // storage doesn't read is refused.
     let vms = json!({ "at": now, "tenants": [{ "tenant": "t1", "vms": 2 }] });
@@ -212,6 +218,7 @@ async fn a_cluster_trusts_the_fake_directory() {
         .await
         .unwrap();
     assert!(dir.cluster(CLUSTER).unwrap().storage.is_empty());
+    assert!(dir.cluster(CLUSTER).unwrap().project_storage.is_empty());
     let bad =
         json!({ "at": now, "tenants": [{ "tenant": "t1", "storage": { "volumes": "two" } }] });
     assert!(

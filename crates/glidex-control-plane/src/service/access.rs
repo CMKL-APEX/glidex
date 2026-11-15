@@ -481,6 +481,33 @@ pub async fn delete_project(
             format!("project still owns {}", what),
         ));
     }
+    // Storage it still holds on a trusted cluster (D89): it would be cut off there.
+    if let Some(t) = call.auth().tenants.get(&p.tenant_id).ok().flatten() {
+        let clusters = call.auth().trust.clusters(&t.directory_id).map_err(|e| {
+            ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
+        })?;
+        let held: Vec<String> = clusters
+            .iter()
+            .filter(|c| c.tenants.contains(&t.id))
+            .filter_map(|c| {
+                let s = c.holds_storage_of(&t.id, &p.id)?;
+                Some(format!(
+                    "{}: {} volume(s), {} bucket(s), {} S3 key(s)",
+                    c.name, s.volumes, s.buckets, s.s3_keys
+                ))
+            })
+            .collect();
+        if !held.is_empty() {
+            return Err(ServiceError::new(
+                StatusCode::CONFLICT,
+                "conflict",
+                format!(
+                    "project still holds storage on {}; empty it there first",
+                    held.join("; ")
+                ),
+            ));
+        }
+    }
     call.manager()
         .projects()
         .delete(&p.id)

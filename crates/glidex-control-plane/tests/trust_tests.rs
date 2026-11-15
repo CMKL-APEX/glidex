@@ -1143,6 +1143,7 @@ async fn the_cluster_reports_its_tenants_back() {
         north,
         acme,
         issuer,
+        project,
         ..
     } = admitted().await;
     let d = north
@@ -1291,6 +1292,64 @@ async fn the_cluster_reports_its_tenants_back() {
     assert_eq!(rep["storage"]["bucket_bytes"], "12345", "{v}");
     assert_eq!(rep["storage"]["s3_keys"], "3", "{v}");
     assert!(rep["vms"].is_null() || rep["vms"] == "0", "{v}");
+
+    // Per project (D89): a project holding storage there can't be deleted
+    // here; another tenant's project in the report is dropped.
+    let send = |report: serde_json::Value| {
+        let (acme, north, issuer, north_id, d) = (&acme, &north, &issuer, &north_id, &d);
+        async move {
+            let a = glidex_control_plane::directory::peer::assertion(
+                &north.app.auth.connectors,
+                glidex_control_plane::directory::issuer::CLUSTER_OWNER,
+                north_id,
+                issuer,
+                glidex_control_plane::trust::REPORT,
+                glidex_control_plane::auth::store::now(),
+            )
+            .unwrap();
+            let (s, _) = glidex_control_plane::directory::peer::post(
+                &acme.base,
+                &d.tls_sha256,
+                "/d/local/feed/v1/report",
+                &a,
+                &json!({ "cluster_id": north_id, "report": report }),
+            )
+            .await
+            .unwrap();
+            assert_eq!(s, 204);
+        }
+    };
+    send(json!({ "at": 1, "tenants": [{
+        "tenant": t.tenant, "storage": { "volumes": 2, "buckets": 1 },
+        "project_storage": [
+            { "project": project, "storage": { "volumes": 2, "buckets": 1 } },
+            { "project": "not-acmes", "storage": { "volumes": 9 } },
+        ],
+    }] }))
+    .await;
+    let kept = acme
+        .app
+        .auth
+        .trust
+        .clusters("local")
+        .unwrap()
+        .pop()
+        .unwrap();
+    let kept = &kept.report.unwrap().tenants[0].project_storage;
+    assert_eq!(kept.len(), 1, "{kept:?}");
+    let session = format!("{cookie}|{csrf}");
+    let (s, v) = acme
+        .rest("DELETE", &format!("/projects/{project}"), None, &session)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    let m = v.to_string();
+    assert!(m.contains("2 volume(s), 1 bucket(s), 0 S3 key(s)"), "{m}");
+    // Emptied there, the next report says so and the delete goes through.
+    send(json!({ "at": 2, "tenants": [{ "tenant": t.tenant, "storage": {} }] })).await;
+    let (s, v) = acme
+        .rest("DELETE", &format!("/projects/{project}"), None, &session)
+        .await;
+    assert!(s.is_success(), "{v}");
 }
 
 /// D13: past its `max_staleness` without a feed, a trusted directory's

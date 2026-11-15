@@ -510,7 +510,9 @@ Once trust is set up:
   A storage cluster (hyperstor) reports the tenant's storage instead:
   volumes with their provisioned size and the space they actually use,
   buckets with the space their objects take, and S3 keys. The page
-  shows them in a *Storage* column.
+  shows them in a *Storage* column. It may also report them per
+  project: a project that still holds storage there can't be deleted
+  here until a later report no longer lists it.
 - **A tenant's storage on a hyperstor cluster.** *Open storage* in that
   column shows, for the tenant's members, the tenant's volumes, buckets
   and S3 keys there, and usage per project. Glidex's server reads them

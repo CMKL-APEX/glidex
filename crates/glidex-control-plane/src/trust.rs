@@ -96,6 +96,25 @@ pub struct TenantReport {
     /// What a storage cluster holds of the tenant, as totals (D85).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub storage: Option<glidex_trust::StorageReport>,
+    /// The same per project that holds any (D89): such a project can't be
+    /// deleted here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_storage: Vec<glidex_trust::StorageProjectReport>,
+}
+
+impl TrustedCluster {
+    /// What its last report says it holds of project `id` of `tenant`, if
+    /// anything (D89).
+    pub fn holds_storage_of(&self, tenant: &str, id: &str) -> Option<&glidex_trust::StorageReport> {
+        self.report
+            .as_ref()?
+            .tenants
+            .iter()
+            .filter(|t| t.tenant == tenant)
+            .flat_map(|t| &t.project_storage)
+            .find(|p| p.project == id && p.storage.holds_any())
+            .map(|p| &p.storage)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
