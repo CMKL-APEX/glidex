@@ -311,7 +311,8 @@ pub fn send_pylon_policy_update(
 pub enum PylondRegistration {
     /// pylond lists the VM: it manages its cores.
     Listed,
-    /// pylond answers without it: it refused the VM, or restarted since.
+    /// pylond answers without it: it refused the VM, or restarted and the
+    /// VMM hasn't registered again yet.
     NotListed,
     /// No pylond socket on this host.
     NoPylond,

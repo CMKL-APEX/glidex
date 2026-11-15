@@ -209,7 +209,7 @@ own `~/.glidex/`, for a control plane you run by hand.
 With `--with-pylon`, the installer downloads `pylon-x86_64`,
 `pylond-x86_64` and `pylon-guest-agent-static` from the
 [Pylon release](https://github.com/CMKL-APEX/pylon/releases) this
-Glidex pins (`v0.0.8-rc3`), checks each against its pinned SHA-256, and
+Glidex pins (`v0.0.8-rc4`), checks each against its pinned SHA-256, and
 installs them as `/usr/local/bin/pylon`, `/usr/local/bin/pylond` and
 `/usr/local/share/glidex/pylon-guest-agent` (the agent Glidex puts in
 Pylon guests).
@@ -217,10 +217,10 @@ A file is replaced only when its SHA-256 differs; a new `pylond`
 restarts `glidex-pylond`.
 
 - **Restart Pylon VMs after an update.** A running VM keeps its `pylon`,
-  and it registers with `pylond` only once, when it starts: after
-  `glidex-pylond` restarts, VMs started before no longer get cores
-  managed. A release can also change what the VMM and `pylond` share
-  (v0.0.8-rc2 did), so restart them with the new `pylon` either way.
+  and the VMM and `pylond` must come from the same release: a release
+  can change what they share (v0.0.8-rc2 and v0.0.8-rc4 did), and
+  `pylond` then refuses VMs started with the older `pylon`. Stop and
+  start Pylon VMs once the installer has updated Pylon.
 
 - **What it needs.** The release is built on Ubuntu 24.04: it needs
   glibc 2.38 or later, and `pylond` needs `libelf`, `zlib` and `zstd`
@@ -281,8 +281,11 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
   the VM's page *Not managed by pylond* under its vCPUs, when
   `pylond` has no registration for a running Pylon VM: it refused the
   VM (the VMM writes why in the VM's console log, `gxctl log <vm>`), or
-  `pylond` restarted after the VM started. The VM still runs, with all
-  its vCPUs, but nothing parks them; restart it to register again.
+  `pylond` isn't running. The VM still runs, with all its vCPUs, but
+  nothing parks them. When `glidex-pylond` restarts, its VMs run
+  unmanaged until the new `pylond` listens and then register again by
+  themselves (from v0.0.8-rc4); a VM `pylond` refused registers again
+  only when it restarts.
 
 A host offers Pylon when `/usr/local/bin/pylon` is there; Pylon VMs also
 need `pylond` running to scale. Elastic VMs run on any host with Cloud
