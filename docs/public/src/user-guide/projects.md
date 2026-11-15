@@ -228,7 +228,12 @@ the project's tenant.
 
 To delete a project it must not own any VMs, disks or credentials:
 **Delete project** on its page, or `gxctl project delete lab` (it asks
-for confirmation). Its service-account tokens are revoked with it.
+for confirmation). Its service-account tokens are revoked with it. Nor
+may it hold storage on a hyperstor cluster its tenant uses: while that
+cluster's last report lists volumes, buckets or S3 keys of the project,
+the delete is refused and names them. Empty them there first; the
+delete goes through once the cluster's next report no longer lists
+them.
 
 On an installation with several tenants (organisations), each project
 belongs to one tenant, shown in the **Tenant** column. See

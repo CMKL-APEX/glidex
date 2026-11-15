@@ -608,6 +608,7 @@ pub async fn report_for(
             disk_gib: 0,
             networks: 0,
             storage: None,
+            project_storage: Vec::new(),
         };
         for p in projects.iter().filter(|p| p.tenant_id == rt.id) {
             let u = app.manager.usage(&p.id).await.map_err(|e| e.to_string())?;
@@ -676,6 +677,15 @@ pub async fn report(
     r.at = now();
     r.tenants.retain(|t| c.tenants.contains(&t.tenant));
     r.tenants.truncate(c.tenants.len());
+    // Per-project storage only of the tenant's own projects here (D89).
+    let projects = app.manager.projects().list().unwrap_or_default();
+    for t in &mut r.tenants {
+        t.project_storage.retain(|p| {
+            projects
+                .iter()
+                .any(|x| x.id == p.project && x.tenant_id == t.tenant)
+        });
+    }
     c.report = Some(r);
     // A renewal it announced (D88): accepted next to its pin until seen.
     let before = c.next_tls_sha256.clone();
