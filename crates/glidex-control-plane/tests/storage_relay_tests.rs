@@ -160,6 +160,7 @@ async fn the_relay_reads_a_trusted_clusters_storage_as_the_person() {
                 name: "store-north".into(),
                 api,
                 tls_sha256: mgmt.pin.clone(),
+                next_tls_sha256: None,
                 jwks: json!({ "keys": [] }),
                 // The second is trusted for another tenant only.
                 tenants: vec![if id == CLUSTER {
@@ -281,4 +282,91 @@ async fn the_relay_reads_a_trusted_clusters_storage_as_the_person() {
     let (st, v, _) = c.relay(&s, CLUSTER, "auth/whoami", json!({})).await;
     assert_eq!(st, StatusCode::BAD_GATEWAY, "{v}");
     assert_eq!(v["error"], "cluster_unreachable");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_renewal_the_cluster_announced_is_pinned_once_seen() {
+    let mut mgmt = serve_https(Arc::new(|_: Seen| {
+        Box::pin(async { Reply::json(200, json!({ "user": "alice" })) })
+    }))
+    .await
+    .unwrap();
+    let c = cp();
+    let now = glidex_trust::now();
+    let iss = format!("{BASE}/d/local");
+    c.app.auth.tenants.set_issuer("local", &iss, false).unwrap();
+    c.app
+        .auth
+        .connectors
+        .maintain_signing_keys("local", now)
+        .unwrap();
+    let key = glidex_trust::ClusterKey::generate("c-store:1").unwrap();
+    c.app
+        .auth
+        .trust
+        .put_cluster(&TrustedCluster {
+            directory_id: "local".into(),
+            cluster_id: CLUSTER.into(),
+            name: "store-north".into(),
+            api: mgmt.base.clone(),
+            tls_sha256: mgmt.pin.clone(),
+            next_tls_sha256: None,
+            jwks: glidex_trust::key::jwks(&[&key]),
+            tenants: vec![DEFAULT_TENANT.into()],
+            created_at: now,
+            ui_callback: None,
+            report: None,
+        })
+        .unwrap();
+    let (_, s) = c.session("alice", true);
+    let whoami = || c.relay(&s, CLUSTER, "auth/whoami", json!({}));
+    let record = || c.app.auth.trust.cluster("local", CLUSTER).unwrap().unwrap();
+    assert_eq!(whoami().await.0, StatusCode::OK);
+
+    // A certificate it didn't announce isn't the cluster.
+    let old = mgmt.pin.clone();
+    mgmt.renew().unwrap();
+    assert_eq!(whoami().await.0, StatusCode::BAD_GATEWAY);
+
+    // Announced in a signed report, it is accepted beside the pin...
+    let report = |next: &str| {
+        let a =
+            glidex_trust::peer::assertion(&key, CLUSTER, &iss, glidex_trust::REPORT, now).unwrap();
+        Request::builder()
+            .method("POST")
+            .uri("/d/local/feed/v1/report")
+            .header(
+                header::AUTHORIZATION,
+                format!("{} {a}", glidex_trust::peer::SCHEME),
+            )
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                json!({
+                    "cluster_id": CLUSTER,
+                    "report": { "at": now, "tenants": [] },
+                    "next_tls_sha256": next,
+                })
+                .to_string(),
+            ))
+            .unwrap()
+    };
+    let r = c.router.clone().oneshot(report(&mgmt.pin)).await.unwrap();
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let kept = record();
+    assert_eq!(
+        (kept.tls_sha256, kept.next_tls_sha256),
+        (old.clone(), Some(mgmt.pin.clone()))
+    );
+    // ...and the first call that sees it makes it the pin.
+    assert_eq!(whoami().await.0, StatusCode::OK);
+    let kept = record();
+    assert_eq!(
+        (kept.tls_sha256, kept.next_tls_sha256),
+        (mgmt.pin.clone(), None)
+    );
+    // The old certificate is no longer the cluster.
+    let r = c.router.clone().oneshot(report("junk")).await.unwrap();
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    assert_eq!(record().next_tls_sha256, None);
+    assert_ne!(record().tls_sha256, old);
 }

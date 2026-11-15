@@ -305,6 +305,37 @@ pub struct ReportBody<R> {
     pub report: R,
     #[serde(default)]
     pub ui_callback: Option<String>,
+    /// The pin of the certificate the cluster will serve next (D88).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_tls_sha256: Option<String>,
+}
+
+/// The pins a directory accepts for a cluster (D88): the one it holds,
+/// and the one the cluster's reports announced.
+pub fn accepted_pins<'a>(tls_sha256: &'a str, next: Option<&'a str>) -> Vec<&'a str> {
+    std::iter::once(tls_sha256).chain(next).collect()
+}
+
+/// What a directory keeps of a report's announced pin (D88): normalized,
+/// and not the pin it holds already. A report without one, or with junk,
+/// leaves `next` as it was: the cluster may switch before the directory
+/// next calls it.
+pub fn announce_pin(tls_sha256: &str, next: &mut Option<String>, announced: Option<&str>) {
+    if let Some(p) = announced.and_then(glidex_tls::Trust::normalize_pin)
+        && p != tls_sha256
+    {
+        *next = Some(p);
+    }
+}
+
+/// After a call that saw certificate `seen` (D88): the announced pin, once
+/// seen, becomes the pin and the old one goes. Whether it did.
+pub fn promote_pin(tls_sha256: &mut String, next: &mut Option<String>, seen: &str) -> bool {
+    if next.as_deref() != Some(seen) {
+        return false;
+    }
+    *tls_sha256 = next.take().unwrap_or_default();
+    true
 }
 
 /// What a storage cluster holds of one tenant, as totals (D85): a
@@ -388,6 +419,36 @@ mod tests {
             Some("https://id.acme.example/d/acme")
         );
         assert_eq!(normalize_issuer("http://id.acme.example/d/acme"), None);
+    }
+
+    #[test]
+    fn an_announced_pin_is_kept_until_seen_then_becomes_the_pin() {
+        let (a, b) = ("aa".repeat(32), "bb".repeat(32));
+        let (mut pin, mut next) = (a.clone(), None);
+        // Junk, and the pin it has, are no announcement.
+        announce_pin(&pin, &mut next, Some("not a pin"));
+        announce_pin(&pin, &mut next, Some(&a));
+        assert_eq!(next, None);
+        announce_pin(
+            &pin,
+            &mut next,
+            Some(&format!("sha256/{}", b.to_uppercase())),
+        );
+        assert_eq!(next.as_deref(), Some(b.as_str()));
+        // A report without one keeps it: the cluster may switch first.
+        announce_pin(&pin, &mut next, None);
+        assert_eq!(
+            accepted_pins(&pin, next.as_deref()),
+            vec![a.as_str(), b.as_str()]
+        );
+        // Seeing the old certificate changes nothing; the new one, all.
+        assert!(!promote_pin(&mut pin, &mut next, &a));
+        assert!(promote_pin(&mut pin, &mut next, &b));
+        assert_eq!((pin, next), (b, None));
+        // Old reports read without it.
+        let r: ReportBody<Value> =
+            serde_json::from_value(serde_json::json!({ "cluster_id": "c", "report": {} })).unwrap();
+        assert_eq!(r.next_tls_sha256, None);
     }
 
     #[test]

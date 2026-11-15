@@ -8,7 +8,7 @@ use serde_json::Value;
 
 pub use glidex_trust::peer::{
     ASSERTION_SECS, CLIENT_ASSERTION_TYPE, PeerError, Replays, SCHEME, TYP, fingerprint_of,
-    from_headers, post, post_unsigned, verify, verify_client_assertion,
+    from_headers, post, post_any, post_unsigned, verify, verify_client_assertion,
 };
 
 /// `owner`'s active key (a directory's, or `issuer::CLUSTER_OWNER`'s) as

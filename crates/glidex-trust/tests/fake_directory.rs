@@ -483,3 +483,72 @@ async fn the_fake_runs_a_device_login() {
     let (_, v) = refresh_with(t).await;
     assert_eq!(error(&v), "invalid_grant");
 }
+
+#[tokio::test]
+async fn a_renewed_certificate_is_pinned_once_announced() {
+    let dir = FakeDirectory::start("acme").await.unwrap();
+    let tenant = dir.add_tenant("t1", "acme");
+    let c = Arc::new(Cluster {
+        key: ClusterKey::generate("c1:1").unwrap(),
+        secret_hash: glidex_trust::sha256_hex(b"s"),
+        offer_open: Mutex::new(true),
+        replays: Replays::default(),
+        trusted: Mutex::new(None),
+    });
+    let (c2, iss) = (c.clone(), dir.issuer().to_string());
+    let handler: Handler = Arc::new(move |req| {
+        let (c, iss) = (c2.clone(), iss.clone());
+        Box::pin(async move { c.handle(req, &iss) })
+    });
+    let mut https = serve_https(handler).await.unwrap();
+    let api = https.base.clone();
+    let offer = |pin: &str| {
+        OfferToken {
+            cluster_id: CLUSTER.into(),
+            cluster_name: "north".into(),
+            api: api.clone(),
+            tls_sha256: pin.into(),
+            tenant: "acme".into(),
+            directory: dir.issuer().into(),
+            offer: "o1".into(),
+            secret: "s".into(),
+            expires_at: u64::MAX,
+        }
+        .encode()
+    };
+    dir.redeem(&offer(&https.pin), &tenant).await.unwrap();
+
+    // A certificate it didn't announce is refused.
+    https.renew().unwrap();
+    assert!(dir.end_trust(CLUSTER, "t1").await.is_err());
+    assert!(dir.cluster(CLUSTER).is_none());
+
+    // Offered again with its new pin, it renews once more and announces
+    // that in a report (signed with its key): the directory then reaches it.
+    *c.offer_open.lock().unwrap() = true;
+    dir.redeem(&offer(&https.pin), &tenant).await.unwrap();
+    let old = https.pin.clone();
+    https.renew().unwrap();
+    let report = ClusterReport::<StorageTenantReport> {
+        at: glidex_trust::now(),
+        tenants: vec![],
+    };
+    client::push_report_announcing(
+        &c.key,
+        CLUSTER,
+        &trusted(&c),
+        &report,
+        None,
+        Some(&https.pin.to_uppercase()),
+        glidex_trust::now(),
+    )
+    .await
+    .unwrap();
+    let seen = dir.cluster(CLUSTER).unwrap();
+    assert_eq!(
+        (seen.tls_sha256, seen.next_tls_sha256),
+        (old, Some(https.pin.clone()))
+    );
+    assert_eq!(dir.end_trust(CLUSTER, "t1").await.unwrap(), 200);
+    assert!(c.trusted.lock().unwrap().is_none());
+}

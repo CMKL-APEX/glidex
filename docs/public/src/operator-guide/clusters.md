@@ -539,6 +539,13 @@ Feed, sign-in and report requests are signed by the sending side's key
 and go to the other side's API with its certificate pinned, on port
 8841 both ways: open it between the two organizations' hosts.
 
+When a hyperstor cluster renews its certificate, it announces the new
+one in its report first, and the directory then accepts it. A Glidex
+cluster doesn't announce its renewals yet: if its API certificate
+changes, the tenant's directory can't end the trust from its side until
+the tenant accepts a new offer (the cluster's feed, reports and sign-ins
+keep working).
+
 ## The web UI's address
 
 Agents send browsers to a server's web UI, at the address that server

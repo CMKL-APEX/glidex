@@ -677,6 +677,24 @@ pub async fn report(
     r.tenants.retain(|t| c.tenants.contains(&t.tenant));
     r.tenants.truncate(c.tenants.len());
     c.report = Some(r);
+    // A renewal it announced (D88): accepted next to its pin until seen.
+    let before = c.next_tls_sha256.clone();
+    glidex_trust::announce_pin(
+        &c.tls_sha256,
+        &mut c.next_tls_sha256,
+        b.next_tls_sha256.as_deref(),
+    );
+    if c.next_tls_sha256 != before {
+        app.auth.audit_system(
+            &format!("cluster:{}", c.cluster_id),
+            "",
+            "announcePin",
+            Some(&format!("cluster:{}", c.cluster_id)),
+            "allowed",
+            None,
+            json!({ "pin": c.tls_sha256, "next": c.next_tls_sha256 }),
+        );
+    }
     if let Some(u) = b.ui_callback.filter(|u| valid_callback(u))
         && c.ui_callback.as_deref() != Some(u.as_str())
     {
