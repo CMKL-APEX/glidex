@@ -2126,13 +2126,24 @@ async fn a_firmware_template_copy_is_checked_against_its_digest() {
         std::fs::read(agent.manager.images().firmware_vars_template("fw-good")).unwrap(),
         vars
     );
-    wait_for("the agent refusing the other template", || async {
-        row("fw-bad").await["phase"] == "Failed"
-    })
-    .await;
-    let r = row("fw-bad").await;
+    // The row as it was when failed: a retry may rewrite it before a
+    // second read (#512).
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let r = loop {
+        let r = row("fw-bad").await;
+        if r["phase"] == "Failed" {
+            break r;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the agent refusing the other template: {r}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
     assert!(
-        r["error"].as_str().unwrap().contains("does not match"),
+        r["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("does not match")),
         "{r}"
     );
     assert!(
