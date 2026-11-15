@@ -275,6 +275,13 @@ pub struct NodeStatus {
     /// A server's web UI address (spec/28-host-page.md W3); agents publish none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_url: Option<String>,
+    /// The pin (SHA-256, 64 hex) of the API certificate it serves, and of a
+    /// renewed one it holds until trusted directories know it
+    /// (spec/19-tenancy.md D90).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_pin: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_pin_pending: Option<String>,
     #[serde(default)]
     pub versions: Versions,
     #[serde(default)]
@@ -334,6 +341,8 @@ impl Node {
                 advertise: None,
                 tunnel_ip: None,
                 ui_url: None,
+                api_pin: None,
+                api_pin_pending: None,
                 versions: Versions {
                     glidex: env!("CARGO_PKG_VERSION").into(),
                     ..Default::default()
@@ -542,6 +551,8 @@ impl NodeStore {
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;
         node.status.ui_url = probe.ui_url;
+        node.status.api_pin = probe.api_pin;
+        node.status.api_pin_pending = probe.api_pin_pending;
         if node != before || self.get(id)?.is_none() {
             node.meta.resource_version += 1;
             self.put(&node)?;
@@ -564,6 +575,9 @@ pub struct SelfProbe {
     pub ovn_version: Option<String>,
     /// This server's web UI address (spec/28-host-page.md W3).
     pub ui_url: Option<String>,
+    /// Its API certificate's pin, and a renewed one's it holds (D90).
+    pub api_pin: Option<String>,
+    pub api_pin_pending: Option<String>,
 }
 
 /// The first line of `<program> --version` (`ovn-controller 24.03.2`), its
@@ -687,6 +701,8 @@ impl SelfProbe {
             topology: crate::topology::read(),
             ovn_version: program_version("ovn-controller"),
             ui_url: None,
+            api_pin: None,
+            api_pin_pending: None,
         }
     }
 }

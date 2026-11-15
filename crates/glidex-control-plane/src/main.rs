@@ -453,6 +453,7 @@ async fn main() {
     });
     // Feeds from the directories this cluster trusts (spec/19-tenancy.md D67).
     api::trust::spawn_feeds(app_state.clone());
+    let cert_app = app_state.clone();
     // glidex-metad's own socket and router (spec/29-workload-identity.md W11);
     // as the leader, the app answers its nodes' metadata questions (§15).
     let metad_router = api::metad::router(app_state.clone()).layer(TraceLayer::new_for_http());
@@ -524,16 +525,26 @@ async fn main() {
         tracing::info!(cert = %t.cert.display(), fingerprint = %t.fingerprint, self_signed = t.self_signed, "TLS certificate");
     }
     // Replaced certificate files are served without a restart, and
-    // published again for local clients (spec/21-tailscale-tls.md §4.1).
+    // published again for local clients (spec/21-tailscale-tls.md §4.1);
+    // a renewal once the directories that trust this cluster know it
+    // (spec/19-tenancy.md D90).
     if let Some(files) = tls.as_mut().and_then(|t| t.files.take()) {
         let run_dir = run_dir.clone();
-        files.watch(glidex_tls::RELOAD_EVERY, move |f| {
-            let fingerprint = glidex_tls::fingerprint_certified(&f.slot.get());
-            tracing::info!(cert = %f.cert.display(), %fingerprint, "TLS certificate reloaded");
-            if let Err(e) = glidex_tls::publish(&f.cert, &run_dir) {
-                tracing::warn!("cannot publish the reloaded TLS certificate: {}", e);
-            }
-        });
+        glidex_control_plane::api_cert::serving(&cert_app, &files.slot.get());
+        let gate_app = cert_app.clone();
+        files.watch_gated(
+            glidex_tls::RELOAD_EVERY,
+            move |new, old| glidex_control_plane::api_cert::gate(&gate_app, new, old),
+            move |f| {
+                let key = f.slot.get();
+                let fingerprint = glidex_tls::fingerprint_certified(&key);
+                tracing::info!(cert = %f.cert.display(), %fingerprint, "TLS certificate reloaded");
+                glidex_control_plane::api_cert::serving(&cert_app, &key);
+                if let Err(e) = glidex_tls::publish(&f.cert, &run_dir) {
+                    tracing::warn!("cannot publish the reloaded TLS certificate: {}", e);
+                }
+            },
+        );
     }
     for (_, kind, path) in &unix {
         println!("  Listening on {} ({:?})", path.display(), kind);

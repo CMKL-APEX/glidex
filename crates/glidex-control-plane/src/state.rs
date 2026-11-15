@@ -380,6 +380,9 @@ pub struct VmManager {
     /// This host's web UI address, as a server publishes it
     /// (spec/28-host-page.md W3).
     ui_url: ArcSwap<Option<String>>,
+    /// The pins of the API certificate served, and of a renewed one held
+    /// (spec/19-tenancy.md D90): `(serving, pending)`.
+    api_pins: ArcSwap<(Option<String>, Option<String>)>,
     /// The device pools and grants in force: the cluster setting if
     /// written, else this host's file (spec/22-host-topology.md H20).
     pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
@@ -590,6 +593,7 @@ impl VmManager {
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
             ui_url: ArcSwap::from_pointee(None),
+            api_pins: ArcSwap::from_pointee((None, None)),
             pci_pools: ArcSwap::from_pointee(Vec::new()),
             pools_in_force: ArcSwap::from_pointee(Vec::new()),
             pci_grants: ArcSwap::from_pointee(Vec::new()),
@@ -1458,6 +1462,23 @@ impl VmManager {
         (**self.ui_url.load()).clone()
     }
 
+    /// Set the pins of the API certificate served and of a renewed one
+    /// held (D90); `true` when they changed, and the node record should be
+    /// refreshed.
+    pub fn set_api_pins(&self, serving: Option<String>, pending: Option<String>) -> bool {
+        let new = (serving, pending);
+        if **self.api_pins.load() == new {
+            return false;
+        }
+        self.api_pins.store(Arc::new(new));
+        true
+    }
+
+    /// `(serving, pending)`, as `set_api_pins` left them.
+    pub fn api_pins(&self) -> (Option<String>, Option<String>) {
+        (**self.api_pins.load()).clone()
+    }
+
     /// Whether this host is a cluster agent.
     pub fn is_agent(&self) -> bool {
         self.cluster().is_some_and(|c| c.node.is_none())
@@ -1484,6 +1505,7 @@ impl VmManager {
                 .ui_url()
                 .or_else(|| stored.as_ref().and_then(|n| n.status.ui_url.clone()));
         }
+        (probe.api_pin, probe.api_pin_pending) = self.api_pins();
         // Unrecorded image files (spec/14-clustering.md §9.2.3): deleted when
         // asked (once per request), the rest reported.
         if let Some(before) = stored.and_then(|n| n.spec.drop_spare_files_before) {

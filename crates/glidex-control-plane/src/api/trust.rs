@@ -626,13 +626,66 @@ pub async fn report_for(
 
 /// Send trusted directory `d` this cluster's report (D70).
 pub async fn push_report(app: &AppState, d: &TrustedDirectory) -> Result<(), String> {
+    push_report_announcing(app, d, None).await
+}
+
+/// `push_report`, announcing the renewal `a` names (D88, D90); once the
+/// directory has taken it, record what it knows of the API certificate.
+pub async fn push_report_announcing(
+    app: &AppState,
+    d: &TrustedDirectory,
+    a: Option<&crate::api_cert::Announcement>,
+) -> Result<(), String> {
     let cluster = super::op::cluster_id(app);
     let report = report_for(app, d).await?;
     // The callback as it is now, should the web UI's address have changed (D73).
     let ui_callback = super::trusted_login::callback_url(app, &d.id);
     let key = peer::cluster_key(&app.auth.connectors);
-    glidex_trust::client::push_report(&key, &cluster, d, &report, ui_callback.as_deref(), now())
-        .await
+    let next = a.and_then(|a| a.next.as_deref());
+    glidex_trust::client::push_report_announcing(
+        &key,
+        &cluster,
+        d,
+        &report,
+        ui_callback.as_deref(),
+        next,
+        now(),
+    )
+    .await?;
+    if let Some(a) = a {
+        let known = trust::DirectoryPins {
+            seen: a.seen.clone(),
+            accepted: a.next.clone(),
+        };
+        let had = app.auth.trust.directory_pins().map_err(|e| e.to_string())?;
+        if !had.iter().any(|(id, p)| *id == d.id && *p == known) {
+            app.auth
+                .trust
+                .put_directory_pins(&d.id, &known)
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// One round with every trusted directory: pull its feed, then report,
+/// announcing a renewal of the API certificate if a node holds one (D90).
+pub async fn feed_round(app: &AppState) {
+    let directories = app.auth.trust.directories().unwrap_or_default();
+    if directories.is_empty() {
+        return;
+    }
+    let a = crate::api_cert::announcement(app).await;
+    for d in directories {
+        if let Err(e) = pull_feed(app, &d).await {
+            tracing::warn!(directory = %d.issuer, "feed: {}", e);
+            continue;
+        }
+        // And what it holds of the directory's tenants (D70).
+        if let Err(e) = push_report_announcing(app, &d, a.as_ref()).await {
+            tracing::warn!(directory = %d.issuer, "report: {}", e);
+        }
+    }
 }
 
 /// `POST /d/{dir}/feed/v1/report {cluster_id, report, ui_callback}`, at
@@ -863,16 +916,7 @@ pub fn spawn_feeds(app: AppState) {
             if !app.auth.tenants.can_write() || app.auth.is_disabled() {
                 continue;
             }
-            for d in app.auth.trust.directories().unwrap_or_default() {
-                if let Err(e) = pull_feed(&app, &d).await {
-                    tracing::warn!(directory = %d.issuer, "feed: {}", e);
-                    continue;
-                }
-                // And what it holds of the directory's tenants (D70).
-                if let Err(e) = push_report(&app, &d).await {
-                    tracing::warn!(directory = %d.issuer, "report: {}", e);
-                }
-            }
+            feed_round(&app).await;
         }
     });
 }

@@ -239,13 +239,28 @@ pub async fn post_unsigned(
     Ok((s, v))
 }
 
-async fn exchange(
+/// The pin of the certificate the peer at `base` presents, one of `pins`
+/// (or one the system's roots trust): a handshake, no request. A cluster
+/// finds which of its nodes serves its API address this way (D90).
+pub async fn presented(base: &str, pins: &[&str]) -> Result<String, String> {
+    let (_, _, _, seen) = connect(base, pins).await?;
+    Ok(seen)
+}
+
+/// A TLS connection to `base`, its certificate pinned to any of `pins`:
+/// the stream, the URI, its host, and the presented certificate's pin.
+async fn connect(
     base: &str,
     pins: &[&str],
-    path: &str,
-    assertion: Option<&str>,
-    body: &Value,
-) -> Result<(u16, Value, String), String> {
+) -> Result<
+    (
+        tokio_rustls::client::TlsStream<tokio::net::TcpStream>,
+        http::Uri,
+        String,
+        String,
+    ),
+    String,
+> {
     let uri: http::Uri = base.parse().map_err(|e| format!("{base}: {e}"))?;
     if uri.scheme_str() != Some("https") {
         return Err(format!("{base}: a peer is reached over https"));
@@ -281,6 +296,22 @@ async fn exchange(
             .await
             .map_err(|e| format!("{host}:{port}: TLS: {e}"))?;
         let seen = presented_pin(&s).ok_or("no certificate presented")?;
+        Ok::<_, String>((s, uri, host, seen))
+    };
+    tokio::time::timeout(TIMEOUT, run)
+        .await
+        .map_err(|_| format!("{base}: no answer"))?
+}
+
+async fn exchange(
+    base: &str,
+    pins: &[&str],
+    path: &str,
+    assertion: Option<&str>,
+    body: &Value,
+) -> Result<(u16, Value, String), String> {
+    let run = async {
+        let (s, uri, _, seen) = connect(base, pins).await?;
         let (mut sender, conn) = hyper::client::conn::http1::handshake(TokioIo::new(s))
             .await
             .map_err(|e| e.to_string())?;

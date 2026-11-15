@@ -541,12 +541,16 @@ Feed, sign-in and report requests are signed by the sending side's key
 and go to the other side's API with its certificate pinned, on port
 8841 both ways: open it between the two organizations' hosts.
 
-When a hyperstor cluster renews its certificate, it announces the new
-one in its report first, and the directory then accepts it. A Glidex
-cluster doesn't announce its renewals yet: if its API certificate
-changes, the tenant's directory can't end the trust from its side until
-the tenant accepts a new offer (the cluster's feed, reports and sign-ins
-keep working).
+When a cluster renews its certificate, it announces the new one in its
+report first, and the directory then accepts it. A Glidex cluster does
+this by itself: the node serving the cluster's API address keeps serving
+the old certificate, the leader announces the new one in its next report
+(within a minute), and the node switches once every trusted directory
+has taken it. A directory out of reach doesn't hold it for ever: 7 days
+before the old certificate expires, the node switches anyway. The log
+says `holding a renewed API certificate` when it starts waiting. If a proxy in
+front of the API address presents its own certificate, no node matches
+it, nothing is announced, and renewals wait for the 7-day fallback.
 
 ## The web UI's address
 

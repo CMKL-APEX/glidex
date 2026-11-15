@@ -1,4 +1,5 @@
 pub mod api;
+pub mod api_cert;
 pub mod auth;
 pub mod authz;
 pub mod cloud_init;

@@ -138,6 +138,11 @@ certificate in either order: until the two match again, the service
 keeps serving the previous pair and logs a warning. The control plane
 also refreshes its public copy, `/run/glidex-cp/tls.crt`.
 
+When directories of other organizations trust the cluster, the control
+plane serving its API address holds a renewed certificate until they
+know it, or until 7 days before the old one expires (see
+[Clusters](clusters.md)).
+
 A key given as a systemd credential (`LoadCredential=`) is copied when
 the service starts, so a renewal that changes the key needs a restart;
 running VMs keep running:

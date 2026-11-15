@@ -440,6 +440,9 @@ pub struct FileCert {
     pub cert: PathBuf,
     pub key: PathBuf,
     seen: (Stamp, Stamp),
+    /// A renewed pair read but not served yet: `poll_gated`'s gate holds
+    /// it (spec/19-tenancy.md D90).
+    pending: Option<Arc<CertifiedKey>>,
 }
 
 impl FileCert {
@@ -452,6 +455,7 @@ impl FileCert {
             cert: cert.to_path_buf(),
             key: key.to_path_buf(),
             seen,
+            pending: None,
         })
     }
 
@@ -460,28 +464,71 @@ impl FileCert {
     /// same files aren't retried until one of them changes again (a
     /// certificate written before its key is picked up once the key is).
     pub fn poll(&mut self) -> Result<bool, String> {
+        self.poll_gated(|_, _| true)
+    }
+
+    /// `poll`, but a pair with another certificate goes in only once
+    /// `may_switch(new, served)` says so; until then it is held, and asked
+    /// about again at each poll. A pair with the same certificate goes in
+    /// at once.
+    pub fn poll_gated(
+        &mut self,
+        may_switch: impl Fn(&CertifiedKey, &CertifiedKey) -> bool,
+    ) -> Result<bool, String> {
         let now = (stamp(&self.cert), stamp(&self.key));
-        if now == self.seen {
-            return Ok(false);
-        }
-        self.seen = now;
-        let key = certified_key(&self.cert, &self.key).map_err(|e| {
-            if is_credential(&self.key) {
-                format!(
-                    "{e} (the key is a systemd credential, copied when the service starts: restart it to load a new key)"
-                )
-            } else {
-                e
+        if now != self.seen {
+            self.seen = now;
+            let key = certified_key(&self.cert, &self.key).map_err(|e| {
+                if is_credential(&self.key) {
+                    format!(
+                        "{e} (the key is a systemd credential, copied when the service starts: restart it to load a new key)"
+                    )
+                } else {
+                    e
+                }
+            })?;
+            if fingerprint_certified(&key) == fingerprint_certified(&self.slot.get()) {
+                self.pending = None;
+                self.slot.set(key);
+                return Ok(true);
             }
-        })?;
-        self.slot.set(key);
-        Ok(true)
+            self.pending = Some(key);
+        }
+        match self.pending.take() {
+            Some(key) if may_switch(&key, &self.slot.get()) => {
+                self.slot.set(key);
+                Ok(true)
+            }
+            held => {
+                self.pending = held;
+                Ok(false)
+            }
+        }
+    }
+
+    /// The renewed pair `poll_gated` holds, if any.
+    pub fn pending(&self) -> Option<Arc<CertifiedKey>> {
+        self.pending.clone()
     }
 
     /// Poll every `every` in the background; `on_change` runs after each
     /// swap. Errors are logged and the current pair kept.
-    pub fn watch<F>(mut self, every: Duration, on_change: F) -> tokio::task::JoinHandle<()>
+    pub fn watch<F>(self, every: Duration, on_change: F) -> tokio::task::JoinHandle<()>
     where
+        F: Fn(&FileCert) + Send + 'static,
+    {
+        self.watch_gated(every, |_, _| true, on_change)
+    }
+
+    /// `watch` with `poll_gated`'s gate.
+    pub fn watch_gated<G, F>(
+        mut self,
+        every: Duration,
+        may_switch: G,
+        on_change: F,
+    ) -> tokio::task::JoinHandle<()>
+    where
+        G: Fn(&CertifiedKey, &CertifiedKey) -> bool + Send + 'static,
         F: Fn(&FileCert) + Send + 'static,
     {
         tokio::spawn(async move {
@@ -490,7 +537,7 @@ impl FileCert {
             tick.tick().await;
             loop {
                 tick.tick().await;
-                match self.poll() {
+                match self.poll_gated(&may_switch) {
                     Ok(true) => on_change(&self),
                     Ok(false) => {}
                     Err(e) => tracing::warn!(
@@ -1271,6 +1318,42 @@ mod tests {
         );
 
         assert!(FileCert::load(&d.join("missing.crt"), &key).is_err());
+    }
+
+    /// A gated slot holds a renewed pair until its gate allows it, asking
+    /// at each poll; refused, the old one keeps serving.
+    #[test]
+    fn a_gated_file_cert_holds_a_renewal_until_allowed() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let d = tmp.path();
+        let (cert, key) = cert_for(d, "live", "a.example");
+        let fp0 = fingerprint(&cert).unwrap();
+        let mut f = FileCert::load(&cert, &key).unwrap();
+        let (b, bk) = cert_for(d, "b", "a.example");
+        std::fs::rename(&bk, &key).unwrap();
+        std::fs::rename(&b, &cert).unwrap();
+        let fp1 = fingerprint(&cert).unwrap();
+        let asked = std::cell::Cell::new(0);
+        let no = |new: &CertifiedKey, old: &CertifiedKey| {
+            asked.set(asked.get() + 1);
+            assert_eq!(
+                (fingerprint_certified(new), fingerprint_certified(old)),
+                (fp1.clone(), fp0.clone())
+            );
+            false
+        };
+        assert_eq!(f.poll_gated(no), Ok(false));
+        assert_eq!(f.poll_gated(no), Ok(false));
+        assert_eq!(asked.get(), 2);
+        assert_eq!(fingerprint_certified(&f.slot.get()), fp0);
+        assert_eq!(
+            f.pending().map(|k| fingerprint_certified(&k)),
+            Some(fp1.clone())
+        );
+        assert_eq!(f.poll_gated(|_, _| true), Ok(true));
+        assert_eq!(fingerprint_certified(&f.slot.get()), fp1);
+        assert!(f.pending().is_none());
+        assert_eq!(f.poll_gated(|_, _| panic!("nothing held")), Ok(false));
     }
 
     /// End to end: a server with a self-signed certificate is verified by

@@ -106,8 +106,11 @@ changes the key still needs a restart; the reload warning says so. The
 Tailscale slot (§4.2) never touches files, so it is unaffected.
 
 The control plane re-publishes `<run dir>/tls.crt` after a reload, so
-local clients trust the new certificate; `GET /auth/server-info` reads
-the certificate file per request and needs no change.
+local clients trust the new certificate; `GET /auth/server-info` gives
+the certificate served. When directories of other organizations trust
+the cluster, the control plane holds a renewed certificate until they
+know it, or until 7 days before the old one expires
+(spec/19-tenancy.md D90).
 
 Implementation: `glidex_tls::{CertSlot, Resolver, FileCert,
 resolver_config, certified_key}`; a file's identity for change
