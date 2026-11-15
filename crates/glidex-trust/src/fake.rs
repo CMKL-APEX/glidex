@@ -8,6 +8,11 @@
 //! - It **serves** the feed of the rows a test puts in it, takes reports,
 //!   logouts and ended trust, and runs a browser login's `authorize` and
 //!   `token` for the person a test names ([`FakeDirectory::login_as`]).
+//! - It runs **gxctl's device login** (RFC 8628) as the real directory
+//!   does: `device_authorization`, the device-code grant at `token`, the
+//!   refresh tokens it issues and `revoke`; a test answers a pending code
+//!   ([`FakeDirectory::approve_device`], [`FakeDirectory::deny_device`],
+//!   [`FakeDirectory::expire_device`]).
 //! - It **issues** access tokens addressed to a cluster
 //!   ([`FakeDirectory::access_token`]) and API tokens in its feed.
 //!
@@ -230,12 +235,36 @@ struct Code {
     redirect_uri: String,
 }
 
+/// A device login waiting for its answer, by its device code.
+struct Device {
+    user_code: String,
+    scope: String,
+    expires: u64,
+    last_poll: u64,
+    /// `Some(Some((user, mfa)))`: approved; `Some(None)`: denied.
+    answer: Option<Option<(String, bool)>>,
+}
+
+/// A refresh token it issued, by its secret.
+struct Refresh {
+    /// Its chain: the `sid` of the tokens it issues.
+    family: String,
+    client: String,
+    user: String,
+    mfa: bool,
+    scope: String,
+    /// Replaced by a newer one: its coming back ends the chain.
+    replaced: bool,
+}
+
 #[derive(Default)]
 struct State {
     clusters: HashMap<String, FakeCluster>,
     rows: Vec<Row>,
     ended_sids: Vec<String>,
     codes: HashMap<String, Code>,
+    devices: HashMap<String, Device>,
+    refresh: HashMap<String, Refresh>,
     login: Option<(String, bool)>,
     down: bool,
     logouts: Vec<(String, String)>,
@@ -258,6 +287,18 @@ pub struct FakeDirectory {
 
 /// How long the access tokens it issues live.
 pub const ACCESS_SECS: u64 = 600;
+
+/// The device login's client, and how long a code waits and how often its
+/// client may ask, as at the real directory.
+pub const GXCTL: &str = "gxctl";
+pub const DEVICE_SECS: u64 = 600;
+pub const DEVICE_INTERVAL: u64 = 5;
+/// The device-code grant type (RFC 8628 §3.4).
+pub const DEVICE_GRANT: &str = "urn:ietf:params:oauth:grant-type:device_code";
+/// What an access token's `resource` names a cluster as.
+pub const CLUSTER_URN: &str = "urn:glidex:cluster:";
+/// A refresh token's prefix.
+pub const REFRESH_PREFIX: &str = "gxr_";
 
 impl FakeDirectory {
     /// A directory named `name` (its id at its host) on a free loopback
@@ -575,6 +616,27 @@ impl FakeDirectory {
             .ok_or_else(|| format!("authorize answered {}: {:?}", r.status, r.body))
     }
 
+    /// Approve the device login waiting with `user_code` as `user`, with
+    /// a second factor or not, as the person does on the device page.
+    /// `false` when none waits.
+    pub fn approve_device(&self, user_code: &str, user: &str, mfa: bool) -> bool {
+        self.inner
+            .answer_device(user_code, Some((user.to_string(), mfa)))
+    }
+
+    /// Deny the device login waiting with `user_code`.
+    pub fn deny_device(&self, user_code: &str) -> bool {
+        self.inner.answer_device(user_code, None)
+    }
+
+    /// Let the device login with `user_code` run out now, as its
+    /// [`DEVICE_SECS`] would.
+    pub fn expire_device(&self, user_code: &str) -> bool {
+        let mut st = self.inner.state.lock().unwrap();
+        let d = st.devices.values_mut().find(|d| d.user_code == user_code);
+        d.map(|d| d.expires = 0).is_some()
+    }
+
     // ---- what clusters did ------------------------------------------------------
 
     /// Answer nothing but 503 while `down`: a partition.
@@ -608,6 +670,10 @@ impl Inner {
                     "issuer": self.issuer,
                     "authorization_endpoint": format!("{}/authorize", self.issuer),
                     "token_endpoint": format!("{}/token", self.issuer),
+                    "device_authorization_endpoint":
+                        format!("{}/device_authorization", self.issuer),
+                    "revocation_endpoint": format!("{}/revoke", self.issuer),
+                    "grant_types_supported": ["authorization_code", "refresh_token", DEVICE_GRANT],
                     "jwks_uri": format!("{}/jwks.json", self.issuer),
                     "id_token_signing_alg_values_supported": ["ES256"],
                 }),
@@ -615,6 +681,19 @@ impl Inner {
             ("GET", "/jwks.json") => Reply::json(200, jwks(&[&self.key])),
             ("GET", "/authorize") => self.authorize(&req.query),
             ("POST", "/token") => self.token(&req.fields()),
+            ("POST", "/device_authorization") => self.device_authorization(&req.fields()),
+            ("POST", "/revoke") => {
+                let f = req.fields();
+                let mut st = self.state.lock().unwrap();
+                if let Some(family) = f
+                    .get("token")
+                    .and_then(|t| st.refresh.get(t))
+                    .map(|r| r.family.clone())
+                {
+                    st.refresh.retain(|_, r| r.family != family);
+                }
+                Reply::status(200)
+            }
             ("POST", "/feed/v1") => self.peer(&req, wire::FEED, |me, c, b| me.feed(c, b)),
             ("POST", "/feed/v1/report") => self.peer(&req, wire::REPORT, |me, c, b| {
                 // As a directory reads it: storage, where an entry has it,
@@ -762,6 +841,12 @@ impl Inner {
     fn token(&self, f: &HashMap<String, String>) -> Reply {
         let get = |k: &str| f.get(k).map(String::as_str).unwrap_or("");
         let err = |s: u16, e: &str| Reply::json(s, json!({ "error": e, "error_description": e }));
+        // gxctl's grants: a public client, no assertion.
+        match (get("grant_type"), get("client_id")) {
+            (DEVICE_GRANT, _) => return self.device_token(f),
+            ("refresh_token", GXCTL) => return self.refresh(f),
+            _ => {}
+        }
         let client = get("client_id");
         let Some(cluster) = client.strip_prefix(crate::client::CLUSTER_CLIENT) else {
             return err(401, "invalid_client");
@@ -838,4 +923,201 @@ impl Inner {
         }
         Reply::json(200, out)
     }
+    // ---- the device login (RFC 8628) -----------------------------------------------
+
+    /// `POST /device_authorization`: gxctl's only.
+    fn device_authorization(&self, f: &HashMap<String, String>) -> Reply {
+        if f.get("client_id").map(String::as_str) != Some(GXCTL) {
+            return Reply::json(400, json!({ "error": "invalid_client" }));
+        }
+        let scope = f
+            .get("scope")
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| "openid".into());
+        let device_code = crate::random_token(32);
+        let mut st = self.state.lock().unwrap();
+        let user_code = loop {
+            let c = user_code();
+            if !st.devices.values().any(|d| d.user_code == c) {
+                break c;
+            }
+        };
+        st.devices.insert(
+            device_code.clone(),
+            Device {
+                user_code: user_code.clone(),
+                scope,
+                expires: crate::now() + DEVICE_SECS,
+                last_poll: 0,
+                answer: None,
+            },
+        );
+        let base = self
+            .issuer
+            .strip_suffix(&format!("/d/{}", self.name))
+            .unwrap_or(&self.issuer);
+        let page = format!("{base}/device");
+        Reply::json(
+            200,
+            json!({
+                "device_code": device_code,
+                "user_code": user_code,
+                "verification_uri": page,
+                "verification_uri_complete":
+                    format!("{page}?directory={}&code={user_code}", self.name),
+                "expires_in": DEVICE_SECS,
+                "interval": DEVICE_INTERVAL,
+            }),
+        )
+    }
+
+    fn answer_device(&self, user_code: &str, answer: Option<(String, bool)>) -> bool {
+        let now = crate::now();
+        let mut st = self.state.lock().unwrap();
+        let Some(d) = st
+            .devices
+            .values_mut()
+            .find(|d| d.user_code == user_code && d.expires > now && d.answer.is_none())
+        else {
+            return false;
+        };
+        d.answer = Some(answer);
+        true
+    }
+
+    /// The device-code grant at `token`.
+    fn device_token(&self, f: &HashMap<String, String>) -> Reply {
+        let get = |k: &str| f.get(k).map(String::as_str).unwrap_or("");
+        let err = |e: &str| Reply::json(400, json!({ "error": e, "error_description": e }));
+        let now = crate::now();
+        let mut st = self.state.lock().unwrap();
+        let code = get("device_code").to_string();
+        let Some(d) = st.devices.get_mut(&code) else {
+            return err("expired_token");
+        };
+        if get("client_id") != GXCTL || d.expires <= now {
+            st.devices.remove(&code);
+            return err("expired_token");
+        }
+        match d.answer.clone() {
+            Some(None) => {
+                st.devices.remove(&code);
+                err("access_denied")
+            }
+            Some(Some((user, mfa))) => {
+                let d = st.devices.remove(&code).expect("present");
+                let r = Refresh {
+                    family: crate::random_token(16),
+                    client: GXCTL.into(),
+                    user,
+                    mfa,
+                    scope: d.scope,
+                    replaced: false,
+                };
+                drop(st);
+                self.chain_tokens(r, f.get("resource"), now)
+            }
+            None => {
+                let early = now < d.last_poll + DEVICE_INTERVAL;
+                d.last_poll = now;
+                err(if early {
+                    "slow_down"
+                } else {
+                    "authorization_pending"
+                })
+            }
+        }
+    }
+
+    /// The refresh grant: the token replaced by a new one of its chain; a
+    /// replaced one coming back ends the chain.
+    fn refresh(&self, f: &HashMap<String, String>) -> Reply {
+        let get = |k: &str| f.get(k).map(String::as_str).unwrap_or("");
+        let bad = || Reply::json(400, json!({ "error": "invalid_grant" }));
+        let mut st = self.state.lock().unwrap();
+        let Some(old) = st.refresh.get_mut(get("refresh_token")) else {
+            return bad();
+        };
+        if old.replaced {
+            let family = old.family.clone();
+            st.refresh.retain(|_, r| r.family != family);
+            return bad();
+        }
+        if old.client != get("client_id") {
+            return bad();
+        }
+        old.replaced = true;
+        let r = Refresh {
+            family: old.family.clone(),
+            client: old.client.clone(),
+            user: old.user.clone(),
+            mfa: old.mfa,
+            scope: old.scope.clone(),
+            replaced: false,
+        };
+        drop(st);
+        self.chain_tokens(r, f.get("resource"), crate::now())
+    }
+
+    /// The token response for chain token `r`, as the real directory's:
+    /// a new refresh token, an ID token for `openid`, and an access token
+    /// for the cluster `resource` names (`urn:glidex:cluster:<id>`).
+    fn chain_tokens(&self, r: Refresh, resource: Option<&String>, now: u64) -> Reply {
+        let err = |s: u16, e: &str| Reply::json(s, json!({ "error": e, "error_description": e }));
+        let aud = match resource.filter(|r| !r.is_empty()) {
+            None => None,
+            Some(res) => match res.strip_prefix(CLUSTER_URN) {
+                Some(id) if !id.is_empty() => Some(id.to_string()),
+                _ => return err(400, "invalid_target"),
+            },
+        };
+        let amr: Vec<&str> = if r.mfa {
+            vec!["pwd", "mfa"]
+        } else {
+            vec!["pwd"]
+        };
+        let secret = format!("{REFRESH_PREFIX}{}", crate::random_token(32));
+        let mut out = json!({ "token_type": "Bearer", "refresh_token": secret, "scope": r.scope });
+        if r.scope.split(' ').any(|s| s == "openid") {
+            let id = json!({
+                "iss": self.issuer, "sub": r.user, "aud": r.client, "iat": now, "exp": now + 3600,
+                "auth_time": now, "amr": amr, "sid": r.family,
+            });
+            match self.key.sign_jwt("JWT", &id) {
+                Ok(j) => out["id_token"] = j.into(),
+                Err(e) => return err(500, &e),
+            }
+        }
+        if let Some(aud) = aud {
+            let at = json!({
+                "iss": self.issuer, "sub": r.user, "aud": aud, "client_id": r.client, "iat": now,
+                "nbf": now, "exp": now + ACCESS_SECS, "jti": crate::random_token(16),
+                "sid": r.family, "auth_time": now, "amr": amr, "scope": r.scope,
+                "glidex": { "directory": self.name, "mfa": r.mfa },
+            });
+            match self.key.sign_jwt(crate::tokens::ACCESS_TYP, &at) {
+                Ok(j) => {
+                    out["access_token"] = j.into();
+                    out["expires_in"] = ACCESS_SECS.into();
+                }
+                Err(e) => return err(500, &e),
+            }
+        }
+        self.state.lock().unwrap().refresh.insert(secret, r);
+        Reply::json(200, out)
+    }
+}
+
+/// A device login's user code: 8 letters a person reads and types, as the
+/// real directory makes them.
+fn user_code() -> String {
+    const LETTERS: &[u8] = b"BCDFGHJKLMNPQRSTVWXZ";
+    let mut b = [0u8; 8];
+    getrandom::fill(&mut b).expect("the system's random source");
+    let s: String = b
+        .iter()
+        .map(|x| LETTERS[*x as usize % LETTERS.len()] as char)
+        .collect();
+    format!("{}-{}", &s[..4], &s[4..])
 }

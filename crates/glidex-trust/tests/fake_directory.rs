@@ -365,3 +365,121 @@ async fn the_cluster_ends_trust_at_the_directory() {
             .is_err()
     );
 }
+
+/// gxctl's device login at the fake (RFC 8628), as the real directory runs
+/// it: pending, too fast, approved, denied, expired, and its refresh tokens.
+#[tokio::test]
+async fn the_fake_runs_a_device_login() {
+    use glidex_trust::fake::{CLUSTER_URN, DEVICE_GRANT};
+    let dir = FakeDirectory::start("acme").await.unwrap();
+    let (api, pin) = (dir.api().to_string(), dir.tls_sha256().to_string());
+    let post = |path: &str, body: serde_json::Value| {
+        let (api, pin, path) = (api.clone(), pin.clone(), format!("/d/acme{path}"));
+        async move { peer::post_unsigned(&api, &pin, &path, &body).await.unwrap() }
+    };
+    let start = || async {
+        let (s, v) = post(
+            "/device_authorization",
+            json!({ "client_id": "gxctl", "scope": "openid offline_access" }),
+        )
+        .await;
+        assert_eq!(s, 200, "{v}");
+        assert_eq!(v["interval"], 5);
+        (
+            v["device_code"].as_str().unwrap().to_string(),
+            v["user_code"].as_str().unwrap().to_string(),
+        )
+    };
+    let poll = |code: String| {
+        post(
+            "/token",
+            json!({
+                "grant_type": DEVICE_GRANT, "client_id": "gxctl", "device_code": code,
+                "resource": format!("{CLUSTER_URN}{CLUSTER}"),
+            }),
+        )
+    };
+    let error = |v: &serde_json::Value| v["error"].as_str().unwrap_or_default().to_string();
+
+    // Only gxctl starts one.
+    let (s, v) = post("/device_authorization", json!({ "client_id": "other" })).await;
+    assert_eq!((s, error(&v).as_str()), (400, "invalid_client"));
+
+    // Waiting, then asked again too soon, then approved.
+    let (code, user_code) = start().await;
+    assert_eq!(user_code.len(), 9, "{user_code}");
+    let (s, v) = poll(code.clone()).await;
+    assert_eq!((s, error(&v).as_str()), (400, "authorization_pending"));
+    let (_, v) = poll(code.clone()).await;
+    assert_eq!(error(&v), "slow_down");
+    assert!(dir.approve_device(&user_code, "u1", true));
+    assert!(!dir.approve_device(&user_code, "u1", true), "answered once");
+    let (s, v) = poll(code.clone()).await;
+    assert_eq!(s, 200, "{v}");
+    let d = TrustedDirectory {
+        id: "trusted-x".into(),
+        issuer: dir.issuer().into(),
+        directory: "acme".into(),
+        api: api.clone(),
+        tls_sha256: pin.clone(),
+        jwks: dir.jwks(),
+        tenants: vec![],
+        created_at: 0,
+        max_staleness_minutes: None,
+    };
+    let at = tokens::verify_access_token(v["access_token"].as_str().unwrap(), &d, CLUSTER)
+        .expect("an access token for the cluster");
+    assert_eq!(at["sub"], "u1");
+    assert_eq!(at["glidex"]["mfa"], true);
+    assert!(v["id_token"].is_string());
+    let refresh = v["refresh_token"].as_str().unwrap().to_string();
+    assert!(refresh.starts_with("gxr_"));
+    let (_, v) = poll(code).await;
+    assert_eq!(error(&v), "expired_token", "a device code is used once");
+
+    // A refresh: a new token of the same chain; the old one coming back
+    // ends the chain.
+    let refresh_with = |t: String| {
+        post(
+            "/token",
+            json!({
+                "grant_type": "refresh_token", "client_id": "gxctl", "refresh_token": t,
+                "resource": format!("{CLUSTER_URN}{CLUSTER}"),
+            }),
+        )
+    };
+    let (s, v) = refresh_with(refresh.clone()).await;
+    assert_eq!(s, 200, "{v}");
+    let at2 =
+        tokens::verify_access_token(v["access_token"].as_str().unwrap(), &d, CLUSTER).unwrap();
+    assert_eq!(at2["sid"], at["sid"]);
+    let newer = v["refresh_token"].as_str().unwrap().to_string();
+    assert_ne!(newer, refresh);
+    let (s, v) = refresh_with(refresh).await;
+    assert_eq!((s, error(&v).as_str()), (400, "invalid_grant"));
+    let (_, v) = refresh_with(newer).await;
+    assert_eq!(error(&v), "invalid_grant", "the chain ended with the reuse");
+
+    // Denied.
+    let (code, user_code) = start().await;
+    assert!(dir.deny_device(&user_code));
+    let (s, v) = poll(code).await;
+    assert_eq!((s, error(&v).as_str()), (400, "access_denied"));
+
+    // Expired.
+    let (code, user_code) = start().await;
+    assert!(dir.expire_device(&user_code));
+    assert!(!dir.approve_device(&user_code, "u1", false), "too late");
+    let (_, v) = poll(code).await;
+    assert_eq!(error(&v), "expired_token");
+
+    // A revoked chain refreshes no more.
+    let (code, user_code) = start().await;
+    dir.approve_device(&user_code, "u2", false);
+    let (_, v) = poll(code).await;
+    let t = v["refresh_token"].as_str().unwrap().to_string();
+    let (s, _) = post("/revoke", json!({ "token": t, "client_id": "gxctl" })).await;
+    assert_eq!(s, 200);
+    let (_, v) = refresh_with(t).await;
+    assert_eq!(error(&v), "invalid_grant");
+}
