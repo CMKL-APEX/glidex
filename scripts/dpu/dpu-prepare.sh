@@ -17,7 +17,9 @@
 #                            recreate it on the kernel datapath)
 #   --underlay-cidr A/LEN    re-apply the underlay address on the phy bridge
 #   --underlay-gw ADDR       and the default route through it
-#   --persist                write the tmpfiles.d + fstab entries for hugepages
+#   --persist                keep the hugepage pool and mount across reboots
+#                            (doca-hugepages where the bundle has it, else
+#                            tmpfiles.d; and fstab)
 #   --ovn-remote REMOTE      chassis: ovn-remote (ssl:... for a real central)
 #   --ovn-encap-ip ADDR      chassis: ovn-encap-ip (geneve)
 #   --ovn-bridge-mappings M  chassis: ovn-bridge-mappings (e.g. externalnet:ovsbr1)
@@ -45,6 +47,7 @@ IP2=/opt/mellanox/iproute2/sbin; SF_CONF=/etc/mellanox/mlnx-sf.conf; STOCK_SF_NE
 HP_2M=/sys/kernel/mm/hugepages/hugepages-2048kB
 HP_512M=/sys/kernel/mm/hugepages/hugepages-524288kB
 HP_DIR=/hugepages-2M
+DOCA_HP=/usr/sbin/doca-hugepages; DOCA_HP_DIR=/etc/mellanox/hugepages.d; DOCA_HP_APP=glidex-ovs-doca
 
 parse_common "$@"; set -- "${ARGS[@]}"
 while [ $# -gt 0 ]; do
@@ -99,7 +102,14 @@ elif [ "${t512:-0}" = "${f512:-x}" ]; then mut_sh "release the unused 512 MB poo
 else warn "512 MB pages in use (total ${t512}, free ${f512}); leaving them"; fi
 
 if [ "$PERSIST" = 1 ]; then
-  if [ "$(rd_sh 'cat /etc/tmpfiles.d/ovs-doca-hugepages.conf 2>/dev/null | grep -c nr_hugepages')" = 2 ]; then ok "tmpfiles entry present"
+  # The bundle's mlnx_bf_configure runs `doca-hugepages reload` at boot,
+  # which sets every pool to what doca-hugepages has stored (none: 0) after
+  # tmpfiles has run, so the pool must be stored there (spec §0 finding 33).
+  if [ -n "$(rd_sh "command -v $DOCA_HP")" ]; then
+    if [ "$(rd_sh "cat $DOCA_HP_DIR/$DOCA_HP_APP.json 2>/dev/null | tr -d ' \n'")" = "{\"2048\":{\"num\":$HUGE,\"is_active\":\"active\"}}" ]; then
+      ok "doca-hugepages stores $HUGE x 2 MB pages ($DOCA_HP_APP)"
+    else mut "persist the 2 MB pool in doca-hugepages ($DOCA_HP_APP)" "$DOCA_HP" config --app "$DOCA_HP_APP" --size 2048 --num "$HUGE" --force; fi
+  elif [ "$(rd_sh 'cat /etc/tmpfiles.d/ovs-doca-hugepages.conf 2>/dev/null | grep -c nr_hugepages')" = 2 ]; then ok "tmpfiles entry present"
   else mut_sh "persist the pools across reboots" "printf '%s\n' '# OVS-DOCA hugepages' 'w $HP_512M/nr_hugepages - - - - 0' 'w $HP_2M/nr_hugepages - - - - $HUGE' > /etc/tmpfiles.d/ovs-doca-hugepages.conf"; fi
   if [ "$(rd_sh "grep -c ' $HP_DIR ' /etc/fstab")" -ge 1 ] 2>/dev/null; then ok "fstab entry present"
   else mut_sh "persist the mount" "echo 'none $HP_DIR hugetlbfs pagesize=2M 0 0' >> /etc/fstab"; fi

@@ -47,6 +47,10 @@ parse_common() {
 require_target() {
   if [ "$DPU_LOCAL" = 1 ]; then return 0; fi
   [ -n "$DPU_SSH" ] || die "give --ssh <user@host> (the DPU) or --local (running on the DPU)"
+  # rd/rd_sh read a failure as "unset", so an unreachable DPU would look
+  # like an empty one: check the session and sudo once, up front.
+  ssh "${SSH_OPTS[@]}" "$DPU_SSH" "sudo -n true" ||
+    die "cannot run 'sudo -n' on $DPU_SSH over SSH (is the management link up? spec/31-dpu.md §0 finding 32)"
 }
 
 # Run a command on the DPU, as root via passwordless sudo (-n: never
