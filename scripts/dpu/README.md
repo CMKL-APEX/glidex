@@ -89,13 +89,17 @@ firmware values survive (O13). Copy the reviewed `--fixtures` files to
   sequence and a second `--check` reported **0 changes** (spec §0
   findings 16–18). Probe bugs found on the way (map keys after `{`,
   `devlink` needing a device, OVS's literal `[]`) are fixed.
-- `dpu-reinit.sh` has been run **five times** against a real DPU (spec §0
-  findings 19-28). **Run 5 worked end to end**: about 5 minutes for the
+- `dpu-reinit.sh` has been run **six times** against a real DPU (spec §0
+  findings 19-28, 36; run 6 with the virtio-net firmware active, which a
+  reinstall leaves as it was). **Run 5 worked end to end**: about 5 minutes for the
   install, then key-only SSH as `glidex` about 2 minutes later. The account
   is created at first boot by a vendor-data shell script (a second `users:`
   list does not merge), has no usable password (`passwd -S` `L`, shadow `!`)
   and passwordless sudo; the image's `ubuntu` account and `user-data` are
   untouched. Staged firmware values survive a reinstall but are not active
   until the operator's cold reset.
-- Not yet covered: firmware staging and O1–O3 (need the virtio-net
-  values), and the `--ovn-*` / `--ssl-*` options of `dpu-prepare.sh`.
+- `dpu-prepare.sh --virtio-net --persist` has run from a stock image and
+  across DPU reboots (findings 33, 34, 36); a VF was created from the host
+  through `pci-pf-stub` by hand (finding 35), not by a script.
+- Not yet covered: traffic through a VF (D4) and the `--ovn-*` /
+  `--ssl-*` options of `dpu-prepare.sh` (they need the cluster's OVN, D2).

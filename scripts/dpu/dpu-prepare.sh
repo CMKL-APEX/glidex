@@ -108,7 +108,8 @@ if [ "$PERSIST" = 1 ]; then
   if [ -n "$(rd_sh "command -v $DOCA_HP")" ]; then
     if [ "$(rd_sh "cat $DOCA_HP_DIR/$DOCA_HP_APP.json 2>/dev/null | tr -d ' \n'")" = "{\"2048\":{\"num\":$HUGE,\"is_active\":\"active\"}}" ]; then
       ok "doca-hugepages stores $HUGE x 2 MB pages ($DOCA_HP_APP)"
-    else mut "persist the 2 MB pool in doca-hugepages ($DOCA_HP_APP)" "$DOCA_HP" config --app "$DOCA_HP_APP" --size 2048 --num "$HUGE" --force; fi
+    # `config` stores the entry as inactive; `reload` makes it active.
+    else mut_sh "persist the 2 MB pool in doca-hugepages ($DOCA_HP_APP)" "$DOCA_HP config --app $DOCA_HP_APP --size 2048 --num $HUGE --force && $DOCA_HP reload"; fi
   elif [ "$(rd_sh 'cat /etc/tmpfiles.d/ovs-doca-hugepages.conf 2>/dev/null | grep -c nr_hugepages')" = 2 ]; then ok "tmpfiles entry present"
   else mut_sh "persist the pools across reboots" "printf '%s\n' '# OVS-DOCA hugepages' 'w $HP_512M/nr_hugepages - - - - 0' 'w $HP_2M/nr_hugepages - - - - $HUGE' > /etc/tmpfiles.d/ovs-doca-hugepages.conf"; fi
   if [ "$(rd_sh "grep -c ' $HP_DIR ' /etc/fstab")" -ge 1 ] 2>/dev/null; then ok "fstab entry present"
