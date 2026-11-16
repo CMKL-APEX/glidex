@@ -1,0 +1,7 @@
+name                : ovsbr1
+datapath_type       : doca
+fail_mode           : []
+
+name                : br-int
+datapath_type       : doca
+fail_mode           : secure

@@ -1,0 +1,14 @@
+doca@ovs-doca: hit:574719 missed:22830
+  br-int:
+    br-int 65534/4: (tap)
+    en3f0pf0sf3000 2/5: (doca: dpdk-devargs=0000:03:00.0,dv_xmeta_en=4,dv_flow_en=2,probe_opt_en=1,representor=(pf0)sf3000, dpdk-lsc-interrupt=false, dpdk-vf-mac=<mac>, n_rxq=1, n_rxq_desc=2048, n_txq_desc=2048)
+  offloaded flows: 1
+  offloaded packets: 0.00% (0/0)
+  offloaded bytes: 0.00% (0/0)
+  ovsbr1:
+    ovsbr1 65534/1: (tap)
+    p0 2/2: (doca: dpdk-devargs=0000:03:00.0,dv_xmeta_en=4,dv_flow_en=2,probe_opt_en=1, dpdk-lsc-interrupt=false, n_rxq=1, n_rxq_desc=2048, n_txq_desc=2048)
+    pf0hpf 3/3: (doca: dpdk-devargs=0000:03:00.0,dv_xmeta_en=4,dv_flow_en=2,probe_opt_en=1,representor=(pf0)vf65535, dpdk-lsc-interrupt=false, dpdk-vf-mac=<mac>, n_rxq=1, n_rxq_desc=2048, n_txq_desc=2048)
+  offloaded flows: 1
+  offloaded packets: 0.20% (1198/597534)
+  offloaded bytes: 0.19% (71880/37276306)

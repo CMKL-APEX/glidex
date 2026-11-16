@@ -1,0 +1,80 @@
+{
+  "ovs_version": "3.5.0052",
+  "doca_initialized": true,
+  "doca_version": "3.5.0098",
+  "iface_types_has_doca": true,
+  "iface_types_lists_dpdk": false,
+  "other_config": {
+    "doca_init": "true",
+    "hw_offload": "true",
+    "dpdk_hugepage_dir": "/hugepages-2M",
+    "pmd_cpu_mask": "0xc0"
+  },
+  "hugepages": [
+    "hugepages-16777216kB total=0 free=0",
+    "hugepages-2048kB total=1024 free=954",
+    "hugepages-524288kB total=0 free=0"
+  ],
+  "pmd_threads": 2,
+  "offloaded_flows": 2,
+  "eswitch_mode": "switchdev",
+  "bridges": [
+    {
+      "name": "ovsbr1",
+      "datapath_type": "doca",
+      "fail_mode": null
+    },
+    {
+      "name": "br-int",
+      "datapath_type": "doca",
+      "fail_mode": "secure"
+    }
+  ],
+  "virtio_controller": "active",
+  "firmware": {
+    "VIRTIO_NET_EMULATION_ENABLE": "True",
+    "VIRTIO_NET_EMULATION_NUM_PF": "1",
+    "VIRTIO_NET_EMULATION_NUM_VF": "16",
+    "VIRTIO_NET_EMULATION_NUM_MSIX": "64",
+    "VIRTIO_NET_EMULATION_NUM_VF_MSIX": "12",
+    "PCI_SWITCH_EMULATION_ENABLE": "False",
+    "PER_PF_NUM_SF": "True",
+    "PF_TOTAL_SF": "32",
+    "PF_SF_BAR_SIZE": "8",
+    "SRIOV_EN": "True",
+    "NUM_OF_VFS": "16",
+    "INTERNAL_CPU_MODEL": "EMBEDDED_CPU"
+  },
+  "ovn": {
+    "version": null,
+    "units": [
+      "inactive",
+      "inactive",
+      "inactive",
+      "inactive",
+      "inactive"
+    ]
+  },
+  "bundle": "--/dev/mmcblk0boot0 BlueField ATF version: v2.2(release):4.16.0-8-gda930bca9 BlueField UEFI version: 4.16.0-48-g3e1cb60aa0",
+  "os": "Ubuntu 24.04.4 LTS 6.8.0-1030-bluefield-64k",
+  "host": {
+    "rshim": {
+      "device": "rshim0",
+      "service": "active",
+      "bf_mode": "DPU mode",
+      "boot_mode": "1 (0:rshim, 1:emmc, 2:emmc-boot-swap)",
+      "dev_info": "BlueField-3(Rev 1)"
+    },
+    "modules": [
+      "vhost_net",
+      "vfio_pci",
+      "vfio_iommu_type1",
+      "vfio",
+      "iommufd"
+    ],
+    "iommu_groups": 247,
+    "cmdline": "pci=realloc iommu=pt",
+    "kernel": "6.8.0-138-generic",
+    "bfb_install": "/usr/sbin/bfb-install"
+  }
+}

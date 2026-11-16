@@ -1,0 +1,1 @@
+{hostname=localhost.localdomain, rundir="/var/run/openvswitch", system-id="<uuid>"}

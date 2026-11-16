@@ -24,6 +24,7 @@
 # Networking
 
 - [Networking](09-networking.md)
+- [DPU integration](31-dpu.md)
 
 # APIs and clients
 

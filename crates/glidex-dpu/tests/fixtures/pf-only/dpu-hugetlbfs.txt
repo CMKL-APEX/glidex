@@ -1,0 +1,2 @@
+hugetlbfs on /dev/hugepages type hugetlbfs (rw,nosuid,nodev,relatime,pagesize=512M)
+none on /hugepages-2M type hugetlbfs (rw,relatime,pagesize=2M)

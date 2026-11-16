@@ -12,7 +12,7 @@ fresh reader cannot infer just by reading the source.
 ## Contents
 
 Each spec's file name starts with a number, in the order the specs were
-added. A new spec takes the next number (`31-…`); a spec's number never
+added. A new spec takes the next number (`32-…`); a spec's number never
 changes and is never reused. Cite a spec by its file name and section
 or decision, such as `27-gpu-vms.md §10` or `19-tenancy.md D48`.
 `progress.md`, this file and `SUMMARY.md` have no number.
@@ -30,6 +30,7 @@ or decision, such as `27-gpu-vms.md §10` or `19-tenancy.md D48`.
 | [10-images.md](10-images.md) | Image catalog + verified download, managed disks: create/delete, grow/shrink, root-partition extend |
 | [08-credentials.md](08-credentials.md) | Credential store: guest logins for cloud-init, hashing, security rules |
 | [09-networking.md](09-networking.md) | VM networking: `glidex-ovs` + root `glidex-netd` — OVS install (distro or pinned source), bridges, uplinks with IP migration, NAT + DHCP, vhost-user/tap VM ports; host-test findings in §0 |
+| [31-dpu.md](31-dpu.md) | DPU integration (design): each host's DPU is a chassis (`<node>-dpu`) of the cluster's OVN; a VM's NIC on a cluster network is a virtio-net VF the DPU emulates, passed with VFIO, its representor bound to the NIC's logical port; a DPU agent, `dpu_*` netd ops, DPU reinitialization from a BFB over rshim (§9.4), fallback to the host's own chassis (§11); hardware findings in §0; milestones D0–D8 |
 | [02-console.md](02-console.md) | The one console per VM (`ttyS0`/`hvc0` on a PTY), its proxy in the shim, listener invariant, log append/rotation, the WebSocket and RPC clients, the browser terminal (ghostty-web/xterm.js), known gaps |
 | [01-cli.md](01-cli.md) | `gxctl` interactive CLI, command semantics, console attach loop |
 | [07-web-ui.md](07-web-ui.md) | Vite + React UI structure, routes, API client, dev-proxy |

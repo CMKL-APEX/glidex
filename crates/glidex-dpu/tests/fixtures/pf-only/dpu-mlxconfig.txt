@@ -1,0 +1,22 @@
+
+Device #1:
+----------
+
+Device type:        BlueField3          
+Name:               900-9D3B4-00PN-E_Ax 
+Description:        NVIDIA BlueField-3 B3140L E-Series FHHL SuperNIC; 400GbE / NDR IB (default mode); Single-port QSFP112; PCIe Gen5.0 x16; 8 Arm cores; 16GB on-board DDR; integrated BMC; Crypto Disabled
+Device:             /dev/mst/mt41692_pciconf0
+
+Configurations:                                         Next Boot                        
+        VIRTIO_NET_EMULATION_ENABLE                     True(1)                          
+        VIRTIO_NET_EMULATION_NUM_PF                     1                                
+        VIRTIO_NET_EMULATION_NUM_VF                     16                               
+        VIRTIO_NET_EMULATION_NUM_MSIX                   64                               
+        VIRTIO_NET_EMULATION_NUM_VF_MSIX                12                               
+        PCI_SWITCH_EMULATION_ENABLE                     False(0)                         
+        PER_PF_NUM_SF                                   True(1)                          
+        PF_TOTAL_SF                                     32                               
+        PF_SF_BAR_SIZE                                  8                                
+        SRIOV_EN                                        True(1)                          
+        NUM_OF_VFS                                      16                               
+        INTERNAL_CPU_MODEL                              EMBEDDED_CPU(1)                  

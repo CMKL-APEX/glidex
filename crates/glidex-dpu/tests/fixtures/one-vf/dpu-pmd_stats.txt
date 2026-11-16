@@ -1,0 +1,46 @@
+pmd thread numa_id 0 core_id 6:
+  packets received: 597791
+  packet recirculations: 0
+  avg. datapath passes per packet: 1.00
+  phwol hits: 0
+  mfex opt hits: 0
+  simple match hits: 0
+  emc hits: 154870
+  smc hits: 0
+  megaflow hits: 419963
+  avg. subtable lookups per megaflow hit: 1.04
+  miss with success upcall: 22834
+  miss with failed upcall: 124
+  avg. packets per output batch: 1.00
+  idle cycles: 718373398990 (99.87%)
+  processing cycles: 953741413 (0.13%)
+  avg cycles per packet: 1203308.75 (719327140403/597791)
+  avg processing cycles per packet: 1595.44 (953741413/597791)
+pmd thread numa_id 0 core_id 7:
+  packets received: 0
+  packet recirculations: 0
+  avg. datapath passes per packet: 0.00
+  phwol hits: 0
+  mfex opt hits: 0
+  simple match hits: 0
+  emc hits: 0
+  smc hits: 0
+  megaflow hits: 0
+  avg. subtable lookups per megaflow hit: 0.00
+  miss with success upcall: 0
+  miss with failed upcall: 0
+  avg. packets per output batch: 0.00
+main thread:
+  packets received: 0
+  packet recirculations: 0
+  avg. datapath passes per packet: 0.00
+  phwol hits: 0
+  mfex opt hits: 0
+  simple match hits: 0
+  emc hits: 0
+  smc hits: 0
+  megaflow hits: 0
+  avg. subtable lookups per megaflow hit: 0.00
+  miss with success upcall: 0
+  miss with failed upcall: 0
+  avg. packets per output batch: 0.00

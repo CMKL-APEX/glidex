@@ -1,0 +1,13 @@
+pci/0000:03:00.0/196608: type eth netdev pf0hpf flavour pcipf controller 1 pfnum 0 external true splittable false
+  function:
+    hw_addr <mac> roce enable max_io_eqs 120
+pci/0000:03:00.0/229408: type eth netdev en3f0pf0sf1000 flavour pcisf controller 0 pfnum 0 sfnum 1000 splittable false
+  function:
+    hw_addr <mac> state active opstate attached roce disable trust off max_uc_macs 4096 max_io_eqs 8
+      nested_mlxdevm:
+        auxiliary/mlx5_core.sf.1
+pci/0000:03:00.0/229409: type eth netdev en3f0pf0sf3000 flavour pcisf controller 0 pfnum 0 sfnum 3000 splittable false
+  function:
+    hw_addr <mac> state active opstate attached roce disable trust off max_uc_macs 4096 max_io_eqs 8
+      nested_mlxdevm:
+        auxiliary/mlx5_core.sf.2

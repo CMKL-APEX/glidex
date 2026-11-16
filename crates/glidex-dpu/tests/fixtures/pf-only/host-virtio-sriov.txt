@@ -1,0 +1,7 @@
+pf 0000:61:00.1 driver= group=11
+  sriov_totalvfs=16
+  sriov_numvfs=0
+  sriov_offset=18
+  sriov_stride=1
+  sriov_vf_device=1041
+  sriov_drivers_autoprobe=1

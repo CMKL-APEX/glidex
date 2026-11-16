@@ -1,0 +1,24 @@
+name                : en3f0pf0sf3000
+type                : doca
+error               : []
+options             : {}
+
+name                : ovsbr1
+type                : internal
+error               : []
+options             : {}
+
+name                : p0
+type                : doca
+error               : []
+options             : {}
+
+name                : pf0hpf
+type                : doca
+error               : []
+options             : {}
+
+name                : br-int
+type                : internal
+error               : []
+options             : {}

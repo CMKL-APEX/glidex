@@ -1,0 +1,12 @@
+{
+	"success": true,
+	"valid": true,
+	"version": "00005072",
+	"os": "Ubuntu 24.04.4 LTS",
+	"krnl": "6.8.0-1030-bluefield-64k",
+	"fw": "",
+	"spdk": "",
+	"lsnap": "",
+	"next": true,
+	"active": true
+}
