@@ -141,5 +141,6 @@ scrub() {
     -e 's/\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b/<uuid>/g' \
     -e 's/(system-id|ovn-chassis-idx-[0-9a-f-]+|SerialNumber|serial|Serial|SN)([=: ]+)[^ ,}"]+/\1\2<redacted>/g' \
     -e 's/(PEER_MAC|PXE_ID)[ ]+[^ ]+/\1 <redacted>/g' \
+    -e 's/\bMT[0-9]{4}[0-9A-Z]{6,}/<serial>/g' \
     "${sedargs[@]}"
 }

@@ -1,0 +1,8 @@
+pf 0000:61:00.1 driver=pci-pf-stub group=11
+  sriov_totalvfs=16
+  sriov_numvfs=1
+  sriov_offset=18
+  sriov_stride=1
+  sriov_vf_device=1041
+  sriov_drivers_autoprobe=0
+  virtfn0 0000:61:02.3 driver= group=3 members=0000:60:03.1,0000:61:02.3

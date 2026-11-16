@@ -1,0 +1,13 @@
+DISPLAY_LEVEL   0 (0:basic, 1:advanced, 2:log)
+BF_MODE         DPU mode
+BOOT_MODE       1 (0:rshim, 1:emmc, 2:emmc-boot-swap)
+BOOT_TIMEOUT    300 (seconds)
+USB_TIMEOUT     40 (seconds)
+DROP_MODE       0 (0:normal, 1:drop)
+SW_RESET        0 (1: reset)
+DEV_NAME        pcie-0000:61:00.2
+DEV_INFO        BlueField-3(Rev 1)
+OPN_STR         N/A
+UP_TIME         2438(s)
+SECURE_NIC_MODE 0 (0:no, 1:yes)
+FORCE_CMD       0 (1: send Force command)

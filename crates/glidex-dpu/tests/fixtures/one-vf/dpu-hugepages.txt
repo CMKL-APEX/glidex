@@ -1,0 +1,3 @@
+hugepages-16777216kB total=0 free=0
+hugepages-2048kB total=1024 free=954
+hugepages-524288kB total=0 free=0

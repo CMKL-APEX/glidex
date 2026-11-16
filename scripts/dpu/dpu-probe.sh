@@ -75,6 +75,8 @@ cap_sh hugetlbfs    'mount -t hugetlbfs'
 cap_sh eswitch      'for d in $(devlink dev show 2>/dev/null | grep -E "^pci/" | head -1); do devlink dev eswitch show $d; done'
 cap mlxconfig       dpu mlxconfig -d /dev/mst/mt41692_pciconf0 q VIRTIO_NET_EMULATION_ENABLE VIRTIO_NET_EMULATION_NUM_PF VIRTIO_NET_EMULATION_NUM_VF VIRTIO_NET_EMULATION_NUM_MSIX VIRTIO_NET_EMULATION_NUM_VF_MSIX PCI_SWITCH_EMULATION_ENABLE PER_PF_NUM_SF PF_TOTAL_SF PF_SF_BAR_SIZE SRIOV_EN NUM_OF_VFS INTERNAL_CPU_MODEL
 cap virtnet_list    dpu virtnet list
+cap virtnet_query   dpu virtnet query -a -b
+cap mlxdevm_ports   dpu /opt/mellanox/iproute2/sbin/mlxdevm port show
 cap_sh virtnet_svc  'systemctl is-active virtio-net-controller; systemctl is-enabled virtio-net-controller'
 cap ovn_ctl_ver     dpu ovn-controller --version
 cap_sh ovn_central  'systemctl is-active ovn-central ovn-northd ovn-ovsdb-server-nb ovn-ovsdb-server-sb ovn-controller'
@@ -109,9 +111,20 @@ host_json=null
 if [ "$WITH_HOST" = 1 ]; then
   misc="$( (cat "/dev/$RSHIM/misc" 2>/dev/null || sudo -n cat "/dev/$RSHIM/misc" 2>/dev/null) || true)"
   [ -z "$FIXTURES" ] || printf '%s\n' "$misc" | scrub "${HOSTNAMES[@]}" >"$FIXTURES/host-rshim-misc.txt"
+  if [ -n "$FIXTURES" ]; then
+    # The virtio-net PFs (1af4:1041 without a physfn) and their SR-IOV state.
+    for d in /sys/bus/pci/devices/*; do
+      [ "$(cat "$d/vendor" 2>/dev/null):$(cat "$d/device" 2>/dev/null)" = 0x1af4:0x1041 ] && [ ! -e "$d/physfn" ] || continue
+      echo "pf $(basename "$d") driver=$(basename "$(readlink "$d/driver" 2>/dev/null)" 2>/dev/null) group=$(basename "$(readlink "$d/iommu_group")")"
+      for f in sriov_totalvfs sriov_numvfs sriov_offset sriov_stride sriov_vf_device sriov_drivers_autoprobe; do echo "  $f=$(cat "$d/$f" 2>/dev/null)"; done
+      for v in "$d"/virtfn*; do [ -e "$v" ] || continue
+        echo "  $(basename "$v") $(basename "$(readlink -f "$v")") driver=$(basename "$(readlink "$v/driver" 2>/dev/null)" 2>/dev/null) group=$(basename "$(readlink "$v/iommu_group")") members=$(ls "$v/iommu_group/devices" | paste -sd, -)"
+      done
+    done | scrub "${HOSTNAMES[@]}" >"$FIXTURES/host-virtio-sriov.txt"
+  fi
   mods="$(lsmod 2>/dev/null | awk '{print $1}' | grep -E '^(vfio|vfio_pci|vfio_iommu_type1|iommufd|vdpa|vhost_vdpa|mlx5_vdpa|virtio_vdpa|virtio_vfio_pci|vhost_net)$' | paste -sd, - || true)"
   groups=$(ls /sys/kernel/iommu_groups 2>/dev/null | wc -l)
-  cmdline="$(tr ' ' '\n' </proc/cmdline | grep -E '^(iommu|intel_iommu|amd_iommu|pci)=' | paste -sd' ' - || true)"
+  cmdline="$(tr ' ' '\n' </proc/cmdline | grep -E '^(iommu|intel_iommu|amd_iommu|pci|initcall_blacklist)=' | paste -sd' ' - || true)"
   host_json=$(jq -n \
     --arg bf_mode "$(printf '%s\n' "$misc" | sed -nE 's/^BF_MODE +//p' | head -1)" \
     --arg boot_mode "$(printf '%s\n' "$misc" | sed -nE 's/^BOOT_MODE +//p' | head -1)" \

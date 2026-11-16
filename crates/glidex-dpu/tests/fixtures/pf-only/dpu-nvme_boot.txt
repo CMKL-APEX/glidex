@@ -1,0 +1,5 @@
+/dev/nvme0n1p2
+mmcblk0       38.8G disk
+mmcblk0boot0  31.5M disk
+mmcblk0boot1  31.5M disk
+nvme0n1      119.2G disk

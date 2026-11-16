@@ -1,0 +1,1 @@
+{doca-init="true", dpdk-hugepage-dir="/hugepages-2M", hw-offload="true", pmd-cpu-mask="0xc0"}
