@@ -1,4 +1,4 @@
-# DPU Integration: virtio-net ports on OVS-DOCA, switched by glidex's own OVN
+# DPU Integration: virtio-net ports on OVS-DOCA, a chassis of the cluster's OVN
 
 **Status: design, not implemented.** Nothing in this document exists in
 the code yet. §0 records what was verified on a real BlueField-3 pair
@@ -6,16 +6,23 @@ while writing it; items marked **(verify)** must be checked on hardware
 during the milestone that uses them (§14).
 
 Builds on [09-networking.md](09-networking.md) (`glidex-ovs`, `glidex-netd`,
-VM ports, vhost-user), [11-security.md](11-security.md) (netd policy, ownership)
+VM ports, vhost-user), [14-clustering.md](14-clustering.md) §11 (the
+cluster's OVN: central on the servers, a chassis per node, logical ports
+bound by `iface-id` and `requested-chassis`),
+[11-security.md](11-security.md) (netd policy, ownership)
 and [12-reconciliation.md](12-reconciliation.md) (VM controller, `status.nics`).
 Read those first; this document only describes what changes.
 
-glidex **runs its own OVN instance** (NB DB, SB DB, `ovn-northd`, and a
-host `ovn-controller`) next to the OVS it already manages. That instance
-is what lets one logical network span a DPU chassis and a host-OVS
-chassis, so a VM can be switched by the DPU when it is available and by
-host OVS-DPDK when it is not (§11), and it lets overlay networks work on
-a host with no DPU at all.
+A host's DPU is **one more chassis of the cluster's OVN**, next to the
+host's own (decisions 5, 15). A VM's NIC on a cluster network is a
+virtio-net VF that the DPU emulates, passed to the VM with VFIO; its
+representor on the DPU's `br-int` carries the NIC's logical port. The
+logical switches, ports, addresses, DHCP, routers and NAT are the
+cluster's, unchanged (14-clustering.md §11); only the chassis a port is
+bound to differs. When the DPU is unavailable, a network that allows it
+puts the NIC on the host's chassis instead, on the same logical switch
+(§11). DPU NICs therefore need a cluster: a single DPU host is a
+one-server cluster (decision 6).
 
 ## 0. Verified on hardware
 
@@ -36,10 +43,10 @@ IDs are deliberately left out of this document.
 | 7 | Firmware starts with virtio-net emulation **off**: `VIRTIO_NET_EMULATION_ENABLE=0`, `NUM_PF=0`, `PF_TOTAL_SF=0`; `virtio-net-controller` is installed and enabled but inactive. `devlink resource` shows capacity for 32 local and 32 external SFs. | Virtio ports are impossible until firmware is changed and the DPU is cold-reset (§9.1). glidex never does this itself. |
 | 8 | Host: `vdpa`, `vhost_vdpa`, `mlx5_vdpa`, `virtio_vdpa`, `virtio_vfio_pci`, `iommufd` modules **exist** for kernel 6.8; QEMU is 8.2.2 and libvirt 10.0. `vfe-vhostd` is not installed. No `pci=realloc`. | VFIO passthrough of a virtio VF works with the host as it is; migration paths need newer QEMU/kernel (§2, §15). |
 | 9 | The Geneve tunnel between two DPUs came up with **one** DPU on the kernel datapath and the other on OVS-DOCA. | Mixed datapaths interoperate on the wire; backends may differ per host. |
-| 10 | The test OVN central services (NB and SB) listened on plain TCP on all interfaces, unauthenticated. | glidex's own instance is TLS-only for anything that leaves the host, and NB is never on the network (§8.3). |
-| 11 | The DPU runs **OVN 24.03.8** (`ovn-controller`, `ovn-northd`; Ubuntu 24.04 packages), SB schema **20.33.0**. The host's Ubuntu 24.04 archive offers `ovn-central` and `ovn-host` **24.03.8** as well. | A distro-installed central matches the DPU's chassis version (§8.8). |
-| 12 | The test DPU **already runs its own `ovn-central`** (NB, SB, northd all active) and its OVS `ovn-remote` pointed at it. | A DPU may carry a foreign OVN central. The module reports it and repoints the chassis only with confirmation (§8.6, §9.3). |
-| 13 | The host reaches the DPU over a point-to-point management link (`tmfifo_net0`, a pair of private addresses), independent of every OVS bridge. | That link is the agent and SB transport and survives OVS restarts (§10). |
+| 10 | The test OVN central services (NB and SB) listened on plain TCP on all interfaces, unauthenticated. | The cluster's OVN is TLS-only with the cluster CA (14-clustering.md §4); a DPU never connects to a central of its own (§8.3). |
+| 11 | The DPU runs **OVN 24.03.8** (`ovn-controller`, `ovn-northd`; Ubuntu 24.04 packages), SB schema **20.33.0**. The host's Ubuntu 24.04 archive offers `ovn-central` and `ovn-host` **24.03.8** as well. | A cluster on the distro's OVN matches the DPU's chassis version; the cluster's version rule covers the DPU chassis (§8.3). |
+| 12 | The test DPU **already runs its own `ovn-central`** (NB, SB, northd all active) and its OVS `ovn-remote` pointed at it. | A DPU may carry a foreign OVN central. The module reports it and repoints the chassis only with confirmation (§8.3, §9.3). |
+| 13 | The host reaches the DPU over a point-to-point management link (`tmfifo_net0`, a pair of private addresses), independent of every OVS bridge. | That link is the agent's transport and survives OVS restarts (§10). The DPU chassis reaches the cluster's SB over the underlay, like any chassis (§8.3). |
 | 14 | The host runs `rshim` 2.8.5 (service active and enabled) with one device, `/dev/rshim0` (`boot`, `console`, `misc`, `rshim`), bound to the SoC management function (`DEV_NAME` is the PCI address of function `.1`). `misc` reports `BF_MODE` `DPU mode`, `BOOT_MODE` `1 (emmc)`, `BOOT_TIMEOUT` 300 s, `SECURE_NIC_MODE` 0. `bfb-install`, `mlxfwreset`, `mlxconfig` and `mlnx-fw-updater` 26.07 are installed on the host. | The reinitialization path (§9.4) uses `bfb-install --rshim rshim0`; the device identity can be checked before anything is written. |
 | 15 | A BFB matching the DPU's running bundle (`bf-bundle-3.5.0-89_26.07_ubuntu-24.04_64k_prod`) is already on the host, in two places. The DPU's root filesystem is on NVMe (117 GB, 7% used). No `/etc/bf.cfg` exists on the DPU; its image identity is in `/etc/bfb_version.json`. | glidex does not download BFBs; the operator supplies the path and the expected checksum (§9.4). A reinstall replaces everything on that filesystem. |
 | 16 | **D0 run 1.** A DPU on a clean bundle (3.5.0-89) starts with `hw-offload=true` already set, `doca-init` unset, `ovsbr1` on the `system` datapath with ports of unset type, **no IPv4 address on `ovsbr1`** (the underlay address of earlier tests was added by hand), no OVN packages, and eswitch mode already `switchdev`. `iface_types` lists `doca` only **after** `doca-init` and a restart. | A clean DPU needs `dpu_prepare` to supply the underlay address and, if OVN is wanted on the DPU, to install it; the probe must treat "no `doca` in `iface_types`" as "not initialized", not "unsupported". |
@@ -67,31 +74,35 @@ IDs are deliberately left out of this document.
 | 2 | How glidex reaches a DPU | A small **DPU agent** (`glidex-dpu-agent`, systemd on the DPU) speaking the netd NDJSON protocol over the DPU's point-to-point management link; **not** `ssh` + `sudo` from netd. Mutual authentication; only netd's root credential can connect (§10). |
 | 3 | Guest-visible device | A **virtio-net VF** emulated by the DPU (`virtio-net-controller`), attached to the VM by **VFIO passthrough** in v1. vhost-user via `vfe-vhostd` is v2 (§5.2). |
 | 4 | Switching and policy | **OVN**, with `ovn-controller` and `br-int` on the DPU (OVS-DOCA, offloaded). The VM's port is an OVN logical switch port. |
-| 5 | OVN central | **glidex runs its own instance** (decision revised): `glidex-ovn-nb`, `glidex-ovn-sb`, `glidex-ovn-northd`, glidex-owned systemd units with their own run and data directories, installed and maintained by netd. An **external** central stays supported (`ovn.mode: external`, §8.10). |
-| 6 | Where the internal central runs | **On the host**, next to netd. NB is reachable only through a local Unix socket; SB listens on a local Unix socket and, over TLS, on the DPU management link (§8.3). Running it on the DPU is deferred (O9). |
-| 7 | Fallback | If the DPU is unavailable, a network that allows it falls back to **OVS-DPDK vhost-user on the host** (existing M7 path), with the host as a second chassis of the same internal OVN (§11). |
+| 5 | OVN central | **The cluster's OVN** (revised 2026-11-16; earlier: glidex's own single-host instance, and before that an external central). The DPU is a chassis of the OVN the cluster's servers run (14-clustering.md §11). glidex runs no OVN central for DPUs and has no external-central mode (§8). |
+| 6 | Cluster required | **A DPU NIC exists only on a cluster network** (`scope: cluster`; revised 2026-11-16). A standalone host has no OVN (14-clustering.md D5, D10), so a host with a DPU that wants DPU NICs is at least a one-server cluster (`cluster init`). Probing, preparing and reinitializing a DPU work on a standalone host too (§9). |
+| 7 | Fallback | If the DPU is unavailable, a network with `backend: auto` puts the NIC on the **host's own chassis** (tap, or vhost-user on a `netdev` `br-int`), on the same logical switch (revised 2026-11-16; §11). |
 | 8 | Backend stickiness | A NIC's backend is decided at attach and **never changes while the VM runs** (the hypervisor holds the device). |
 | 9 | Firmware and reset | **Never applied by glidex.** `dpu_probe` reports what is missing and prints the commands (§9.1). The one DPU reset glidex can drive is a **BFB reinstall of the DPU's operating system** over rshim (decision 14, §9.4); it never changes firmware settings and never power-cycles the card or the host. |
-| 10 | Live migration | **Out of scope** for v1 (glidex is single-host). The design leaves room: a stable VF ↔ port mapping and OVN `requested-chassis` (§15). |
+| 10 | Live migration | **Out of scope** for v1 (glidex has none yet, 14-clustering.md §2). The design leaves room: a stable VF ↔ port mapping and OVN `requested-chassis` (§15). |
 | 11 | Datapath types | `doca` for bridges, `doca` for ports on a DOCA DPU. Never `dpdk`/`netdev` there. |
-| 12 | PKI | glidex runs a **private CA** for OVN. Chassis private keys are generated on the chassis and never leave it (§8.3). |
-| 13 | NB is derived state | NB rows are generated from netd's own records; a lost or damaged NB is rebuilt, not restored (§8.7). |
+| 12 | PKI | The DPU chassis's certificate is the **cluster CA's** (revised 2026-11-16). The DPU generates its key and a CSR; the leader signs it. The key never leaves the DPU (§8.3). |
+| 13 | NB | The NB is the cluster's, written only by the leader's network controller from the cluster's records (14-clustering.md §11). This module adds no NB state of its own (revised 2026-11-16). |
 | 14 | DPU reinitialization | An explicit, confirmed, **destructive** operation, `dpu_reinit`: netd writes an operator-supplied, checksum-verified **BFB** to the DPU through `rshim` (`bfb-install`), then re-bootstraps the agent, re-enrols the chassis certificate and re-runs `dpu_prepare`. It runs as an asynchronous **job**, is admin-only, refuses while any DPU-backed VM is running, and is never triggered automatically (§9.4). |
+| 15 | The DPU chassis | Each DPU is a chassis named **`<node id>-dpu`**, next to the host's `<node id>`, enrolled by the leader through `ensure_ovn_chassis` (§8.3). It is **never a gateway**: gateways stay on host `br-int`s with the `system` datapath, which external-traffic metering needs (14-clustering.md D22). |
+| 16 | Which chassis a port binds to | A NIC's **backend picks its `requested-chassis`**: `<node>-dpu` for the DPU, `<node>` for the host. The scheduler chooses the backend at placement; a node that falls back at launch reports it, and the leader moves `requested-chassis` to match (§8.4). |
 
 ## 2. Scope
 
 **In scope**
-- Install, configure, supervise and upgrade a single-node OVN central on
-  the host, and a host `ovn-controller` chassis, from netd.
-- Create, list and delete a virtio-net port for a VM NIC on an OVN-managed
-  network, switched by OVS-DOCA on the DPU attached to this host.
+- Enrol each DPU as a chassis of the cluster's OVN, with a cluster-CA
+  certificate whose key stays on the DPU (§8.3).
+- Create, list and delete a virtio-net port for a VM NIC on a cluster
+  network, switched by OVS-DOCA on the DPU of the VM's node, bound to
+  the NIC's existing logical port (§7, §8.4).
 - Probe and (with confirmation) configure the runtime parts of a DPU:
-  hugepages, `doca-init`, bridges, OVN chassis settings and certificates.
+  hugepages, `doca-init`, bridges, the virtio-net controller's
+  prerequisites, the chassis settings and certificate.
 - Reinitialize a DPU's operating system from a BFB over rshim and bring
   it back to a working chassis (§9.4).
-- Fall back to host OVS-DPDK vhost-user for networks that allow it, and
-  run overlay networks on hosts that have no DPU.
-- REST, `gxctl` and UI surfaces consistent with networks today.
+- Fall back to the host's own chassis for networks that allow it (§11).
+- Scheduling on DPU capacity, and REST, `gxctl` and UI surfaces
+  consistent with cluster networks today (§12).
 
 **Non-goals**
 - Firmware (`mlxconfig`) changes, cold resets and power cycles of the
@@ -100,35 +111,35 @@ IDs are deliberately left out of this document.
   default (§9.4).
 - Obtaining BFBs: glidex does not download, build or customize bundles
   beyond the first-boot configuration file it generates (§9.4).
-- **OVN clustering or HA.** One central, on this host. When it is down,
-  no port or network changes are possible, but traffic already switched
-  keeps flowing (§8.7).
-- OVN routers, NAT, gateways, ACLs (§8.11 says what is deferred).
+- **An OVN of the DPU's own, or of the host's.** DPU NICs use the
+  cluster's OVN; on a standalone host there are none (decision 6).
+- Changes to the cluster's NB model: switches, routers, NAT, DHCP and
+  IPAM are 14-clustering.md §11's. Security groups are not built there
+  yet; when they are, DPU ports get them with no change here (§8.5).
+- A DPU chassis as a gateway (decision 15), and provider (`localnet`)
+  networks on a DPU chassis in v1 (§8.5, O18).
 - SR-IOV VFs of the regular ConnectX PF as VM NICs, SFs as VM NICs,
   `docavdpa`, and hotplug virtio PFs. Static virtio PF + VFs only.
 - Live migration (decision 10).
-- **Multi-host orchestration.** [README.md](README.md) lists it as a
-  non-goal, and this module respects it: glidex manages *its own host's*
-  OVN, DPU and VMs. The internal SB does not listen on the underlay or
-  any address except the ones configured (§8.3), and glidex never talks
-  to another host's DPU. A chassis from another host could connect to the
-  SB if an operator adds its address to `sb.listen` and issues it a
-  certificate by hand; that is unsupported, not forbidden.
+- One host's netd talking to another host's DPU: each node drives only
+  its own DPU, through its own agent (§10).
 
 ## 3. Topology
 
 ```
- Host (glidex)                                         DPU (OVS-DOCA, DPU mode)
-┌─────────────────────────────────────────────┐      ┌────────────────────────────────────────┐
-│ control plane ──NDJSON──▶ glidex-netd       │─mgmt▶│ glidex-dpu-agent                       │
-│                            │ ovn-nbctl      │ link │   ├ ovs-vsctl (br-int, ovsbr-phy)      │
-│  glidex-ovn-nb  ◀──unix────┘                │      │   └ virtnet (virtio-net-controller)    │
-│  glidex-ovn-sb  ◀─unix─ glidex-ovn-controller│      │ ovn-controller ──TLS──▶ host SB ───────┼─(mgmt link)
-│  glidex-ovn-northd                          │      │                                        │
-│                                             │      │ VF representor ─ br-int ═ Geneve ═▶ …  │
-│  VM ── virtio-net VF (vfio) ◀──PCIe─────────┼─────▶│                  └ ovsbr-phy ─ p0 ─▶ wire
-│  fallback: VM ── vhost-user ─ host OVS-DPDK br-int (chassis "host") ═ Geneve ═▶ same switch │
-└─────────────────────────────────────────────┘      └────────────────────────────────────────┘
+ Cluster servers: NB / SB / ovn-northd (OVSDB Raft, cluster CA; 14-clustering.md §4)
+   ▲ leader's network controller writes NB          ▲ ssl:6642          ▲ ssl:6642
+   │                                                 │                   │
+ Node (glidex)                                       │      DPU (OVS-DOCA, DPU mode)
+┌────────────────────────────────────────────┐      │     ┌──────────────────────────────────────┐
+│ control plane ──NDJSON──▶ glidex-netd      │─mgmt─┼────▶│ glidex-dpu-agent                     │
+│                                            │ link │     │   ├ ovs-vsctl (br-int, ovsbr-phy)    │
+│ ovn-controller, chassis "<node>" ──────────┼──────┘     │   └ virtnet (virtio-net-controller)  │
+│ br-int: tap / vhost-user NICs (fallback)   │            │ ovn-controller, chassis "<node>-dpu" ┘
+│                                            │            │                                      │
+│ VM ── virtio-net VF (vfio-pci) ◀──PCIe─────┼───────────▶│ VF representor ─ br-int ═ Geneve ═▶ …│
+│                                            │            │                  └ ovsbr-phy ─ p0 ─▶ wire
+└────────────────────────────────────────────┘            └──────────────────────────────────────┘
 ```
 
 Two bridges on the DPU, as in NVIDIA's tunnel guidance: **`ovsbr-phy`**
@@ -146,15 +157,15 @@ hardware milestone (D4) decides which layout works.
 
 | Path | What |
 |---|---|
-| `crates/glidex-ovn/` | **New library.** Installing OVN packages, rendering the three central unit files and the host `ovn-controller` unit, the private CA and certificate issuing, `ovn-nbctl`/`ovn-sbctl`/`ovn-appctl` command builders, the NB model (§8.4) and its reconciler, status parsing. No dependency on other glidex crates. |
-| `crates/glidex-dpu/` | **New library.** DPU-side command builders (`ovs-vsctl`, `virtnet`), VF allocation, DPU probe parsing. |
+| `crates/glidex-dpu/` | **New library.** DPU-side command builders (`ovs-vsctl`, `virtnet`), VF allocation, DPU probe parsing, the DPU chassis's `Open_vSwitch` settings. |
 | `crates/glidex-dpu-agent/` | **New binary**, runs on the DPU. Protocol server around `glidex-dpu`; allow-listed programs only. No OVN central access. |
-| `crates/glidex-netd/` | New ops and a `Backend` abstraction (§6); owns the OVN instance (§8), holds the DPU credential and the CA key, and does the host-side steps (VF creation, `vfio-pci` binding, and the `rshim`/`bfb-install` reinitialization jobs of §9.4). |
+| `crates/glidex-netd/` | New ops and a `Backend` abstraction (§6); `ensure_ovn_chassis`, `leave_ovn` and `ovn_status` gain a DPU target, relayed to the agent (§8.3); holds the agent credential; does the host-side steps (VF creation, `vfio-pci` binding, and the `rshim`/`bfb-install` reinitialization jobs of §9.4). |
 | `crates/glidex-ovs/` | Unchanged API. Gains a `Backend::HostOvs` adapter over today's `vm_port` (§11). |
-| `crates/glidex-control-plane/` | Models, REST, controller changes (§12). |
-| `packaging/` | `glidex-ovn-nb.service`, `glidex-ovn-sb.service`, `glidex-ovn-northd.service`, `glidex-ovn-controller.service` (host); `glidex-dpu-agent.service` (DPU); `dpu.json` and `ovn.json` examples. |
+| `crates/glidex-ovn/` | Unchanged. |
+| `crates/glidex-control-plane/` | The DPU chassis's enrolment and CSR signing by the leader, `requested-chassis` by backend, the DPU in node status and the scheduler, VF claims, REST (§8, §12). |
+| `packaging/` | `glidex-dpu-agent.service` (DPU); a `dpu.json` example. |
 
-`glidex-ovn` and `glidex-dpu` have an `Exec` trait like `glidex-ovs`
+`glidex-dpu` has an `Exec` trait like `glidex-ovs`
 (`crates/glidex-ovs/src/exec.rs`) and a `RecordingExec` for tests; the
 agent supplies the real implementation on the DPU, netd supplies one for
 host commands.
@@ -175,19 +186,15 @@ pub enum VmPortBinding {
 }
 ```
 
-`VmPortSpec` gains optional fields (defaults keep old records valid):
+`VmPortSpec` gains one optional field (the default keeps old records
+valid); the logical port stays `ovn_lport`
+([14-clustering.md §11.3](14-clustering.md#113-hosts-joining-ovn-netd)),
+whose addresses and port security the leader sets in the NB:
 
 ```rust
 pub struct VmPortSpec {
-    /* existing */
-    pub backend: BackendPolicy,            // Auto (default) | Dpu | Host
-    pub ovn: Option<OvnPortSpec>,          // set for overlay networks
-}
-pub enum BackendPolicy { Auto, Dpu, Host }
-pub struct OvnPortSpec {
-    pub switch: String,                    // logical switch, e.g. "gx-<project>-<network>"
-    pub addresses: Option<String>,         // "<mac> <ip>" or "<mac>"; default: mac only (DHCP)
-    pub port_security: bool,               // default true: mac (+ ip when static)
+    /* existing, including ovn_lport */
+    pub backend: Backend,                  // Host (default) | Dpu: the one placement chose (§8.4)
 }
 ```
 
@@ -217,10 +224,11 @@ The mode is a per-DPU setting (`dpu.json`, §10), not per VM.
 - Representor: the VF's SF representor (`en3f0pf0sf<3000+n>` on the test
   DPU; the exact numbering comes from `virtnet list`, **verify** O2).
   Its OVS port name is the representor netdev name; glidex tags it.
-- Names of OVN objects (deterministic, `names.rs` style):
-  - logical switch port `gx<first 8 hex of vm id>-<nic>` (same as the tap
-    name today, ≤ 15 chars);
-  - MAC `02:` + 5 bytes of `sha256(vm_id ‖ nic)` (unchanged).
+- OVN names are the cluster's
+  ([14-clustering.md §11.1](14-clustering.md#111-ownership-and-naming)):
+  the logical port is `gx-<vm8>-<i>` whatever the backend, and it is the
+  representor's `external_ids:iface-id`; the MAC is `02:` + 5 bytes of
+  `sha256(vm_id ‖ nic)` (unchanged).
 
 ## 6. Backend abstraction in netd
 
@@ -231,20 +239,21 @@ trait PortBackend {
     fn detach(&self, vm_id: &str, nic: u8) -> Result<(), OvsError>;
     fn list(&self) -> Result<Vec<PortRecord>, OvsError>;
 }
-// HostOvsBackend: today's vm_port::attach/detach (tap, vhost-user), plus the OVN iface-id on overlay networks.
+// HostOvsBackend: today's vm_port::attach/detach (tap, vhost-user), with `iface-id` on cluster networks, as today.
 // DpuBackend:     agent client + host VFIO steps (§7).
 ```
 
-`attach_vm_port` selects a backend:
+The network's policy (§12.1) and the DPU's health give the backend.
+The scheduler applies it at placement (§8.4); the node applies it again
+at launch, when the DPU may have gone away since:
 
-| `backend` | DPU healthy | Result |
+| Network `backend` | DPU healthy | Result |
 |---|---|---|
-| `Dpu` | yes | DPU |
-| `Dpu` | no | error `dpu_unavailable` |
-| `Host` | n/a | host |
-| `Auto` | yes | DPU |
-| `Auto` | no, network allows fallback (§11) | host, event `BackendFallback` |
-| `Auto` | no, no fallback | error `dpu_unavailable` |
+| `host` (default) | n/a | host |
+| `dpu` | yes | DPU |
+| `dpu` | no | error `dpu_unavailable` |
+| `auto` | yes | DPU |
+| `auto` | no | host, event `BackendFallback` (§11) |
 
 **Invariant:** the chosen backend is stored in the `vm_ports` record and
 re-attach (crash-restart, `attach_vm_port` on an existing record) always
@@ -253,10 +262,10 @@ Why: the hypervisor holds the device or socket; only a VM restart can
 switch.
 
 "Healthy" means: agent reachable, `ovs-vswitchd` has `doca_initialized`,
-the controller reports the PF, a VF is free, and the DPU chassis is
-registered in the internal SB (§8.6). Cached for 5 s so a launch burst
-probes once. Every overlay attach also requires the internal OVN to be
-healthy (§8.7); otherwise `ovn_unavailable`, whatever the backend.
+the controller reports the PF, a VF is free, and the DPU's
+`ovn-controller` is connected to the cluster's SB (§8.3). Cached for 5 s
+so a launch burst probes once. The node reports it in its status, which
+is what the scheduler reads (§12.3).
 
 ## 7. Port lifecycle (DPU backend)
 
@@ -283,10 +292,15 @@ so a crash resumes.
    external_ids:glidex-owner=glidex external_ids:glidex-role=vm
    external_ids:glidex-vm-id=<id> external_ids:glidex-nic=<n>`; `ip link set <rep> up`;
    align the representor MTU with the VF's.
-6. **OVN: create the logical port** on the **internal NB** (§8.5), from
-   netd, with the local `ovn-nbctl`; then wait for the port to be `up`
-   in the SB (`lsp-get-up`, ≤ `port_timeout_secs`). On timeout roll back
-   steps 5–6 and return `dpu_port_timeout`.
+6. **OVN: wait for the binding.** The logical port already exists: the
+   leader made it at placement, with `requested-chassis=<node>-dpu`
+   (§8.4). The DPU's `ovn-controller` claims it once the representor
+   carries its `iface-id`; the VM controller waits for `ovn_installed`
+   as for any cluster NIC
+   ([14-clustering.md §11.5](14-clustering.md#115-vm-port-lifecycle),
+   10 s, then `NetworkReady=False/PortNotInstalled`). If the
+   representor does not appear within `port_timeout_secs`, step 5 is
+   rolled back and the result is `dpu_port_timeout`.
 7. **Host: bind the VF to `vfio-pci`**: `driver_override`, unbind,
    `drivers_probe` (same sysfs sequence as the DPDK uplink,
    `crates/glidex-ovs/src/uplink.rs`); record the original driver. Return
@@ -300,8 +314,9 @@ in `status.nics`, not in the spec's device list.
 ### 7.2 Detach and release
 
 Reverse order; every step tolerates "already gone": rebind the original
-driver (or leave unbound if none), delete the NB port, `del-port` on the
-DPU, free the VF. `release_vm` does this for every NIC of a VM.
+driver (or leave unbound if none), `del-port` on the DPU, free the VF.
+The logical port is the leader's and follows the VM, not its instances
+(14-clustering.md §11.5 step 3). `release_vm` does this for every NIC of a VM.
 `detach_vm_port` and `release_vm` keep the owner-uid check from
 [09-networking.md §7.2](09-networking.md#72-authorization).
 
@@ -318,221 +333,140 @@ DPU, free the VF. `release_vm` does this for every NIC of a VM.
 ### 7.4 Reconciliation (at netd start, on agent reconnect, and every resync)
 
 Netd diffs its `vm_ports` records against the DPU
-(`dpu_list_ports`), the internal NB and the host:
+(`dpu_list_ports`) and the host:
 
 | Situation | Action |
 |---|---|
-| Record present, DPU port or NB port missing | re-create (steps 4–6); event `PortRestored` |
-| DPU port or NB row tagged glidex, no record | **report** in `ReconcileReport`, never delete ([09-networking.md §7.7](09-networking.md#77-startup-and-reconciliation) rule 4) |
+| Record present, DPU port missing | re-create (steps 4–6); event `PortRestored` |
+| DPU port tagged glidex, no record | **report** in `ReconcileReport`, never delete ([09-networking.md §7.7](09-networking.md#77-startup-and-reconciliation) rule 4) |
 | Host rebooted (VFs gone; `sriov_numvfs` = 0) | VMs are stopped anyway; netd recreates VFs at the next attach |
 | DPU reset (representors gone, controller restarted) | running VMs lose their NIC: `NetworkReady=False/PortLost`, `RestartRequired=True/PortLost`, same as a lost tap |
 
-The NB side of this table is the generic NB reconcile of §8.7.
+The NB side is the leader's: a missing logical port or chassis binding
+is re-created by its network controller (14-clustering.md §11.5 step 4).
 
-## 8. OVN
+## 8. OVN: the DPU as a chassis of the cluster's OVN
 
-### 8.1 Modes and ownership
+### 8.1 What the cluster already provides
 
-`ovn.mode` in `/etc/glidex/ovn.json` (§10.1):
+In a cluster, the servers run the NB and SB databases and `ovn-northd`
+in their own OVSDB Raft clusters, over TLS with the cluster CA; only the
+leader's network controller writes the NB; every node is a chassis set
+up by netd's `ensure_ovn_chassis`; a VM's NIC is a logical port
+`gx-<vm8>-<i>` with the control plane's addresses and port security,
+bound by `iface-id` and `requested-chassis=<node>`
+([14-clustering.md §11](14-clustering.md#11-ovn-networks)). This module
+adds one chassis per DPU and changes nothing in the central or the NB
+model.
 
-| Mode | Who runs central | Used when |
-|---|---|---|
-| `internal` (**default**) | glidex (§8.2) | always, unless the operator points glidex at a central of their own |
-| `external` | the operator (§8.10) | an existing OVN deployment glidex must join |
-| `off` | nobody | no overlay networks; netd leaves OVN alone |
+### 8.2 A cluster is required (decision 6)
 
-Whatever the mode, the NB model (§8.4) and the ownership rule are the
-same. **Invariant** (extends [09-networking.md §8.1](09-networking.md#81-ownership)):
-every NB row glidex creates carries `external_ids:glidex-owner=glidex`
-(plus `glidex-project`, `glidex-vm-id`, `glidex-nic`); the module changes
-or deletes only tagged rows; a switch name that exists untagged is
-`not_owned`. In `internal` mode glidex owns the whole instance, but the
-rule still holds: it keeps an operator's own `ovn-nbctl` additions from
-being deleted by a reconcile.
+A NIC with the DPU backend exists only on a `scope: cluster` network. A
+standalone host has no OVN, so a network policy asking for the DPU there
+is refused (`400 invalid_network`, `details.missing: ["cluster"]`). A
+single DPU host becomes a one-server cluster with `cluster init`, whose
+server runs the OVN central (14-clustering.md §5.1). `dpu_probe`,
+`dpu_prepare` and `dpu_reinit` work without a cluster; they skip the
+chassis step (§9.3 step 4).
 
-### 8.2 The internal instance
+### 8.3 The DPU chassis (decision 15)
 
-Four **glidex-owned systemd units**, rendered by `glidex-ovn` and
-installed by `install_ovn` (the same pattern as the source-build OVS
-units in [09-networking.md §6.3](09-networking.md#63-pinned-source-build-decision-10)):
+- **Name:** `system-id` `<node id>-dpu`; the host's chassis stays
+  `<node id>`. The node's status lists both.
+- **Enrolment:** when a node reports a prepared DPU, the leader calls
+  `ensure_ovn_chassis` with `target: {dpu: <id>}`. netd relays it to
+  the agent, which sets the DPU's `Open_vSwitch` `external_ids`
+  (`system-id`, `ovn-remote` the same SB remotes as the host's chassis,
+  `ovn-encap-type=geneve`, `ovn-encap-ip` from `dpu.json`, no
+  `ovn-bridge-mappings` in v1), makes sure `br-int` exists on the `doca`
+  datapath, and enables the DPU's `ovn-controller`. Idempotent, as for
+  the host.
+- **Certificate:** the agent generates the key and a CSR (`csr`); netd
+  passes the CSR to the control plane, the leader signs it with the
+  cluster CA (subject: the chassis name, which the SB's `ovn-controller`
+  role ties to the chassis, **verify** O19), and the agent installs the
+  certificate (`install_cert`). The private key never leaves the DPU.
+  Renewal and CA rotation take the same path as the node's own chassis
+  certificate (14-clustering.md D20).
+- **Underlay:** the DPU's `ovn-encap-ip` must reach every other
+  chassis's (the servers', the other nodes', its own host's), with the
+  cluster's MTU rule (`underlay_mtu − 58`,
+  [14-clustering.md §11.6](14-clustering.md#116-mtu-and-offload));
+  **verify** O6.
+- **Version:** the DPU's `ovn-controller` must not be newer than the
+  cluster's `ovn-northd`, the rule the cluster applies to every chassis;
+  `dpu_probe` reports `ovn_version`, and a DPU that breaks the rule is
+  not enrolled (`unsupported { missing: ["ovn<=<ver>"] }`). On the test
+  pair both are 24.03.8 (finding 11). The DOCA bundle ships the DPU's
+  OVN; glidex never upgrades it.
+- **A DPU's own central** (finding 12): reported as
+  `local_ovn_central: active`; stopped and disabled (never uninstalled,
+  its NB never read) only when `dpu_prepare` is confirmed with
+  `stop_local_central: true`. Until then the DPU is not enrolled,
+  because repointing `ovn-remote` strands whatever that central managed.
+- **Leaving:** `leave_ovn` with the DPU target clears the settings and
+  stops the DPU's `ovn-controller`; a node removed from the cluster
+  leaves both chassis (14-clustering.md §5.5), and the leader's clean-up
+  of tombstoned nodes' chassis covers `<node>-dpu`. `dpu_reinit` deletes
+  it first (§9.4.3 phase 2).
+- netd's ownership markers (`glidex-owner=glidex`, `glidex-role=vm`,
+  `glidex-vm-id`, `glidex-nic`) apply to the representor ports on the
+  DPU's `br-int` as they do on the host's. Neither netd nor the agent
+  touches `br-int` flows.
 
-| Unit | Runs | Notes |
-|---|---|---|
-| `glidex-ovn-nb.service` | `ovsdb-server` on the NB schema | DB `/var/lib/glidex/ovn/ovnnb_db.db`; socket `/run/glidex/ovn/ovnnb_db.sock` (`root:root 0600`); **no network listener** |
-| `glidex-ovn-sb.service` | `ovsdb-server` on the SB schema | DB `/var/lib/glidex/ovn/ovnsb_db.db`; socket `/run/glidex/ovn/ovnsb_db.sock` (`root:root 0600`); TLS listener per §8.3 |
-| `glidex-ovn-northd.service` | `ovn-northd` against the two sockets | single instance, always active |
-| `glidex-ovn-controller.service` | `ovn-controller` for the **host** chassis (§11) | only when `host_chassis.enabled`; connects to the SB by Unix socket |
+### 8.4 Ports and their chassis (decision 16)
 
-Why separate units and directories: a host (or DPU) that already runs the
-distro's `ovn-central` keeps working untouched, because glidex's central
-uses `/run/glidex/ovn/` and `/var/lib/glidex/ovn/` and never
-`/var/run/ovn`. `Restart=on-failure`, `RuntimeDirectoryPreserve=yes`,
-`Before=glidex-netd.service`. The units are independent of netd, so a
-netd restart does not interrupt OVN, and `glidex-netd.service` gains
-`Wants=` on them.
+- **NB unchanged.** The switch `gx-<network id>`, the logical port, its
+  `addresses` and `port_security` from IPAM, OVN DHCP, routers and SNAT
+  are the leader's, whatever the backend (14-clustering.md §11.2–§11.5).
+- **Placement** (leader): the scheduler picks the node and, from the
+  network's `backend` policy (§12.1) and the node's reported DPU state,
+  the NIC's backend; it claims a VF for a DPU NIC (§12.3). The network
+  controller creates the logical port with
+  `requested-chassis=<node>-dpu` for the DPU, `<node>` for the host, and
+  the NIC's placement records the backend.
+- **Launch** (node): netd attaches with the recorded backend (§7.1). If
+  the DPU is unavailable and the policy is `auto`, it attaches on the
+  host instead and the node reports `status.nics[].backend = host`; the
+  leader's network controller moves `requested-chassis` to match, the
+  same drift path as a missing binding (14-clustering.md §11.5 step 4),
+  and the launch waits for `ovn_installed` as usual. Until it moves, the
+  port is bound nowhere, so a NIC never has two live bindings.
+- **Stickiness:** a NIC's backend does not change while the VM runs
+  (decision 8); the next placement or start may choose again.
 
-`install_ovn {profile, confirm}` (op, §13):
+### 8.5 Rules
 
-- Profile `distro`: install `ovn-central` and `ovn-host` (Ubuntu/Debian;
-  Fedora family **verify**) with the same non-interactive apt rules as
-  `install_ovs`. The packages' postinst starts the distro's `ovn-central`
-  and `ovn-controller`; glidex then **stops and disables** those units
-  (never uninstalls them) **only if** they have no state of their own, and
-  otherwise returns `confirmation_required` naming them. It never starts
-  glidex's units against a distro NB DB.
-- Idempotent and no downgrades, with the same restart-impact confirmation
-  as `install_ovs`.
-- Version policy: §8.8.
+- **Never a gateway** (decision 15): the DPU chassis is never in the
+  edge's or a VPC router's HA chassis group. A DPU NIC's external traffic
+  crosses Geneve to a gateway node, as any NIC's, and is metered there
+  (14-clustering.md D22).
+- **Network modes:** `isolated` and `nat` cluster networks. A `provider`
+  network's `localnet` port needs bridge mappings on the DPU to a bridge
+  that holds its uplink; v1 refuses the DPU backend on one
+  (`invalid_network`, O18).
+- **Security groups** (port groups and ACLs) are later work in the
+  cluster (14-clustering.md §18); a DPU port gets them unchanged when
+  they come, and whether their conntrack rules offload is O5.
 
-### 8.3 Listeners and PKI
+### 8.6 Trust
 
-| Endpoint | Where | Auth |
-|---|---|---|
-| NB | Unix socket only | filesystem permissions (root) |
-| SB, host chassis | Unix socket | filesystem permissions (root) |
-| SB, DPU chassis | `pssl:<port>:<addr>` on each address in `sb.listen`, default **only** the host side of each configured DPU management link | mutual TLS (the DPU's chassis certificate) |
+Enforcement is on the DPU (flows, offload); the **policy source** is the
+cluster's NB on the servers, which only the leader writes. On an agent
+node, host root cannot change the NB. It can still reach its own DPU's
+OVS through the agent, whose credential netd holds, so the DPU protects
+the *data path* from a compromised guest or hypervisor process, not from
+the host's root user ([11-security.md](11-security.md)). On a server,
+host root also holds the cluster CA key and the NB credential
+(14-clustering.md §12.1).
 
-**Invariant:** the SB never listens on `0.0.0.0`, on the OVS underlay, or
-on any address not named in `ovn.json`; netd refuses a configuration that
-asks for a wildcard address (`invalid_argument`) unless
-`sb.allow_wildcard=true`, which `probe` reports as a warning. Why: finding 10.
+### 8.7 When OVN or the leader is away
 
-**PKI** (private to glidex, issued in-process by netd; the `glidex-tls`
-crate's certificate code is reused where it fits, **verify**):
-
-- CA key and certificate: `/etc/glidex/ovn/pki/` (`root:root 0700`; key
-  `0600`). The CA key never leaves the host and is never pushed.
-- SB server certificate: SANs are the `sb.listen` addresses.
-- Chassis certificates: one per chassis (the host, each DPU). **A chassis
-  generates its own key and a CSR; netd signs the CSR and returns the
-  certificate** (agent ops `csr` and `install_cert`, §13), so a DPU's
-  private key never crosses the link. The DPU stores it root-only and
-  wires it into OVS (`ovs-vsctl set-ssl <key> <cert> <ca>`).
-- Validity 365 days (`pki.validity_days`); `ovn_status` reports expiry and
-  warns 30 days ahead; `ovn_rotate_certs {confirm}` re-issues and
-  reloads. Revocation is by removing the chassis from the SB and
-  re-issuing the CA only if the CA key was exposed (documented, manual).
-
-### 8.4 NB model
-
-| glidex | OVN NB |
-|---|---|
-| Network (overlay mode, §12.1) | logical switch `gx-<project>-<network>` |
-| NIC of a VM | logical switch port, `type=""`, `addresses`, `port-security` |
-| DHCP | OVN native `dhcp_options` on the switch (replaces dnsmasq on overlay networks) |
-| `vlan` | `tag_request` on the port when the network sets one |
-
-With DHCP: one `dhcp_options` row per network (`cidr`, router, lease,
-DNS) referenced from each port's `dhcpv4_options`. The CIDR is the
-network's `subnet` (required for overlay networks with DHCP).
-Port-security: MAC always; MAC+IP when the attachment pins an address.
-
-### 8.5 NB operations
-
-Run by netd with the local `ovn-nbctl` against the NB socket (never over
-the network): `ls-add --may-exist` on network create; `lsp-add
---may-exist`, `lsp-set-addresses`, `lsp-set-port-security`,
-`lsp-set-enabled` on attach; `lsp-del --if-exists` on detach; `ls-del`
-when the network goes. After a batch, `ovn-nbctl --wait=sb sync` so the
-caller knows northd has processed it. `Program` gains `OvnNbctl`,
-`OvnSbctl`, `OvnAppctl`, `OvsdbTool` (schema conversion on upgrade); no
-request can name another program.
-
-### 8.6 Chassis
-
-Each chassis registers by setting `external_ids` on its OVS
-`Open_vSwitch` record (`ovn-remote`, `ovn-encap-type=geneve`,
-`ovn-encap-ip`, `ovn-bridge-mappings`):
-
-- **Host chassis** (`glidex-ovn-controller.service`): `ovn-remote` is the
-  SB Unix socket; `ovn-encap-ip` is the host's underlay address
-  (`host_chassis.encap_ip`). If the host OVS record already carries a
-  foreign `ovn-remote` the result is `conflict` unless `adopt`.
-- **DPU chassis**: `ovn-remote` is `ssl:<host-link-address>:<port>`; set
-  by `dpu_prepare` (§9.3).
-- `dpu_probe` and `ovn_status` report each chassis and whether the SB
-  lists it. A DPU that already runs its own central (finding 12) is
-  reported as `local_ovn_central: active`; it keeps running unless
-  `dpu_prepare` is confirmed with `stop_local_central: true`, which stops
-  and disables those units (never uninstalls) and never reads or changes
-  their NB. Its OVS `ovn-remote` is repointed to the internal SB only on
-  that confirmation, because doing so strands anything the old central
-  managed.
-
-### 8.7 State, recovery, availability
-
-- **Source of truth:** netd's state DB. New tables: `overlays`
-  (network → subnet, dhcp, mtu, switch name) and `ovn_pki` (CA
-  fingerprint; issued certificates with chassis, serial, expiry);
-  `vm_ports` records already hold each port's `OvnPortSpec`. `meta`
-  gains `ovn_install` `{profile, version, at}`. Two more tables serve §9.4:
-  `dpus` (id → pinned rshim identity, last known bundle version, state
-  `ready`/`reinitializing`/`unreachable`) and `jobs` (id → op, phase,
-  start/end, log tail, result).
-- **Invariant: NB is derived.** `ovn_reconcile` (netd start, resync,
-  after any unit restart) makes the NB equal to what the records imply:
-  missing switches, ports and DHCP rows are created, tagged rows with no
-  record are **reported**, never deleted (§7.4, 09-networking.md §7.7 rule
-  4). A lost or corrupted NB DB is therefore rebuilt, not restored; the
-  SB is runtime state and is never backed up. `install_ovn` copies the NB
-  DB aside before a schema conversion (`ovsdb-tool convert`).
-- **Startup order:** units active → schemas match the installed version →
-  NB reconcile → chassis registrations checked. `glidex-netd` reports
-  READY after the reconcile, as today.
-- **If netd or the central is down:** each chassis's `ovn-controller`
-  keeps its installed flows; traffic already switched continues. No
-  attach, detach or network change succeeds (`ovn_unavailable`), the same
-  posture as "VMs survive control-plane restarts"
-  ([README.md](README.md)).
-- **Health** (`ovn_status`): unit states, listener addresses, DB sizes,
-  `ovn-northd` role (`ovn-appctl -t ovn-northd status`: active/standby),
-  NB↔SB sync (`nb_cfg` against each chassis's `hv_cfg`), chassis list,
-  certificate expiry, version.
-
-### 8.8 Versions
-
-- **Rule:** the central's OVN version must be **≥ every chassis's
-  `ovn-controller` version** (central is upgraded first). `dpu_probe`
-  reports the DPU's `ovn_version`; a DPU newer than the central is
-  `unsupported { missing: ["ovn>=<ver>"] }`.
-- Distro profile on the test pair: host archive 24.03.8, DPU 24.03.8
-  (finding 11); equal, so compatible. If the pair ever diverges, a pinned
-  source build (as for OVS, 09-networking.md §6.3) is the escape hatch; its
-  pins and checksums would live in `glidex-ovn`. Deferred until needed.
-- The DOCA bundle ships the DPU's OVN; glidex never upgrades it.
-
-### 8.9 Trust
-
-Policy enforcement is on the DPU (flows, ACLs, offload); the **policy
-source** is the NB on the host. A root user on the host can rewrite the
-NB and therefore the policy the DPU enforces, which is a weaker claim
-than "policy enforced off-host" ([11-security.md](11-security.md)): the DPU
-protects the *data path* from a compromised guest or hypervisor
-process, not from host root. Mitigations in v1: NB reachable only by
-root through a Unix socket, TLS-only SB, a private CA whose key stays on
-the host, every NB change logged with peer uid and `on_behalf_of`
-(09-networking.md §7.2). Running the central on the DPU instead, so the
-host cannot alter policy, is deferred (O9).
-
-### 8.10 External mode
-
-`ovn.mode: external` keeps the earlier model: glidex runs no OVN
-services, `ovn-nbctl` talks to `external.nb_remote`, DPU chassis use
-`external.sb_remote`. Remotes must be `ssl:` (with CA, certificate and
-key paths) or `unix:`; a `tcp:` remote is refused with `invalid_argument`
-unless `external.allow_insecure=true`, which `probe` reports as a warning.
-There is no PKI, no `install_ovn`, no host controller unit (the operator
-runs a chassis if the host fallback is wanted), and the fallback's
-host-chassis step becomes a probe-and-report. Everything in §7, §8.4–8.5
-and §11 is otherwise identical.
-
-### 8.11 Deferred
-
-Logical routers, SNAT/DNAT, gateways, floating IPs, ACLs/port groups and
-multi-chassis binding (live migration). The NB model leaves room (one
-router per project, port groups per security group). The NVIDIA doc says
-OVS-DOCA does not support the specialised `ct-ct-nat` mode; whether OVN
-NAT offloads on this build is unverified (O5).
+As for every chassis: `ovn-controller` keeps its installed flows, so
+traffic already switched continues. Placements, new logical ports and
+`requested-chassis` changes wait for a leader; a launch whose port is
+not bound starts with `NetworkReady=False/PortNotInstalled`
+(14-clustering.md §11.5).
 
 ## 9. Configuring the DPU
 
@@ -573,17 +507,16 @@ PFs; the first hardware run (D4) trims this table to what is proven.
 | `virtio_controller` (`active`/`inactive`/`missing`), `virtio_pfs`, `virtio_vfs_total`, `virtio_vfs_free` | `systemctl`, `virtnet list` |
 | `firmware` (the §9.1 parameters, current and next-boot) | `mlxconfig q` (read-only) |
 | `ovn_version`, `local_ovn_central` | `ovn-controller --version`, `systemctl is-active` |
-| `chassis` (`registered`, `name`, `remote`) | `Open_vSwitch` `external_ids`; registration is read from the internal SB on the host |
-| `ovn_cert` (present, expiry) | the DPU's certificate files |
+| `chassis` (`name`, `remote`, `sb_connected`) | `Open_vSwitch` `external_ids`, `ovn-appctl -t ovn-controller connection-status` |
+| `ovn_cert` (present, expiry, issuer fingerprint) | the DPU's certificate files |
 | `bridges` | `ovs-vsctl list Bridge` (datapath type, owned) |
 | `combinations` | which of §5.2's modes are possible now, and what's missing |
 
 Host side (`probe` extended): virtio PF present (by PCI id/driver),
 `sriov_totalvfs`, `vfio_pci`/`virtio_vfio_pci` modules, IOMMU groups
-(reuses `HostCapabilities.iommu`), `pci=realloc` on the command line, and
-the OVN fields: `ovn_central_installed`, `ovn_version`, `ovn_mode`,
-`ovn_units` (the four of §8.2), and a foreign central (`ovn-central`
-active under the distro's paths).
+(reuses `HostCapabilities.iommu`), and `pci=realloc` and the
+`virtio_pci` initcall blacklist on the command line. The host's own
+chassis is reported by `ovn_status`, as today.
 
 ### 9.3 `dpu_prepare` (confirm required)
 
@@ -607,10 +540,11 @@ nothing differs. Order, with the interruption each step causes:
    bridge step so the SF is never converted to `doca` first.
 3. Bridges with `datapath_type=doca`, uplink and representors `type=doca`
    with no options (finding 2).
-4. **Chassis identity:** `csr` on the DPU → netd signs → `install_cert`
-   (§8.3); then the OVN `external_ids` (§8.6), `ovn-remote` pointing at the
-   internal SB over the management link. With `stop_local_central: true`
-   a DPU-local central is stopped first (§8.6).
+4. **Chassis** (in a cluster only; skipped on a standalone host): with
+   `stop_local_central: true` a DPU-local central is stopped first;
+   then the node reports the DPU prepared and the leader enrols the
+   chassis (§8.3: CSR, signed certificate, `external_ids`). The step is
+   done when the DPU's `ovn-controller` is connected to the cluster's SB.
 5. Re-apply the underlay IP and routes that the restart dropped (finding
    6), from `dpu.json`'s `underlay` block. Persistence of these across a
    DPU reboot is the operator's (netplan on the DPU); glidex reports
@@ -703,8 +637,8 @@ the host.
       includes `sshd_config.d/*.conf` first and the installer appends
       `PasswordAuthentication yes` at its end, so the policy must live in a
       drop-in;
-    - the OVN CA **certificate** (public) and the DPU's intended chassis
-      name; the `glidex-dpu-agent` unit and binary from
+    - the cluster CA **certificate** (public, when the host is in a
+      cluster) and the DPU's chassis name (§8.3); the `glidex-dpu-agent` unit and binary from
       `reinit.agent_package`, enabled by creating the unit's
       `multi-user.target.wants` link (no `systemctl` in the chroot is
       assumed).
@@ -749,13 +683,13 @@ resumes.
 | # | Phase | What happens | On failure |
 |---|---|---|---|
 | 1 | `preflight` | the §9.4.1 device checks; BFB checksum; no running tenants; `rshim` service active; disk space for the log; record the DPU's current facts (`bfver`, `mlxconfig` values, `dpu_probe`) into the job as a before-picture | job fails, DPU untouched |
-| 2 | `quiesce` | detach every port on this DPU in netd (hypervisors are already stopped); remove the DPU's chassis from the internal SB (`chassis-del`, tagged by its recorded name); mark the DPU `reinitializing` so §6's health check says `dpu_unavailable` and `Auto` networks fall back (§11) or refuse | roll the markers back; job fails |
+| 2 | `quiesce` | detach every port on this DPU in netd (hypervisors are already stopped); the leader deletes the DPU's chassis (`<node>-dpu`) from the cluster's SB; mark the DPU `reinitializing` so §6's health check says `dpu_unavailable` and `auto` networks fall back (§11) while `dpu` networks refuse | roll the markers back; job fails |
 | 3 | `install` | `bfb-install -r <dev> -c <bf.cfg> -b <path>`; typically **about 10 minutes** (O15); progress streamed from `/dev/rshim0/misc` (`DISPLAY_LEVEL` 2) and the `console` device into the job log (tail kept, 64 KiB); a hard timeout of `timeout_secs` | on timeout or a nonzero exit: job `failed`, DPU left as is, **no automatic retry**; the console tail is in the job |
 | 4 | `wait` | the `console` device shows the boot sequence; wait for the `DPU is ready` message, the management link (`tmfifo_net0`) and the DPU's SSH port; budget 15 min after `bfb-install` returns | `failed`, DPU in an unknown state; `dpu_probe` reports it `unreachable` |
 | 5 | `bootstrap` | connect **once** over SSH with netd's bootstrap key (the only SSH use in this design; decision 2 otherwise applies) and run the agent's one-time `enroll`: the agent generates its server key and a CSR, netd signs it, and the agent starts listening with mutual TLS (§10.2); then remove the bootstrap key from the DPU and verify the agent answers `hello` over TLS | the bootstrap key is removed even on failure; the job fails with the step that broke |
 | 6 | `prepare` | run `dpu_prepare` (§9.3) with `confirm` carried from the job: hugepages, `doca-init`, `doca` bridges and ports, chassis certificate and `ovn-remote`, underlay address | `failed`; `dpu_prepare` is idempotent and can be re-run on its own |
-| 7 | `verify` | `dpu_probe` must report no missing item that the pre-install picture did not already list; the chassis registers in the internal SB; the agent reports the same bundle version as the BFB's | `failed` with the missing items |
-| 8 | `release` | clear `reinitializing`; `ovn_reconcile` and the §7.4 port reconcile run; event `DpuReinitialized` | – |
+| 7 | `verify` | `dpu_probe` must report no missing item that the pre-install picture did not already list; in a cluster, the chassis is enrolled again and connected to the SB (§8.3); the agent reports the same bundle version as the BFB's | `failed` with the missing items |
+| 8 | `release` | clear `reinitializing`; the §7.4 port reconcile runs; event `DpuReinitialized` | – |
 
 A **completed** job leaves the DPU as `dpu_prepare` would, with a fresh
 chassis identity and certificate. A **failed** job never retries by itself,
@@ -768,7 +702,7 @@ an admin runs `dpu_reinit` again or clears the mark
 | Survives | Lost |
 |---|---|
 | `mlxconfig` (firmware) settings, to be verified (O13) | all DPU OS state, including the agent's keys and a DPU-local OVN central's data |
-| host-side state: netd DB, internal NB/SB, the CA and its key, `dpu.json`, VF configuration on the host | the DPU chassis identity (a new certificate is issued; the old chassis row is deleted in `quiesce`) |
+| host-side state: netd DB, `dpu.json`, VF configuration on the host; the cluster's NB, SB and CA, on the servers | the DPU chassis identity (a new certificate is issued; the old chassis row is deleted in `quiesce`) |
 | the host's VMs (stopped ones keep their records) | DOCA/OVS settings applied by `dpu_prepare` until phase 6 re-applies them |
 
 Cost: about **10 minutes** for the install on this card (operator
@@ -787,18 +721,8 @@ if the host's default route goes through a function of this DPU.
 
 ### 10.1 Host configuration
 
-`/etc/glidex/ovn.json` (`root:root 0644`; no secrets, key material is
-under `pki.dir`). Missing file = defaults; an unreadable or unparseable
-file stops netd at startup, as with `netd.json`.
-
-```json
-{ "mode": "internal",
-  "profile": "distro",
-  "sb":  { "listen": ["<host-side-dpu-link-address>:6642"], "allow_wildcard": false },
-  "pki": { "dir": "/etc/glidex/ovn/pki", "validity_days": 365 },
-  "host_chassis": { "enabled": true, "encap_ip": "<host-underlay-address>", "bridge": "br-int" },
-  "external": { "nb_remote": null, "sb_remote": null, "ca": null, "cert": null, "key": null, "allow_insecure": false } }
-```
+There is no OVN file of this module's own: the SB remotes, the CA and
+the host's chassis are the cluster's (14-clustering.md §10.2, §11.3).
 
 `/etc/glidex/dpu.json` (`root:root 0600`):
 
@@ -822,10 +746,10 @@ file stops netd at startup, as with `netd.json`.
 `rshim` and `reinit` are needed only for §9.4; without them `dpu_reinit`
 returns `unsupported { missing: ["dpu.reinit"] }`.
 
-A missing `dpu.json` means "no DPU" (backend `Dpu` is unavailable, `Auto`
-falls back). v1 supports exactly one DPU entry per host; the list shape
+A missing `dpu.json` means "no DPU" (the DPU backend is unavailable;
+`auto` networks use the host). v1 supports exactly one DPU entry per host; the list shape
 is for later. The agent channel's own certificates (`tls`) are separate
-from the OVN PKI: they authenticate netd to the agent, and are created
+from the chassis certificate of §8.3: they authenticate netd to the agent, and are created
 by the operator at first setup (or by `gxctl dpu enroll`, **verify**
 O10).
 
@@ -842,7 +766,7 @@ O10).
 - Programs: an allow-list enum like `Program` (`OvsVsctl`, `OvsAppctl`,
   `Virtnet`, `Ip`, `Devlink`, `Mlxconfig` (query only), `Systemctl`, and
   sysfs writes for hugepages), vector arguments, no shell. It has **no**
-  OVN central programs: all NB/SB work happens on the host. Certificate
+  OVN central programs: all NB/SB work happens on the cluster's servers. Certificate
   signing requests are generated in-process (no `openssl`).
 - First start after a reinstall: the agent has no certificate and
   listens for nothing until `enroll` (§9.4.3 phase 5) completes. `enroll`
@@ -853,40 +777,38 @@ O10).
 - Version handshake like `hello`; a protocol or agent version older than
   netd's is `unsupported`.
 
-## 11. Host fallback (OVS-DPDK)
+## 11. Host fallback: the node's own chassis
 
-Applies to **overlay** networks with `backend: auto` and `fallback: host`
-(§12.1), and to overlay networks with `backend: host` on hosts with no
-DPU. The VM gets today's vhost-user port on a host `netdev` bridge
-(09-networking.md §9, combination B), and the host chassis (§8.6) puts that
-port on the same logical switch as DPU-backed NICs: the glidex-owned
-`ovn-controller` and the internal central are what make this work, and no
-external service is required.
+Applies to cluster networks with `backend: auto` when the node's DPU is
+unavailable at placement or at launch (§8.4). The NIC gets the port it
+would have on a node with no DPU: a tap, or a vhost-user port where the
+node's `br-int` is on the `netdev` datapath, on the host's `br-int` with
+the same logical port. The host's chassis is the node's own, which the
+cluster already runs ([14-clustering.md §11.3](14-clustering.md#113-hosts-joining-ovn-netd));
+nothing is added for the fallback.
 
 Requirements, probed and reported when missing:
 
-- Host OVS with DPDK and `dpdkvhostuserclient` (existing `probe`).
-- The internal OVN (§8.2): `ovn-host` installed through `install_ovn`;
-  `host_chassis.enabled`.
-- A host `br-int` with `datapath_type=netdev` (created by netd, tagged),
-  chassis `external_ids` (§8.6). **Verify** O6: the host and DPU underlays
-  must reach each other, and with a bridged host NIC the underlay address
-  is the bridge's.
-- MTU: the host path must carry the same Geneve overhead as the DPU path.
+- The node is a chassis of the cluster's OVN, as every cluster node is.
+- For vhost-user: `spec.br_int_datapath` resolves to `netdev`
+  (14-clustering.md §11.6). A tap needs nothing more.
+- MTU: both chassis use the cluster's guest MTU, so a NIC's MTU is the
+  same on either backend.
 
 Behaviour differences the control plane surfaces (`status.nics[].backend`):
 
 | | DPU | Host fallback |
 |---|---|---|
-| Switching CPU | DPU eswitch + Arm | host PMD cores |
-| Hugepages | on the DPU | host (09-networking.md §0 finding 9) |
+| Switching CPU | DPU eswitch + Arm | host (kernel datapath or PMD cores) |
+| Hugepages | on the DPU | host, for vhost-user only (09-networking.md §0 finding 9) |
 | Offload | hardware | none |
 | Data path under a compromised host | enforced off-host | enforced on the host |
 
-(The policy source is the host in both cases, §8.9.) The last row is why
-fallback is **opt-in per network** (`fallback: host`, default `none`): it
-silently weakens isolation. A VM launched on fallback gets event
-`BackendFallback` and condition `NetworkDegraded=True/HostBackend`.
+(The policy source is the cluster's NB in both cases, §8.6.) The last
+row is why fallback is **opt-in per network** (`backend: auto`; the
+default is `host`, and `dpu` never falls back): it silently weakens
+isolation. A VM launched on fallback gets event `BackendFallback` and
+condition `NetworkDegraded=True/HostBackend`.
 
 Mixed VMs (one NIC on each backend) are allowed. A NIC's backend does
 not change at runtime (decision 8); after the DPU recovers, a restart
@@ -898,27 +820,25 @@ the host backend so an operator can find them.
 ### 12.1 Models
 
 ```rust
-pub enum NetworkMode { Nat, Bridged, Isolated, Overlay }   // + Overlay
-
 pub struct Network {
     /* existing */
-    pub backend: BackendPolicy,            // default Auto; only meaningful for Overlay
-    pub fallback: FallbackPolicy,          // None (default) | Host
-    pub overlay: Option<OverlayConfig>,    // Overlay mode only
+    pub backend: BackendPolicy,            // Host (default) | Dpu | Auto; cluster networks only
 }
-pub struct OverlayConfig { pub subnet: Ipv4Net, pub dhcp: bool, pub mtu: Option<u16> }
+pub enum BackendPolicy { Host, Dpu, Auto }
 ```
 
-`port_type` is derived: DPU backend → `DpuVirtio`; host → `VhostUser`.
-`NicBinding.binding` gains `Vfio { bdf }`
-(`crates/glidex-control-plane/src/models.rs:186`).
+No new network mode: `backend` applies to `isolated` and `nat` cluster
+networks (§8.5). The default `host` keeps existing networks as they are.
+`port_type` is derived: DPU backend → `DpuVirtio`; host → `Tap` or
+`VhostUser`, as today. `NicBinding.binding` gains `Vfio { bdf }`
+(`crates/glidex-control-plane/src/models.rs`), and a NIC's placement and
+`status.nics[]` gain `backend`.
 
-Validation at `create_vm`: an `Overlay` network needs the internal OVN
-(or an external one) to be *possible*, and the matching backend to be
-possible (DPU configured, or host DPDK present when `backend` is `Host`
-or `fallback: host`); otherwise `400 invalid_network` with
-`details.missing`. Memory: a `Vfio` NIC does **not** force shared guest
-memory; a host vhost-user NIC does (unchanged).
+Validation: setting `backend: dpu` or `auto` on a node network, a
+`provider` network, or any network of a standalone host is
+`400 invalid_network` with `details.missing`. Memory: a `Vfio` NIC does
+**not** force shared guest memory; a host vhost-user NIC does
+(unchanged).
 
 ### 12.2 Hypervisors
 
@@ -931,87 +851,87 @@ memory; a host vhost-user NIC does (unchanged).
   (`GET /pci-devices` shows `in_use: "dpu port <vm>/<nic>"`), so a user
   cannot also hand it to a VM with `attach_device`.
 
-### 12.3 Network controller
+### 12.3 Network controller and scheduler
 
-`controller/network.rs` ([12-reconciliation.md §10.3](12-reconciliation.md#103-network))
-gains, for overlay networks: `ensure_overlay` (switch and DHCP options on
-the internal NB), conditions `OvnReady`, `DpuReady`, `ChassisRegistered`,
-and phase `degraded` with the missing piece named (`netd_unavailable`
-when netd is away, as today). A deleted network removes its tagged switch
-**only when no VM uses it**, as for NAT.
+- **Node status** gains `dpus: [{id, state, vfs_total, vfs_free,
+  chassis, sb_connected}]`, from netd's `dpu_probe` and the health check
+  of §6.
+- **Scheduler:** a NIC on a `dpu` network needs a node whose DPU is
+  healthy with a free VF; an `auto` network prefers one and accepts any
+  node. VFs are claimed per node at placement and freed with the VM,
+  like VFIO claims
+  ([22-host-topology.md](22-host-topology.md)), and its explanation names
+  the DPU when that is why a node was refused.
+- **Network controller** (`controller/network.rs`): sets each logical
+  port's `requested-chassis` from the NIC's backend, follows a node's
+  fallback (§8.4), and enrols each prepared DPU's chassis (§8.3).
+  Conditions on the node: `DpuReady`, `DpuChassisRegistered`.
+- The control plane's "VFIO conflict" list gains each DPU NIC's `bdf`
+  (§12.2).
 
 ### 12.4 REST and CLI
 
 | Method + path | netd op |
 |---|---|
-| `GET /ovn` | `ovn_status` |
-| `POST /ovn/install {profile, confirm?}` | `install_ovn` |
-| `POST /ovn/rotate-certs {confirm?}` | `ovn_rotate_certs` |
-| `GET /dpus` | `dpu_probe` |
-| `POST /dpus/{id}/prepare {confirm?, stop_local_central?}` | `dpu_prepare` |
-| `POST /dpus/{id}/reinit {confirm?}` | `dpu_reinit` (202 with a job id; 409 `confirmation_required` first) |
-| `GET /dpus/{id}/jobs/{job}` · `DELETE …/{job}` | `dpu_job` (status; `abandon`) |
-| `GET /dpus/{id}/ports` | `dpu_list_ports` |
-| `POST /networks {mode:"overlay", subnet, dhcp, backend, fallback}` | `ensure_overlay` + store |
-| `POST /vms` with `networks` | validation only |
+| `GET /nodes/{id}/dpus` | `dpu_probe` |
+| `POST /nodes/{id}/dpus/{dpu}/prepare {confirm?, stop_local_central?}` | `dpu_prepare` |
+| `POST /nodes/{id}/dpus/{dpu}/reinit {confirm?}` | `dpu_reinit` (202 with a job id; 409 `confirmation_required` first) |
+| `GET /nodes/{id}/dpus/{dpu}/jobs/{job}` · `DELETE …/{job}` | `dpu_job` (status; `abandon`) |
+| `GET /nodes/{id}/dpus/{dpu}/ports` | `dpu_list_ports` |
+| `POST /networks` · `PATCH /networks/{id}` with `backend` | validation (§12.1), then the network controller |
 
-`gxctl`: `ovn status`, `ovn install [--force]`, `dpu status`,
-`dpu prepare [--stop-local-central] [--force]`,
-`dpu reinit <id> [--force]` (prints the job, then follows it until a phase
-fails or `release` completes; Ctrl-C detaches and leaves the job running),
-`dpu job <id> <job>`,
-`network-add <name> --overlay --subnet s [--dhcp] [--backend auto|dpu|host] [--fallback host]`.
-UI: an **OVN** and a **DPU** panel on the Networking page (probe,
-missing items, install/prepare with the confirmation dialog), a backend
-column on NICs.
+A standalone host's node id is `local`, as for its other node routes.
+`gxctl`: `dpu status [--node n]`, `dpu prepare [--node n]
+[--stop-local-central] [--force]`, `dpu reinit <id> [--node n] [--force]`
+(prints the job, then follows it until a phase fails or `release`
+completes; Ctrl-C detaches and leaves the job running),
+`dpu job <id> <job>`, and `--backend host|dpu|auto` on the commands that
+create and change cluster networks.
+UI: a **DPU** panel on the Node page (probe, missing items, prepare and
+reinit with the confirmation dialog, the chassis), a backend choice on
+cluster networks, and a backend column on NICs.
 
 Error mapping adds: `dpu_unavailable` → 503 `dpu_unavailable`;
-`dpu_capacity` → 409 `dpu_capacity`; `ovn_unavailable` → 503
-`ovn_unavailable`; `dpu_port_timeout` → 502 `netd_error`.
+`dpu_capacity` → 409 `dpu_capacity`; `dpu_port_timeout` → 502
+`netd_error`.
 
 ## 13. Protocol additions
 
-New ops on the **full** sockets only (never the status socket); `dpu_probe`
-and `ovn_status` are read-only but return tenant-adjacent state:
+New ops on the **full** sockets only (never the status socket);
+`dpu_probe` is read-only but returns tenant-adjacent state:
 
 | Op | Args → result |
 |---|---|
-| `install_ovn` | `{profile, confirm}` → `InstallReport` (`confirmation_required` first when units or state exist) |
-| `ovn_status` | – → `OvnStatus` |
-| `ovn_reconcile` | – → `ReconcileReport` |
-| `ovn_rotate_certs` | `{confirm}` → `RotateReport` |
 | `dpu_probe` | `{id?}` → `DpuCapabilities` |
 | `dpu_prepare` | `{id?, confirm, stop_local_central?}` → `PrepareReport` (`ConfirmationRequired` first) |
-| `dpu_list_ports` | – → records with live DPU + NB state |
+| `dpu_list_ports` | – → records with live DPU state |
 | `dpu_reinit` | `{id?, confirm}` → `{job}` (`ConfirmationRequired` first; §9.4) |
 | `dpu_job` | `{job, abandon?}` → `JobStatus {phase, state, log_tail, result?}` |
-| `ensure_overlay` | `{network, subnet, dhcp, mtu?}` → `OverlayState` |
-| `delete_overlay` | `{network}` → – |
+| `dpu_chassis_csr` | `{id}` → `{csr}` (the agent's, §8.3) |
+| `ensure_ovn_chassis` / `leave_ovn` / `ovn_status` | gain `target: host (default) \| {dpu: id}`; the DPU target is relayed to the agent, with the signed certificate on `ensure_ovn_chassis` |
 | `attach_vm_port` / `detach_vm_port` / `release_vm` | extended as in §5, no new op names |
 
 Agent-side ops (netd → agent, not on netd's sockets): `hello`, `probe`,
-`list_ports`, `ensure_vf`, `attach_rep`, `detach_rep`, `prepare`, `csr`,
-`install_cert`.
+`list_ports`, `ensure_vf`, `attach_rep`, `detach_rep`, `prepare`,
+`chassis` (the §8.3 settings), `leave_ovn`, `csr`, `install_cert`.
 
-New error codes: `dpu_unavailable`, `dpu_capacity`, `ovn_unavailable`,
-`dpu_port_timeout`. `PROTOCOL_VERSION` stays 1: all additions are optional
-fields or new ops, and an older netd answers an unknown op with
-`protocol_error`. Per-op policy ([09-networking.md §7.2](09-networking.md#72-authorization))
-applies; the default `glidex-admin: ["*"]` covers them, and the default
-`glidex` policy gets `ovn_status`, `dpu_probe`, `dpu_list_ports`,
-`attach_vm_port`, `detach_vm_port`, `release_vm`, `ensure_overlay`,
-`delete_overlay`, `ovn_reconcile`, `dpu_job` (status only) but **not**
-`install_ovn`, `ovn_rotate_certs`, `dpu_prepare` or **`dpu_reinit`** (they
-install packages, re-issue certificates, restart OVS, or erase the DPU).
-New error codes also include `dpu_job_failed` (a job's terminal state
-when it is polled as an error) and `host_interface_in_use` is reused by
-§9.4.4.
+New error codes: `dpu_unavailable`, `dpu_capacity`, `dpu_port_timeout`,
+`dpu_job_failed` (a job's terminal state when it is polled as an error);
+`host_interface_in_use` is reused by §9.4.4. `PROTOCOL_VERSION` stays 1:
+all additions are optional fields or new ops, and an older netd answers
+an unknown op with `protocol_error`. Per-op policy
+([09-networking.md §7.2](09-networking.md#72-authorization)) applies; the
+default `glidex-admin: ["*"]` covers them, and the default `glidex`
+policy gets `dpu_probe`, `dpu_list_ports`, `dpu_chassis_csr`,
+`attach_vm_port`, `detach_vm_port`, `release_vm`, `dpu_job` (status
+only) and the DPU target of the chassis ops, but **not** `dpu_prepare` or
+**`dpu_reinit`** (they restart OVS or erase the DPU).
 
 ## 14. Milestones
 
 Each is one PR or a short series. Ignored e2e tests need
-`GLIDEX_TEST_DPU=1` (hardware) or `GLIDEX_TEST_OVN=1` (root host with OVN
-packages); CI runs unit and fake-agent tests.
+`GLIDEX_TEST_DPU=1` (hardware, on a host that is a one-server cluster
+at least); CI runs unit, fake-agent and cluster tests.
 
 **D0 comes first and gates every hardware milestone.** Everything in §9
 was worked out by hand, in sequence, on DPUs that already carried other
@@ -1027,13 +947,13 @@ D0's findings are in §0.**
 |---|---|---|
 | **D0** hardware bring-up (no glidex code; **in progress**: acceptance (1) met (findings 16–18); (3) **met** in run 5 (findings 19-28); (2) **half met**: firmware activated, the virtio-net PF is served (findings 29-31), still to record `mlxconfig` after a reinstall; (4) pending: VF enablement and the representor bridge) | Operator-run scripts and a runbook under `scripts/dpu/` (next to `scripts/dev/`): `dpu-probe.sh` collects every §9.2 field as JSON; `dpu-prepare.sh` is the §9.3 sequence as idempotent shell with `--dry-run`, per-step timing, and the restart/underlay handling; `dpu-reinit.sh` generates the §9.4.1 `bf.cfg` and drives `bfb-install -r … -c … -b …`, capturing the rshim `console`. Run on a DPU that may be wiped, from a stock BFB. Scripts hold no secrets and take paths and keys as arguments. | Findings recorded in §0 (and the open questions closed): (1) from a freshly reinstalled DPU, `dpu-prepare.sh` alone reaches a probe with no gaps and a `doca` bridge carrying traffic, and a second run changes nothing; (2) **O13**: stage the §9.1 firmware values (operator decision), follow the cold-reset procedure, record `mlxconfig q`, reinstall with `WITH_NIC_FW_UPDATE=no`, record it again; (3) the `bf.cfg` path: where `authorized_keys` and the agent unit must go under `/mnt/`, unit enablement by symlink, key-only first login and the `DPU is ready` gate (**O17**), the console markers a job can key on, the measured duration (**O15**), and which devices the BFB writes (**O16**); (4) with firmware staged, **O1–O3** (representor bridge, `virtnet` flags, minimal parameter set); (5) every command's raw output saved as fixtures under `crates/glidex-dpu/tests/fixtures/`, scrubbed of addresses, MACs and identifiers, as the canned inputs for D1's probe-parsing tests. |
 | **D1** `glidex-dpu` core | types, `Exec`/`RecordingExec`, command builders (`ovs-vsctl`, `virtnet`), probe parsing, VF allocator | Unit tests: exact commands per port; idempotency flags; `type=doca` with no options; refusal of `dpdk`/`netdev` on a DOCA DPU; probe parsed from canned output of the test DPU; allocator reuse after free. |
-| **D2** `glidex-ovn`: the internal instance | `install_ovn` (distro profile), four unit files, listeners, private CA and chassis-CSR signing, NB model and reconciler, `ovn_status`, host chassis | Unit tests: rendered units and `ovsdb-server` arguments; wildcard SB listener refused; CA/cert issuing and SAN contents; reconciler plan from records (create, report-untagged, rebuild-from-empty); version rule (§8.8). Ignored e2e (`GLIDEX_TEST_OVN`, host OVS-DPDK, **no DPU**): an overlay network with two VMs on host vhost-user ports ping each other through the internal OVN; kill and recreate the NB DB and the same ping works again after `ovn_reconcile`. |
-| **D3** agent + netd backend | agent binary, mTLS, allow-list, `Backend` trait, `HostOvsBackend` adapter, backend selection and stickiness, `dpu.json` | Fake-agent tests: every §6 table row; recorded backend wins on re-attach; agent down → `dpu_unavailable`/fallback; unparseable `dpu.json` or `ovn.json` stops netd. |
-| **D4** DPU attach (hardware; needs D0) | §7.1 end to end on one DPU, `dpu_probe`, DPU chassis cert enrolment | Ignored e2e (`GLIDEX_TEST_DPU`): a VM gets a virtio NIC, a DHCP address from OVN, pings a host-backed VM on the same logical switch; detach leaves no tagged rows; the DPU's private key never appears on the host. **Also settles O1–O3** and trims §9.1. |
+| **D2** the DPU chassis in the cluster's OVN | `ensure_ovn_chassis`/`leave_ovn`/`ovn_status` with a DPU target (relayed to a fake agent), CSR signing by the leader with the cluster CA, the version rule, tombstone clean-up of `<node>-dpu`, `requested-chassis` by backend, the backend at placement and the follow-up after a node's fallback | Unit tests: the agent's `external_ids` and `br-int` for a DPU target; a signed certificate's subject and issuer; a DPU newer than `ovn-northd` not enrolled; `requested-chassis` per backend and after a reported fallback. Cluster tests (`cluster_tests.rs`, fake agent): a node reporting a prepared DPU gets its chassis enrolled; removing the node deletes both chassis; the DPU's key never reaches the control plane. |
+| **D3** agent + netd backend | agent binary, mTLS, allow-list, `Backend` trait, `HostOvsBackend` adapter, backend selection and stickiness, `dpu.json` | Fake-agent tests: every §6 table row; recorded backend wins on re-attach; agent down → `dpu_unavailable`/fallback; an unparseable `dpu.json` stops netd. |
+| **D4** DPU attach (hardware; needs D0) | §7.1 end to end on one DPU, `dpu_probe`, the DPU chassis enrolled on real hardware | Ignored e2e (`GLIDEX_TEST_DPU`, a one-server cluster): a VM gets a virtio NIC, a DHCP address from the cluster's OVN, pings a host-backed VM on the same logical switch and, through `gx-edge`, an address outside; detach leaves no tagged rows; the DPU's private key never appears on the host. **Also settles O1–O3** and trims §9.1. |
 | **D5** `dpu_prepare` (needs D0) | §9.3 incl. hugepage persistence, `stop_local_central` | Unit tests per step; e2e: from a stock DPU (firmware already set, local central running) to a probe with no gaps; restart interruption reported; underlay re-applied; DPU-local central stopped only with the flag. |
 | **D5b** `dpu_reinit` (needs D0) | §9.4: device identity checks, BFB checksum, `bf.cfg` generation, `bfb-install` under a transient unit, the eight phases, jobs table, admin-only policy, `gxctl dpu reinit` | Unit tests with `RecordingExec`: exact `bfb-install` arguments; refusal on rshim mismatch, bad checksum, running tenant, concurrent job, default route through the DPU; `bf.cfg` contains a public key and the CA certificate and **no** password or private key; each phase's failure rule; a netd restart mid-install reattaches instead of starting a second install. Ignored e2e (`GLIDEX_TEST_DPU_REINIT=1` **and** an explicit DPU id; never in CI): from a running DPU to a verified `release`, with the timing recorded for O15. |
-| **D6** control plane + UI | overlay networks, `Vfio` bindings in both hypervisors, controller conditions, REST/CLI/UI | API tests against a fake netd+agent; hypervisor argument tests (VFIO NIC) for CH and QEMU. |
-| **D7** fallback integration | `BackendFallback`, `NetworkDegraded`, mixed VMs, rollback on recovery | e2e: stop the agent, launch a VM on a `fallback: host` network, ping a DPU-backed VM on the same switch; a `fallback: none` network refuses. |
+| **D6** control plane + UI | `backend` on cluster networks, the DPU in node status and the scheduler, VF claims, `Vfio` bindings in both hypervisors, conditions, REST/CLI/UI | API tests against a fake netd+agent; scheduler tests for `dpu` and `auto`; hypervisor argument tests (VFIO NIC) for CH and QEMU. |
+| **D7** fallback integration | `BackendFallback`, `NetworkDegraded`, mixed VMs, rollback on recovery | e2e: stop the agent, launch a VM on an `auto` network, it binds to the host's chassis and pings a DPU-backed VM on the same switch; a `dpu` network refuses. |
 | **D8** (later) vhost-user via `vfe` | §5.2 | after O4 is answered. |
 
 ## 15. Open questions (verify on hardware)
@@ -1045,18 +965,20 @@ D0's findings are in §0.**
 | O3 | **Partly answered (findings 29-31):** `pci=realloc`, the `virtio_pci` initcall blacklist and no stock SF are needed; VF enablement is still open. The minimal firmware and host-kernel set for a static PF with VFs and no hotplug (`pci=realloc`, MSI-X counts); how many VFs the B3140L allows (`PF_TOTAL_SF` ceiling; the test card reported 32 external SFs at default). |
 | O4 | Where `vfe-vhostd`/`vfe-vhost-cli` come from for this host, and which versions. |
 | O5 | Whether OVN SNAT/DNAT and conntrack ACLs offload on OVS-DOCA 3.5 (the doc excludes `ct-ct-nat`). |
-| O6 | Underlay reachability and MTU between the host chassis and a DPU chassis on the same host (§11). |
+| O6 | Underlay reachability and MTU between the DPU chassis and every other chassis, including its own host's, whose traffic crosses the DPU's eswitch (§8.3). |
 | O7 | Whether VF state survives a controller restart (`recovery=1` default) and how netd should rediscover VFs after one. |
 | O8 | Migration: the guide documents VFIO migration (kernel 6.13+, QEMU 9.1+, `virtio_vfio_pci`) and a vhost-user path; the test host has kernel 6.8 and QEMU 8.2.2. Revisit if glidex ever gets multi-host. |
-| O9 | Running the central on the DPU instead of the host (§8.9): memory and CPU cost on the DPU's 8 Arm cores and 16 GB, and who restarts it. |
+| O9 | **Dropped** (decision 5, revised): the central is the cluster's; nothing runs one on the DPU. |
 | O10 | Enrolling the agent channel (`dpu.json` `tls`): operator-issued certificates at first setup vs a `gxctl dpu enroll` flow over the rshim/management link. |
-| O11 | Whether `glidex-tls`'s certificate code can issue CSR-signed client certificates with the SANs and key usages OVN requires, or `glidex-ovn` needs its own issuer. |
-| O12 | How the host's OVS (which reports `3.5.0052`, a DOCA-host build) behaves as an OVS-DPDK vhost-user host for §11: whether it has `dpdkvhostuserclient` and DPDK, and how it coexists with `glidex-ovn-controller`. |
+| O11 | Whether the cluster CA's issuing code (`glidex-tls`) can sign a CSR from the DPU with the subject and key usages OVN requires, or needs a CSR path added. |
+| O12 | Whether the host's OVS (which reports `3.5.0052`, a DOCA-host build) can run the node's `br-int` on the `netdev` datapath with `dpdkvhostuserclient`, for vhost-user fallback NICs (§11); taps need nothing. |
 | O13 | **Half answered (findings 28, 31).** Staged (`Next Boot`) `mlxconfig` values **survive** a BFB reinstall with `WITH_NIC_FW_UPDATE=no`. Still open: whether they survive **after** they have been activated by a cold reset, and whether any bundle step resets active values. Test after the operator's cold reset (host first, then the BlueField). |
 | O14 | **Resolved (findings 26-28).** `bf.cfg` through `bfb-install -c`; the `bfb_modify_os` hook writes a first-boot script as vendor-data; cloud-init's `scripts_vendor` runs it once per instance; the account it creates authenticates by key. |
 | O15 | **Answered**: about **5 minutes** for the install (310 s and 304 s), plus the DPU's first boot; the earlier ~10 minute estimate was for the whole cycle. Findings 19. |
 | O16 | **Answered (findings 19, 28)**: the installer erases both `/dev/mmcblk0` and `/dev/nvme0n1`; the OS lands on `nvme0n1` (`p1` EFI, `p2` root) as `device=` says; `BOOT_MODE` reads `1 (emmc)` before and after. |
 | O17 | **Answered (finding 28)**: the `glidex` account (locked password, key only) accepts a non-interactive SSH session as soon as the first-boot script has run, 115 s after `bfb-install` returned; no expiry or `DPU is ready` interference. |
+| O18 | Provider (`localnet`) networks on a DPU chassis: which DPU bridge their physnets map to (the uplink's `ovsbr-phy`, or a bridge per physnet), and whether a VLAN-tagged `localnet` port offloads (§8.5). |
+| O19 | Whether the SB's `ovn-controller` RBAC role accepts a chassis whose certificate subject is `<node>-dpu`, as it does for `<node>` (§8.3). |
 
 ## Appendix A: DPU commands verified on the test DPU
 
