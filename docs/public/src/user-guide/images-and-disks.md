@@ -69,7 +69,10 @@ optional **Name**.
 
 Give the sha256 whenever you can: without it the image is stored but
 listed as *unverified*. URLs must be `https://` and, unless the operator
-allows it, on a public address.
+allows it, on a public address. A downloaded qcow2 that names a backing
+file or an external data file is refused, because those name paths on
+the host: flatten it first (`qemu-img convert -O qcow2 in.qcow2
+out.qcow2`).
 
 ### Listing, retrying and deleting
 
