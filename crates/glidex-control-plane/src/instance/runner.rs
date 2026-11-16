@@ -160,7 +160,7 @@ impl Runner {
             Runner::Systemd(s) => s
                 .manager_call("StopUnit", &(unit_name(vm_id), "replace"))
                 .await
-                .map(|_: zbus::zvariant::OwnedObjectPath| ()),
+                .map(|_: zbus::OwnedObjectPath| ()),
             Runner::Detached(_) => signal_verified(shim, nix::sys::signal::Signal::SIGTERM),
         }
     }
@@ -247,8 +247,8 @@ impl SystemdRunner {
 
     async fn manager_call<B, R>(&self, method: &str, body: &B) -> Result<R, RunnerError>
     where
-        B: serde::Serialize + zbus::zvariant::DynamicType,
-        R: for<'d> zbus::zvariant::DynamicDeserialize<'d>,
+        B: serde::Serialize + zbus::DynamicType,
+        R: for<'d> zbus::wire::DynamicDeserialize<'d>,
     {
         let c = self.connection().await?;
         match manager(&c).await?.call(method, body).await {
@@ -283,7 +283,7 @@ impl SystemdRunner {
             .receive_signal("JobRemoved")
             .await
             .map_err(RunnerError::from)?;
-        let job: zbus::zvariant::OwnedObjectPath = mgr
+        let job: zbus::OwnedObjectPath = mgr
             .call("StartUnit", &(unit_name(vm_id), "fail"))
             .await
             .map_err(RunnerError::from)?;
@@ -291,7 +291,7 @@ impl SystemdRunner {
             while let Some(msg) = removed.next().await {
                 if let Ok((_id, path, _unit, result)) =
                     msg.body()
-                        .deserialize::<(u32, zbus::zvariant::OwnedObjectPath, String, String)>()
+                        .deserialize::<(u32, zbus::OwnedObjectPath, String, String)>()
                     && path == job
                 {
                     return Some(result);
@@ -317,7 +317,7 @@ impl SystemdRunner {
 
     async fn active(&self, vm_id: &str) -> Result<bool, RunnerError> {
         let c = self.connection().await?;
-        let path: zbus::zvariant::OwnedObjectPath = match manager(&c)
+        let path: zbus::OwnedObjectPath = match manager(&c)
             .await?
             .call("GetUnit", &(unit_name(vm_id),))
             .await
@@ -336,9 +336,9 @@ impl SystemdRunner {
             }
         };
         let unit = zbus::proxy::Builder::<zbus::Proxy>::new(&c)
-            .destination(SYSTEMD)?
-            .path(path)?
-            .interface(UNIT)?
+            .destination(SYSTEMD)
+            .path(path)
+            .interface(UNIT)
             .cache_properties(zbus::proxy::CacheProperties::No)
             .build()
             .await?;
@@ -357,10 +357,10 @@ impl SystemdRunner {
             String,
             String,
             String,
-            zbus::zvariant::OwnedObjectPath,
+            zbus::OwnedObjectPath,
             u32,
             String,
-            zbus::zvariant::OwnedObjectPath,
+            zbus::OwnedObjectPath,
         );
         let rows: Vec<UnitRow> = self
             .manager_call(
@@ -382,17 +382,11 @@ impl SystemdRunner {
     }
 }
 
-impl From<zbus::zvariant::Error> for RunnerError {
-    fn from(e: zbus::zvariant::Error) -> Self {
-        RunnerError::Failed(e.to_string())
-    }
-}
-
 async fn manager(c: &zbus::Connection) -> Result<zbus::Proxy<'static>, RunnerError> {
     Ok(zbus::proxy::Builder::<zbus::Proxy>::new(c)
-        .destination(SYSTEMD)?
-        .path(MANAGER_PATH)?
-        .interface(MANAGER)?
+        .destination(SYSTEMD)
+        .path(MANAGER_PATH)
+        .interface(MANAGER)
         .cache_properties(zbus::proxy::CacheProperties::No)
         .build()
         .await?)

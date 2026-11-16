@@ -52,34 +52,36 @@ pub fn allocate(used: &[u16]) -> Option<u16> {
 
 /// The OpenFlow rule for port `ofport` with `index`: mark its metadata
 /// requests, then switch them as usual. The cookie is the mark, so the
-/// rule is removed by it.
-pub fn flow(ofport: u32, index: u16) -> String {
+/// rule is removed by it. With `source` (the port's MAC and address, when
+/// port security is on: spec/09-networking.md §9.1), only requests that
+/// pass its checks are marked; others fall through to those checks.
+pub fn flow(ofport: u32, index: u16, source: Option<(&str, Ipv4Addr)>) -> String {
+    let source = match source {
+        Some((mac, ip)) => format!(",dl_src={mac},nw_src={ip}"),
+        None => String::new(),
+    };
     format!(
-        "cookie={mark:#x},priority=200,in_port={ofport},tcp,nw_dst={ADDRESS},tp_dst={GUEST_PORT},actions=set_field:{mark:#x}->pkt_mark,NORMAL",
+        "cookie={mark:#x},priority=200,in_port={ofport},tcp{source},nw_dst={ADDRESS},tp_dst={GUEST_PORT},actions=set_field:{mark:#x}->pkt_mark,NORMAL",
         mark = mark(index)
     )
 }
 
 /// Put `port`'s rule on `bridge` (again, after a restart of OVS: rules
 /// aren't kept).
-pub fn add_flow(exec: &dyn Exec, bridge: &str, port: &str, index: u16) -> Result<(), OvsError> {
-    let out = exec.check(&Cmd::new(
-        Program::OvsVsctl,
-        ["get", "Interface", port, "ofport"],
-    ))?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    let ofport: u32 = text.trim().parse().map_err(|_| {
-        OvsError::conflict(format!(
-            "{port} has no OpenFlow port number yet: {}",
-            text.trim()
-        ))
-    })?;
+pub fn add_flow(
+    exec: &dyn Exec,
+    bridge: &str,
+    port: &str,
+    index: u16,
+    source: Option<(&str, Ipv4Addr)>,
+) -> Result<(), OvsError> {
+    let ofport = crate::vsctl::ofport(exec, port)?;
     exec.check(&Cmd::new(
         Program::OvsOfctl,
         [
             "add-flow".to_string(),
             bridge.to_string(),
-            flow(ofport, index),
+            flow(ofport, index, source),
         ],
     ))?;
     Ok(())
@@ -170,8 +172,17 @@ mod tests {
     #[test]
     fn the_flow_marks_only_metadata_requests_from_its_port() {
         assert_eq!(
-            flow(5, 3),
+            flow(5, 3, None),
             "cookie=0x6d000003,priority=200,in_port=5,tcp,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000003->pkt_mark,NORMAL"
+        );
+        // Behind port security: only from the port's own MAC and address.
+        assert_eq!(
+            flow(
+                5,
+                3,
+                Some(("02:aa:bb:cc:dd:ee", Ipv4Addr::new(10, 88, 0, 2)))
+            ),
+            "cookie=0x6d000003,priority=200,in_port=5,tcp,dl_src=02:aa:bb:cc:dd:ee,nw_src=10.88.0.2,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000003->pkt_mark,NORMAL"
         );
     }
 

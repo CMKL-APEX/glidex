@@ -285,6 +285,14 @@ message NetworkAttachment {
   // Filled in at create time (derived from the VM id) if absent.
   optional string mac = 2;
   optional uint32 queue_pairs = 3 [json_name = "queue_pairs"];
+  // Absent: true. False takes the port-security checks off this NIC's port
+  // on a host network (spec/09-networking.md decision 19); setting it or
+  // changing it needs `setPortSecurity`.
+  optional bool port_security = 4 [json_name = "port_security"];
+  // IPv4 and IPv6 addresses or prefixes the NIC may send from besides its
+  // own (spec/09-networking.md decision 20), at most 16. Each must fit the
+  // network's subnet, and no two VMs' lists may overlap on one network.
+  repeated string allowed_addresses = 5 [json_name = "allowed_addresses"];
 }
 
 // A NIC as last seen.
@@ -296,6 +304,9 @@ message Nic {
   optional string ipv4 = 4;
   // The network's name, when the caller can see the network.
   optional string network_name = 5 [json_name = "network_name"];
+  // Whether the NIC's port is checked (spec/09-networking.md decision 19).
+  optional bool port_security = 6 [json_name = "port_security"];
+  repeated string allowed_addresses = 7 [json_name = "allowed_addresses"];
 }
 
 message Vm {
@@ -579,6 +590,9 @@ message VmChange {
   optional uint32 min_vcpus = 20 [json_name = "min_vcpus"];
   optional uint32 max_vcpus = 21 [json_name = "max_vcpus"];
   optional uint32 cpu_weight = 22 [json_name = "cpu_weight"];
+  // A new name, unique in the project. A root disk the VM made for
+  // itself is renamed with it (spec/12-reconciliation.md §7.7).
+  optional string name = 23;
 }
 
 message UpdateVmRequest {
@@ -738,6 +752,10 @@ message AttachNetworkRequest {
   optional string mac = 3;
   optional uint32 queue_pairs = 4 [json_name = "queue_pairs"];
   optional uint32 wait_secs = 5 [json_name = "wait_secs"];
+  // False: no port-security checks on the new NIC's port; needs
+  // `setPortSecurity`.
+  optional bool port_security = 6 [json_name = "port_security"];
+  repeated string allowed_addresses = 7 [json_name = "allowed_addresses"];
 }
 message AttachNetworkResponse {
   Vm vm = 1;

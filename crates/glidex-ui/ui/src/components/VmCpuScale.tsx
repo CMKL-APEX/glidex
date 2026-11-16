@@ -60,7 +60,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
         <button
           type="button"
           onClick={() => setEditing(true)}
-          className="text-xs text-sky-600 hover:text-sky-800 underline focus:outline-none"
+          className="text-xs text-sky-600 hover:text-sky-800 underline focus:outline-hidden"
         >
           Scale CPU / Elasticity
         </button>
@@ -87,7 +87,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
                 setMaxVcpus(vcpus);
               }
             }}
-            className="rounded text-sky-600"
+            className="rounded-sm text-sky-600"
           />
           Elastic CPU scaling (pylond microsecond elasticity)
         </label>
@@ -103,7 +103,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
               max={maxVcpus}
               value={minVcpus}
               onChange={(e) => setMinVcpus(Number(e.target.value))}
-              className="w-full px-2 py-1 border border-gray-300 rounded text-sm bg-white"
+              className="w-full px-2 py-1 border border-gray-300 rounded-sm text-sm bg-white"
             />
           </div>
           <div>
@@ -114,7 +114,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
               max={64}
               value={maxVcpus}
               onChange={(e) => setMaxVcpus(Number(e.target.value))}
-              className="w-full px-2 py-1 border border-gray-300 rounded text-sm bg-white"
+              className="w-full px-2 py-1 border border-gray-300 rounded-sm text-sm bg-white"
             />
           </div>
           {pylon && (
@@ -132,7 +132,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
             max={64}
             value={vcpus}
             onChange={(e) => setVcpus(Number(e.target.value))}
-            className="w-full px-2 py-1 border border-gray-300 rounded text-sm bg-white"
+            className="w-full px-2 py-1 border border-gray-300 rounded-sm text-sm bg-white"
           />
         </div>
       )}
@@ -145,7 +145,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
           max={10000}
           value={weight}
           onChange={(e) => setWeight(Number(e.target.value))}
-          className="w-full px-2 py-1 border border-gray-300 rounded text-sm bg-white"
+          className="w-full px-2 py-1 border border-gray-300 rounded-sm text-sm bg-white"
         />
       </div>
 
@@ -154,7 +154,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
           type="button"
           onClick={save}
           disabled={busy}
-          className="px-3 py-1 text-xs font-medium text-white bg-sky-600 hover:bg-sky-700 rounded disabled:opacity-50"
+          className="px-3 py-1 text-xs font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-sm disabled:opacity-50"
         >
           {busy ? "Saving..." : "Apply"}
         </button>
@@ -162,7 +162,7 @@ export default function VmCpuScale({ vm, onChanged }: { vm: VmResponse; onChange
           type="button"
           onClick={() => setEditing(false)}
           disabled={busy}
-          className="px-3 py-1 text-xs font-medium text-gray-600 bg-gray-200 hover:bg-gray-300 rounded"
+          className="px-3 py-1 text-xs font-medium text-gray-600 bg-gray-200 hover:bg-gray-300 rounded-sm"
         >
           Cancel
         </button>

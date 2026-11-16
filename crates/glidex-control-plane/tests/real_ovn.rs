@@ -27,7 +27,9 @@ fn the_northbound_database_takes_cluster_certificates_and_a_sync_over_ssl() {
     let ca = Ca::generate("test-cluster").unwrap();
     let key = NodeKey::generate().unwrap();
     let csr = key.csr(&["127.0.0.1".parse().unwrap()], &[]).unwrap();
-    let (cert, _) = ca.sign_node(&csr, "node-1", true, 30).unwrap();
+    let (cert, _) = ca
+        .sign_node(&csr, "node-1", true, 30, &["127.0.0.1".parse().unwrap()])
+        .unwrap();
     std::fs::write(p("ca.crt"), &ca.cert_pem).unwrap();
     std::fs::write(p("node.crt"), &cert).unwrap();
     std::fs::write(p("node.key"), key.key_pem().as_bytes()).unwrap();
@@ -97,6 +99,7 @@ fn the_northbound_database_takes_cluster_certificates_and_a_sync_over_ssl() {
             "intruder",
             true,
             30,
+            &["127.0.0.1".parse().unwrap()],
         )
         .unwrap();
     std::fs::write(p("x.crt"), &c2).unwrap();
@@ -150,6 +153,7 @@ fn two_servers_form_the_ovn_database_clusters_with_glidex_options() {
                 &format!("node-{i}"),
                 true,
                 30,
+                &[*ip],
             )
             .unwrap();
         std::fs::write(d.join("certs/chassis.key"), key.key_pem().as_bytes()).unwrap();
@@ -372,6 +376,7 @@ fn two_servers_form_the_ovn_database_clusters_with_glidex_options() {
             "agent-9",
             false,
             30,
+            &["127.0.0.9".parse().unwrap()],
         )
         .unwrap();
     std::fs::write(root.path().join("a.crt"), &cc).unwrap();

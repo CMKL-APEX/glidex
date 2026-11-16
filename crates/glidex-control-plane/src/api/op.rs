@@ -35,7 +35,7 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// The `typ` of an access token (RFC 9068).
-pub const ACCESS_TYP: &str = "at+jwt";
+pub const ACCESS_TYP: &str = glidex_trust::tokens::ACCESS_TYP;
 /// How long an ID token is good for.
 const ID_TOKEN_SECS: u64 = 3600;
 
@@ -269,6 +269,44 @@ fn token_response(
         }
     }
     no_store(out)
+}
+
+/// The longest access token the web UI gets for a trusted cluster (D86).
+pub const UI_CLUSTER_TOKEN_SECS: u64 = 15 * 60;
+/// The `client_id` those tokens name.
+pub const UI_CLIENT: &str = "glidex-ui";
+
+/// An access token for trusted cluster `c`, for browser session `p`'s user
+/// (D86): the web UI calls the cluster's API with it. As `token_response`
+/// makes one, but for at most [`UI_CLUSTER_TOKEN_SECS`], with the session's
+/// own login (`auth_time`, `amr`) and a `sid` derived from the session, so
+/// it never names the session's id. Who may have one is the caller's to
+/// check. `(token, expires_at)`.
+pub fn ui_cluster_token(
+    app: &AppState,
+    c: &TrustedCluster,
+    p: &Principal,
+) -> Result<(String, u64), super::ApiErr> {
+    let internal = || {
+        err(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "no browser session",
+        )
+    };
+    let g = grant_of(p).ok_or_else(internal)?;
+    let session = p.session_hash.as_deref().ok_or_else(internal)?;
+    let t = now();
+    let exp = t + access_ttl(app).min(UI_CLUSTER_TOKEN_SECS);
+    let sid = crate::auth::sha256_hex(format!("{UI_CLIENT}:{session}").as_bytes());
+    let claims = json!({
+        "sub": g.user_id, "aud": c.cluster_id, "client_id": UI_CLIENT, "iat": t, "nbf": t,
+        "exp": exp, "jti": crate::auth::random_token(16), "sid": &sid[..32],
+        "auth_time": g.auth_time, "amr": g.amr, "scope": "openid",
+        "glidex": { "directory": c.directory_id, "mfa": g.mfa },
+    });
+    let jwt = super::issuer::sign(app, &c.directory_id, ACCESS_TYP, claims)?;
+    Ok((jwt, exp))
 }
 
 // ---- authorize -------------------------------------------------------------
@@ -721,7 +759,7 @@ pub fn access_principal(
         return None;
     }
     // A directory this cluster trusts (D69), by its token's issuer.
-    if let Some(iss) = unverified_issuer(jwt)
+    if let Some(iss) = glidex_trust::tokens::unverified_issuer(jwt)
         && let Ok(Some(d)) = app.auth.trust.directory_by_issuer(&iss)
     {
         return trusted_access_principal(app, jwt, &d, transport, ip);
@@ -773,17 +811,6 @@ pub fn access_principal(
     })
 }
 
-/// A JWT's `iss`, unverified: only to pick the keys to verify it with.
-fn unverified_issuer(jwt: &str) -> Option<String> {
-    use base64::Engine as _;
-    let payload = jwt.split('.').nth(1)?;
-    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload)
-        .ok()?;
-    let v: Value = serde_json::from_slice(&bytes).ok()?;
-    v["iss"].as_str().map(String::from)
-}
-
 /// The principal for an access token of trusted directory `d` (D69):
 /// signed with a key of its last feed, for this cluster, its user in the
 /// replica and enabled.
@@ -794,16 +821,7 @@ fn trusted_access_principal(
     transport: Transport,
     ip: Option<std::net::IpAddr>,
 ) -> Option<Principal> {
-    let header = jsonwebtoken::decode_header(jwt).ok()?;
-    let set: jsonwebtoken::jwk::JwkSet = serde_json::from_value(d.jwks.clone()).ok()?;
-    let jwk = set.find(header.kid.as_deref()?)?;
-    let dk = jsonwebtoken::DecodingKey::from_jwk(jwk).ok()?;
-    let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
-    v.set_audience(&[cluster_id(app)]);
-    v.set_issuer(&[d.issuer.as_str()]);
-    v.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-    v.leeway = 30;
-    let c = jsonwebtoken::decode::<Value>(jwt, &dk, &v).ok()?.claims;
+    let c = glidex_trust::tokens::verify_access_token(jwt, d, &cluster_id(app))?;
     let user = app.auth.store.user(c["sub"].as_str()?).ok()??;
     if user.disabled || user.directory_id != d.id {
         return None;

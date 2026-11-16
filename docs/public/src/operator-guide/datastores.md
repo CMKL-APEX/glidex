@@ -579,9 +579,15 @@ lease, and another node can't attach it meanwhile.
 
 A hold can outlive its VM there: the VM's node crashed, or a detach
 failed. Each node lets go, within a minute, of the volumes it holds for
-VMs placed elsewhere. And a VM starting on a node takes its disks from
+VMs placed on another node. It keeps the holds of VMs placed nowhere or
+not known to it, and lets go of nothing while its control plane is
+starting, so a restart doesn't take the disks of the VMs running there.
+And a VM starting on a node takes its disks from
 another node's `hyperstor-vhost` that still holds them, which cuts off
-only those volumes there; the node's other VMs carry on. A disk that a
+only those volumes there; the node's other VMs carry on. It takes them
+from its own node's `hyperstor-vhost` too when that service no longer
+has them attached: a hold left from before the host rebooted or the
+service restarted. A disk that a
 Glidex disk operation holds (`hyperstorctl`, on a server) is waited for:
 the VM shows `DiskBusy` until it ends. This needs hyperstor with
 per-volume fencing on every node; with an older `hyperstor-vhost`, a
@@ -600,7 +606,8 @@ On each node that should run VMs from hyperstor disks:
   `hyperstor-install install --role vhost --map ADDR[,ADDR...]
   --vhost-user glidex` on a host that only runs VMs;
 - install `hyperstorctl`: Glidex writes images into volumes and edits
-  their partitions with it.
+  their partitions with it, and reads a disk's partition table with it
+  for `gxctl disk show` and the disk's details in the web UI.
 
 Servers also need to reach the cluster's API (port 8850 by default):
 they do the volume operations, because only they hold Glidex's
@@ -622,6 +629,12 @@ gxctl datastore create hs1 --hyperstor 192.0.2.21:8850,192.0.2.22:8850 --pool 1 
   server that takes the request: it makes a key, gets a certificate for
   the identity the token names, and keeps the key sealed with the
   cluster's secrets key. The token is used up and isn't kept.
+- `--mgmt-url URL`, optional: the cluster's management UI,
+  `https://host[:port]`. The datastore links to it as *Manage cluster*
+  (in `gxctl datastore show` and on the **Datastores** page); without
+  it, the page links to the address the cluster gave when one of your
+  tenants opted in to it, if any. Change it with
+  `gxctl datastore set hs1 --mgmt-url URL` (`""` removes it).
 - `--nodes`, `--default` and `--no-overcommit` work as for a directory.
   With `--no-overcommit`, a disk larger than the pool's free space is
   refused (`507 insufficient_storage`).
@@ -635,11 +648,12 @@ trash, adding a device) lets it finish. Disks already there keep
 working. A nearly full pool is a warning only.
 
 **Web UI:** **Datastores**, **Add Datastore**, *hyperstor cluster*: the
-**Name**, the **Cluster API** addresses, the **Pool** and the **Token**.
+**Name**, the **Cluster API** addresses, the **Pool**, the **Token**,
+and optionally the **Management UI**.
 
 Over the API: `POST /datastores` with `driver`
 `DATASTORE_DRIVER_HYPERSTOR`, `hyperstor_api`, `hyperstor_pool` and
-`hyperstor_token`, and no `path`. `gxctl datastore show` prints the
+`hyperstor_token` (and optionally `hyperstor_mgmt_url`), and no `path`. `gxctl datastore show` prints the
 identity and when its certificate expires; the leader renews it when a
 third of its life is left.
 
@@ -730,9 +744,10 @@ disk on the default datastore) and when a disk is moved to it.
   within a minute; a node that is only down keeps its last status.
 - Existing data can't be registered as a datastore: Glidex doesn't take
   over a directory that already has files in it.
-- Block storage is node-local LVM-thin only: no shared LVM, no Ceph
-  RBD, no CSI plugins, no disk snapshots, and no per-datastore quotas
-  yet.
+- Block storage is node-local LVM-thin or a hyperstor pool: no shared
+  LVM, no Ceph RBD, no CSI plugins, no disk snapshots, and no
+  per-datastore quotas yet.
+- Disks can't move onto or off a hyperstor datastore yet.
 - A VM's root disk made along with the VM always goes to the default
   datastore. To put it elsewhere, create the disk first
   (`gxctl disk create … --datastore`) and boot the VM from it.

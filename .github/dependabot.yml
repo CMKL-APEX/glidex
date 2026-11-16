@@ -1,0 +1,34 @@
+# Weekly update PRs, grouped so each ecosystem opens at most one PR for
+# compatible updates. Major versions come as their own PRs: they usually
+# need code changes. The UI uses bun; Dependabot's "bun" ecosystem reads
+# bun.lock.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      cargo-compatible:
+        update-types: [minor, patch]
+
+  - package-ecosystem: bun
+    directory: /crates/glidex-ui/ui
+    schedule:
+      interval: weekly
+    groups:
+      ui-compatible:
+        update-types: [minor, patch]
+        # The generated code under src/gen names protoc-gen-es's version:
+        # these move together, with `buf generate`.
+        exclude-patterns: ["@bufbuild/*", "@connectrpc/*"]
+      protobuf:
+        patterns: ["@bufbuild/*", "@connectrpc/*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]

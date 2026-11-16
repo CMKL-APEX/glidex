@@ -19,7 +19,8 @@ use std::time::{Duration, Instant};
 pub enum Program {
     OvsVsctl,
     OvsAppctl,
-    /// OpenFlow rules for the metadata endpoint (spec/29-workload-identity.md §7.1).
+    /// OpenFlow rules: VM port checks (spec/09-networking.md §9.1) and the
+    /// metadata endpoint (spec/29-workload-identity.md §7.1).
     OvsOfctl,
     OvsVswitchd,
     OvnNbctl,
@@ -278,9 +279,9 @@ impl Default for SystemExec {
     }
 }
 
-impl Exec for SystemExec {
-    fn run(&self, cmd: &Cmd) -> Result<Output, OvsError> {
-        let program = self.resolve(cmd)?;
+impl SystemExec {
+    /// The process for `cmd`, run as `program`.
+    fn command(&self, cmd: &Cmd, program: &Path) -> Command {
         let mut command = if self.sudo {
             // sudo resets the environment; pass variables through `env`.
             let mut c = Command::new("sudo");
@@ -288,16 +289,38 @@ impl Exec for SystemExec {
                 c.arg("env");
                 c.args(cmd.env.iter().map(|(k, v)| format!("{}={}", k, v)));
             }
-            c.arg(&program);
+            c.arg(program);
             c
         } else {
-            let mut c = Command::new(&program);
-            c.envs(cmd.env.iter().map(|(k, v)| (k, v)));
-            c
+            Command::new(program)
         };
+        // systemd's notify socket is the service's own (netd is
+        // `Type=notify`, `NotifyAccess=main`). A child that inherits it may
+        // send to it: systemctl 255 sends `EXIT_STATUS=` as it exits, and
+        // systemd logs a warning for each message from a PID that isn't the
+        // main one.
+        command.env_remove("NOTIFY_SOCKET");
+        if !self.sudo {
+            command.envs(cmd.env.iter().map(|(k, v)| (k, v)));
+        }
         if let Some(dir) = &cmd.cwd {
             command.current_dir(dir);
         }
+        // The OVN clients log to syslog at INFO: each command line ("Called
+        // as …") and each clustered server that isn't the leader. The leader's
+        // network controller runs hundreds a minute, which buried the
+        // journal; warnings and errors still go.
+        if matches!(cmd.program, Program::OvnNbctl | Program::OvnSbctl) {
+            command.arg("-vsyslog:warn");
+        }
+        command
+    }
+}
+
+impl Exec for SystemExec {
+    fn run(&self, cmd: &Cmd) -> Result<Output, OvsError> {
+        let program = self.resolve(cmd)?;
+        let mut command = self.command(cmd, &program);
         let mut child = command
             .args(&cmd.args)
             .stdin(if cmd.stdin.is_some() {
@@ -624,5 +647,51 @@ impl Exec for RecordingExec {
             .unwrap()
             .push(format!("chgrp {group} {}; chmod {mode:o}", path.display()));
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commands_run_without_the_services_notify_socket() {
+        let cmd = Cmd::new(Program::Systemctl, ["enable", "ovn-central"]);
+        let command = SystemExec::new().command(&cmd, Path::new("/usr/bin/systemctl"));
+        assert!(
+            command
+                .get_envs()
+                .any(|(k, v)| k == "NOTIFY_SOCKET" && v.is_none()),
+            "the child inherits NOTIFY_SOCKET"
+        );
+    }
+
+    #[test]
+    fn ovn_clients_log_only_warnings_to_syslog() {
+        for (program, sudo) in [
+            (Program::OvnNbctl, false),
+            (Program::OvnSbctl, false),
+            (Program::OvnNbctl, true),
+        ] {
+            let cmd = Cmd::new(program, ["show"]);
+            let exec = if sudo {
+                SystemExec::sudo()
+            } else {
+                SystemExec::new()
+            };
+            let mut command = exec.command(&cmd, Path::new(program.name()));
+            command.args(&cmd.args);
+            let args: Vec<_> = command.get_args().map(|a| a.to_string_lossy()).collect();
+            // Right after the program (sudo's argument, or argv[0]).
+            let want: Vec<&str> = if sudo {
+                vec![program.name(), "-vsyslog:warn", "show"]
+            } else {
+                vec!["-vsyslog:warn", "show"]
+            };
+            assert_eq!(args, want);
+        }
+        let cmd = Cmd::new(Program::OvsVsctl, ["show"]);
+        let command = SystemExec::new().command(&cmd, Path::new("ovs-vsctl"));
+        assert_eq!(command.get_args().count(), 0);
     }
 }

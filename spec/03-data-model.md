@@ -221,7 +221,8 @@ with ([06-rest-api.md](06-rest-api.md#vm)):
 - Hides the runtime paths (spec/11-security.md §9), `status.instance` and
   most of `config` (e.g. `kernel_args`), because clients don't need it.
 
-`PATCH /vms/{id}` takes `VmPatch` (`state.rs`): a JSON merge patch of
+`PATCH /vms/{id}` takes `VmPatch` (`state.rs`): `name` (a rename,
+12-reconciliation.md §7.7), and a JSON merge patch of
 the spec (`power`, `restart_policy`, `on_host_boot`, `stop_grace_secs`,
 `config.{vcpu_count, mem_size_mib, kernel_args, kernel, credential, hugepages,
 hugepage_size, vfio_devices, data_disks, networks}`); immutable fields are accepted by

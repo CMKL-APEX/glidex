@@ -716,6 +716,7 @@ async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
             nodes: vec![],
             prepare: false,
             per_device: None,
+            bar_mib: None,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,
@@ -877,6 +878,595 @@ async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
     let (s, v) = h.rest("GET", &path, None, &t).await;
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["pools"][0]["used"], 1, "{v}");
+}
+
+/// spec/22-host-topology.md H25: once a tenant has tenant pools on a
+/// cluster pool, its tenant grant lets its projects use the cluster pool
+/// only through them; a grant to the project and a host role still allow
+/// it directly, and `gpus` picks the tenant pool.
+#[tokio::test]
+async fn tenant_pools_are_the_tenants_only_way_to_its_granted_pool() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    use glidex_control_plane::topology::{SummaryDevice, TopologySummary};
+    let h = harness_with(|c| {
+        c.pci.pools = vec![PciPool {
+            name: "a100".into(),
+            class: Some("gpu".into()),
+            matches: PoolMatch {
+                vendor_id: Some("0x10de".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+            per_device: None,
+            bar_mib: None,
+        }];
+        let grant = |projects: Vec<String>, tenants: Vec<String>| PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects,
+            tenants,
+            node: None,
+        };
+        c.pci.allow = vec![
+            grant(vec![], vec!["acme".into()]),
+            grant(vec!["p2".into()], vec![]),
+        ];
+    });
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let mut topo = n.status.topology.clone().unwrap_or_default();
+    // This host's first NUMA node, for the fake GPUs (`gpus` aligns).
+    let k = topo.numa_nodes.first().map(|x| x.id).unwrap_or(0);
+    let addresses = [
+        "0000:87:00.0",
+        "0000:88:00.0",
+        "0000:89:00.0",
+        "0000:90:00.0",
+    ];
+    topo.devices = addresses
+        .iter()
+        .map(|a| SummaryDevice {
+            address: a.to_string(),
+            vendor_id: "0x10de".into(),
+            device_id: "0x20b0".into(),
+            class_id: "0x030200".into(),
+            numa_node: Some(k),
+            ready: true,
+            ..Default::default()
+        })
+        .collect();
+    for a in addresses {
+        topo.device_numa.insert(a.into(), k);
+    }
+    n.status.topology = Some(TopologySummary { ..topo });
+    nodes.put(&n).unwrap();
+
+    let ada = h.admin("ada");
+    let at = h.session(&ada);
+    let (_, v) = h
+        .rest("POST", "/tenants", Some(json!({ "slug": "acme" })), &at)
+        .await;
+    let acme = v["tenant"]["id"].as_str().unwrap().to_string();
+    let (s, _) = h
+        .rest("PUT", "/admissions/acme", Some(json!({})), &at)
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    let (owner, tom) = (h.user("olivia"), h.user("tom"));
+    h.app
+        .auth
+        .add_link(
+            "grant.host-paths",
+            Ent::User(owner.clone()),
+            Ent::Cluster,
+            "test",
+        )
+        .unwrap();
+    let (s, _) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{acme}/bindings"),
+            Some(
+                json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": tom } }),
+            ),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (o, t) = (h.token(&owner), h.token(&tom));
+    let mut ids = std::collections::HashMap::new();
+    for name in ["p1", "p2", "p3"] {
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/projects",
+                Some(json!({ "name": name, "tenant": acme, "owners": [owner] })),
+                &t,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        ids.insert(name, v["project"]["id"].as_str().unwrap().to_string());
+    }
+    let direct = |name: &str, project: &str| {
+        let mut b = vm_body(name, project);
+        b["devices"] = json!([{ "pool": "a100" }]);
+        b
+    };
+    let pools_of = |v: &Value| -> Vec<String> {
+        v["pools"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    // Before the tenant splits it, its grant reaches every project.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("before", &ids["p1"])), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    let (s, v) = h
+        .rest(
+            "PUT",
+            &format!("/tenants/{acme}/device-pools"),
+            Some(json!({ "pools": [{ "name": "team-gpus", "from": "a100", "max": 2, "projects": ["p1", "p2"] }] })),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+
+    // Now only through the tenant pool.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("after", &ids["p1"])), &o)
+        .await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("forbidden")),
+        "{v}"
+    );
+    assert!(v.to_string().contains("team-gpus"), "{v}");
+    let (s, v) = h
+        .rest(
+            "GET",
+            &format!("/pci-pools?project={}", ids["p1"]),
+            None,
+            &o,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(pools_of(&v), ["team-gpus"], "{v}");
+    // `gpus` without a pool picks the tenant pool.
+    let mut b = vm_body("gpu", &ids["p1"]);
+    b["gpus"] = json!({ "count": 1 });
+    let (s, v) = h.rest("POST", "/vms", Some(b), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let d = &vm_of(&v)["devices"][0];
+    assert_eq!(
+        (d["pool"].as_str(), d["tenant_pool"].as_str()),
+        (Some("a100"), Some("team-gpus")),
+        "{v}"
+    );
+
+    // A grant to the project itself still allows it directly.
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("granted", &ids["p2"])), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (_, v) = h
+        .rest(
+            "GET",
+            &format!("/pci-pools?project={}", ids["p2"]),
+            None,
+            &o,
+        )
+        .await;
+    assert!(pools_of(&v).contains(&"a100".to_string()), "{v}");
+    // So does a host role with usePciPool (host.devices).
+    let (s, v) = h
+        .rest("POST", "/vms", Some(direct("admin", &ids["p3"])), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+}
+
+/// D24: a project of another tenant answers as a missing one does, by id
+/// or by name, on every request that names a project (and before a
+/// `gpus` request looks at its pools); a name means the caller's own
+/// project of that name.
+#[tokio::test]
+async fn a_project_of_another_tenant_answers_like_a_missing_one() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let h = harness_with(|c| {
+        c.pci.pools = vec![PciPool {
+            name: "a100".into(),
+            class: Some("gpu".into()),
+            matches: PoolMatch {
+                vendor_id: Some("0x10de".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+            per_device: None,
+            bar_mib: None,
+        }];
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec![],
+            tenants: vec!["lab".into()],
+            node: None,
+        }];
+    });
+    let at = h.session(&h.admin("ada"));
+    let mut tenants = std::collections::HashMap::new();
+    for slug in ["acme", "lab"] {
+        let (_, v) = h
+            .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+            .await;
+        tenants.insert(slug, v["tenant"]["id"].as_str().unwrap().to_string());
+    }
+    let (alice, bob) = (h.user("alice"), h.user("bob"));
+    for (slug, who) in [("acme", &alice), ("lab", &bob)] {
+        let (s, _) = h
+            .rest(
+                "POST",
+                &format!("/tenants/{}/bindings", tenants[slug]),
+                Some(json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": who } })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+    }
+    let (a, b) = (h.token(&alice), h.token(&bob));
+    let mut ids = Vec::new();
+    for (tok, name, tenant) in [
+        (&a, "web", "acme"),
+        (&b, "web", "lab"),
+        (&b, "secret", "lab"),
+    ] {
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/projects",
+                Some(json!({ "name": name, "tenant": tenant })),
+                tok,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        ids.push(v["project"]["id"].as_str().unwrap().to_string());
+    }
+    let (web, lab_web, secret) = (&ids[0], &ids[1], &ids[2]);
+
+    // Each request, for a key: the other tenant's project (by id and by
+    // name) answers exactly as a project that doesn't exist.
+    type Req = Box<dyn Fn(&str) -> (String, Option<Value>)>;
+    let requests: Vec<(&str, Req)> = vec![
+        (
+            "list VMs",
+            Box::new(|k| (format!("/vms?project={k}"), None)),
+        ),
+        (
+            "list disks",
+            Box::new(|k| (format!("/disks?project={k}"), None)),
+        ),
+        (
+            "pools",
+            Box::new(|k| (format!("/pci-pools?project={k}"), None)),
+        ),
+        ("read", Box::new(|k| (format!("/projects/{k}"), None))),
+        (
+            "create VM",
+            Box::new(|k| ("/vms".into(), Some(vm_body("v", k)))),
+        ),
+        (
+            "create a GPU VM",
+            Box::new(|k| {
+                let mut b = vm_body("v", k);
+                b["gpus"] = json!({ "count": 1 });
+                ("/vms".into(), Some(b))
+            }),
+        ),
+        (
+            "create a GPU VM from a pool",
+            Box::new(|k| {
+                let mut b = vm_body("v", k);
+                b["gpus"] = json!({ "count": 1, "pool": "a100" });
+                ("/vms".into(), Some(b))
+            }),
+        ),
+        (
+            "preview a GPU VM",
+            Box::new(|k| {
+                (
+                    "/scheduler/preview".into(),
+                    Some(
+                        json!({ "project": k, "vcpu_count": 1, "mem_size_mib": 128, "gpus": { "count": 1 } }),
+                    ),
+                )
+            }),
+        ),
+    ];
+    let missing = "00000000-0000-0000-0000-000000000000";
+    for (what, req) in &requests {
+        let method = |b: &Option<Value>| if b.is_some() { "POST" } else { "GET" };
+        let (path, body) = req(missing);
+        let (s, gone) = h.rest(method(&body), &path, body, &a).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{what}: {gone}");
+        let gone = gone.to_string().replace(missing, "KEY");
+        for key in [secret.as_str(), "secret"] {
+            let (path, body) = req(key);
+            let (s, v) = h.rest(method(&body), &path, body, &a).await;
+            assert_eq!(s, StatusCode::NOT_FOUND, "{what} {key}: {v}");
+            assert_eq!(v.to_string().replace(key, "KEY"), gone, "{what} {key}");
+        }
+        // Its own tenant still sees it.
+        let (path, body) = req(secret);
+        let (s, v) = h.rest(method(&body), &path, body, &b).await;
+        assert_ne!(s, StatusCode::NOT_FOUND, "{what}, bob: {v}");
+    }
+
+    // A name means the caller's own project of that name.
+    for (tok, id) in [(&a, web), (&b, lab_web)] {
+        let (s, v) = h.rest("GET", "/projects/web", None, tok).await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        assert_eq!(v["project"]["id"], id.as_str(), "{v}");
+    }
+    // Who sees both names one by its id.
+    let (s, v) = h.rest("GET", "/vms?project=web", None, &at).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("ambiguous")),
+        "{v}"
+    );
+    let (s, v) = h
+        .rest("GET", &format!("/vms?project={web}"), None, &at)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn a_device_grant_names_one_project() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let a100 = PciPool {
+        name: "a100".into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some("0x10de".into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+        per_device: None,
+        bar_mib: None,
+    };
+    let h = harness_with(|c| {
+        c.pci.pools = vec![a100];
+        c.pci.allow = vec![PciGrant {
+            bdf: None,
+            pool: Some("a100".into()),
+            projects: vec!["web".into()],
+            tenants: vec![],
+            node: None,
+        }];
+    });
+    let ada = h.admin("ada");
+    let at = h.session(&ada);
+    let mut tenants = std::collections::HashMap::new();
+    for slug in ["acme", "lab"] {
+        let (_, v) = h
+            .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+            .await;
+        let id = v["tenant"]["id"].as_str().unwrap().to_string();
+        let (s, _) = h
+            .rest(
+                "POST",
+                &format!("/tenants/{id}/bindings"),
+                Some(json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": ada } })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+        tenants.insert(slug, id);
+    }
+    let (alice, bob) = (h.user("alice"), h.user("bob"));
+    let (a, b) = (h.token(&alice), h.token(&bob));
+    let create = |name: &str, tenant: &str| {
+        let body = json!({ "name": name, "tenant": tenant, "owners": [alice] });
+        let at = at.clone();
+        let h = &h;
+        async move { h.rest("POST", "/projects", Some(body), &at).await }
+    };
+    let (s, v) = create("web", "acme").await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let web = v["project"]["id"].as_str().unwrap().to_string();
+    // Asked as the project's owner: an administrator may use any pool.
+    let granted = |project: String, tok: &String| {
+        let tok = tok.clone();
+        let h = &h;
+        async move {
+            let (s, v) = h
+                .rest("GET", &format!("/pci-pools?project={project}"), None, &tok)
+                .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            // An empty list is left out of the answer.
+            v["pools"]
+                .as_array()
+                .is_some_and(|p| p.iter().any(|p| p["name"] == "a100"))
+        }
+    };
+    // A bare name that one project has names it.
+    assert!(granted(web.clone(), &a).await);
+    assert_eq!(h.app.manager.check_pci_grant_names(), Ok(()));
+
+    // Another project of that name would make the grant name two.
+    let (s, v) = create("web", "lab").await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::CONFLICT, Some("name_in_device_grant")),
+        "{v}"
+    );
+
+    // One made anyway (by an older build) leaves the name naming none,
+    // and a server refuses to start on that file.
+    let lab_web = h
+        .app
+        .manager
+        .projects()
+        .create_in(&tenants["lab"], "web", String::new(), None)
+        .unwrap()
+        .id;
+    h.app
+        .auth
+        .add_link(
+            "role.owner",
+            Ent::User(bob.clone()),
+            Ent::Project(lab_web.clone()),
+            "test",
+        )
+        .unwrap();
+    assert!(!granted(web.clone(), &a).await);
+    assert!(!granted(lab_web.clone(), &b).await);
+    let e = h.app.manager.check_pci_grant_names().unwrap_err();
+    assert!(e.contains("web (2 projects)"), "{e}");
+
+    // The cluster's setting takes `<tenant>/<project>`, not the bare name.
+    let pool = json!({ "name": "a100", "class": "gpu", "match": { "vendor_id": "0x10de" } });
+    let put = |projects: Value| {
+        let body = json!({ "pools": [pool], "allow": [{ "pool": "a100", "projects": projects }] });
+        let at = at.clone();
+        let h = &h;
+        async move {
+            h.rest("PUT", "/cluster/settings/pci", Some(body), &at)
+                .await
+        }
+    };
+    let (s, v) = put(json!(["web"])).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("web (2 projects)"),
+        "{v}"
+    );
+    let (s, v) = put(json!(["lab/web"])).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(granted(lab_web.clone(), &b).await);
+    assert!(!granted(web.clone(), &a).await);
+    let (s, v) = put(json!([format!("{}/web", tenants["acme"])])).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(granted(web, &a).await);
+    assert!(!granted(lab_web, &b).await);
+}
+
+/// H27 (spec/22-host-topology.md): a device grant's tenant slug is the
+/// `local` directory's, whoever asks; another directory's tenant of the
+/// same slug is named by id.
+#[tokio::test]
+async fn a_device_grant_slug_is_the_local_directorys() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let pool = |name: &str, vendor: &str| PciPool {
+        name: name.into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some(vendor.into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+        per_device: None,
+        bar_mib: None,
+    };
+    let grant = |pool: &str, projects: &[&str], tenants: &[&str]| PciGrant {
+        bdf: None,
+        pool: Some(pool.into()),
+        projects: projects.iter().map(|p| p.to_string()).collect(),
+        tenants: tenants.iter().map(|t| t.to_string()).collect(),
+        node: None,
+    };
+    let h = harness_with(|c| {
+        c.pci.pools = vec![pool("a100", "0x10de"), pool("t4", "0x1002")];
+        c.pci.allow = vec![
+            grant("a100", &[], &["acme"]),
+            grant("t4", &["acme/gpu"], &[]),
+        ];
+    });
+    let tenants = &h.app.auth.tenants;
+    let local_acme = tenants.create("acme", "Acme".into(), false).unwrap().id;
+    tenants
+        .create_directory("beta", "Beta", "beta-admin")
+        .unwrap();
+    let beta_acme = tenants
+        .create_in("beta", "acme", "Acme".into(), false)
+        .unwrap()
+        .id;
+    let projects = h.app.manager.projects();
+    let local_gpu = projects
+        .create_in(&local_acme, "gpu", String::new(), None)
+        .unwrap()
+        .id;
+    let beta_gpu = projects
+        .create_in(&beta_acme, "gpu", String::new(), None)
+        .unwrap()
+        .id;
+    // alice owns local acme's project; bob, of directory beta, beta's.
+    let (alice, bob) = (h.user("alice"), h.user("bob"));
+    let mut u = h.app.auth.store.user(&bob).unwrap().unwrap();
+    u.directory_id = "beta".into();
+    h.app.auth.store.put_user(&u).unwrap();
+    for (user, project) in [(&alice, &local_gpu), (&bob, &beta_gpu)] {
+        h.app
+            .auth
+            .add_link(
+                "role.owner",
+                Ent::User(user.clone()),
+                Ent::Project(project.clone()),
+                "test",
+            )
+            .unwrap();
+    }
+    let (a, b) = (h.token(&alice), h.token(&bob));
+    let pools = |project: String, tok: &String| {
+        let tok = tok.clone();
+        let h = &h;
+        async move {
+            let (s, v) = h
+                .rest("GET", &format!("/pci-pools?project={project}"), None, &tok)
+                .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+            let mut names: Vec<String> = v["pools"]
+                .as_array()
+                .map(|p| {
+                    p.iter()
+                        .map(|p| p["name"].as_str().unwrap().to_string())
+                        .collect()
+                })
+                .unwrap_or_default();
+            names.sort();
+            names
+        }
+    };
+    assert_eq!(pools(local_gpu.clone(), &a).await, ["a100", "t4"]);
+    assert!(pools(beta_gpu.clone(), &b).await.is_empty());
+
+    // Beta's tenant is named by id.
+    let ada = h.admin("ada");
+    let at = h.session(&ada);
+    let body = json!({
+        "pools": [
+            { "name": "a100", "class": "gpu", "match": { "vendor_id": "0x10de" } },
+            { "name": "t4", "class": "gpu", "match": { "vendor_id": "0x1002" } },
+        ],
+        "allow": [
+            { "pool": "a100", "tenants": [beta_acme] },
+            { "pool": "t4", "projects": [format!("{beta_acme}/gpu")] },
+        ],
+    });
+    let (s, v) = h
+        .rest("PUT", "/cluster/settings/pci", Some(body), &at)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(pools(beta_gpu, &b).await, ["a100", "t4"]);
+    assert!(pools(local_gpu, &a).await.is_empty());
 }
 
 #[tokio::test]
@@ -1446,6 +2036,290 @@ async fn users_create_tenants_of_their_own_within_the_directorys_limits() {
     assert_eq!(s, StatusCode::FORBIDDEN, "the site forbid wins");
 }
 
+/// D83: members and roles given by email: an address an IdP verified,
+/// a provisioned or pre-added user's; never an unverified address, another
+/// directory's user or a disabled one; two users with it are ambiguous; a
+/// caller who may not add learns nothing.
+#[tokio::test]
+async fn members_and_roles_by_verified_email() {
+    use glidex_control_plane::auth::store::{Identity, Managed, PendingLogin};
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let store = &h.app.auth.store;
+    let signed_in = |name: &str, email: &str, verified: bool| {
+        let id = h.user(name);
+        store
+            .put_identity(&Identity {
+                provider: "oidc:https://idp.example.org".into(),
+                subject: name.into(),
+                user_id: id.clone(),
+                email: Some(email.into()),
+                email_verified: verified,
+                created_at: 0,
+            })
+            .unwrap();
+        id
+    };
+    let carol = signed_in("carol", "carol@example.org", true);
+    signed_in("dave", "dave@example.org", false);
+    let erin = signed_in("erin", "erin@example.org", true);
+    let mut u = store.user(&erin).unwrap().unwrap();
+    u.directory_id = "other".into();
+    store.put_user(&u).unwrap();
+    let frank = signed_in("frank", "frank@example.org", true);
+    let mut u = store.user(&frank).unwrap().unwrap();
+    u.disabled = true;
+    store.put_user(&u).unwrap();
+    signed_in("gil1", "gil@example.org", true);
+    signed_in("gil2", "gil@example.org", true);
+    let pat = h.user("pat");
+    let mut u = store.user(&pat).unwrap().unwrap();
+    u.pending_login = Some(PendingLogin {
+        connector: "google".into(),
+        email: "pat@example.org".into(),
+    });
+    store.put_user(&u).unwrap();
+    let sam = h.user("sam");
+    let mut u = store.user(&sam).unwrap().unwrap();
+    u.managed = Some(Managed {
+        connector: "scim".into(),
+        external_id: None,
+        user_name: None,
+        given_name: None,
+        family_name: None,
+        ssh_keys: Vec::new(),
+    });
+    u.email = Some("sam@example.org".into());
+    store.put_user(&u).unwrap();
+
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({ "slug": "lab", "display_name": "Lab" })),
+            &at,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let lab = v["tenant"]["id"].as_str().unwrap().to_string();
+    let add = |email: &str| json!({ "principal": { "type": "User", "email": email } });
+    let members = format!("/tenants/{lab}/members");
+
+    // A caller who may not add is refused before the address is looked at.
+    let bob = h.session(&h.user("bob"));
+    let (s, v) = h
+        .rest("POST", &members, Some(add("carol@example.org")), &bob)
+        .await;
+    assert!(
+        s == StatusCode::NOT_FOUND || s == StatusCode::FORBIDDEN,
+        "{s} {v}"
+    );
+
+    // A verified address, in any case: that user.
+    let (s, v) = h
+        .rest("POST", &members, Some(add("Carol@Example.ORG")), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["member"]["principal"]["id"], carol.as_str(), "{v}");
+    // Pre-added and provisioned users' addresses.
+    for (email, id) in [("pat@example.org", &pat), ("sam@example.org", &sam)] {
+        let (s, v) = h.rest("POST", &members, Some(add(email)), &at).await;
+        assert_eq!(s, StatusCode::CREATED, "{email}: {v}");
+        assert_eq!(v["member"]["principal"]["id"], id.as_str());
+    }
+    // Unverified, another directory's, disabled, nobody's: as an unknown id.
+    for email in [
+        "dave@example.org",
+        "erin@example.org",
+        "frank@example.org",
+        "nobody@example.org",
+    ] {
+        let (s, v) = h.rest("POST", &members, Some(add(email)), &at).await;
+        assert_eq!(s, StatusCode::BAD_REQUEST, "{email}: {v}");
+        assert_eq!(v["error"], "invalid", "{email}: {v}");
+    }
+    let (s, v) = h
+        .rest("POST", &members, Some(add("gil@example.org")), &at)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"], "ambiguous");
+
+    // A tenant role and a project role by email.
+    let (s, v) = h
+        .rest(
+            "POST",
+            &format!("/tenants/{lab}/bindings"),
+            Some(json!({ "role": "role.tenant-auditor", "principal": { "type": "User", "email": "carol@example.org" } })),
+            &at,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let (s, v) = h
+        .rest("POST", "/projects", Some(json!({ "name": "web" })), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let web = v["project"]["id"].as_str().unwrap().to_string();
+    let (s, v) = h
+        .rest(
+            "POST",
+            &format!("/projects/{web}/bindings"),
+            Some(json!({ "role": "role.viewer", "principal": { "type": "User", "email": "carol@example.org" } })),
+            &at,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    assert!(v.to_string().contains(carol.as_str()), "{v}");
+
+    // A sign-in records whether the address was verified, in lower case.
+    store
+        .record_identity_email(
+            "oidc:https://idp.example.org",
+            "dave",
+            Some("Dave@Example.org"),
+            true,
+        )
+        .unwrap();
+    let i = store
+        .identity("oidc:https://idp.example.org", "dave")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        (i.email.as_deref(), i.email_verified),
+        (Some("dave@example.org"), true)
+    );
+    let (s, v) = h
+        .rest("POST", &members, Some(add("dave@example.org")), &at)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+}
+
+/// D82: a tenant at a user's first sign-in, when the directory makes one:
+/// off by default, once per user, not for a member of a tenant (the
+/// connector's default tenant aside), a taken slug, the limits.
+#[tokio::test]
+async fn a_user_in_no_tenant_gets_one_at_first_sign_in() {
+    use glidex_control_plane::service::tenancy::tenant_at_sign_in;
+    let h = harness_with(|c| c.auth.pam.enabled = true);
+    let at = h.session(&h.admin("ada"));
+    let c = h.app.auth.pam_connector(None).unwrap();
+    let sign_in = |name: &str, email: Option<&str>| {
+        let id = h.user(name);
+        let u = h.app.auth.store.user(&id).unwrap().unwrap();
+        tenant_at_sign_in(&h.app, &c, &u, email, "test");
+        id
+    };
+    let made_by = |id: &str| -> Vec<String> {
+        let mut v: Vec<String> = h
+            .app
+            .auth
+            .tenants
+            .list()
+            .unwrap()
+            .into_iter()
+            .filter(|t| t.created_by.as_deref() == Some(id))
+            .map(|t| t.slug)
+            .collect();
+        v.sort();
+        v
+    };
+    let set = |ss: Value| {
+        let h = &h;
+        let at = at.clone();
+        async move {
+            let (s, v) = h
+                .rest(
+                    "PUT",
+                    "/directory/settings",
+                    Some(json!({ "settings": { "self_service": ss } })),
+                    &at,
+                )
+                .await;
+            assert_eq!(s, StatusCode::OK, "{v}");
+        }
+    };
+
+    // Self-service on, but not at sign-in: nothing.
+    set(json!({ "enabled": true, "slug_prefix": "lab-" })).await;
+    let alice = sign_in("alice", Some("Alice.Smith@example.test"));
+    assert!(made_by(&alice).is_empty());
+
+    set(json!({ "enabled": true, "slug_prefix": "lab-", "auto_create": true })).await;
+    let (_, v) = h.rest("GET", "/directory/settings", None, &at).await;
+    assert_eq!(v["settings"]["self_service"]["auto_create"], true, "{v}");
+
+    // Named from the address, the user its admin; once.
+    sign_in("alice", Some("Alice.Smith@example.test"));
+    assert_eq!(made_by(&alice), ["lab-alice-smith"]);
+    let t = h.app.auth.tenants.resolve("lab-alice-smith").unwrap();
+    assert_eq!(t.display_name, "alice's Tenant");
+    assert!(t.self_service);
+    let (_, v) = h.rest("GET", "/tenants", None, &h.session(&alice)).await;
+    assert!(v["tenants"].to_string().contains("lab-alice-smith"), "{v}");
+    sign_in("alice", Some("Alice.Smith@example.test"));
+    assert_eq!(made_by(&alice).len(), 1);
+    // A taken slug.
+    let erin = sign_in("erin", Some("alice.smith@other.test"));
+    assert_eq!(made_by(&erin), ["lab-alice-smith-2"]);
+    let (s, v) = h
+        .rest(
+            "DELETE",
+            &format!("/tenants/{}", t.id),
+            None,
+            &h.session(&alice),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    sign_in("alice", Some("Alice.Smith@example.test"));
+    assert!(made_by(&alice).is_empty(), "not again once deleted");
+
+    // No address: the display name.
+    let frank = sign_in("Frank Lee", None);
+    assert_eq!(made_by(&frank), ["lab-frank-lee"]);
+
+    // A member of a tenant gets none; of the connector's default one alone, does.
+    let bob = h.user("bob");
+    h.app
+        .auth
+        .tenants
+        .add_member(
+            &t_id(&h, "lab-alice-smith-2"),
+            Ent::User(bob.clone()),
+            "test",
+        )
+        .unwrap();
+    sign_in("bob", None);
+    assert!(made_by(&bob).is_empty());
+    let dave = h.user("dave");
+    h.app
+        .auth
+        .tenants
+        .add_member(DEFAULT_TENANT, Ent::User(dave.clone()), "test")
+        .unwrap();
+    sign_in("dave", None);
+    assert!(made_by(&dave).is_empty(), "default isn't the connector's");
+    let mut dc = c.clone();
+    dc.default_tenant = Some(DEFAULT_TENANT.into());
+    let u = h.app.auth.store.user(&dave).unwrap().unwrap();
+    tenant_at_sign_in(&h.app, &dc, &u, None, "test");
+    assert_eq!(made_by(&dave), ["lab-dave"]);
+
+    // Over a limit: none, and tried again at the next sign-in.
+    set(
+        json!({ "enabled": true, "slug_prefix": "lab-", "auto_create": true,
+                "max_total": 3 }),
+    )
+    .await;
+    let gil = sign_in("gil", None);
+    assert!(made_by(&gil).is_empty());
+    set(json!({ "enabled": true, "slug_prefix": "lab-", "auto_create": true })).await;
+    sign_in("gil", None);
+    assert_eq!(made_by(&gil), ["lab-gil"]);
+}
+
+fn t_id(h: &H, slug: &str) -> String {
+    h.app.auth.tenants.resolve(slug).unwrap().id
+}
+
 /// Automatic admission (spec/19-tenancy.md D79): a hosted directory's
 /// self-service (or all new) tenants are admitted as they become active,
 /// with a default cap they follow until the operator sets theirs by hand.
@@ -1631,6 +2505,7 @@ async fn an_open_pool_is_granted_to_every_admitted_tenant() {
             nodes: vec![],
             prepare: false,
             per_device: None,
+            bar_mib: None,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,
@@ -1717,4 +2592,159 @@ async fn an_open_pool_is_granted_to_every_admitted_tenant() {
     h.rest("PUT", "/admissions/other", Some(json!({})), &at)
         .await;
     assert_eq!(pools(other_p).await, vec![json!("a100")]);
+}
+
+/// A kernel taken from a VM's disk is that VM's (spec/23-kernel-boot.md §3):
+/// listed, read and booted only with its project. Shared images name only
+/// the VMs a caller can read.
+#[tokio::test]
+async fn a_vms_own_kernel_stays_with_its_project() {
+    let h = harness();
+    let at = h.session(&h.admin("ada"));
+    let ada = h
+        .app
+        .auth
+        .store
+        .user_for_identity("pam", "ada", "ada", None, false)
+        .unwrap()
+        .unwrap()
+        .id;
+    let (olivia, bob) = (h.user("olivia"), h.user("bob"));
+    for u in [&olivia, &bob] {
+        h.app
+            .auth
+            .add_link(
+                "grant.host-paths",
+                Ent::User(u.clone()),
+                Ent::Cluster,
+                "test",
+            )
+            .unwrap();
+    }
+    let mut projects = Vec::new();
+    for (slug, owner) in [("acme", &olivia), ("lab", &bob)] {
+        let (_, v) = h
+            .rest("POST", "/tenants", Some(json!({ "slug": slug })), &at)
+            .await;
+        let t = v["tenant"]["id"].as_str().unwrap().to_string();
+        let (s, _) = h
+            .rest(
+                "POST",
+                &format!("/tenants/{t}/bindings"),
+                Some(json!({ "role": "role.tenant-admin", "principal": { "type": "User", "id": ada } })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED);
+        let (s, v) = h
+            .rest("PUT", &format!("/admissions/{slug}"), Some(json!({})), &at)
+            .await;
+        assert_eq!(s, StatusCode::OK, "{v}");
+        let name = format!("{slug}-p");
+        let (s, v) = h
+            .rest(
+                "POST",
+                "/projects",
+                Some(json!({ "name": name, "tenant": t, "owners": [owner] })),
+                &at,
+            )
+            .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        projects.push(v["project"]["id"].as_str().unwrap().to_string());
+    }
+    let (o, b) = (h.token(&olivia), h.token(&bob));
+    let (s, v) = h
+        .rest("POST", "/vms", Some(vm_body("secret-vm", &projects[0])), &o)
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let vm_id = vm_of(&v)["id"].as_str().unwrap().to_string();
+
+    // The kernel extracted from her VM's disk.
+    let img = json!({
+        "id": "k-own", "name": "secret-vm-kernel", "kind": "kernel",
+        "source": { "kind": "host", "path": "/tmp/vmlinux" },
+        "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": 1, "file_size_bytes": 1,
+        "sha256": "", "arch": "x86_64", "created_at": 1, "owner": vm_id,
+    });
+    h.app
+        .manager
+        .database()
+        .write(
+            glidex_control_plane::store::Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(glidex_control_plane::store::TableId::Images.definition())?
+                    .insert("k-own", img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    // And a shared kernel her other VM boots.
+    let shared = json!({
+        "id": "k-shared", "name": "shared-kernel", "kind": "kernel",
+        "source": { "kind": "host", "path": "/tmp/vmlinux" },
+        "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": 1, "file_size_bytes": 1,
+        "sha256": "", "arch": "x86_64", "created_at": 1,
+    });
+    h.app
+        .manager
+        .database()
+        .write(
+            glidex_control_plane::store::Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(glidex_control_plane::store::TableId::Images.definition())?
+                    .insert("k-shared", shared.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    h.app.manager.images().reload_all();
+    let mut body = vm_body("secret-booter", &projects[0]);
+    body.as_object_mut().unwrap().remove("kernel_image_path");
+    body["kernel"] = json!("k-shared");
+    let (s, v) = h.rest("POST", "/vms", Some(body), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let users = |v: &Value| -> Value {
+        v["images"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|i| i["name"] == "shared-kernel")
+            .map(|i| i["used_by_vms"].clone())
+            .unwrap()
+    };
+    assert!(h.app.manager.images().get_image("k-own").is_ok());
+
+    // An empty list has no `images` at all.
+    let names = |v: &Value| -> Vec<String> {
+        v["images"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|i| i["name"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let (s, v) = h.rest("GET", "/images", None, &o).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(names(&v).contains(&"secret-vm-kernel".to_string()), "{v}");
+    assert_eq!(users(&v), json!(["secret-booter"]), "{v}");
+    let (s, _) = h.rest("GET", "/images/k-own", None, &o).await;
+    assert_eq!(s, StatusCode::OK);
+
+    // Another tenant's user neither sees it nor boots it.
+    let (s, v) = h.rest("GET", "/images", None, &b).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(!names(&v).contains(&"secret-vm-kernel".to_string()), "{v}");
+    // The shared kernel, without the names of VMs it can't read.
+    assert!(users(&v).as_array().is_none_or(|a| a.is_empty()), "{v}");
+    for path in ["/images/k-own", "/images/k-own/events"] {
+        let (s, v) = h.rest("GET", path, None, &b).await;
+        assert_eq!(s, StatusCode::NOT_FOUND, "{path}: {v}");
+    }
+    let mut body = vm_body("borrower", &projects[1]);
+    body.as_object_mut().unwrap().remove("kernel_image_path");
+    body["kernel"] = json!("k-own");
+    let (s, v) = h.rest("POST", "/vms", Some(body), &b).await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
 }

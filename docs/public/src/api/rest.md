@@ -15,7 +15,9 @@
   resolves VM names for you.
 - **Projects**: VMs, disks, guest credentials and project networks
   belong to a project. Creates take `project` (id or name) and default to
-  your default project; lists take `?project=`.
+  your default project; lists take `?project=`. A project name is
+  looked up among the projects you can see, and a project you can't see
+  answers `404` exactly as one that doesn't exist.
 - **Status codes**: `200` OK, `201` created, `202` accepted (the
   controller is still working on it), `204` no content (gone).
 
@@ -146,7 +148,7 @@ a delete with nothing left to do). Add `?wait=<secs>` (at most
 | The resource is gone (a delete) | `204` |
 
 `?wait` applies to VM create, start, stop, pause, `PATCH`, delete,
-device and disk attach/detach; disk create, resize, move and extend-root;
+device, disk and network attach/detach; disk create, resize, move and extend-root;
 image delete; network delete. `gxctl` waits 60 s by default.
 
 A VM's `state` is what the controller last saw and `desired_state`
@@ -164,7 +166,11 @@ Lists return everything you may see in one answer, except:
 - `GET /tenants`: `page_size`, `page_token`; the answer has
   `next_page_token`.
 - `GET /audit`: `since`, `limit` (default 500, at most 5000),
-  `project`, `user`, `directory`.
+  `project`, `user`, `directory`; newest first. `order_by` (`time`,
+  `user`, `action`, `project`, `target`, `source`, `result`) and
+  `ascending=true` sort otherwise; an order other than `time` sorts at
+  most 20,000 matches and the answer has `truncated: true` past that.
+  `page_token`; the answer has `next_page_token`, with the same filters.
 
 ### Live changes: `GET /watch`
 
@@ -313,10 +319,10 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/vms` | List VMs (`?project=`) |
-| `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path`; `gpus` (`{count, pool, nvlink}`) asks for GPUs from a device pool, NUMA-aligned, and with it `vcpu_count` and `mem_size_mib` may be left out to take the pool's per-device sizing (see [GPUs](../user-guide/vms.md#gpus)) |
+| `POST` | `/vms` | Create a VM (`?wait=`). Boots through `firmware`, or a kernel image (`kernel`, with `kernel_from_disk` to follow the guest's kernel); `generate_seed` overrides whether the cloud-init seed is generated; `initrd_path` goes with `kernel_image_path`; `gpus` (`{count, pool, nvlink}`) asks for GPUs from a device pool, NUMA-aligned, and with it `vcpu_count` and `mem_size_mib` may be left out to take the pool's per-device sizing (see [GPUs](../user-guide/vms.md#gpus)); `service_account` (a token id) gives the VM that service account's tokens from its metadata endpoint (see [Workload identity](../user-guide/vms.md#workload-identity)); `min_vcpus`, `max_vcpus` and `cpu_weight` make it elastic (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)) |
 | `POST` | `/scheduler/preview` | Where a VM would be placed, node by node; a node is refused when a requested PCI device, or another device in its IOMMU group, is used by a VM there. Takes the VM's hugepage, NUMA, CPU, `devices` and `gpus` settings; each node's fit has `page_kib`, `hugepages_mib_taken` / `_capacity`, `numa_node`, `cpus`, `numa_aligned`, `pool_devices` and, for `NUMA_POLICY_ALIGNED` over several NUMA nodes, `numa` (each node's share) |
 | `GET` | `/vms/{id}` | Get a VM |
-| `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy`, `devices`, `service_account`, `min_vcpus`, `max_vcpus` and `cpu_weight`. A change to `mem_size_mib` or `data_disks` of a running VM applies at its next start |
+| `PATCH` | `/vms/{id}` | Change a VM's spec (`?wait=`, `If-Match`); `name` renames it, in any state (free in its project, else `409`; a root disk the VM made for itself is renamed with it; the guest's hostname follows at its next start); also `kernel`, `kernel_from_disk`, `hugepage_size`, `numa_policy`, `cpu_policy`, `devices`, `service_account`, `min_vcpus`, `max_vcpus` and `cpu_weight`. A change to `mem_size_mib` or `data_disks` of a running VM applies at its next start |
 | `DELETE` | `/vms/{id}` | Delete a VM and its own root disk (`?keep_disk=true`, `?wait=`) |
 | `POST` | `/vms/{id}/start` | Start, or resume a paused VM (`?wait=`) |
 | `POST` | `/vms/{id}/place` | Place a stopped or lost VM again: on `node` (`{node}`, optional), or where the scheduler finds room; answers `{vm}`. See [Placing a stopped or lost VM again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again) |
@@ -328,6 +334,8 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `DELETE` | `/vms/{id}/devices` | Detach a PCI device |
 | `POST` | `/vms/{id}/disks` | Attach a data disk: `{disk}` (id, or a name in the VM's tenant); on a running VM at its next start (`?wait=`) |
 | `DELETE` | `/vms/{id}/disks/{disk}` | Detach a data disk |
+| `POST` | `/vms/{id}/networks` | Add a NIC on a network, after the others: `{network, mac?, queue_pairs?}` (a network id, or a name the VM's project may use); without `mac`, one derived from the VM's id that no other NIC has; on a running VM at its next start (`?wait=`) |
+| `DELETE` | `/vms/{id}/networks/{network}` | Remove a NIC (`?mac=`: which one, when the VM has more than one on the network); on a running VM at its next start (`?wait=`) |
 | `GET` | `/vms/{id}/console` | Console availability and WebSocket path |
 | `POST` | `/vms/{id}/console/ticket` | Single-use console ticket for a browser session |
 | `GET` | `/vms/{id}/console/ws` | Console WebSocket |
@@ -415,7 +423,7 @@ shared datastore has `datastore` and `datastore_name` instead of a
 | Method | Path | What it does |
 |---|---|---|
 | `GET` | `/networks` | List networks |
-| `POST` | `/networks` | Create a host or cluster network (NAT, isolated or bridged) |
+| `POST` | `/networks` | Create a host or cluster network (NAT, isolated or bridged). A node network's `node` (id or name) defaults to the node that answers, the leader in a cluster; on another node, that node makes the bridge and its NAT, and the network is `PENDING` until it has (`subnet` and bridged networks aren't supported there) |
 | `GET` | `/networks/{id}` | Get a network |
 | `DELETE` | `/networks/{id}` | Delete (`?wait=`; `409` while a VM uses it) |
 | `GET` | `/networks/{id}/events` | The network's last events |
@@ -446,7 +454,7 @@ UI's Host pages send it.
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/ovs/status` | Open vSwitch and networking helper status |
+| `GET` | `/ovs/status` | Open vSwitch and networking helper status, and the subnets two or more ports share with their source routes (`source_routes`) |
 | `POST` | `/ovs/install` | Install Open vSwitch (kernel or DPDK profile) |
 | `POST` | `/ovs/dpdk-init` | Initialize DPDK in Open vSwitch |
 | `GET` | `/ovs/bridges` | List glidex bridges |
@@ -458,7 +466,7 @@ UI's Host pages send it.
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/commit` | Keep a migrated host address (otherwise it is rolled back at the deadline) |
 | `POST` | `/ovs/bridges/{name}/uplinks/{uplink}/reapply` | Set up again an uplink that was rolled back at start |
 | `GET` | `/pci-devices` | List the host's PCI devices, with `numa_node`, `ready` and, when not ready, `not_ready` (the reasons) |
-| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts, and `per_device_vcpus` / `per_device_memory_mib` when the pool sizes VMs per device; `?project=` the pools that project may use, free counts only |
+| `GET` | `/pci-pools` | Device pools: devices per node, holders, free counts, and `per_device_vcpus` / `per_device_memory_mib` when the pool sizes VMs per device; `?project=` the pools that project may use, free counts only; `discovered: true` on a pool formed from GPUs or accelerators no defined pool covers |
 | `GET` | `/host/topology` | The host's NUMA nodes and PCIe tree, with device readiness and warnings |
 
 ### Usage and metrics
@@ -490,7 +498,7 @@ UI's Host pages send it.
 | `PATCH` | `/projects/{id}` | Change description or quotas |
 | `DELETE` | `/projects/{id}` | Delete a project |
 | `GET` | `/projects/{id}/bindings` | A project's role bindings |
-| `POST` | `/projects/{id}/bindings` | Grant a role on the project to a user, team or token |
+| `POST` | `/projects/{id}/bindings` | Grant a role on the project to a user, team or token; a user may be given as `{"type": "User", "email": …}` (a verified address in your directory; none: `400 invalid`, several: `409 ambiguous`) |
 | `DELETE` | `/projects/{id}/bindings/{link}` | Remove a binding |
 | `GET` | `/system/bindings` | Host role bindings: the cluster's and every host's (`node`: one node's host only) |
 | `POST` | `/system/bindings` | Grant a host role, cluster-wide or, with `node` (id or name), on one node's host (`role.auditor`, `role.net-admin`, `grant.host-paths`) |
@@ -524,7 +532,7 @@ UI's Host pages send it.
 | `POST` | `/authz/validate` | Check a policy without saving it |
 | `POST` | `/authz/simulate` | Decide requests under the current policies plus proposed changes |
 | `POST` | `/authz/reload` | Reload policies |
-| `GET` | `/audit` | The audit log (`since`, `limit`, `project`, `user`; `directory`: a hosted directory's own log) |
+| `GET` | `/audit` | The audit log, newest first (`since`, `limit`, `project`, `user`, `order_by`, `ascending`, `page_token`; `directory`: a hosted directory's own log) |
 
 ### Tenants and login connectors
 
@@ -545,7 +553,7 @@ UI's Host pages send it.
 | `DELETE` | `/tenants/{id}/federations/{federation}` | Remove a federation; the tokens it gave stop working. Needs a recent login |
 | `GET` | `/directory/keys` | The directory's issuer URL (`issuer`, `issuer_fixed`) and its token signing keys: `{keys: [{kid, alg, created_at, retired_at, published_until, active}]}`; never a private part |
 | `POST` | `/directory/keys/rotate` | A new active signing key; the previous one stays published until its tokens expire. Needs a recent login |
-| `GET` | `/directory/settings` | The caller's directory's settings: `{settings: {tenant_label: {singular, plural}, self_service: {enabled, creator_teams, max_per_user, max_total, approval_required, slug_prefix, admins_may_delete}}}` (`directory.read`) |
+| `GET` | `/directory/settings` | The caller's directory's settings: `{settings: {tenant_label: {singular, plural}, self_service: {enabled, creator_teams, max_per_user, max_total, approval_required, slug_prefix, admins_may_delete, auto_create}}}` (`directory.read`) |
 | `PUT` | `/directory/settings` | Replace them (`{settings}`; an absent part takes its defaults: *Tenant*/*Tenants*, self-service off, 3 per user); teams by id or name, answered as ids (`directory.tenants`) |
 | `GET` | `/d/{directory}/.well-known/openid-configuration` | Public: the directory's OIDC discovery document (`issuer`, `jwks_uri`, ES256) |
 | `GET` | `/d/{directory}/jwks.json` | Public: the directory's signing keys as a JWKS, cacheable for 5 minutes |
@@ -556,10 +564,10 @@ UI's Host pages send it.
 | `POST` | `/d/{directory}/device/inspect` | What a device code is for (`{user_code}`), for the web UI's `/device` page |
 | `POST` | `/d/{directory}/device/answer` | Approve or refuse a device code (`{user_code, approve}`) |
 | `GET` | `/tenants/{id}/members` | List explicit members |
-| `POST` | `/tenants/{id}/members` | Add a member |
+| `POST` | `/tenants/{id}/members` | Add a member; a user by id or by `email`, as for project bindings |
 | `DELETE` | `/tenants/{id}/members/{principal}` | Remove a member (`user:<id>` or `team:<id>`) |
 | `GET` | `/tenants/{id}/bindings` | Tenant role bindings |
-| `POST` | `/tenants/{id}/bindings` | Grant a tenant role |
+| `POST` | `/tenants/{id}/bindings` | Grant a tenant role; a user by id or by `email` |
 | `DELETE` | `/tenants/{id}/bindings/{link}` | Remove a tenant role binding |
 | `GET` | `/tenants/{id}/device-pools` | The tenant's pools on this cluster, with what they hold |
 | `PUT` | `/tenants/{id}/device-pools` | Replace the tenant's pools: `{pools: [{name, from, max, projects}]}` |
@@ -741,7 +749,7 @@ id or its name.
 
 | Method | Path | What it does |
 |---|---|---|
-| `GET` | `/cluster/status` | Raft group, nodes, versions, CA rotation (`?ports=true`: port reachability) |
+| `GET` | `/cluster/status` | Raft group, nodes, versions, CA rotation (`?ports=true`: port reachability). `raft.stalled_since` while the serving server's log applies nothing |
 | `POST` | `/cluster/init` | Turn this host into a cluster of one |
 | `POST` | `/cluster/join` | Join this host to a cluster with a join token |
 | `POST` | `/cluster/import` | Join with this host's VMs and disks (waits for approval) |
@@ -755,6 +763,8 @@ id or its name.
 | `GET` | `/cluster/snapshot` | Download a snapshot of the replicated store (store it like the database) |
 | `GET` | `/cluster/settings/ovn` | Whether cluster networks use OVN, and its settings |
 | `PUT` | `/cluster/settings/ovn` | Turn OVN on or off and set the shared edge |
+| `GET` | `/cluster/settings/pci` | The device pools and grants, and whether they come from the cluster setting or this server's file |
+| `PUT` | `/cluster/settings/pci` | Replace the device pools and grants (`system-admin`) |
 | `GET` | `/cluster/settings/ovn/edge-defaults` | A suggested shared edge from what the nodes report |
 | `GET` | `/cluster/ovn` | OVN as it is now: databases, chassis, gateways |
 | `GET` | `/cluster/ovn/tunnels` | Each node's Geneve tunnels and their state |

@@ -46,6 +46,23 @@ jobs:
     - name: Check formatting
       run: cargo fmt --all --check
 
+  # Cargo.lock against the RustSec advisory database. The advisories we
+  # accept, and why, are in .cargo/audit.toml. A new advisory fails this job
+  # even when the change didn't touch dependencies: update, or record why it
+  # doesn't apply.
+  audit:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+
+    steps:
+    - uses: actions/checkout@v7
+    - uses: taiki-e/install-action@v2
+      with:
+        tool: cargo-audit
+    - name: Audit dependencies
+      run: cargo audit
+
   # The RPC API's protos (spec/18-grpc.md G-D9). Building them needs only
   # cargo (protox in glidex-api's build.rs); buf checks style and
   # compatibility.
@@ -60,7 +77,7 @@ jobs:
         fetch-depth: 0
     - uses: bufbuild/buf-action@v1
       with:
-        version: 1.74.0
+        version: 1.75.0
         setup_only: true
     - name: Lint and format
       working-directory: crates/glidex-api

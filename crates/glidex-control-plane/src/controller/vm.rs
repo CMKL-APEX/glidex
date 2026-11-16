@@ -56,6 +56,9 @@ const CRASH_BACKOFF_BASE: u64 = 10;
 const CRASH_BACKOFF_MAX: u64 = 300;
 /// Slack after a stop's grace before the controller escalates (§9.1).
 const STOP_SLACK_SECS: u64 = 15;
+/// How long after a launch a Pylon VM missing from pylond counts as
+/// unmanaged (spec/30-pylon.md P16).
+const PYLON_REGISTER_SECS: u64 = 10;
 
 /// Set (or update) a condition; `last_transition_at` moves only when its
 /// status changes.
@@ -89,6 +92,39 @@ pub(crate) fn set_cond(
 
 pub(crate) fn clear_cond(conds: &mut Vec<Condition>, kind: &str) {
     conds.retain(|c| c.kind != kind);
+}
+
+/// How long the shim waits for a hypervisor's socket (spec/12-reconciliation.md
+/// D22): `base`, plus, with passthrough devices, 1 s per GiB of guest memory
+/// and 1 s per 2 GiB of the devices' memory BARs, up to 15 minutes. Before its
+/// API answers, Cloud Hypervisor maps the VM's memory into the IOMMU once and
+/// each device's BARs after it, 4 KiB at a time on a 6.8 host: on prism2, 4 GiB
+/// took 3.6 s and an A100's 64 GiB BAR 27 s.
+fn ready_timeout_secs(base: u64, mem_size_mib: u32, bar_mib: &[u64]) -> u64 {
+    const MAX: u64 = 15 * 60;
+    if bar_mib.is_empty() {
+        return base;
+    }
+    let mem = u64::from(mem_size_mib).div_ceil(1024);
+    let bars = bar_mib.iter().sum::<u64>().div_ceil(2048);
+    (base + mem + bars).min(MAX.max(base))
+}
+
+/// The MiB of memory BARs 0–5 in a device's sysfs `resource` file (one
+/// `start end flags` line per resource; the ROM and SR-IOV BARs follow).
+fn mem_bar_mib(resource: &str) -> u64 {
+    const IORESOURCE_MEM: u64 = 0x200;
+    let hex = |s: &str| u64::from_str_radix(s.trim_start_matches("0x"), 16).unwrap_or(0);
+    let bytes: u64 = resource
+        .lines()
+        .take(6)
+        .filter_map(|l| {
+            let mut f = l.split_whitespace().map(hex);
+            let (start, end, flags) = (f.next()?, f.next()?, f.next()?);
+            (end > start && flags & IORESOURCE_MEM != 0).then(|| end - start + 1)
+        })
+        .sum();
+    bytes.div_ceil(1 << 20)
 }
 
 fn crash_delay(restarts: u32) -> u64 {
@@ -173,6 +209,19 @@ fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind,
 /// unchanged status is written to refresh it.
 const RECONCILED_STAMP_SECS: u64 = 600;
 
+/// What of a status is written at once (spec/14-clustering.md D27): all of
+/// it but the conditions' messages and reasons, with the conditions in
+/// kind order.
+fn acted_on(s: &VmStatus) -> VmStatus {
+    let mut s = s.clone();
+    for c in &mut s.conditions {
+        c.message.clear();
+        c.reason.clear();
+    }
+    s.conditions.sort_by(|a, b| a.kind.cmp(&b.kind));
+    s
+}
+
 /// The port a NIC gets: on its network's bridge, or, on a cluster network,
 /// on `br-int` as the logical port OVN knows (spec/14-clustering.md §11.3, §11.5).
 fn port_spec(
@@ -181,6 +230,7 @@ fn port_spec(
     nic: u8,
     mac: String,
     queue_pairs: u8,
+    att: &crate::models::NetworkAttachment,
 ) -> VmPortSpec {
     let cluster = net.scope == crate::network::NetworkScope::Cluster;
     VmPortSpec {
@@ -198,6 +248,8 @@ fn port_spec(
         mtu: net.mtu,
         queue_pairs,
         ovn_lport: cluster.then(|| glidex_ovs::names::port_name(vm_id, nic).unwrap_or_default()),
+        port_security: att.port_security,
+        allowed_addresses: att.allowed_addresses.clone(),
     }
 }
 
@@ -333,7 +385,21 @@ impl VmManager {
         if status.phase != cur.status.phase {
             status.phase_since = Some(now);
         }
-        if cur.status == status
+        // D27: a condition keeps its transition time while its status holds,
+        // also when the round cleared it and set it again.
+        for c in &mut status.conditions {
+            if let Some(old) = cur
+                .status
+                .conditions
+                .iter()
+                .find(|o| o.kind == c.kind && o.status == c.status)
+            {
+                c.last_transition_at = old.last_transition_at;
+            }
+        }
+        // D27: a change only to conditions' messages or reasons waits for the
+        // stamp; a status change of any condition is written at once.
+        if acted_on(&cur.status) == acted_on(&status)
             && events.is_empty()
             && now.saturating_sub(cur.status.last_reconciled_at) < RECONCILED_STAMP_SECS
         {
@@ -683,7 +749,16 @@ impl VmManager {
             "controller",
             kind,
             "InstanceExited",
-            format!("instance {} ended: {}", inst.instance_id, cause.as_str()),
+            match (cause, message.as_deref().and_then(|m| m.lines().next())) {
+                // Why a launch failed, as the shim recorded it.
+                (ExitCause::LaunchFailed, Some(why)) if !why.is_empty() => format!(
+                    "instance {} ended: {}: {}",
+                    inst.instance_id,
+                    cause.as_str(),
+                    why
+                ),
+                _ => format!("instance {} ended: {}", inst.instance_id, cause.as_str()),
+            },
         ));
         match cause {
             ExitCause::Requested => {}
@@ -1181,6 +1256,21 @@ impl VmManager {
                 growpart_disk = root.as_ref().map(|(_, d)| d.id.clone());
                 growpart_seq = root.as_ref().map(|(_, d)| d.applied_extend_root_seq);
             }
+            // The agent only where its first heartbeat may park vCPUs safely:
+            // with park=vmm the guest stalls on parked vCPUs (P18, P19).
+            if vm.hypervisor() == HypervisorType::Pylon
+                && crate::hypervisor::pylon::park_mode_here() == crate::hypervisor::pylon::Park::Kvm
+            {
+                let path = crate::hypervisor::pylon::PYLON_GUEST_AGENT;
+                seed.pylon_guest_agent = blocking(move || std::fs::read(path))
+                    .await
+                    .map_err(before_intent)?
+                    .ok()
+                    .map(std::sync::Arc::new);
+                if seed.pylon_guest_agent.is_none() {
+                    tracing::warn!(vm_id = %vm.id, path, "no Pylon guest agent on this host; pylond won't see the guest's demand");
+                }
+            }
             if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
                 tracing::info!(vm_id = %vm.id, "VM has no login credential; the guest has no way to log in");
             }
@@ -1312,6 +1402,23 @@ impl VmManager {
                 .map_err(before_intent)?
         };
         let settings = self.settings();
+        let bar_mib = {
+            let devices = config.vfio_devices.clone();
+            blocking(move || {
+                devices
+                    .iter()
+                    .map(|d| {
+                        mem_bar_mib(
+                            &std::fs::read_to_string(format!("{d}/resource")).unwrap_or_default(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .map_err(before_intent)?
+        };
+        let ready_timeout =
+            ready_timeout_secs(settings.ready_timeout_secs, config.mem_size_mib, &bar_mib);
         // Shared disks' locks: the shim takes them before the hypervisor
         // starts (spec/24-storage.md S16).
         let volume_locks = config
@@ -1333,7 +1440,7 @@ impl VmManager {
             shim_socket: paths.shim_socket.clone(),
             log_path: paths.log.clone(),
             log_max_bytes: settings.log_max_bytes,
-            ready_timeout_secs: settings.ready_timeout_secs,
+            ready_timeout_secs: ready_timeout,
             host_shutdown_grace_secs: settings.host_shutdown_grace_secs,
             spec: serde_json::json!({ "generation": vm.generation, "spec": vm.spec }),
             meter_poll_secs: settings.meter_poll_secs,
@@ -1419,8 +1526,7 @@ impl VmManager {
                 ),
                 intent: true,
             })?;
-        let deadline =
-            tokio::time::Instant::now() + Duration::from_secs(settings.ready_timeout_secs + 5);
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(ready_timeout + 5);
         loop {
             match InstanceFile::read(&paths.instance) {
                 Ok(Some(f)) if f.instance_id == instance_id && f.phase != Phase::Launching => {
@@ -1460,18 +1566,19 @@ impl VmManager {
     }
 
     /// Attach (or re-attach: netd is idempotent) every NIC of the spec,
-    /// first detaching ports the spec no longer has. Each port is written
-    /// to `status.nics` before netd attaches it.
+    /// first detaching ports the spec no longer has or has with another
+    /// MAC. Each port is written to `status.nics` before netd attaches it.
     async fn attach_ports(
         &self,
         vm: &Vm,
         st: &mut VmStatus,
     ) -> Result<Vec<NicBinding>, VmManagerError> {
         let networks = vm.config().networks.clone();
+        let spec = vm.spec_nics();
         let stale = |n: &NicStatus| {
-            networks
-                .get(n.nic_index as usize)
-                .is_some_and(|a| a.network == n.network)
+            spec.iter().any(|(i, network, mac)| {
+                *i == n.nic_index && *network == n.network && mac.eq_ignore_ascii_case(&n.mac)
+            })
         };
         if st.nics.iter().any(|n| !stale(n)) {
             self.detach_ports(&vm.id, st, Some(&stale)).await?;
@@ -1510,7 +1617,7 @@ impl VmManager {
             }
             let queue_pairs =
                 nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
-            let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs);
+            let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs, att);
             let netd = self.netd.clone();
             let res: AttachResult = blocking(move || netd.call(Op::AttachVmPort(spec))).await??;
             if let Some(n) = st.nics.iter_mut().find(|n| n.nic_index as usize == i) {
@@ -1831,6 +1938,56 @@ impl VmManager {
             } else {
                 clear_cond(&mut st.conditions, "VcpuResizePending");
             }
+
+            // Whether pylond manages the VM (spec/30-pylon.md P16): the VMM
+            // logs a refused registration only to the console log.
+            if guest == GuestState::Running {
+                use crate::hypervisor::pylon;
+                let api = paths.api_socket.clone();
+                let reg = blocking(move || {
+                    pylon::pylond_registration(
+                        pylon::DEFAULT_PYLOND_SOCKET,
+                        pylon::pylon_vm_id(&api),
+                    )
+                })
+                .await?;
+                // The VMM registers as it starts; give it a moment.
+                let settled = st.instance.as_ref().is_none_or(|i| {
+                    crate::tenancy::now().saturating_sub(i.launched_at) >= PYLON_REGISTER_SECS
+                });
+                match reg {
+                    Ok(pylon::PylondRegistration::Listed) => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::True,
+                        "Registered",
+                        "pylond manages the VM's cores",
+                    ),
+                    Ok(pylon::PylondRegistration::NotListed) if settled => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::False,
+                        "NotRegistered",
+                        "pylond has no registration for the VM: it refused it (the VMM says why \
+                         in the console log, `gxctl log`) or restarted since; restart the VM",
+                    ),
+                    Ok(pylon::PylondRegistration::NoPylond) => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::False,
+                        "NoPylond",
+                        "glidex-pylond isn't running on this node",
+                    ),
+                    Ok(pylon::PylondRegistration::NotListed) => {}
+                    Err(e) => set_cond(
+                        &mut st.conditions,
+                        "PylonManaged",
+                        Tristate::Unknown,
+                        "PylondError",
+                        e.to_string(),
+                    ),
+                }
+            }
         } else if let Some(observed_vcpus) = observed.vcpu_count {
             let desired_vcpus = vm.spec.config.vcpu_count;
             let launched_max = st
@@ -2050,6 +2207,7 @@ impl VmManager {
                 nic.nic_index,
                 nic.mac.clone(),
                 nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count),
+                att,
             );
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();
@@ -2301,6 +2459,43 @@ mod tests {
         );
     }
 
+    #[test]
+    fn passthrough_gives_the_hypervisor_longer_to_answer() {
+        assert_eq!(
+            ready_timeout_secs(30, 16384, &[]),
+            30,
+            "no devices: the base"
+        );
+        // prism2's ch1k: 4 GiB, a ConnectX-6 (one 32 MiB BAR) and an A100
+        // (16 MiB, 64 GiB, 32 MiB). It answered after 31 s.
+        assert_eq!(ready_timeout_secs(30, 4096, &[32, 65_584]), 30 + 4 + 33);
+        // A part GiB counts whole.
+        assert_eq!(ready_timeout_secs(30, 1536, &[32]), 30 + 2 + 1);
+        // Eight A100s and 1 TiB: capped.
+        assert_eq!(ready_timeout_secs(30, 1 << 20, &[65_584; 8]), 900);
+    }
+
+    #[test]
+    fn memory_bars_are_read_from_sysfs() {
+        // An A100: BARs 0, 1 and 3, an expansion ROM, and an empty SR-IOV BAR.
+        let a100 = "\
+0x00000000f3000000 0x00000000f3ffffff 0x0000000000040200
+0x0000022000000000 0x0000022fffffffff 0x000000000014220c
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x0000023420000000 0x0000023421ffffff 0x000000000014220c
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+0x000000000000e000 0x000000000000e07f 0x0000000000040101
+0x00000000f2000000 0x00000000f207ffff 0x0000000000046200
+0x0000000000000000 0x0000000000000000 0x0000000000000000
+";
+        assert_eq!(
+            mem_bar_mib(a100),
+            16 + 65_536 + 32,
+            "I/O ports and the ROM don't count"
+        );
+        assert_eq!(mem_bar_mib(""), 0);
+    }
+
     /// spec/14-clustering.md §4.1 / C0: an idle VM causes no store write across
     /// ten resync rounds.
     #[tokio::test]
@@ -2328,6 +2523,42 @@ mod tests {
                 .unwrap();
         }
         assert_eq!(db.revision(), before, "ten idle rounds wrote to the store");
+        // D27: a condition cleared and set again with the same status, or a
+        // change only to its message, waits for the stamp.
+        let cond = |status: Tristate, message: &str, at: u64| Condition {
+            kind: "HypervisorReachable".into(),
+            status,
+            reason: "Reachable".into(),
+            message: message.into(),
+            last_transition_at: at,
+        };
+        let mut st = manager.get_vm(&vm.id).await.unwrap().status;
+        st.conditions = vec![cond(Tristate::True, "", 1)];
+        manager
+            .write_status(&vm.id, vm.generation, st, vec![])
+            .await
+            .unwrap();
+        let before = db.revision();
+        for (i, message) in ["", "", "a new message"].into_iter().enumerate() {
+            let mut st = manager.get_vm(&vm.id).await.unwrap().status;
+            st.conditions = vec![cond(Tristate::True, message, 100 + i as u64)];
+            manager
+                .write_status(&vm.id, vm.generation, st, vec![])
+                .await
+                .unwrap();
+        }
+        assert_eq!(db.revision(), before, "condition bookkeeping wrote");
+        let stored = manager.get_vm(&vm.id).await.unwrap().status;
+        assert_eq!(stored.conditions[0].last_transition_at, 1);
+        // A condition's status change is written at once.
+        let mut st = stored;
+        st.conditions = vec![cond(Tristate::False, "", 200)];
+        manager
+            .write_status(&vm.id, vm.generation, st, vec![])
+            .await
+            .unwrap();
+        assert_eq!(db.revision(), before + 1);
+        let before = db.revision();
         // A real change is written.
         let mut changed = manager.get_vm(&vm.id).await.unwrap().status;
         changed.never_started = !changed.never_started;

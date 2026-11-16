@@ -3,9 +3,9 @@ import { listCredentials, listDisks, listImages, listNetworks, listProjectPciPoo
 import type { PciPoolJson } from "../gen/glidex/cluster/v1/cluster_pb";
 import { Link } from "react-router-dom";
 import type { ApiToken, CreateVmRequest, CredentialInfo, DiskInfo, HypervisorType, ImageInfo, Network } from "../types";
-import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwareFor, formatBytes, imageState, isDiskImage, isKernel, networkModeLabel, networkUsableBy } from "../types";
+import { HYPERVISOR_LABELS, HYPERVISOR_TO_PROTO, archLabel, archToProto, firmwareFor, formatBytes, imageState, isDiskImage, isClusterNetwork, isKernel, networkModeLabel, networkUsableBy } from "../types";
 import { useSession } from "../session";
-import { useNodes } from "../nodes";
+import { hostOf, useNodes } from "../nodes";
 import PlacementPicker from "./PlacementPicker";
 import GpuPicker, { sysfsPath } from "./GpuPicker";
 
@@ -53,6 +53,8 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const [serviceAccounts, setServiceAccounts] = useState<ApiToken[]>([]);
   const [networks, setNetworks] = useState<Network[]>([]);
   const [selectedNetworks, setSelectedNetworks] = useState<string[]>([]);
+  /** Selected networks whose NIC gets no port security (decision 19). */
+  const [unchecked, setUnchecked] = useState<string[]>([]);
   const [kernelPath, setKernelPath] = useState("");
   const [initrdPath, setInitrdPath] = useState("");
   const [kernelSource, setKernelSource] = useState<KernelSource>("image");
@@ -260,6 +262,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
   const otherPools = pools.filter((p) => p.class !== "gpu");
   // Whose GPUs are listed: this host's, or in a cluster the node chosen.
   const gpuNode = nodes.clustered ? node || null : (nodes.self ?? "local");
+  const gpuHost = nodes.clustered && gpuNode ? hostOf(gpuNode, nodes.self) : ({ type: "Host" } as const);
   // The picked GPUs and the paths typed under Advanced, each once.
   const vfioPaths = [
     ...new Set([
@@ -292,7 +295,11 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         credential: seeded && credential ? credential : undefined,
         service_account: serviceAccount || undefined,
         networks:
-          selectedNetworks.length > 0 ? selectedNetworks.map((network) => ({ network })) : undefined,
+          selectedNetworks.length > 0
+            ? selectedNetworks.map((network) =>
+                unchecked.includes(network) ? { network, port_security: false } : { network },
+              )
+            : undefined,
         rootfs_path: rootSource === "path" ? rootfsPath : undefined,
         image: rootSource === "image" ? image : undefined,
         root_disk_size_gib: rootSource === "image" && rootSizeGib ? Number(rootSizeGib) : undefined,
@@ -416,7 +423,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-gray-700">
           <input
             type="checkbox"
-            className="rounded border-gray-300 text-sky-600 focus:ring-sky-500"
+            className="rounded-sm border-gray-300 text-sky-600 focus:ring-sky-500"
             checked={isElastic}
             onChange={(e) => {
               setIsElastic(e.target.checked);
@@ -436,7 +443,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               <label className="block text-xs font-medium text-gray-600">Min vCPUs</label>
               <input
                 type="number"
-                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded-sm focus:ring-2 focus:ring-sky-500 bg-white"
                 min={hypervisor === "pylon" ? 0 : 1}
                 max={hypervisor === "pylon" ? (typeof maxVcpus === "number" ? maxVcpus : 64) : vcpuCount}
                 value={minVcpus}
@@ -447,7 +454,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               <label className="block text-xs font-medium text-gray-600">Max vCPUs</label>
               <input
                 type="number"
-                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded-sm focus:ring-2 focus:ring-sky-500 bg-white"
                 min={hypervisor === "pylon" ? (typeof minVcpus === "number" ? minVcpus : 1) : vcpuCount}
                 max={hypervisor === "pylon" ? 64 : 255}
                 value={maxVcpus}
@@ -464,7 +471,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               <label className="block text-xs font-medium text-gray-600">Weight (1–10000)</label>
               <input
                 type="number"
-                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-2 focus:ring-sky-500 bg-white"
+                className="mt-1 w-full px-2 py-1 text-sm border border-gray-300 rounded-sm focus:ring-2 focus:ring-sky-500 bg-white"
                 min="1"
                 max="10000"
                 placeholder="100"
@@ -482,6 +489,7 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
         onAsk={askPool}
         sizesVm={!sizedByHand}
         node={gpuNode}
+        host={gpuHost}
         picked={pickedGpus}
         onPick={setPickedGpus}
       />
@@ -667,6 +675,29 @@ export default function CreateVmForm({ onSubmit, onCancel }: CreateVmFormProps) 
               </label>
             ))}
           </div>
+          {selectedNetworks.some((id) => networks.some((n) => n.id === id && !isClusterNetwork(n))) && (
+            <div className="mt-2 flex flex-wrap gap-3">
+              {networks
+                .filter((n) => selectedNetworks.includes(n.id) && !isClusterNetwork(n))
+                .map((n) => (
+                  <label key={n.id} className="flex items-center space-x-2 text-xs text-gray-600">
+                    <input
+                      type="checkbox"
+                      checked={unchecked.includes(n.id)}
+                      onChange={(e) =>
+                        setUnchecked((cur) =>
+                          e.target.checked ? [...cur, n.id] : cur.filter((x) => x !== n.id),
+                        )
+                      }
+                    />
+                    <span>
+                      No port security on <span className="font-mono">{n.name}</span> (a router or firewall VM;
+                      a project owner's)
+                    </span>
+                  </label>
+                ))}
+            </div>
+          )}
           <p className="mt-1 text-xs text-gray-500">
             One NIC per selected network, in this order. Manage networks on the
             Networking page.

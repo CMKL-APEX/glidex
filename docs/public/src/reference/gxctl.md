@@ -10,15 +10,21 @@ gxctl --project lab disk list
 gxctl --url https://host.example.org:8841 auth login --oidc
 ```
 
+One command exits 1 when it prints an error or its usage line (an
+unknown command, a missing argument, a request that fails), 2 when gxctl
+can't set up its connection (no usable socket, URL or profile, or a
+profile bound to another cluster), and 0 otherwise, so a script can tell.
+
 In the shell, `help` (or `?`) lists the commands, Tab completes command
 names, subcommands and file paths, and `exit` (`quit`, `q`) leaves.
 Words can be quoted: `project create lab --description "Lab VMs"`.
 Noun commands also answer to their plural (`images`, `projects`,
 `tenants`, …), and many subcommands to short forms (`ls`, `rm`).
 
-`gxctl --help` shows the global options. Commands have no `--help` of
-their own: run one without its arguments to see its usage line, or
-`gxctl help` for the full list. Both are authoritative over this page.
+`gxctl --help` shows the global options. A command's `--help` (or
+`-h`), and `help <command>`, show that command's usage lines and never
+run it: `gxctl audit --help`. `gxctl help` gives the full list. Help
+needs no server. Both are authoritative over this page.
 
 ## Global options
 
@@ -61,13 +67,13 @@ See [Logging in](../user-guide/logging-in.md).
 
 | Command | Effect |
 |---|---|
-| `auth login [--url U]… [--profile P] [--directory [ID] [--via PROFILE] \| --oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--server U` is the same as `--url U`. `--directory`: device flow at a glidex directory (default `local`); `--via`: the profile of another organization's directory servers; `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host: a host name's first label, or a whole IP address with dashes: `192.0.2.10` gives `192-0-2-10`, `[fd00::1]` gives `fd00-1`), `--non-interactive` |
-| `auth logout [--profile P] [--revoke] [--keep-token]` | Drop a profile's credential; `--revoke` also revokes the token on the server |
-| `auth status [--profile P]` | Target, cluster, trust mode, token and expiry |
+| `auth login [--url U]… [--profile P] [--directory [ID] [--via PROFILE] \| --oidc \| --token \| --pam-user U] [--connector ID]` | Log in and save a profile. `--server U` is the same as `--url U`. `--directory`: device flow at a glidex directory (default `local`); `--via`: the profile of another organization's directory servers; `--oidc`: device flow in a browser; `--token`: paste a token (read without echo); `--pam-user`: a password login. Also `--pin sha256/…` (expected fingerprint), `--insecure`, `--rebind`, `--use` (make it current), `--name N` / `--days N` (the token's name and lifetime), `--save` (record a new target as a profile named after its host: a host name's first label, or a whole IP address with dashes: `192.0.2.10` gives `192-0-2-10`, `[fd00::1]` gives `fd00-1`), `--non-interactive`. With neither `--url` nor `--profile`, it logs in again to the profile of `gxctl --profile`, else the current one |
+| `auth logout [--profile P] [--revoke] [--keep-token]` | Drop a profile's credential (default: the profile of `gxctl --profile`, else the current one); `--revoke` also revokes the token on the server. A directory login (`--directory`) is also ended at the directory, with the tokens it gave |
+| `auth status [--profile P]` | Target, cluster, trust mode, token and expiry (default: the profile of `gxctl --profile`, else the current one) |
 | `auth use <profile\|->` | Set the current profile (`-` clears it) |
 | `auth profiles [--all]` | List profiles |
 | `auth profiles remove <name> [--forget-token]` | Delete a profile from the config file. One that still holds a token is refused: revoke it first with `auth logout --profile <name> --revoke`, or `--forget-token` drops it unrevoked. Removing the current profile leaves none current: while other profiles remain, commands fail with *no current profile; choose one with --profile*; pick one with `gxctl --profile <other> auth use <other>` |
-| `auth trust list \| fetch \| remove <pin> \| remove --all [--yes]` | A profile's pinned certificate fingerprints; `fetch` shows what the server claims, sending nothing else |
+| `auth trust list \| fetch \| remove <pin> \| remove --all [--yes] [--profile P]` | A profile's pinned certificate fingerprints (default: the profile of `gxctl --profile`, else the current one); `fetch` shows what the server claims, sending nothing else |
 | `auth token …`, `auth whoami` | Same as `token …`, `whoami` |
 | `login --oidc [--connector ID] \| --token` | Older form: log in over HTTPS and save the token file. Not needed on the socket |
 | `logout [--revoke]` | Delete the token file; `--revoke` revokes the token first |
@@ -83,12 +89,14 @@ See [Logging in](../user-guide/logging-in.md).
 |---|---|
 | `list`, `ls` | List VMs; `STATE` shows `state → desired` while they differ |
 | `get <vm>` | VM details, and why it isn't ready yet if it isn't; a `Pool:` line per device pool request with the devices it got; for a GPU request, `GPUs: <count> from <pool>` (with ` (NVLink)` when asked), and for a VM aligned over several NUMA nodes a `NUMA <i>:` line per guest NUMA node: its host node, vCPUs, memory and devices |
-| `create` | Create a VM, asking for name, GPUs (`count[:pool][:nvlink]`, such as `4:a100`; optional: with GPUs, an empty vCPU or memory answer takes the pool's per-device sizing), size, hypervisor, firmware, image or disk, credential, networks, PCI devices and device pools (`a100:2`, or `a100:2:switch` for one PCIe switch). `none` at the firmware prompt is kernel boot from host paths: it asks for the kernel image path, the root filesystem path and the kernel arguments (default `console=ttyS0`, `ttyAMA0` on aarch64, `root=/dev/vda reboot=k panic=1`) |
+| `create` | Create a VM, asking for name, GPUs (`count[:pool][:nvlink]`, such as `4:a100`; optional: with GPUs, an empty vCPU or memory answer takes the pool's per-device sizing), size, hypervisor (`cloudhypervisor`, `qemu` or `pylon`), elastic CPU (minimum and maximum vCPUs and weight; asked by default on Pylon), firmware, image or disk, data disks, credential, networks, PCI devices and device pools (`a100:2`, or `a100:2:switch` for one PCIe switch). `none` at the firmware prompt is kernel boot from host paths: it asks for the kernel image path, the root filesystem path and the kernel arguments (default `console=ttyS0`, `ttyAMA0` on aarch64, `root=/dev/vda reboot=k panic=1`) |
+| `create <name> (--image I [--disk-size GiB] \| --root-disk D \| --rootfs PATH) [flags]` | Create a VM without prompts, for scripts. Exactly one boot disk: an image (`--disk-size`: the root disk's size, default 10 GiB), an existing disk, or a host path. Flags: `--vcpus N`, `--memory MiB\|NG`, `--hypervisor ch\|qemu\|pylon`, `--firmware F\|PATH\|none` (`none`: kernel boot), `--kernel K\|PATH`, `--initrd PATH` (with a kernel path), `--follow-kernel`, `--kernel-args A`, `--network N` (repeatable or comma-separated; `none` for no NIC), `--credential C\|none`, `--data-disk D` (repeatable), `--cloud-init PATH`, `--gpus N[:pool][:nvlink]`, `--devices pool[:n],…`, `--vfio PATH` (repeatable), `--min-vcpus N`, `--max-vcpus N`, `--cpu-weight N`, `--service-account SA`, `--node N`, `--start` (start it once created). What isn't given takes the default the prompt offers: 1 vCPU and 512 MiB (the pool's sizing with `--gpus`), Cloud Hypervisor, the newest firmware image for it (kernel boot when there is none, or with `--kernel`), the boot image's own kernel, your own credential if the project has one, and the `default` network if there is one. An unknown flag is refused. |
 | `start <vm> [--no-wait]` | Start or resume; waits up to 60 s for the VM to run |
 | `stop <vm> [--graceful [secs]] [--no-wait]` | Stop. `--graceful` presses the power button and stops it hard after `secs` (default 60) |
 | `pause <vm> [--no-wait]` | Pause |
 | `service-account <vm> [--set <account> \| --none]` | Show or change the VM's service account, the identity its guest gets glidex tokens for (from its next token) |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
+| `rename <vm> <new-name>` | Rename a VM, and the root disk it made from an image; the guest's hostname follows at the next start |
 | `memory <vm> [<MiB>\|<N>G]` | Show a VM's memory, or change it from the next start |
 | `scale <vm> [--vcpus N] [--min N] [--max N] [--weight N]` | Show a VM's vCPUs, elastic range and weight, or change them. On an elastic Pylon VM the vCPU count is the maximum. See [Elastic CPU](../user-guide/vms.md#elastic-cpu) |
 | `delete <vm> [--keep-disk] [--no-wait]`, `rm` | Delete after confirmation, with its own root disk unless `--keep-disk` |
@@ -100,7 +108,7 @@ See [Logging in](../user-guide/logging-in.md).
 | `detach-device <vm> <path>` | Detach a PCI device |
 | `attach-disk <vm> <disk>` | Attach a data disk; on a running VM from its next start |
 | `detach-disk <vm> <disk>` | Detach a data disk, which is kept; on a running VM at its next start |
-| `attach-network <vm> <network> [--mac <mac>]` | Add a NIC on a network; on a running VM from its next start |
+| `attach-network <vm> <network> [--mac <mac>] [--no-port-security] [--allow <addr>,...]` | Add a NIC on a network; on a running VM from its next start. `--no-port-security`: no port checks on it (a project owner's); `--allow`: addresses or prefixes it may also send from. See [Networks](../user-guide/networks.md#port-security) |
 | `detach-network <vm> <network> [--mac <mac>]` | Remove the VM's NIC on a network (the MAC picks one of several); on a running VM at its next start |
 | `watch [kinds]` | Follow changes until Ctrl-C; kinds are `vms,disks,images,networks` (the default), also `nodes`, `imports`, `cluster`, `policy`, `datastores` |
 
@@ -146,8 +154,8 @@ Private key files are refused before anything is sent. See
 | `disk rm <disk>` | Delete after confirmation |
 | `datastore list`, `datastores`, `datastore ls` | Datastores, how many nodes reach each, and free space: `NAME`, `DEFAULT` (`*`), `NODES OK` (such as `2/3`), `FREE` (the most on one node), `DISKS`, `PATH` (empty for LVM-thin) |
 | `datastore show <datastore>`, `get` | Id, paths (for LVM-thin, the volume group and thin pool, and each node's own volume group), nodes, overcommit, disks, and each node's view: free space, why it can't reach it, mount or thin pool warnings and, for LVM-thin, the image volumes it keeps (`image volumes:`, by image id) |
-| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL \| --hyperstor API[,API…] --pool N --token-file F) [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`): a path under `/srv/glidex`, or with `--lvm` LVM-thin in volume group VG's thin pool POOL on each node, or with `--hyperstor` pool N of a hyperstor cluster, enrolling with the management token in F. `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path (for `--lvm`, its own volume group); `--default`: the default for new disks |
-| `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit]` | Change the nodes, the nodes' own paths, the default or overcommit (`system-admin`) |
+| `datastore create <name> (--path P [--shared] \| --lvm VG/POOL \| --hyperstor API[,API…] --pool N --token-file F [--mgmt-url URL]) [--node-path NODE=P]… [--nodes N,M] [--default] [--no-overcommit]` | Register a datastore (`system-admin`): a path under `/srv/glidex`, or with `--lvm` LVM-thin in volume group VG's thin pool POOL on each node, or with `--hyperstor` pool N of a hyperstor cluster, enrolling with the management token in F; `--mgmt-url`: the cluster's management UI (`https://host[:port]`), linked as *Manage cluster*. `--shared`: one filesystem every node mounts; `--nodes`: only these nodes; `--node-path`: a node's own path (for `--lvm`, its own volume group); `--default`: the default for new disks |
+| `datastore set <datastore> [--node-path NODE=P]… [--nodes N,M\|--all-nodes] [--default\|--no-default] [--overcommit\|--no-overcommit] [--mgmt-url URL]` | Change the nodes, the nodes' own paths, the default, overcommit or a hyperstor datastore's management UI (`--mgmt-url ""` clears it) (`system-admin`) |
 | `datastore rm <datastore>`, `delete` | Delete one no disk is on and, for LVM-thin, where no node keeps image volumes; without confirmation; its files stay (`system-admin`) |
 
 A datastore is named by its name or id. See
@@ -191,6 +199,14 @@ Routers have no `gxctl` command yet: use the web UI or the
 | `uplink-rm <bridge> <name>` | Remove an uplink, restoring the NIC |
 | `pci`, `pci-devices` | List the host's PCI devices, with their NUMA node and whether each is ready for passthrough |
 | `pci pools [--project P]` | The device pools: their devices per node, holders, and how many are free; with `--project`, the pools that project may use and how many are free |
+| `pci pool show <pool>` | One pool of the cluster setting as JSON, with its grants |
+| `pci pool set <pool.json>` | Add a pool to the cluster setting from a file holding one pool (`{"name": ..., "match": {...}}`), or replace the pool of that name |
+| `pci pool rm <pool>` | Remove a pool and its grants from the cluster setting; refused while VMs or tenant pools use it |
+| `pci pool adopt <pool> [--name N]` | Make a discovered pool (`amd-7551`) a defined one in the cluster setting, under its name or `N` |
+| `pci grant` | List the cluster's grants |
+| `pci grant <pool\|address> [--node N] [--projects a,b] [--tenants t,u]` | Let projects and tenants use a pool, or the device at an address (on node `N`, else on every node); `--tenants '*'` opens a pool to every admitted tenant. Granting a discovered pool adopts it under its name |
+| `pci grant rm <pool\|address> [--node N] [--projects a,b] [--tenants t,u]` | Take projects and tenants off a grant; without them, remove the grant |
+| `pci settings [set <file.json>]` | The cluster's device pools and grants; `set` replaces them from a file holding `{"pools": [...], "allow": [...]}` |
 | `pci <address>` | One device in detail |
 
 See [Host networking](../operator-guide/host-networking.md) and
@@ -239,10 +255,12 @@ Times (`--from`, `--to`) are Unix seconds or RFC 3339. See
 | `policy history <id>` | A policy's versions |
 | `policy delete <id>` | Delete after confirmation |
 | `policy reload` | Reload policies |
-| `audit [--project P \| --directory D] [--since <unix-ms>] [--limit N] [--user U]` | The audit log; `--directory`: a hosted directory's own log |
+| `audit [--project P \| --directory D] [--since <unix-ms>] [--limit N] [--user U] [--page <token>]` | The audit log's newest entries (default 500), printed oldest first; `--page`: the page before, as printed; `--directory`: a hosted directory's own log |
 
 Roles are written `owner` or `role.owner`; principals are `user:<id>`,
-`team:<id>` or `token:<id>`. See [Projects](../user-guide/projects.md)
+`team:<id>` or `token:<id>`. Where a member or a project or tenant role
+is added, `user:<email>` names a user by an address their identity
+provider verified. See [Projects](../user-guide/projects.md)
 and [Access control](../operator-guide/access-control.md).
 
 ## Tenants and login connectors
@@ -258,10 +276,10 @@ and [Access control](../operator-guide/access-control.md).
 | `tenant bindings <t>`, `bind <t> <tenant-admin\|tenant-auditor> <principal>`, `unbind <t> <link>` | Tenant roles |
 | `tenant device-pools <t>` | The tenant's pools on this cluster: cluster pool, held/max, free, projects |
 | `tenant device-pool set <t> <name> --from <pool> --max N [--projects p1,p2]`, `device-pool remove <t> <name>` | Add or change a tenant pool, or remove one |
-| `tenant clusters <t>` | Clusters of other organizations the tenant uses, with each one's last report |
+| `tenant clusters <t>` | Clusters of other organizations the tenant uses, with each one's last report (a storage cluster's: volumes, provisioned and used, buckets, S3 keys) |
 | `tenant opt-in <t> --offer TOKEN`, `opt-out <t> --cluster ID` | Start using another organization's cluster with the offer token its operator sent, or stop |
 | `admission list` | Tenants admitted on this site, with their caps |
-| `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips` |
+| `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, `devices.<pool>` |
 | `admission remove <tenant>` | Remove an admission |
 | `admission offer <tenant> --directory ISSUER [--days N]` | Offer an admission to a tenant of another organization's directory; prints a token once, which its administrator redeems with `tenant opt-in` |
 | `admission offers`, `revoke-offer <id>` | Offers made, open or redeemed; revoke one |
@@ -274,7 +292,7 @@ and [Access control](../operator-guide/access-control.md).
 | `directory create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME]` | Host a directory for an organization; prints an invitation link once for its first administrator, who signs in with a passkey. `--owner` defaults to `<id>-admin`, `--days` (the invitation's lifetime) to 7; `--trust-domain`: its SPIFFE trust domain, fixed for good |
 | `directory delete <id>` | Delete a hosted directory |
 | `directory keys [rotate]` | Your directory's issuer and token signing keys; `rotate` makes a new key (needs a recent login) |
-| `directory settings [--label SINGULAR/PLURAL] [--self-service on\|off] [--creators all\|TEAM,…] [--max-per-user N] [--max-total N\|none] [--approval none\|required] [--slug-prefix P\|none] [--admins-may-delete on\|off]` | Your directory's settings: what the web UI calls a tenant, and self-service tenants. Without options, shows them; with some, changes those and keeps the rest |
+| `directory settings [--label SINGULAR/PLURAL] [--self-service on\|off] [--creators all\|TEAM,…] [--max-per-user N] [--max-total N\|none] [--approval none\|required] [--slug-prefix P\|none] [--admins-may-delete on\|off] [--auto-create on\|off]` | Your directory's settings: what the web UI calls a tenant, and self-service tenants. Without options, shows them; with some, changes those and keeps the rest. `--self-service`: users may create tenants of their own; `--creators`: everyone, or members of these teams; `--max-per-user` (default 3) and `--max-total`: how many; `--approval required`: each waits for `tenant approve`; `--slug-prefix`: put before their slugs; `--admins-may-delete`: their administrators may delete one that holds nothing (default on); `--auto-create on`: a user in no tenant gets one of their own at first sign-in (default off) |
 | `connector list \| show <id>` | Login connectors (secrets show only whether they are set). `show` of a pulled connector adds its groups, administrator and interval (`Pull:`), and the last run: its result, changes, error, and the users a blocked run would disable |
 | `connector add oidc <id> --issuer URL --client-id ID [--name TEXT] [--scope S]… [--groups-claim C] [--domain D]… [--trust-email] [--allow-email E]… [--mfa-acr V]… [common]` | Add an OIDC connector. `--domain`: only verified addresses in these domains; `--trust-email`: a token without `email_verified` counts as verified; `--allow-email`: with `--jit`, only these addresses get an account |
 | `connector add pam <id> [--name TEXT] [--allow-group G]… [common]` | Add a PAM connector |
@@ -321,7 +339,7 @@ See [Authentication](../operator-guide/authentication.md),
 
 | Command | Effect |
 |---|---|
-| `cluster status`, `cluster` | Raft group, nodes, versions and port reachability; says so on a standalone host |
+| `cluster status`, `cluster` | Raft group, nodes, versions and port reachability; says so on a standalone host. `! STALLED since …` when this server's log has applied nothing for 10 election timeouts ([troubleshooting](../operator-guide/troubleshooting.md#a-cluster-stops-committing)) |
 | `cluster init [--advertise <ip:port>] [--tunnel-ip <ip>] --force` | Make this host a cluster of one (keeps a backup; can't be undone) |
 | `cluster join-token [--role agent\|server] [--ttl <hours>h] [--allow-import]` | Create a one-time join token, printed once (default role `agent`) |
 | `cluster join --server <ip:8842> [--role server\|agent] [--advertise <ip:port>] [--tunnel-ip <ip>] [--name <name>] [--token-file <file>] [--import]` | Join this host to a cluster. The token is read from the file (mode `0600`) or stdin, never from the command line. `--import` brings this host's VMs and disks once an administrator approves |

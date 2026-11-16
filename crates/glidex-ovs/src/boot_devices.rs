@@ -3,15 +3,30 @@
 //! and other hypervisors start. The installer writes the settings
 //! (`--vfio-devices`, `--sriov`); `glidex-netd --boot-devices` applies them.
 //!
-//! A device already on `vfio-pci` is never touched: a VM may hold it.
+//! Once the host is up, a device already on `vfio-pci` is never touched: a
+//! VM may hold it. At boot nothing holds it yet, so the boot unit takes it
+//! back from `vfio-pci` to size its windows (G20).
+//!
+//! The selected devices are claimed before their host driver loads (G20):
+//! a modprobe `install` hook runs `glidex-netd --claim-boot-devices`,
+//! which gives each one with no driver yet a `driver_override` of
+//! `vfio-pci`, so the host driver (`amdgpu`) never binds it and the boot
+//! unit has nothing to take from it. A udev rule does the same for a
+//! device added later.
 
 use crate::OvsError;
-use crate::exec::Exec;
+use crate::exec::{Cmd, Exec, Program};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// `/etc/glidex/vfio-devices.json`.
 pub const BOOT_DEVICES_FILE: &str = "/etc/glidex/vfio-devices.json";
+/// The modprobe hooks that claim the devices before their host drivers
+/// load (G20).
+pub const CLAIM_MODPROBE_FILE: &str = "/etc/modprobe.d/glidex-vfio.conf";
+/// The udev rule that claims a selected device added later: before
+/// `80-drivers.rules`, which loads its driver.
+pub const CLAIM_UDEV_FILE: &str = "/etc/udev/rules.d/70-glidex-vfio-claim.rules";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +37,17 @@ pub struct BootDevices {
     /// What to bind: addresses, or a pool's `match` copied as it is.
     #[serde(default)]
     pub select: Vec<Selector>,
+    /// What the host keeps (`pci.exclude`, spec/22-host-topology.md H23):
+    /// never bound or claimed, whatever selects it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<Selector>,
+}
+
+impl BootDevices {
+    /// Whether the host keeps `bdf`.
+    fn keeps(&self, exec: &dyn Exec, bdf: &str) -> bool {
+        self.exclude.iter().any(|s| s.matches(exec, bdf))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +73,11 @@ pub struct Selector {
     pub addresses: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub vf_of: Option<Box<Selector>>,
+    /// The pool's `bar_mib`, a ceiling for the GPU windows of what this
+    /// selects (spec/27-gpu-vms.md G18, G19); the installer copies it
+    /// beside the pool's `match`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_mib: Option<u64>,
 }
 
 fn hex_id(s: &str) -> String {
@@ -103,8 +134,13 @@ impl Selector {
 pub enum Action {
     /// Already on `vfio-pci`: left as it is (a VM may hold it).
     AlreadyVfio,
-    /// To be bound, from this driver (`None`: unbound).
-    Bind { from: Option<String> },
+    /// To be bound, from this driver (`None`: unbound), with GPU windows
+    /// at most `bar_mib` (the smallest of the selectors that chose it).
+    Bind {
+        from: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bar_mib: Option<u64>,
+    },
 }
 
 /// The selected devices present now, each with what applying would do.
@@ -112,19 +148,180 @@ pub fn plan_devices(exec: &dyn Exec, cfg: &BootDevices) -> Vec<(String, Action)>
     let mut out: Vec<(String, Action)> = exec
         .list_dir(Path::new("/sys/bus/pci/devices"))
         .into_iter()
-        .filter(|bdf| cfg.select.iter().any(|s| s.matches(exec, bdf)))
-        .map(|bdf| {
+        .filter(|bdf| !cfg.keeps(exec, bdf))
+        .filter_map(|bdf| {
+            let chosen: Vec<&Selector> = cfg
+                .select
+                .iter()
+                .filter(|s| s.matches(exec, &bdf))
+                .collect();
+            if chosen.is_empty() {
+                return None;
+            }
             let driver = exec.link_name(&dev_dir(&bdf).join("driver"));
             let a = if driver.as_deref() == Some("vfio-pci") {
                 Action::AlreadyVfio
             } else {
-                Action::Bind { from: driver }
+                Action::Bind {
+                    from: driver,
+                    bar_mib: chosen.iter().filter_map(|s| s.bar_mib).min(),
+                }
             };
-            (bdf, a)
+            Some((bdf, a))
         })
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+/// The selectors a claim covers: VFs (`vf_of`) appear only once the boot
+/// unit sets the VF counts, after any driver loads, so they need none.
+fn claimable(cfg: &BootDevices) -> impl Iterator<Item = &Selector> {
+    cfg.select.iter().filter(|s| s.vf_of.is_none())
+}
+
+fn claimed_devices(exec: &dyn Exec, cfg: &BootDevices) -> Vec<String> {
+    let mut out: Vec<String> = exec
+        .list_dir(Path::new("/sys/bus/pci/devices"))
+        .into_iter()
+        .filter(|bdf| !cfg.keeps(exec, bdf) && claimable(cfg).any(|s| s.matches(exec, bdf)))
+        .collect();
+    out.sort();
+    out
+}
+
+/// The host driver a device would have without the claim: the one it has,
+/// or else what its modalias loads (`modprobe -R`). `None` when that is
+/// `vfio-pci` or nothing.
+pub fn host_driver(exec: &dyn Exec, bdf: &str) -> Option<String> {
+    if let Some(d) = exec.link_name(&dev_dir(bdf).join("driver"))
+        && d != "vfio-pci"
+    {
+        return Some(d);
+    }
+    let alias = attr(exec, bdf, "modalias");
+    if alias.is_empty() {
+        return None;
+    }
+    let out = exec
+        .run(&Cmd::new(Program::Modprobe, ["-R", alias.as_str()]))
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(str::trim)
+        .find(|m| !m.is_empty() && !matches!(*m, "vfio_pci" | "vfio-pci"))
+        .map(str::to_string)
+}
+
+/// The host drivers of the devices a claim covers, sorted: one modprobe
+/// hook each.
+pub fn claim_drivers(exec: &dyn Exec, cfg: &BootDevices) -> Vec<String> {
+    let mut out: Vec<String> = claimed_devices(exec, cfg)
+        .iter()
+        .filter_map(|bdf| host_driver(exec, bdf))
+        .collect();
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// `/etc/modprobe.d/glidex-vfio.conf`: the claim runs before each driver
+/// loads. It never fails, so the driver still loads for other devices.
+pub fn claim_modprobe_conf(drivers: &[String], netd: &str) -> String {
+    let mut text = String::from(
+        "# glidex: devices for VMs get vfio-pci before their host driver loads\n\
+         # (glidex-install --vfio-devices; spec/27-gpu-vms.md G20).\n",
+    );
+    for d in drivers {
+        text.push_str(&format!(
+            "install {d} {netd} --claim-boot-devices; /sbin/modprobe --ignore-install {d} $CMDLINE_OPTS\n"
+        ));
+    }
+    text
+}
+
+/// The udev rule that claims a selected device as it is added.
+pub fn claim_udev_rules(cfg: &BootDevices) -> String {
+    let mut text = String::from(
+        "# glidex: devices for VMs get vfio-pci as they are added, before\n\
+         # 80-drivers.rules loads their driver (spec/27-gpu-vms.md G20).\n",
+    );
+    let set = r#"ATTR{driver_override}="vfio-pci""#;
+    // What the host keeps skips the rest (spec/22-host-topology.md H23).
+    let skip = r#"GOTO="glidex_vfio_claim_end""#;
+    let keeps: Vec<&Selector> = cfg.exclude.iter().filter(|s| s.vf_of.is_none()).collect();
+    for s in &keeps {
+        udev_lines(&mut text, s, skip);
+    }
+    for s in claimable(cfg) {
+        udev_lines(&mut text, s, set);
+    }
+    if !keeps.is_empty() {
+        text.push_str("LABEL=\"glidex_vfio_claim_end\"\n");
+    }
+    text
+}
+
+/// The udev lines doing `then` for what `s` matches: one, or one per address.
+fn udev_lines(text: &mut String, s: &Selector, then: &str) {
+    let mut own = vec![
+        r#"ACTION=="add""#.to_string(),
+        r#"SUBSYSTEM=="pci""#.to_string(),
+    ];
+    if let Some(v) = &s.vendor_id {
+        own.push(format!(r#"ATTR{{vendor}}=="0x{}""#, hex_id(v)));
+    }
+    if let Some(d) = &s.device_id {
+        own.push(format!(r#"ATTR{{device}}=="0x{}""#, hex_id(d)));
+    }
+    if let Some(c) = &s.class_code {
+        own.push(format!(r#"ATTR{{class}}=="0x{}*""#, hex_id(c)));
+    }
+    if s.addresses.is_empty() {
+        text.push_str(&format!("{}, {then}\n", own.join(", ")));
+    }
+    for a in &s.addresses {
+        text.push_str(&format!(
+            r#"{}, KERNEL=="{}", {then}"#,
+            own.join(", "),
+            a.to_ascii_lowercase()
+        ));
+        text.push('\n');
+    }
+}
+
+/// `glidex-netd --claim-boot-devices`, from the modprobe hook: each
+/// selected device with no driver gets a `driver_override` of `vfio-pci`.
+/// Nothing is unbound, resized or bound; the boot unit does that. Returns
+/// what it did, for the hook to print.
+pub fn claim(exec: &dyn Exec, cfg: &BootDevices) -> Vec<(String, Result<(), String>)> {
+    claimed_devices(exec, cfg)
+        .into_iter()
+        .filter(|bdf| exec.link_name(&dev_dir(bdf).join("driver")).is_none())
+        .map(|bdf| {
+            let r = exec
+                .write_file(&dev_dir(&bdf).join("driver_override"), b"vfio-pci")
+                .map_err(|e| e.to_string());
+            (bdf, r)
+        })
+        .collect()
+}
+
+/// At boot only: the selected devices `vfio-pci` already has (it probes one
+/// the claim gave it) are unbound, so the boot unit sizes their windows as
+/// for any other (G17, G18). Nothing holds them yet: the unit runs before
+/// netd, the control plane and other hypervisors.
+pub fn let_go_at_boot(exec: &dyn Exec, cfg: &BootDevices) -> Vec<(String, Result<(), String>)> {
+    plan_devices(exec, cfg)
+        .into_iter()
+        .filter(|(_, a)| *a == Action::AlreadyVfio)
+        .map(|(bdf, _)| {
+            let r = exec
+                .write_file(&dev_dir(&bdf).join("driver/unbind"), bdf.as_bytes())
+                .map_err(|e| e.to_string());
+            (bdf, r)
+        })
+        .collect()
 }
 
 /// Why PF `pf`'s VF count may not change now: one of its VFs is on
@@ -228,6 +425,7 @@ mod tests {
         let cfg = BootDevices {
             sriov: vec![],
             select: vec![gpus, vfs],
+            ..Default::default()
         };
         assert_eq!(
             plan_devices(&exec, &cfg),
@@ -235,14 +433,16 @@ mod tests {
                 (
                     "0000:61:00.2".to_string(),
                     Action::Bind {
-                        from: Some("mlx5_core".into())
+                        from: Some("mlx5_core".into()),
+                        bar_mib: None,
                     }
                 ),
                 ("0000:61:00.3".to_string(), Action::AlreadyVfio),
                 (
                     "0000:87:00.0".to_string(),
                     Action::Bind {
-                        from: Some("nvidia".into())
+                        from: Some("nvidia".into()),
+                        bar_mib: None,
                     }
                 ),
                 ("0000:90:00.0".to_string(), Action::AlreadyVfio),
@@ -251,6 +451,7 @@ mod tests {
         );
         // By address.
         let one = BootDevices {
+            exclude: vec![],
             sriov: vec![],
             select: vec![Selector {
                 addresses: vec!["0000:09:00.0".into()],
@@ -258,12 +459,181 @@ mod tests {
             }],
         };
         assert_eq!(plan_devices(&exec, &one).len(), 1);
+        // Two pools with a bar_mib choose a device: the smaller applies.
+        let sized = |mib| Selector {
+            addresses: vec!["0000:87:00.0".into()],
+            bar_mib: Some(mib),
+            ..Default::default()
+        };
+        let two = BootDevices {
+            exclude: vec![],
+            sriov: vec![],
+            select: vec![
+                sized(16384),
+                sized(8192),
+                Selector {
+                    addresses: vec!["0000:87:00.0".into()],
+                    ..Default::default()
+                },
+            ],
+        };
+        assert_eq!(
+            plan_devices(&exec, &two),
+            vec![(
+                "0000:87:00.0".to_string(),
+                Action::Bind {
+                    from: Some("nvidia".into()),
+                    bar_mib: Some(8192),
+                }
+            )]
+        );
         // An empty selector selects nothing.
         let none = BootDevices {
             sriov: vec![],
             select: vec![Selector::default()],
+            ..Default::default()
         };
         assert!(plan_devices(&exec, &none).is_empty());
+    }
+
+    #[test]
+    fn the_claim_only_marks_selected_devices_with_no_driver() {
+        let exec = host();
+        // An A100 the host driver hasn't taken yet, as when nvidia loads.
+        exec.file("/sys/bus/pci/devices/0000:88:00.0", "");
+        for (f, v) in [
+            ("vendor", "0x10de"),
+            ("device", "0x20b0"),
+            ("class", "0x030200"),
+        ] {
+            exec.file(&format!("/sys/bus/pci/devices/0000:88:00.0/{f}"), v);
+        }
+        let cfg = BootDevices {
+            sriov: vec![],
+            select: vec![
+                serde_json::from_str(r#"{"vendor_id":"0x10de"}"#).unwrap(),
+                serde_json::from_str(r#"{"vf_of":{"vendor_id":"0x15b3"}}"#).unwrap(),
+            ],
+            ..Default::default()
+        };
+        let done = claim(&exec, &cfg);
+        assert_eq!(done, vec![("0000:88:00.0".to_string(), Ok(()))]);
+        let overrides: Vec<(String, String)> = exec
+            .writes()
+            .into_iter()
+            .map(|(p, d)| {
+                (
+                    p.display().to_string(),
+                    String::from_utf8_lossy(&d).into_owned(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            overrides,
+            [(
+                "/sys/bus/pci/devices/0000:88:00.0/driver_override".to_string(),
+                "vfio-pci".to_string()
+            )],
+            "no unbind, resize or bind; the bound A100s and the VFs untouched"
+        );
+        // No settings: nothing to claim, and no error either.
+        assert!(claim(&exec, &BootDevices::default()).is_empty());
+    }
+
+    /// spec/22-host-topology.md H23: what the host keeps is never bound
+    /// or claimed, and its udev rules skip it.
+    #[test]
+    fn what_the_host_keeps_is_never_bound_or_claimed() {
+        let exec = host();
+        exec.file("/sys/bus/pci/devices/0000:88:00.0", "");
+        for (f, v) in [
+            ("vendor", "0x10de"),
+            ("device", "0x20b0"),
+            ("class", "0x030200"),
+        ] {
+            exec.file(&format!("/sys/bus/pci/devices/0000:88:00.0/{f}"), v);
+        }
+        let mut cfg = BootDevices {
+            select: vec![serde_json::from_str(r#"{"vendor_id":"0x10de"}"#).unwrap()],
+            ..Default::default()
+        };
+        let all: Vec<String> = plan_devices(&exec, &cfg)
+            .into_iter()
+            .map(|(b, _)| b)
+            .collect();
+        assert!(all.contains(&"0000:88:00.0".to_string()), "{all:?}");
+        cfg.exclude = vec![serde_json::from_str(r#"{"addresses":["0000:88:00.0"]}"#).unwrap()];
+        let kept: Vec<String> = plan_devices(&exec, &cfg)
+            .into_iter()
+            .map(|(b, _)| b)
+            .collect();
+        assert!(!kept.contains(&"0000:88:00.0".to_string()), "{kept:?}");
+        assert_eq!(kept.len(), all.len() - 1, "{kept:?}");
+        assert!(claim(&exec, &cfg).is_empty());
+        let rules = claim_udev_rules(&cfg);
+        let lines: Vec<&str> = rules.lines().filter(|l| !l.starts_with('#')).collect();
+        assert_eq!(
+            lines,
+            [
+                r#"ACTION=="add", SUBSYSTEM=="pci", KERNEL=="0000:88:00.0", GOTO="glidex_vfio_claim_end""#,
+                r#"ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{driver_override}="vfio-pci""#,
+                r#"LABEL="glidex_vfio_claim_end""#,
+            ]
+        );
+    }
+
+    #[test]
+    fn at_boot_vfio_pci_lets_go_of_selected_devices_to_be_sized() {
+        let exec = host();
+        let cfg = BootDevices {
+            sriov: vec![],
+            select: vec![serde_json::from_str(r#"{"vendor_id":"0x10de"}"#).unwrap()],
+            ..Default::default()
+        };
+        assert_eq!(
+            let_go_at_boot(&exec, &cfg),
+            vec![("0000:90:00.0".to_string(), Ok(()))]
+        );
+        assert_eq!(
+            exec.writes(),
+            [(
+                PathBuf::from("/sys/bus/pci/devices/0000:90:00.0/driver/unbind"),
+                b"0000:90:00.0".to_vec()
+            )],
+            "only the one on vfio-pci; 87:00.0 is the boot unit's to bind"
+        );
+    }
+
+    #[test]
+    fn the_host_driver_is_the_one_it_has_or_what_its_modalias_loads() {
+        let exec = host();
+        assert_eq!(
+            host_driver(&exec, "0000:87:00.0").as_deref(),
+            Some("nvidia")
+        );
+        exec.file(
+            "/sys/bus/pci/devices/0000:90:00.0/modalias",
+            "pci:v000010DEd000020B0sv*\n",
+        );
+        exec.on(
+            "modprobe -R pci:v000010DEd000020B0sv*",
+            crate::exec::Output::ok("vfio_pci\nnvidia\n"),
+        );
+        assert_eq!(
+            host_driver(&exec, "0000:90:00.0").as_deref(),
+            Some("nvidia")
+        );
+        assert_eq!(host_driver(&exec, "0000:09:00.0").as_deref(), Some("nvme"));
+        assert_eq!(host_driver(&exec, "0000:00:00.0"), None, "nothing known");
+        assert_eq!(
+            claim_modprobe_conf(&["nvidia".into()], "/usr/local/bin/glidex-netd")
+                .lines()
+                .last(),
+            Some(
+                "install nvidia /usr/local/bin/glidex-netd --claim-boot-devices; \
+                 /sbin/modprobe --ignore-install nvidia $CMDLINE_OPTS"
+            )
+        );
     }
 
     #[test]

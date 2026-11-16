@@ -118,6 +118,9 @@ pub struct SelfService {
     pub approval_required: bool,
     pub slug_prefix: String,
     pub admins_may_delete: bool,
+    /// A user who may and is a member of no tenant gets one at their
+    /// first sign-in (D82).
+    pub auto_create: bool,
 }
 
 impl Default for SelfService {
@@ -130,6 +133,7 @@ impl Default for SelfService {
             approval_required: false,
             slug_prefix: String::new(),
             admins_may_delete: true,
+            auto_create: false,
         }
     }
 }
@@ -1177,6 +1181,11 @@ impl TenantStore {
         };
         self.put(MEMBERS, &member_key(tenant, &m.principal), &m)?;
         Ok(m)
+    }
+
+    /// Every tenant's pools on this cluster.
+    pub fn all_device_pools(&self) -> Result<Vec<TenantPool>, TenantError> {
+        self.read_all::<TenantPool>(DEVICE_POOLS)
     }
 
     /// The tenant's pools on this cluster, by name.

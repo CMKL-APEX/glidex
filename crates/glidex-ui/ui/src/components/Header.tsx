@@ -27,6 +27,8 @@ export default function Header() {
   const tenants = useTenants();
   const readsATenant = !me.token && tenants.length > 0;
   const directoryReader = host.listTenants || host.createTenant;
+  // A user the directory lets create their own tenants finds the form there.
+  const createsOwnTenant = !!me.self_service?.allowed;
   const groups = byTenant(projects, (id) => tenants.find((t) => t.id === id)?.slug ?? id);
 
   const ownsAProject = (me.project_roles ?? []).some((r) => r.role === "role.owner");
@@ -45,7 +47,7 @@ export default function Header() {
     {
       to: "/directory",
       label: "Directory",
-      show: directoryReader || readsATenant || host.listUsers || host.listTeams || host.readSystemBindings || host.listConnectors || host.readPolicy,
+      show: directoryReader || readsATenant || createsOwnTenant || host.listUsers || host.listTeams || host.readSystemBindings || host.listConnectors || host.readPolicy,
     },
     { to: "/tokens", label: "Tokens", show: !me.token },
     { to: "/usage", label: "Usage", show: host.readUsage || (me.project_roles ?? []).length > 0 },
@@ -58,7 +60,7 @@ export default function Header() {
   const who = me.user?.display_name ?? me.token?.name ?? (me.display_name || "unknown");
 
   return (
-    <header className="bg-white shadow-sm border-b border-gray-200">
+    <header className="bg-white shadow-xs border-b border-gray-200">
       <div className="container mx-auto px-4">
         <div className="flex flex-wrap items-center justify-between min-h-16 py-2 gap-2">
           <div className="flex flex-wrap items-center gap-x-4 gap-y-1">

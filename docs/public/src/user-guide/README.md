@@ -51,7 +51,8 @@ API example where it helps. The full command list is in the
   images and firmware, creating, attaching, resizing and deleting disks.
 - [Guest credentials](credentials.md): the login cloud-init creates in a
   VM, passwords and SSH keys, custom cloud-init seeds.
-- [Virtual machines](vms.md): create, start, stop, resize, delete.
+- [Virtual machines](vms.md): create, start, stop, resize, attach
+  networks and disks, GPUs, elastic vCPUs, delete.
 - [Networks](networks.md): attaching VMs to networks, project networks
   and sharing.
 - [The console](console.md): the serial console in the browser and in

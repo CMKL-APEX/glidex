@@ -1,7 +1,8 @@
 // Hosted directories (spec/19-tenancy.md D59–D61): the operator creates one
 // on the Hosting page; its first administrator opens the invitation in
 // another browser, creates a passkey (Chromium's virtual authenticator)
-// and lands in the new directory, seeing none of the host's own people.
+// and lands in the new directory, seeing none of the host's own people
+// and only its own audit.
 import { api, expect, test } from "../fixtures";
 
 test.use({ ignoredConsoleErrors: /status of 401/ });
@@ -43,6 +44,19 @@ test("a directory is created and its first administrator signs in with a passkey
     expect((users.users ?? []).map((u: any) => u.id)).toEqual([me.user?.id ?? me.user_id]);
     const hostUsers = (await api<{ users?: any[] }>("/users")).users ?? [];
     expect(hostUsers.map((u) => u.id)).not.toContain(me.user?.id ?? me.user_id);
+
+    // Their Audit page reads their directory's own audit (D74): All says
+    // so, their passkey sign-in is in it and the operator's creating the
+    // directory, in the cluster's audit, is not.
+    const made = ((await api<{ entries?: any[] }>("/audit?limit=100")).entries ?? []).find((e) => e.target?.includes(id));
+    expect(made?.action).toBeTruthy();
+    await invitee.goto("/audit");
+    const filter = invitee.locator("#audit-project");
+    await expect(filter).toHaveValue("");
+    await expect(filter.locator("option").first()).toHaveText("All (my directory)");
+    const rows = invitee.locator("tbody tr");
+    await expect(rows.filter({ hasText: "passkey" }).first()).toBeVisible();
+    await expect(rows.filter({ hasText: made.action })).toHaveCount(0);
   } finally {
     await context.close();
   }

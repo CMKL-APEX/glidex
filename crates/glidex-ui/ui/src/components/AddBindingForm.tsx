@@ -1,20 +1,29 @@
 import { useState, type FormEvent } from "react";
-import type { EntityRef } from "../types";
+import type { PrincipalInput } from "../types";
 import { roleLabel } from "../types";
 import { type Directory, errorMessage, inputClass, primaryButton, selectClass } from "./ui";
 
 type Kind = "User" | "Team";
 
+/** What was typed for a principal: a user's id or email (D83), a team's id. */
+export function typedPrincipal(kind: Kind, text: string, emails = true): PrincipalInput {
+  const t = text.trim();
+  return emails && kind === "User" && t.includes("@") ? { type: "User", email: t } : { type: kind, id: t };
+}
+
 /** Role + principal picker. With a directory (listUsers/listTeams) the
- * principal is chosen from a list; otherwise its id is typed. */
+ * principal is chosen from a list; otherwise its id (or a user's email) is typed. */
 export default function AddBindingForm({
   roles,
   dir,
   onAdd,
+  emails = false,
 }: {
   roles: readonly string[];
   dir: Directory | null;
-  onAdd: (role: string, principal: EntityRef) => Promise<void>;
+  onAdd: (role: string, principal: PrincipalInput) => Promise<void>;
+  /** A user may be given by email (D83: project and tenant roles). */
+  emails?: boolean;
 }) {
   const [role, setRole] = useState<string>(roles[0]);
   const [kind, setKind] = useState<Kind>("User");
@@ -35,7 +44,7 @@ export default function AddBindingForm({
     setBusy(true);
     setError(null);
     try {
-      await onAdd(role, { type: kind, id: id.trim() });
+      await onAdd(role, typedPrincipal(kind, id, emails));
       setId("");
     } catch (err) {
       setError(errorMessage(err));
@@ -84,7 +93,7 @@ export default function AddBindingForm({
         ) : (
           <input
             className={inputClass}
-            placeholder={kind === "User" ? "user id" : "team id or unix:<group>"}
+            placeholder={kind === "User" ? (emails ? "user id or email" : "user id") : "team id or unix:<group>"}
             value={id}
             onChange={(e) => setId(e.target.value)}
             required

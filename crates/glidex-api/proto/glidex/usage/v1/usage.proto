@@ -573,6 +573,22 @@ message GetVmStatsResponse {
   map<string, double> vm = 3;
   repeated LiveRates nics = 4;
   repeated LiveRates disks = 5;
+  // The current hour's points, from the VM's host (13-metering.md §9.4,
+  // D19): in a cluster they reach the series routes only when the hour
+  // closes. Unset on a standalone host, whose series include them.
+  VmOpenHour open_hour = 6 [json_name = "open_hour"];
+}
+
+// A VM's 5-minute points from the start of its host's last closed hour,
+// which may not have shipped yet, to now.
+message VmOpenHour {
+  google.protobuf.Timestamp from = 1;
+  // As `GetVmComputeResponse.points`.
+  repeated RatePoint compute = 2;
+  // The VM's NICs summed, as `GetVmBandwidthResponse.points`.
+  repeated RatePoint bandwidth = 3;
+  // The VM's disks summed, as `GetVmIoResponse.points`.
+  repeated RatePoint io = 4;
 }
 
 message GetNetworkStatsRequest {

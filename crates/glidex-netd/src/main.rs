@@ -23,6 +23,8 @@ struct FileConfig {
     policy: Option<auth::Policy>,
     /// Router SNAT zones to meter (`ovn.snat_ct_zones` of the control plane).
     ct_zones: Option<(u16, u16)>,
+    /// Source routes for ports that share a subnet (spec/09-networking.md §8.6).
+    source_routes: Option<glidex_ovs::srcroute::Config>,
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -33,7 +35,87 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// Keep source routes current (spec/09-networking.md §8.6.4): a pass after
+/// each burst of address changes (`ip monitor address`, debounced 1 s),
+/// and every 60 s for anything missed.
+fn watch_source_routes(netd: Arc<Netd>) {
+    use std::io::BufRead;
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use std::time::Duration;
+    let (tx, rx) = channel::<()>();
+    std::thread::spawn(move || {
+        loop {
+            match std::process::Command::new("ip")
+                .args(["-o", "monitor", "address"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    if let Some(out) = child.stdout.take() {
+                        for _ in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                            if tx.send(()).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    let _ = child.wait();
+                    tracing::warn!("ip monitor address ended; restarting it");
+                }
+                Err(e) => tracing::warn!(error = %e, "cannot run ip monitor address"),
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    });
+    std::thread::spawn(move || {
+        loop {
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(()) => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    while rx.try_recv().is_ok() {}
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+            let pass = netd.source_routes_pass();
+            for c in &pass.applied {
+                tracing::info!(command = %c, "source routes");
+            }
+            for e in &pass.errors {
+                tracing::warn!(error = %e, "source routes");
+            }
+        }
+    });
+}
+
+/// Give the boot devices with no driver yet a `driver_override` of
+/// `vfio-pci`; what it did goes to stderr (the journal, through udev).
+fn claim_boot_devices() {
+    let path = std::path::Path::new(glidex_ovs::boot_devices::BOOT_DEVICES_FILE);
+    let cfg = match glidex_ovs::boot_devices::load(path) {
+        Ok(Some(c)) => c,
+        Ok(None) => return,
+        Err(e) => {
+            eprintln!("glidex-netd: claim: {e}");
+            return;
+        }
+    };
+    for (bdf, r) in glidex_ovs::boot_devices::claim(&SystemExec::new(), &cfg) {
+        match r {
+            Ok(()) => eprintln!("glidex-netd: claimed {bdf} for vfio-pci"),
+            Err(e) => eprintln!("glidex-netd: claim {bdf}: {e}"),
+        }
+    }
+}
+
 fn main() {
+    // `--claim-boot-devices`: from the modprobe hook, before a host driver
+    // loads (spec/27-gpu-vms.md G20). It reads nothing else and never fails,
+    // so the driver still loads for the devices it isn't kept from.
+    if std::env::args().any(|a| a == "--claim-boot-devices") {
+        claim_boot_devices();
+        return;
+    }
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -79,6 +161,9 @@ fn main() {
     }
     if let Some(z) = file.ct_zones {
         config.ct_zones = z;
+    }
+    if let Some(s) = file.source_routes {
+        config.source_routes = s;
     }
     config.probe.ch_binary = find_in_path("cloud-hypervisor");
     if let Some(s) = file.commit_window_secs {
@@ -163,6 +248,10 @@ fn main() {
             std::process::exit(1);
         }
     };
+    if let Err(e) = netd.check_source_routes() {
+        eprintln!("glidex-netd: {}: {e}", config_path.display());
+        std::process::exit(1);
+    }
 
     if let Some(gid) = group_gid {
         let _ = nix::unistd::chown(
@@ -221,6 +310,27 @@ fn main() {
         loop {
             std::thread::sleep(std::time::Duration::from_secs(1));
             expiry_netd.expire_pending();
+        }
+    });
+    if !config.source_routes.subnets.is_empty() {
+        watch_source_routes(netd.clone());
+    }
+    // OVS keeps no OpenFlow rules across a restart of ovs-vswitchd: put
+    // the VM ports' rules back (spec/09-networking.md §9.1).
+    let rules_netd = netd.clone();
+    std::thread::spawn(move || {
+        // A failure is logged when it first shows, not every pass.
+        let mut failing = Vec::new();
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(5));
+            let pass = rules_netd.repair_rules();
+            for p in &pass.applied {
+                tracing::info!(port = %p, "OpenFlow rules put back");
+            }
+            for e in pass.errors.iter().filter(|e| !failing.contains(*e)) {
+                tracing::warn!(error = %e, "OpenFlow rules");
+            }
+            failing = pass.errors;
         }
     });
     let status_netd = netd.clone();

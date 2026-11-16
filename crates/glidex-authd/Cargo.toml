@@ -3,6 +3,8 @@ name = "glidex-authd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Installed by glidex-install, not from crates.io.
+publish = false
 description = "Privileged glidex PAM helper: verifies local users' passwords for the control plane"
 
 [lib]
@@ -18,7 +20,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-nix = { version = "0.29", features = ["socket", "user", "fs"] }
+nix = { version = "0.31", features = ["socket", "user", "fs"] }
 libc = "0.2"
 libloading = "0.9"
 zeroize = "1"

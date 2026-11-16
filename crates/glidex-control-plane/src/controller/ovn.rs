@@ -106,15 +106,10 @@ impl VmManager {
             let Some(p) = &vm.status.placement else {
                 continue;
             };
-            for (i, a) in vm.config().networks.iter().enumerate() {
-                let Some(key) = keys.get(&a.network) else {
+            for (i, network, mac) in vm.port_nics() {
+                let Some(key) = keys.get(&network) else {
                     continue;
                 };
-                let mac = a
-                    .mac
-                    .clone()
-                    .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok());
-                let Some(mac) = mac else { continue };
                 let provider = d
                     .networks
                     .iter()
@@ -124,13 +119,13 @@ impl VmManager {
                 } else {
                     let Some(r) = reservations
                         .iter()
-                        .find(|r| r.network == a.network && r.mac.eq_ignore_ascii_case(&mac))
+                        .find(|r| r.network == network && r.mac.eq_ignore_ascii_case(&mac))
                     else {
                         continue;
                     };
                     Some(r.ip)
                 };
-                let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i as u8) else {
+                let Ok(lport) = glidex_ovs::names::port_name(&vm.id, i) else {
                     continue;
                 };
                 d.ports.push(PortSpec {
@@ -139,7 +134,7 @@ impl VmManager {
                     mac: mac.to_ascii_lowercase(),
                     ip,
                     vm_id: vm.id.clone(),
-                    nic: i as u8,
+                    nic: i,
                     chassis: Some(glidex_ovs::ovn::chassis_name(&p.node)),
                 });
             }
@@ -245,6 +240,7 @@ impl VmManager {
     /// One pass of the leader's network controller.
     pub async fn reconcile_ovn(self: &Arc<Self>) {
         if !self.ovn_enabled() || !self.store.database().can_write() {
+            self.stop_nb_daemon().await;
             return;
         }
         self.gc_reservations().await;
@@ -257,9 +253,17 @@ impl VmManager {
             }
         };
         let sb_conn = conn.clone();
+        let me = self.clone();
         let r = tokio::task::spawn_blocking(move || {
             let exec = SystemExec::new();
-            glidex_ovn::sync(&glidex_ovn::Nb::new(&exec, conn), &desired)
+            let mut daemon = me.nb_daemon.lock().unwrap();
+            let conn = daemon.conn(&exec, conn);
+            if let Some(w) = daemon.take_warning() {
+                tracing::warn!("{w}");
+            }
+            let r = glidex_ovn::sync(&glidex_ovn::Nb::new(&exec, conn), &desired);
+            daemon.passed(&exec, r.is_ok());
+            r
         })
         .await;
         self.forget_stale_chassis(sb_conn).await;
@@ -273,6 +277,19 @@ impl VmManager {
             Ok(Err(e)) => tracing::warn!("OVN northbound sync: {}", e),
             Err(e) => tracing::warn!("OVN sync task: {}", e),
         }
+    }
+
+    /// Stop the `ovn-nbctl` daemon, if one runs: this server no longer
+    /// leads, or OVN was turned off.
+    async fn stop_nb_daemon(self: &Arc<Self>) {
+        if !self.nb_daemon.lock().unwrap().is_running() {
+            return;
+        }
+        let me = self.clone();
+        let _ = tokio::task::spawn_blocking(move || {
+            me.nb_daemon.lock().unwrap().stop(&SystemExec::new());
+        })
+        .await;
     }
 
     /// Chassis of nodes that are no longer members. Removal deletes a node's
@@ -337,27 +354,54 @@ impl VmManager {
 
     /// A reservation lives as long as the NIC it was made for (the `vm.ipam`
     /// finalizer of the plan, done as garbage collection): free any whose VM
-    /// or NIC is gone.
+    /// or NIC is gone. A NIC edited on a running VM keeps its old address
+    /// next to the new one until the port changes at the next start. Also
+    /// make any a placed VM's NIC lacks: without one the NIC gets no port,
+    /// and NICs added to a placed VM used to get none.
     async fn gc_reservations(&self) {
         let Ok(res) = crate::ipam::list_reservations(&self.store.database()) else {
             return;
         };
         let vms = self.vms.read().await;
+        let missing: Vec<_> = vms
+            .values()
+            .filter(|vm| vm.status.placement.is_some() && vm.deletion_requested_at.is_none())
+            .flat_map(|vm| self.cluster_nics(vm))
+            .filter(|(network, mac, _, _)| {
+                !res.iter()
+                    .any(|r| &r.network == network && r.mac.eq_ignore_ascii_case(mac))
+            })
+            .collect();
         let stale: Vec<_> = res
             .into_iter()
             .filter(|r| {
                 !vms.get(&r.vm_id).is_some_and(|vm: &Vm| {
-                    vm.config().networks.iter().enumerate().any(|(i, a)| {
-                        a.network == r.network
-                            && a.mac
-                                .clone()
-                                .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())
-                                .is_some_and(|m| m.eq_ignore_ascii_case(&r.mac))
-                    })
+                    vm.spec_nics()
+                        .into_iter()
+                        .chain(vm.port_nics())
+                        .any(|(_, network, mac)| {
+                            network == r.network && mac.eq_ignore_ascii_case(&r.mac)
+                        })
                 })
             })
             .collect();
         drop(vms);
+        // Each on its own, so that one full pool doesn't hold up the others.
+        for (network, mac, vm_id, nic) in &missing {
+            match self.store.database().write(
+                crate::store::Origin::Network,
+                |tx| -> Result<_, crate::ipam::IpamError> {
+                    crate::ipam::reserve(tx, network, mac, vm_id, *nic)
+                },
+            ) {
+                Ok(r) => {
+                    tracing::info!(vm = %vm_id, nic, %network, ip = %r.ip, "reserved a missing address")
+                }
+                Err(e) => {
+                    tracing::warn!(vm = %vm_id, nic, %network, "reserving a missing address: {}", e)
+                }
+            }
+        }
         if stale.is_empty() {
             return;
         }
@@ -724,7 +768,10 @@ impl VmManager {
         let asks = nodes.iter().map(|n| {
             let cluster = cluster.clone();
             let id = n.meta.id.clone();
-            let addr = n.status.advertise.map(|a| a.to_string());
+            let addr = n
+                .status
+                .advertise
+                .map(|a| crate::cluster::net::Target::node(&id, a));
             let local = id == me;
             async move {
                 let r: Result<serde_json::Value, String> = if local {

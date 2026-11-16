@@ -45,6 +45,9 @@ message SelfServiceSettings {
   string slug_prefix = 6 [json_name = "slug_prefix"];
   // A tenant's admins may delete it once it holds nothing; absent: true.
   optional bool admins_may_delete = 7 [json_name = "admins_may_delete"];
+  // A user who may create tenants and is a member of none gets one at
+  // their first sign-in through a connector (D82).
+  bool auto_create = 8 [json_name = "auto_create"];
 }
 
 // What the web UI calls a tenant (D81), 1-24 characters each.

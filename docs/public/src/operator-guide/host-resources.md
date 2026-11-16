@@ -246,18 +246,22 @@ pool, and Glidex picks them. Pools are defined in
 | `match` | `vendor_id`, `device_id`, `class_code` (or its start, `0x0302`) and `addresses`. Every key given must match. A pool must have a match. With `vf_of` (itself a match of physical functions), the pool takes those functions' SR-IOV virtual functions; see [SR-IOV virtual functions](pci-passthrough.md#sr-iov-virtual-functions). |
 | `nodes` | Node names or ids the pool is on. Default: every node. |
 | `prepare` | Each node binds its devices of the pool to `vfio-pci` when glidex starts (see [Prepare devices](#prepare-devices)). |
+| `bar_mib` | The largest memory window (resizable BAR), in MiB and a power of two, that the pool's GPUs get when a node prepares them for the pool: with `prepare: true`, or at boot with `--vfio-devices <pool>`. It only makes a window smaller; the cap below still holds (see [Prepare devices](#prepare-devices)). |
 | `per_device` | What a VM asking for `gpus` from the pool gets per device, unless it sizes itself: `vcpus` and `memory_mib` (both required), and optionally `hugepages` (`true`/`false`) and `cpu_policy` (`shared` or `dedicated`). See [GPU requests](#gpu-requests). |
 
 The control plane refuses to start with two pools of the same name, a
 pool without a match, two pools with the same match on the same nodes,
-or a grant naming an unknown pool. Restart the control plane after
-changing pools or grants.
+or a grant naming an unknown pool or naming a project by a name that
+several projects have. Restart the control plane after changing pools
+or grants.
 
 ### Who may use a pool
 
-A `pci.allow` entry with `pool` grants the pool to projects (ids or
-names) or tenants (ids or slugs), like device grants (see
-[Who may use a device](pci-passthrough.md#who-may-use-a-device)).
+A `pci.allow` entry with `pool` grants the pool to projects (ids,
+`<tenant>/<project>`, or names) or tenants (ids or slugs), like device grants (see
+[Who may use a device](pci-passthrough.md#who-may-use-a-device)). A slug
+names a tenant of the `local` directory; a tenant of another directory
+is named by its id.
 `net-admin` and `system-admin` may use any pool. In policies the
 permission is `usePciPool`.
 
@@ -279,7 +283,8 @@ share into [tenant pools](#tenant-pools) as from any granted pool.
 
 A VM asks with `devices`, for example `[{"pool": "a100", "count": 2,
 "same_switch": true}]` (in `gxctl create`, `a100:2:switch`; in the
-web UI's VM form, **Device Pools**). Glidex picks devices of the pool
+web UI's VM form, **Device Pools**, or **GPUs** for pools of class
+`gpu`, with **Under one PCIe switch**). Glidex picks devices of the pool
 that are ready, not cordoned and not held by another VM (whole IOMMU
 groups counted), on the NUMA node of the VM's other devices first, then
 by address. With `same_switch`, all of them sit under one PCIe switch,
@@ -296,7 +301,7 @@ waits for a node; on a single host the request is refused with `409`.
 
 A user can ask for GPUs by count instead of sizing the VM:
 `"gpus": {"count": 4, "pool": "a100"}` (in `gxctl create`, `4:a100`;
-in the web UI, a GPU pool's count). Glidex turns it into:
+in the web UI's VM form, a count next to the pool under **GPUs**). Glidex turns it into:
 
 - a pool request for 4 devices of `a100`;
 - `NUMA_POLICY_ALIGNED`, so the VM spans exactly its GPUs' NUMA nodes
@@ -374,6 +379,12 @@ API, `PUT /tenants/{id}/device-pools` replaces the tenant's whole set.
 - A VM of one of those projects asks for `{"pool": "team-a-gpus"}`. It
   gets devices of `a100`, and the VM shows `"pool": "a100",
   "tenant_pool": "team-a-gpus"`. Other projects are refused (`403`).
+- Once the tenant has a tenant pool on `a100`, the tenant's grant
+  reaches its projects only through its tenant pools: a project asking
+  for `a100` itself is refused (`403`) unless `pci.allow` grants `a100`
+  to that project by name or id, or the caller has a host role
+  (`net-admin`, `system-admin`). VMs created before keep their devices
+  and requests.
 - The tenant pool's projects together ask for at most `max` devices
   (`tenant_quota_exceeded`, resource `tenant_pool.team-a-gpus`). The
   tenant's cap and the project quota on `a100` still apply.
@@ -412,10 +423,17 @@ Preparing:
   host's GPUs on `vfio-pci` add up to less than the host's memory. Each
   gets the largest size that fits, given the GPUs prepared before it: on
   a host with 32 GiB, a 32 GiB window becomes 16 GiB, and a second GPU's
-  8 GiB. A window as large as the host's memory froze a test host when
-  its VM started. The guest still reaches all of the GPU's memory
+  8 GiB. On a host with far more memory the window stays as it is: a
+  32 GiB window froze a 247 GiB test host when its VM started, for a
+  reason not yet known, so give such a pool a `bar_mib` (below). The
+  guest still reaches all of the GPU's memory
   through the smaller window. A GPU already on `vfio-pci` keeps its
-  size, and a window that can't be made small enough is refused;
+  size, and a window that can't be made small enough is refused. A
+  pool's `bar_mib` makes its GPUs' windows at most that size (the
+  largest size the GPU has under it) when a node prepares them for the
+  pool, with `prepare: true` or the boot binding; a `bar_mib` under
+  every size the GPU has is refused. A device prepared with
+  `prepare-device` gets the size above;
 - remembers the drivers they had, and the window sizes, for release;
 - writes `/etc/udev/rules.d/90-glidex-vfio-<group>.rules`, which gives
   `/dev/vfio/<group>` to the `glidex` group with mode `0660`, and

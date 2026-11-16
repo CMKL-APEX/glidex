@@ -136,8 +136,8 @@ a chat. Turn the Funnel off after the checks.
 ## Two organizations (T6)
 
 Two installs that share nothing but the network: a cluster (here
-gpu-dev2, with an agent) and a standalone host serving another
-organization's directory (here spark-1, split off the cluster for it).
+the R9700 host, with an agent) and a standalone host serving another
+organization's directory, split off the cluster for it.
 No IdP is involved; the accounts are the directory's own.
 
 1. At the directory host: a tenant with a project, and a user who is its
@@ -161,10 +161,63 @@ No IdP is involved; the accounts are the directory's own.
 8. `gxctl --profile <directory profile> auth logout --revoke`: its access
    token is refused at once and its refresh token too.
 
+## Verified addresses and pre-added users (T8)
+
+On a cluster with a Google Workspace connector, as its operator:
+
+1. The connector's allowed domain (and, if wanted, *Allowed emails*).
+2. On Access, **Add user** with an address in that domain and a role,
+   before its owner has signed in: listed as *not signed in yet*.
+3. They sign in with Google: they arrive with that role.
+4. An address outside the domain or the allowlist is refused at sign-in.
+
+## Self-service tenants (T9) and members by email (T10)
+
+On a cluster with a Google Workspace connector:
+
+1. The operator turns on self-service tenants in the directory's
+   **Settings**, with a per-user limit and automatic admission at the
+   default cap (an open device pool too, to try one).
+2. A Workspace user without a role creates a lab: it is admitted.
+3. They add a member by email: a user who has signed in is added; an
+   address with no user is offered an invitation.
+4. They create a project and run a VM in it.
+5. A second lab past the per-user limit is refused, as is going past
+   the cap.
+
+## Token paths on aws-lc-rs (#349, #353)
+
+#349 moved jsonwebtoken to its `aws_lc_rs` backend, and #353 moved the
+issuer's ES256 signing and WebAuthn's ES256 and RS256 checks there too.
+The unit tests cover issuing and checking tokens, key rotation, a key
+stored before #353, and passkey assertions; these steps show the real
+paths, on a cluster running a build with both.
+
+1. Sign in through an OIDC connector in a browser (Google's ID tokens are
+   RS256; an ES256 provider too, where one is configured).
+2. The cluster's own tokens: open a second server's web UI directly (not
+   through the load balancer) while signed in at another, and sign in
+   with the directory there (the issuer's ES256 tokens). With gxctl,
+   `auth login --directory` on a profile for one server, then a command
+   against another server with that profile.
+3. A trusted login (another organization's directory, D69: a profile
+   `--via` it) and a token exchange; skip when no second organization
+   is set up, and say so.
+4. A passkey sign-in on a key made before the install (ES256), and on a
+   Windows Hello key (RS256) where one is at hand.
+5. Google Directory sync's service-account assertion (RS256 signing):
+   only with a test directory (T4 is deferred by the operator).
+
 ## Results
 
 | Date | Build | Check | Result |
 |---|---|---|---|
+| 2026-11-10 | `b7c3d7a` | Security's real-host list (spec/11-security.md §17) on the three-server test cluster, with the operator's go-ahead for the parts that change a host | pass, except VFIO and hugepages: **not run yet**, moved to v0.0.9 by the operator (#454). **Sandboxing (§9):** the units have §9's settings; netd's unit has no capability bounding set on purpose, and §9 is corrected to say so. **nftables (§8.4)** on the single-A100 host, with throwaway networks: a NAT guest reached only its own gateway, and a guest on an isolated network reached nothing on the host. **PAM (§5.3)** on the single-A100 host, with a throwaway account: the right password was accepted; a wrong password and an expired, must-change or locked account were refused |
+| 2026-11-10 | not recorded | OIDC presets Google Workspace and JumpCloud, and verified addresses and pre-added users (T8) | pass, as reported by the operator; when and on which build weren't recorded |
+| 2026-11-10 | `9b69618` | Token paths on aws-lc-rs, step 2 (the cluster's own tokens) | pass. gxctl: a directory login completed at one server listed projects at another, both ways. Browser: a passkey sign-in on a server's own web UI, not through the cluster's public name (a Cloudflare tunnel), worked, as reported by the operator. Step 3 not run: no second organization is admitted. Step 5 not run: T4 deferred by the operator |
+| 2026-11-09 | `4ff7c0b` (#349, #400) | Token paths on aws-lc-rs, steps above: step 1 (Google sign-in through the cluster's public name, a Cloudflare tunnel) and step 4 (passkey sign-in) | pass, as reported by the operator, and in the cluster's audit. Which passkey kinds were used (ES256, RS256) wasn't reported. Steps 2 (the cluster's own tokens through gxctl and a second server), 3 (a trusted login: needs a second organization) and 5 (Directory sync: T4 deferred) **not run yet**: moved to v0.0.9 by the operator (#354) |
+| 2026-11-05 | `6e61817`, then `2c05489` (T9 #260–#267, T10 #278) | Self-service tenants and members by email on the three-server test cluster through the cluster's public name (a Cloudflare tunnel), steps 1–5 above | pass, as reported by the operator, and in the cluster's audit (members and roles added at `6e61817`, a lab with its project, network and VMs at `2c05489`). No refusal at the limit is in the audit |
+| 2026-11-03 | `72b9d7f` (T8 #243, #244, #246) | Verified addresses and pre-added users on the three-server test cluster through the cluster's public name (a Cloudflare tunnel), steps 1–4 above | pass, as reported by the operator; the pre-adds are in the cluster's audit |
 | — | T4 (#74–#85) | Google Workspace directory sync (`provisioning: pull`) | **not run yet**: deferred by the operator; run it before relying on the pull |
 | 2026-10-22 | `ac5a0e2` (T6 #165, #167, #168) | Two organizations: steps 1–8 above, between a cluster and a standalone host on a tailnet | pass (step 8 at `985e97b`), after three fixes found by it and made in #168: a standalone host's server-info now names its token audience (gxctl's directory login asked for the wrong one); a tenant role lists the tenant's projects; `auth logout --revoke` ends a directory login (it refused for want of an API token id). Staleness and logout at the directory ending cluster sessions were checked in-process only |
 | — | T5 (#92–#100) | GitHub Actions workload federation | **not run yet**: needs a test repository and a tunnel; run it before relying on federation with GitHub |

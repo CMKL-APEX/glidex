@@ -209,8 +209,13 @@ fn resizable_bars(exec: &dyn Exec, bdf: &str) -> Vec<(u8, u64, u64)> {
 
 /// The resize G17 asks of `bdf`'s windows: the total of the host's GPU
 /// windows on `vfio-pci` stays below its memory, each window as large as
-/// that allows. Errs when even the smallest size doesn't fit.
-fn window_resizes(exec: &dyn Exec, bdf: &str) -> Result<Vec<Resized>, OvsError> {
+/// that allows and at most `ceiling_mib`, a pool's `bar_mib` (G18). Errs
+/// when even the smallest size doesn't fit.
+fn window_resizes(
+    exec: &dyn Exec,
+    bdf: &str,
+    ceiling_mib: Option<u64>,
+) -> Result<Vec<Resized>, OvsError> {
     let bars = resizable_bars(exec, bdf);
     if bars.is_empty() {
         return Ok(Vec::new());
@@ -226,23 +231,30 @@ fn window_resizes(exec: &dyn Exec, bdf: &str) -> Result<Vec<Resized>, OvsError> 
         .flat_map(|a| resizable_bars(exec, &a))
         .map(|(_, mib, _)| mib)
         .sum();
+    let ceiling = ceiling_mib.unwrap_or(u64::MAX);
     let mut out = Vec::new();
     for (bar, mib, mask) in bars {
-        if used + mib < mem {
+        if mib <= ceiling && used + mib < mem {
             used += mib;
             continue;
         }
-        let fit = (0..64u32)
+        let mut sizes = (0..64u32)
             .rev()
             .filter(|n| mask & (1 << n) != 0)
             .map(|n| 1u64 << n)
-            .find(|size| used + size < mem)
-            .ok_or_else(|| {
-                OvsError::conflict(format!(
-                    "{bdf}'s BAR {bar} has no size that keeps the host's GPU windows \
+            .filter(|size| *size <= ceiling)
+            .peekable();
+        if sizes.peek().is_none() {
+            return Err(OvsError::invalid(format!(
+                "{bdf}'s BAR {bar} has no size of at most the pool's bar_mib ({ceiling} MiB)"
+            )));
+        }
+        let fit = sizes.find(|size| used + size < mem).ok_or_else(|| {
+            OvsError::conflict(format!(
+                "{bdf}'s BAR {bar} has no size that keeps the host's GPU windows \
                      ({used} MiB on vfio-pci) below its memory ({mem} MiB)"
-                ))
-            })?;
+            ))
+        })?;
         used += fit;
         out.push(Resized {
             address: bdf.to_string(),
@@ -252,6 +264,17 @@ fn window_resizes(exec: &dyn Exec, bdf: &str) -> Result<Vec<Resized>, OvsError> 
         });
     }
     Ok(out)
+}
+
+/// The host driver a device with no driver was kept from: its
+/// `driver_override` is `vfio-pci`, set by the boot claim (G20).
+fn claimed_from(exec: &dyn Exec, bdf: &str) -> Option<String> {
+    let over = exec
+        .read_file(&dev_dir(bdf).join("driver_override"))
+        .unwrap_or_default();
+    (over.trim() == "vfio-pci")
+        .then(|| crate::boot_devices::host_driver(exec, bdf))
+        .flatten()
 }
 
 /// Set a BAR's size; the device must have no driver.
@@ -294,12 +317,14 @@ fn load_vfio_pci(exec: &dyn Exec) -> Result<(), OvsError> {
 /// Bind `bdf`'s IOMMU group to `vfio-pci` and give `/dev/vfio/<group>` to
 /// `vm_group` (0660), through a udev rule that keeps it so and a change
 /// now. Not persistent across reboots (the installer's `--vfio-devices`
-/// is).
+/// is). `bar_mib`: a pool's ceiling for GPU windows (spec/27-gpu-vms.md
+/// G18).
 pub fn prepare(
     exec: &dyn Exec,
     bdf: &str,
     dpdk_uplinks: &[String],
     vm_group: &str,
+    bar_mib: Option<u64>,
 ) -> Result<Prepared, OvsError> {
     nic::validate_bdf(bdf)?;
     if !exec.exists(&dev_dir(bdf)) {
@@ -318,9 +343,12 @@ pub fn prepare(
     let mut resized = Vec::new();
     for m in group_members(exec, &group, bdf) {
         let driver = nic::pci_driver(exec, &m)?;
+        // Claimed at boot before its host driver loaded (G20): release
+        // gives it back to that driver.
+        let claimed = driver.is_none().then(|| claimed_from(exec, &m)).flatten();
         // A device already on vfio-pci keeps its size: a VM may hold it.
         if driver.as_deref() != Some("vfio-pci") {
-            let r = window_resizes(exec, &m)?;
+            let r = window_resizes(exec, &m, bar_mib)?;
             if r.is_empty() {
                 nic::bind_driver(exec, &m, "vfio-pci")?;
             } else {
@@ -330,7 +358,7 @@ pub fn prepare(
         }
         members.push(Member {
             address: m,
-            previous_driver: driver.filter(|d| d != "vfio-pci"),
+            previous_driver: driver.filter(|d| d != "vfio-pci").or(claimed),
         });
     }
     let rule = udev_rule_path(&group);
@@ -460,7 +488,7 @@ mod tests {
     fn a_gpu_window_is_kept_below_the_host_s_memory() {
         let exec = gpu_host();
         let a = "/sys/bus/pci/devices/0000:03:00.0";
-        let p = prepare(&exec, "0000:03:00.0", &[], "glidex").unwrap();
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", None).unwrap();
         assert_eq!(
             p.resized,
             vec![Resized {
@@ -495,7 +523,7 @@ mod tests {
             &format!("{a}/resource"),
             "0x0000005000000000 0x00000053ffffffff 0x000000000014220c\n",
         );
-        let q = prepare(&exec, "0000:43:00.0", &[], "glidex").unwrap();
+        let q = prepare(&exec, "0000:43:00.0", &[], "glidex", None).unwrap();
         assert_eq!(q.resized[0].mib, 8192);
 
         // Release puts the size back while the device has no driver.
@@ -520,16 +548,99 @@ mod tests {
             "/sys/bus/pci/devices/0000:03:00.0/uevent",
             "DRIVER=vfio-pci\n",
         );
-        let p = prepare(&exec, "0000:03:00.0", &[], "glidex").unwrap();
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", None).unwrap();
         assert!(p.resized.is_empty(), "a VM may hold it");
         assert!(written(&exec, "/sys/bus/pci/devices/0000:03:00.0/resource0_resize").is_empty());
+    }
+
+    #[test]
+    fn a_claimed_gpu_is_sized_at_boot_and_given_back_to_its_driver() {
+        use crate::boot_devices::{BootDevices, let_go_at_boot};
+        let exec = gpu_host();
+        let a = "/sys/bus/pci/devices/0000:03:00.0";
+        // The claim gave it vfio-pci before amdgpu loaded, and vfio-pci
+        // probed it at its full 32 GiB.
+        exec.file(&format!("{a}/vendor"), "0x1002\n");
+        exec.file(&format!("{a}/driver_override"), "vfio-pci\n");
+        exec.file(&format!("{a}/uevent"), "DRIVER=vfio-pci\n");
+        exec.link(&format!("{a}/driver"), "vfio-pci");
+        exec.file(&format!("{a}/modalias"), "pci:v00001002d00007551\n");
+        exec.on(
+            "modprobe -R pci:v00001002d00007551",
+            crate::exec::Output::ok("amdgpu\n"),
+        );
+        let cfg = BootDevices {
+            exclude: vec![],
+            sriov: vec![],
+            select: vec![crate::boot_devices::Selector {
+                addresses: vec!["0000:03:00.0".into()],
+                bar_mib: Some(16384),
+                ..Default::default()
+            }],
+        };
+        let_go_at_boot(&exec, &cfg);
+        assert_eq!(
+            written(&exec, &format!("{a}/driver/unbind")),
+            ["0000:03:00.0"]
+        );
+        // Unbound now: the boot unit prepares it like any other.
+        exec.file(&format!("{a}/uevent"), "\n");
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(16384)).unwrap();
+        assert_eq!(p.resized[0].previous_mib, 32768);
+        assert_eq!(p.resized[0].mib, 16384);
+        assert_eq!(written(&exec, &format!("{a}/resource0_resize")), ["14"]);
+        assert_eq!(
+            p.members[0].previous_driver.as_deref(),
+            Some("amdgpu"),
+            "release gives it back to the driver the claim kept it from"
+        );
+    }
+
+    #[test]
+    fn a_pool_s_bar_mib_is_a_ceiling_under_the_cap() {
+        let a = "/sys/bus/pci/devices/0000:03:00.0/resource0_resize";
+        // Below the cap: the pool's size.
+        let exec = gpu_host();
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(4096)).unwrap();
+        assert_eq!(p.resized[0].mib, 4096);
+        assert_eq!(written(&exec, a), ["12"]);
+        // Above the cap: the cap's 16 GiB, as without it.
+        let exec = gpu_host();
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(65536)).unwrap();
+        assert_eq!(p.resized[0].mib, 16384);
+        // Not a size the device has: the largest one under it.
+        let exec = gpu_host();
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(3000)).unwrap();
+        assert_eq!(p.resized[0].mib, 2048);
+        // Under every size it has (256 MiB is its smallest): refused, unbound.
+        let exec = gpu_host();
+        let e = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(128)).unwrap_err();
+        assert!(
+            e.to_string()
+                .contains("at most the pool's bar_mib (128 MiB)"),
+            "{e}"
+        );
+        assert!(written(&exec, "/sys/bus/pci/devices/0000:03:00.0/driver_override").is_empty());
+        // A window already within both is left as it is.
+        let exec = gpu_host();
+        exec.file("/proc/meminfo", "MemTotal: 134217728 kB\n");
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(32768)).unwrap();
+        assert!(p.resized.is_empty(), "{:?}", p.resized);
+        // On vfio-pci already: kept, whatever the pool says.
+        let exec = gpu_host();
+        exec.file(
+            "/sys/bus/pci/devices/0000:03:00.0/uevent",
+            "DRIVER=vfio-pci\n",
+        );
+        let p = prepare(&exec, "0000:03:00.0", &[], "glidex", Some(1024)).unwrap();
+        assert!(p.resized.is_empty(), "a VM may hold it");
     }
 
     #[test]
     fn a_window_with_no_size_that_fits_is_refused() {
         let exec = gpu_host();
         exec.file("/proc/meminfo", "MemTotal: 204800 kB\n");
-        let e = prepare(&exec, "0000:03:00.0", &[], "glidex").unwrap_err();
+        let e = prepare(&exec, "0000:03:00.0", &[], "glidex", None).unwrap_err();
         assert!(e.to_string().contains("below its memory (200 MiB)"), "{e}");
         assert!(written(&exec, "/sys/bus/pci/devices/0000:03:00.0/driver_override").is_empty());
     }
@@ -554,19 +665,19 @@ mod tests {
             "0000:03:00.0",
         );
         // The driver doesn't appear: an error, not a device left driverless.
-        let e = prepare(&bare, "0000:03:00.0", &[], "glidex").unwrap_err();
+        let e = prepare(&bare, "0000:03:00.0", &[], "glidex", None).unwrap_err();
         assert!(e.to_string().contains("vfio-pci driver isn't there"), "{e}");
         assert!(bare.calls().contains(&"modprobe vfio-pci".to_string()));
         assert!(bare.writes().is_empty());
         // Loaded already: no modprobe.
-        prepare(&exec, "0000:03:00.0", &[], "glidex").unwrap();
+        prepare(&exec, "0000:03:00.0", &[], "glidex", None).unwrap();
         assert!(!exec.calls().iter().any(|c| c.starts_with("modprobe")));
     }
 
     #[test]
     fn the_whole_group_goes_to_vfio_and_comes_back() {
         let exec = host();
-        let p = prepare(&exec, "0000:07:00.0", &[], "glidex").unwrap();
+        let p = prepare(&exec, "0000:07:00.0", &[], "glidex", None).unwrap();
         assert_eq!(p.iommu_group, "30");
         assert_eq!(
             p.members,
@@ -667,7 +778,7 @@ mod tests {
         exec.link(&format!("/sys/bus/pci/devices/{bdf}/iommu_group"), "178");
         exec.link(&format!("/sys/kernel/iommu_groups/178/devices/{bdf}"), bdf);
         exec.file("/sys/bus/pci/drivers/vfio-pci", "");
-        let p = prepare(&exec, bdf, &[], "glidex").unwrap();
+        let p = prepare(&exec, bdf, &[], "glidex", None).unwrap();
         assert_eq!(
             p.members,
             vec![Member {
@@ -687,7 +798,14 @@ mod tests {
     #[test]
     fn host_devices_and_uplinks_are_refused() {
         let exec = host();
-        let e = prepare(&exec, "0000:07:00.0", &["0000:07:00.1".into()], "glidex").unwrap_err();
+        let e = prepare(
+            &exec,
+            "0000:07:00.0",
+            &["0000:07:00.1".into()],
+            "glidex",
+            None,
+        )
+        .unwrap_err();
         assert!(
             e.to_string().contains("0000:07:00.1 is an OVS-DPDK uplink"),
             "{e}"
@@ -695,9 +813,9 @@ mod tests {
         // No IOMMU group: refused before anything is touched.
         let bare = RecordingExec::new();
         bare.file("/sys/bus/pci/devices/0000:09:00.0", "");
-        let e = prepare(&bare, "0000:09:00.0", &[], "glidex").unwrap_err();
+        let e = prepare(&bare, "0000:09:00.0", &[], "glidex", None).unwrap_err();
         assert!(e.to_string().contains("no IOMMU group"), "{e}");
         assert!(bare.writes().is_empty());
-        assert!(prepare(&bare, "nope", &[], "glidex").is_err());
+        assert!(prepare(&bare, "nope", &[], "glidex", None).is_err());
     }
 }

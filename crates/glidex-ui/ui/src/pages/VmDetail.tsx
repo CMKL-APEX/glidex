@@ -10,6 +10,7 @@ import {
   settled,
   nodeUnreachable,
   notReadyReason,
+  pylonUnmanagedReason,
   tsSecs,
   unscheduledReason,
   vmActivity,
@@ -19,7 +20,7 @@ import {
 } from "../types";
 import NodeName from "../components/NodeName";
 import { ApiRequestError } from "../api";
-import VmActions, { type VmAction } from "../components/VmActions";
+import VmActions, { type VmAction, VM_ALLOW_ACTIONS, vmAllow } from "../components/VmActions";
 import DeleteVmDialog from "../components/DeleteVmDialog";
 import VmDisks from "../components/VmDisks";
 import PlaceVm from "../components/PlaceVm";
@@ -29,10 +30,14 @@ import VmKernel from "../components/VmKernel";
 import VmServiceAccount from "../components/VmServiceAccount";
 import VmCpuScale from "../components/VmCpuScale";
 import VmMemory from "../components/VmMemory";
+import VmRename from "../components/VmRename";
 import VmNetworks from "../components/VmNetworks";
 import { Loading } from "../components/Loading";
-import { useSession } from "../session";
+import { useCan, useSession } from "../session";
 import { useLive, useLiveRefresh } from "../live";
+
+/** The VM page's other controls, each shown only to a caller its action allows. */
+const VM_EDIT_ACTIONS = ["openConsole", "updateVm", "attachNetwork", "detachNetwork", "attachDisk", "detachDisk"] as const;
 
 export default function VmDetail() {
   const { id } = useParams<{ id: string }>();
@@ -46,6 +51,11 @@ export default function VmDetail() {
   /** The firmware image's name, once looked up (the VM carries its id). */
   const [firmwareName, setFirmwareName] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // What the caller may do to this VM: controls they can't use aren't shown
+  // (all hidden until the answer is in).
+  const vmChecks = [...VM_ALLOW_ACTIONS, ...VM_EDIT_ACTIONS];
+  const allowed = useCan(vmChecks.map((action) => ({ action, resource: { type: "Vm" as const, id: id ?? "" } })));
+  const may = (a: (typeof vmChecks)[number]) => !!allowed?.[vmChecks.indexOf(a)];
 
   // While a delete runs, follow the VM on the live stream instead of
   // asking for it: once it is gone, a GET would 404 (handled, but logged
@@ -172,6 +182,7 @@ export default function VmDetail() {
             <div>
               <h1 className="text-2xl font-bold text-gray-900">{vm.name}</h1>
               <p className="text-gray-500 font-mono text-sm mt-1">{vm.id}</p>
+              {may("updateVm") && <VmRename vm={vm} onChanged={fetchVm} />}
             </div>
             <VmStateBadge vm={vm} large />
           </div>
@@ -239,16 +250,21 @@ export default function VmDetail() {
                     </span>
                   )}
                 </p>
-                <VmCpuScale vm={vm} onChanged={fetchVm} />
+                {pylonUnmanagedReason(vm) && (
+                  <p className="mt-1 p-2 bg-amber-50 border border-amber-200 rounded-sm text-xs text-amber-800" data-testid="pylon-unmanaged">
+                    Not managed by pylond: {pylonUnmanagedReason(vm)}
+                  </p>
+                )}
+                {may("updateVm") && <VmCpuScale vm={vm} onChanged={fetchVm} />}
               </div>
               <div>
                 <h3 className="text-sm font-medium text-gray-500">Memory</h3>
                 <p className="text-lg font-semibold text-gray-900">
                   {vm.mem_size_mib} MiB
                 </p>
-                <VmMemory vm={vm} onChanged={fetchVm} />
+                {may("updateVm") && <VmMemory vm={vm} onChanged={fetchVm} />}
               </div>
-              <VmNetworks vm={vm} onChanged={fetchVm} />
+              <VmNetworks vm={vm} onChanged={fetchVm} canAttach={may("attachNetwork")} canDetach={may("detachNetwork")} />
             </div>
             <div className="space-y-4">
               <div>
@@ -269,15 +285,15 @@ export default function VmDetail() {
                   </p>
                 </div>
               )}
-              {vm.kernel && <VmKernel vm={vm} onChanged={fetchVm} />}
+              {vm.kernel && <VmKernel vm={vm} onChanged={fetchVm} editable={may("updateVm")} />}
               {vm.boot === "BOOT_MODE_KERNEL" && !vm.kernel && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Kernel</h3>
                   <p className="text-sm text-gray-700">Kernel files on the host</p>
                 </div>
               )}
-              <VmServiceAccount vm={vm} onChanged={fetchVm} />
-              <VmDisks vm={vm} onChanged={fetchVm} />
+              <VmServiceAccount vm={vm} onChanged={fetchVm} editable={may("updateVm")} />
+              <VmDisks vm={vm} onChanged={fetchVm} canAttach={may("attachDisk")} canDetach={may("detachDisk")} />
               {vm.restart_policy && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">If it stops on its own</h3>
@@ -290,7 +306,7 @@ export default function VmDetail() {
               {vm.last_exit && (
                 <div>
                   <h3 className="text-sm font-medium text-gray-500">Last Exit</h3>
-                  <p className="text-sm text-gray-700 break-words">{describeExit(vm.last_exit)}</p>
+                  <p className="text-sm text-gray-700 wrap-break-word">{describeExit(vm.last_exit)}</p>
                 </div>
               )}
             </div>
@@ -358,9 +374,10 @@ export default function VmDetail() {
                 deleting={vm.deleting}
                 onAction={(vmId, action) => (action === "delete" ? setConfirmDelete(true) : handleAction(vmId, action))}
                 loading={actionLoading}
+                allow={vmAllow(allowed)}
               />
               <PlaceVm vm={vm} stopped={["stopped", "created", "failed"].includes(vmState(vm)) && desiredState(vm) === "stopped"} onDone={fetchVm} />
-              {!nodeUnreachable(vm) && (
+              {!nodeUnreachable(vm) && may("openConsole") && (
               <Link
                 to={`/vms/${vm.id}/console`}
                 className="inline-flex items-center px-3 py-2 text-sm font-medium text-white bg-gray-800 hover:bg-gray-900 rounded-lg"

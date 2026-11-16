@@ -105,7 +105,7 @@ fn default_method() -> String {
 /// Whether cookies should be `Secure`: the browser reached us over TLS.
 pub(super) fn secure_transport(app: &AppState, headers: &HeaderMap, listener: Listener) -> bool {
     match listener {
-        Listener::Ui | Listener::Relay => {
+        Listener::Ui => {
             headers
                 .get("x-forwarded-proto")
                 .and_then(|v| v.to_str().ok())
@@ -160,7 +160,7 @@ pub async fn login(
     }
     // Passwords only over TLS or from this host (spec §5.3).
     let local = match listener {
-        Listener::Ui | Listener::Api | Listener::Cluster | Listener::Relay => true,
+        Listener::Ui | Listener::Api | Listener::Cluster => true,
         Listener::Tcp => {
             app.auth.config.tls.enabled() || addr.is_none_or(|a| a.0.0.ip().is_loopback())
         }
@@ -185,7 +185,10 @@ pub async fn login(
     .await
     .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
     let user = match result {
-        Ok((u, _)) => u,
+        Ok((u, c)) => {
+            crate::service::tenancy::tenant_at_sign_in(&app, &c, &u, None, &rid.0);
+            u
+        }
         Err(e) => {
             audit_login(&app, None, &rid.0, "pam", "denied", &body.username);
             return Err(auth_error(e));
@@ -630,7 +633,14 @@ async fn finish_oidc(
         After::Login => None,
     };
     let user = match oidc_user_invited(&app, &c, &identity, invite.as_ref()) {
-        Ok(u) => u,
+        Ok(u) => {
+            let email = identity
+                .email
+                .as_deref()
+                .filter(|_| identity.email_verified);
+            crate::service::tenancy::tenant_at_sign_in(&app, &c, &u, email, &rid.0);
+            u
+        }
         Err(e) => {
             audit_login(&app, None, &rid.0, "oidc", "denied", &identity.subject);
             return Err(e.into());
@@ -1212,6 +1222,13 @@ pub struct AuditQuery {
     /// A hosted directory's own audit (spec/19-tenancy.md D74).
     #[serde(default)]
     directory: Option<String>,
+    /// Pages (spec/11-security.md decisions 22, 23).
+    #[serde(default)]
+    order_by: Option<String>,
+    #[serde(default)]
+    ascending: Option<bool>,
+    #[serde(default)]
+    page_token: Option<String>,
 }
 
 /// `GET /audit` → `{entries}`.
@@ -1232,6 +1249,9 @@ pub async fn read_audit(
         user: q.user,
         limit: q.limit,
         directory: q.directory,
+        order_by: q.order_by,
+        ascending: q.ascending,
+        page_token: q.page_token,
         ..Default::default()
     };
     Ok(Proto(StatusCode::OK, acc::read_audit(&c, req)?))

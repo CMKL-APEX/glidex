@@ -4,20 +4,22 @@ description = "Core authentication for glidex and hyperstor: secrets, session an
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 cedar-policy = "4.13"
 arc-swap = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-thiserror = "1"
+thiserror = "2"
 tracing = "0.1"
 sha2 = "0.11"
-getrandom = "0.3"
-base64 = "0.22"
+getrandom = "0.4"
+base64 = "0.23"
 zeroize = "1"
-jsonwebtoken = { version = "11", features = ["rust_crypto"] }
-reqwest = { version = "0.12", features = ["json"] }
+jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+reqwest = { version = "0.13", features = ["json", "form"] }
 tokio = { version = "1", features = ["sync"] }
 
 [dev-dependencies]

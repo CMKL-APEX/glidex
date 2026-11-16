@@ -1,9 +1,10 @@
 # `gxctl` CLI
 
-Source: `crates/glidex-control-plane/src/bin/gxctl/` (`main.rs`: REPL
-and VM commands; `client.rs`: transport, token file, error rendering;
-`console.rs`: `connect` / `log`; `admin.rs`: access-control commands).
-Binary produced by the same crate as the control plane.
+Source: `crates/gxctl/src/` (`main.rs`: REPL and VM commands;
+`client.rs`: transport, token file, error rendering; `console.rs`:
+`connect` / `log`; `admin.rs`: access-control commands). Its own crate,
+published to crates.io (`cargo install gxctl`); the installer builds it
+with the rest.
 
 `gxctl` is an **interactive** shell. Invoking it drops into a
 `rustyline` REPL with history and tab completion. Commands talk to
@@ -22,7 +23,7 @@ See [11-security.md](11-security.md) §5.1, §5.2, §5.5.
 | `GLIDEX_CONFIG` | Path to the profile file; empty disables reading it, which is what CI should set. |
 | *(no socket, no `--url`)* | TCP to `https://localhost:8841`. |
 | `--project <id\|name>` (`-p`) / `GLIDEX_PROJECT` | Project for this session (below). |
-| `gxctl [options] <command…>` | Run one REPL command and exit (`gxctl list`, `gxctl --url https://cp:8841 login --oidc`). |
+| `gxctl [options] <command…>` | Run one REPL command and exit (`gxctl list`, `gxctl --url https://cp:8841 login --oidc`). It exits 1 when the command prints an error or its usage line (an unknown command, a missing argument, a request that fails), 2 when gxctl can't set up its connection (no usable socket, URL or profile, or a profile bound to another cluster), else 0. |
 
 - **Unix socket:** the control plane identifies the caller by peer uid
   (`SO_PEERCRED`); gxctl sends no credentials. Root and `glidex-admin`
@@ -101,6 +102,7 @@ name (ids when `/projects` isn't readable).
 | `list` / `ls` | `GET /vms` + table; `STATE` shows `state → desired_state` while they differ |
 | `get <name\|id>` | `GET /vms/{id}` with VM-name resolution; also prints the `Ready` reason while not converged (`Waiting:`) and `last_exit` |
 | `create` | Interactive prompts → `POST /vms` |
+| `create <name> (--image I [--disk-size GiB] \| --root-disk D \| --rootfs PATH) [flags]` | The same request without prompts (§`create` without prompts) |
 | `start <name\|id> [--no-wait]` | `POST /vms/{id}/start?wait=60` |
 | `place <name\|id> [--node N]` | `PlaceVm`: a stopped or lost VM on another node (spec/24-storage.md §9); prints where it went, or why it waits |
 | `stop <name\|id> [--graceful [secs]] [--no-wait]` | `POST /vms/{id}/stop?wait=<w>[&graceful_timeout_secs=<secs>]` (power button first; default 60 s); `w` = max(60, secs + 20), at most 300 |
@@ -117,6 +119,7 @@ name (ids when `/projects` isn't readable).
 | `node topology <node> [--devices]` | `GetNodeTopology`: NUMA nodes with their devices, or the devices with their tree place |
 | `attach-device <vm> <path>` | `POST /vms/{id}/devices` |
 | `detach-device <vm> <path>` | `DELETE /vms/{id}/devices` |
+| `rename <name\|id> <new-name>` | `UpdateVm` (`name`, 12-reconciliation.md §7.7); prints the new name. A root disk the VM made is renamed with it; scripts that used the old name must use the new one or the id |
 | `memory <name\|id> [<size>]` | `GetVm`: the VM's memory; with a size (MiB, or `8G`): `UpdateVm` (`mem_size_mib`), from the next start on a running VM (it says so) |
 | `attach-disk <vm> <disk>` / `detach-disk <vm> <disk>` | `AttachDisk` / `DetachDisk`, the disk by name or id; on a running VM from the next start (it says so) |
 | `attach-network <vm> <network> [--mac <mac>]` / `detach-network …` | `AttachNetwork` / `DetachNetwork`, the network by name or id, `--mac` for one NIC of several on it; on a running VM from the next start (it says so) |
@@ -345,6 +348,26 @@ Interactive `handle_create` asks, in order:
 
 The request is `POST /vms`. Tilde in paths is expanded server-side
 (see [03-data-model.md](03-data-model.md)); the CLI does not do it itself.
+
+### `create` without prompts
+
+`create <name> [flags]` (any argument after `create`) builds the same
+request from flags, for scripts. Each prompt has a flag; what isn't given
+takes the prompt's default, looked up the same way (newest firmware image
+for the hypervisor, the boot image's own kernel, the signed-in user's
+credential, the `default` network). Rules:
+
+- Exactly one boot disk: `--image` (with optional `--disk-size`),
+  `--root-disk` or `--rootfs`. There is no default image: a script says
+  which.
+- An unknown flag, a flag without its value, a malformed number or size,
+  or flags that don't go together (`--initrd` without a kernel path,
+  `--follow-kernel` with a host path, `--kernel` with firmware boot,
+  `--network none` with other networks) are refused before any request.
+- `--start` sends `power: running`; without it the VM is created
+  stopped, as with the prompts.
+- A one-shot run (`gxctl create …`) exits 1 when the create fails, so a
+  script can tell, as every one-shot command does (below).
 
 
 ### `connect` loop

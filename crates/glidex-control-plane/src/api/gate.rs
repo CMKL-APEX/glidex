@@ -283,7 +283,7 @@ async fn forward(
         .unwrap_or(Listener::Tcp);
     let secure = match listener {
         Listener::Tcp => true,
-        Listener::Ui | Listener::Relay => {
+        Listener::Ui => {
             parts
                 .headers
                 .get("x-forwarded-proto")
@@ -311,7 +311,13 @@ async fn forward(
         };
         match cluster
             .client
-            .request(&addr, parts.method.clone(), &path, &headers, body.clone())
+            .request(
+                crate::cluster::net::Target::server(&addr),
+                parts.method.clone(),
+                &path,
+                &headers,
+                body.clone(),
+            )
             .await
         {
             Ok(r) if r.status == StatusCode::MISDIRECTED_REQUEST && attempt == 0 => {

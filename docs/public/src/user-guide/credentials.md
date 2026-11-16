@@ -141,6 +141,11 @@ a root filesystem file path, can't use one. A
 [kernel image](kernel-boot.md) or a managed boot disk gets the seed as
 with firmware.
 
+A credential is a login for people. For software in the guest that
+calls Glidex or another service, give the VM a service account instead:
+it gets short-lived tokens from the metadata endpoint, and no secret is
+stored in the guest (see [Workload identity](vms.md#workload-identity)).
+
 ## Your own cloud-init seed
 
 To provision a guest your own way (other users, packages, files), give

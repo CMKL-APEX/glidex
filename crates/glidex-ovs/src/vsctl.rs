@@ -171,6 +171,22 @@ pub fn find_by_name(
         .next())
 }
 
+/// The OpenFlow port number OVS gave `port` (for rules that match
+/// `in_port`). A port OVS hasn't set up yet has none (`-1` or `[]`).
+pub fn ofport(exec: &dyn Exec, port: &str) -> Result<u32, OvsError> {
+    let out = exec.check(&Cmd::new(
+        Program::OvsVsctl,
+        ["get", "Interface", port, "ofport"],
+    ))?;
+    let text = String::from_utf8_lossy(&out.stdout);
+    text.trim().parse().map_err(|_| {
+        OvsError::conflict(format!(
+            "{port} has no OpenFlow port number yet: {}",
+            text.trim()
+        ))
+    })
+}
+
 /// `ovs-vsctl <args…>`, requiring success.
 pub fn run(exec: &dyn Exec, args: Vec<String>) -> Result<(), OvsError> {
     exec.check(&Cmd::new(Program::OvsVsctl, args)).map(|_| ())

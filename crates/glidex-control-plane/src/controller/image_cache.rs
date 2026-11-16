@@ -330,7 +330,7 @@ impl VmManager {
     }
 
     /// The node-API address of a node (other than this one) with a ready copy.
-    fn holder_of(&self, img: &Image) -> Option<String> {
+    fn holder_of(&self, img: &Image) -> Option<crate::cluster::net::Target> {
         let me = self.local_node_id();
         self.image_caches(&img.id)
             .into_iter()
@@ -340,8 +340,8 @@ impl VmManager {
                     .get(&n)
                     .ok()
                     .flatten()
-                    .and_then(|n| n.status.advertise)
-                    .map(|a| a.to_string())
+                    .and_then(|r| r.status.advertise)
+                    .map(|a| crate::cluster::net::Target::node(n, a))
             })
     }
 
@@ -429,13 +429,20 @@ impl VmManager {
             }),
         )?;
         let mut result: Result<u64, String> = Ok(0);
+        // Every part is fetched and checked before any is put in place: a
+        // main file without its checked template would be a half copy that
+        // the next pass counts as this node's.
+        let mut fetched = Vec::new();
         for (part, dest) in self.image_files(img) {
             let tmp = dest.with_extension("cache.part");
             let path = format!("/cluster/v1/images/{}/file?part={part}", img.id);
             match cluster.client.get_to_file(&holder, &path, &tmp).await {
                 // Optional parts: a firmware without a template, a kernel
                 // without an initramfs.
-                Ok(404) if part == "vars" || (part == "initrd" && img.initrd.is_none()) => {
+                Ok(404)
+                    if (part == "vars" && img.vars_sha256.is_none())
+                        || (part == "initrd" && img.initrd.is_none()) =>
+                {
                     continue;
                 }
                 Ok(200) => {}
@@ -451,10 +458,13 @@ impl VmManager {
                 }
             }
             // The parts with a recorded digest: the main file, a kernel's
-            // initramfs.
+            // initramfs, a firmware's variable-store template (records made
+            // before it was kept have none, and their template is taken as
+            // it comes).
             let want = match part {
                 "main" => Some(img.sha256.clone()),
                 "initrd" => img.initrd.as_ref().map(|i| i.sha256.clone()),
+                "vars" => img.vars_sha256.clone(),
                 _ => None,
             };
             if let Some(want) = want {
@@ -472,13 +482,13 @@ impl VmManager {
                     break;
                 }
             }
-            if let Err(e) = std::fs::rename(&tmp, &dest) {
-                result = Err(e.to_string());
-                break;
-            }
-            if part == "main" {
-                result = Ok(std::fs::metadata(&dest).map(|m| m.len()).unwrap_or(0));
-            }
+            fetched.push((part, tmp, dest));
+        }
+        if result.is_ok() {
+            result = place_together(&fetched);
+        }
+        for (_, tmp, _) in &fetched {
+            let _ = std::fs::remove_file(tmp);
         }
         match result {
             Ok(bytes) => {
@@ -570,6 +580,33 @@ impl VmManager {
 }
 
 /// Whether `vm` boots through firmware or kernel image `id`.
+/// Put fetched parts in place, the main file last: its presence is what
+/// says this node holds the image. If one can't be moved, those already
+/// moved are taken out again. The size of the main file on success.
+fn place_together(
+    fetched: &[(&str, std::path::PathBuf, std::path::PathBuf)],
+) -> Result<u64, String> {
+    let mut placed = Vec::new();
+    let order = fetched
+        .iter()
+        .filter(|(p, ..)| *p != "main")
+        .chain(fetched.iter().filter(|(p, ..)| *p == "main"));
+    for (_, tmp, dest) in order {
+        if let Err(e) = std::fs::rename(tmp, dest) {
+            for p in &placed {
+                let _ = std::fs::remove_file(p);
+            }
+            return Err(e.to_string());
+        }
+        placed.push(dest);
+    }
+    Ok(fetched
+        .iter()
+        .find(|(p, ..)| *p == "main")
+        .and_then(|(_, _, dest)| std::fs::metadata(dest).ok())
+        .map_or(0, |m| m.len()))
+}
+
 fn boots(vm: &crate::models::Vm, id: &str) -> bool {
     vm.uses_boot_image(id)
 }

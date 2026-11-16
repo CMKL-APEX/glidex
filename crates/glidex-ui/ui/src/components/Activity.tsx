@@ -137,7 +137,7 @@ export default function Activity() {
           <ul className="max-h-80 overflow-auto divide-y divide-gray-100">
             {items.map((it) => (
               <li key={it.key}>
-                <Link to={it.to} className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 rounded" onClick={() => setOpen(false)}>
+                <Link to={it.to} className="flex items-center gap-2 px-2 py-1.5 hover:bg-gray-50 rounded-sm" onClick={() => setOpen(false)}>
                   <span className="w-10 shrink-0 text-xs text-gray-400">{it.kind}</span>
                   <span className="font-mono truncate">{it.name}</span>
                   <span className="ml-auto shrink-0 text-xs text-sky-700">{it.what}</span>

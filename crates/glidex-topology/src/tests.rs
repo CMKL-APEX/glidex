@@ -265,6 +265,33 @@ fn ports_with_rdma_fabric_bond_and_addresses() {
 }
 
 #[test]
+fn a_port_has_the_addresses_of_every_master_up_its_chain() {
+    // Port → bond → bridge, the address on the bridge (#425).
+    let s = Sys::hgx();
+    s.link("class/net/bond-apex/master", "class/net/br-apex");
+    s.write("class/net/br-apex/type", "1\n");
+    let addrs = [
+        addr("br-apex", "192.0.2.10", 24),
+        addr("ibp12s0", "198.51.100.21", 24),
+    ];
+    let host = Host::read_in(&s.root, &addrs);
+    let eth = &host.ports[0];
+    assert_eq!(eth.name, "enp225s0f0np0");
+    assert_eq!(
+        eth.master.as_deref(),
+        Some("bond-apex"),
+        "the direct master"
+    );
+    assert_eq!(eth.addresses, vec![addrs[0].1.clone()]);
+    assert_eq!(host.ports[1].addresses, vec![addrs[1].1.clone()]);
+
+    // A master loop ends the chain instead of hanging.
+    s.link("class/net/br-apex/master", "class/net/bond-apex");
+    let host = Host::read_in(&s.root, &addrs);
+    assert_eq!(host.ports[0].addresses, vec![addrs[0].1.clone()]);
+}
+
+#[test]
 fn reads_this_host() {
     // Whatever the host has, reading it doesn't fail, and every port's PCI
     // function is in the tree.
@@ -282,4 +309,14 @@ fn cpu_lists_parse() {
         vec![0, 1, 2, 3, 8, 10, 11]
     );
     assert_eq!(numa::parse_list(""), Vec::<u32>::new());
+}
+
+#[test]
+fn cpu_lists_format() {
+    assert_eq!(numa::format_list(&[3, 0, 1, 2, 8, 10, 11]), "0-3,8,10-11");
+    assert_eq!(numa::format_list(&[]), "");
+    assert_eq!(
+        numa::parse_list(&numa::format_list(&[5, 1, 2, 9])),
+        vec![1, 2, 5, 9]
+    );
 }

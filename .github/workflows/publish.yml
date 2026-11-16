@@ -1,0 +1,77 @@
+name: crates.io
+
+# The library crates (those without `publish = false`) are packaged and
+# built as crates.io would on every change to a manifest or a crate, without
+# uploading anything. They are published only by hand: run this workflow
+# from a release tag (`v<version>`) with `publish` checked. See
+# docs/public/src/developer-guide/contributing.md, "Publishing to crates.io".
+
+on:
+  push:
+    branches: [ "main" ]
+    paths: [ "Cargo.toml", "Cargo.lock", "crates/**", ".github/workflows/publish.yml" ]
+  pull_request:
+    branches: [ "main" ]
+    paths: [ "Cargo.toml", "Cargo.lock", "crates/**", ".github/workflows/publish.yml" ]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload to crates.io (unchecked: a dry run)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Packages each publishable crate alone and builds it from the package,
+  # with workspace crates it depends on taken from their packages too.
+  package:
+
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Package and build, uploading nothing
+      run: cargo publish --workspace --dry-run --locked
+
+  publish:
+
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs: package
+    runs-on: ubuntu-26.04
+    timeout-minutes: 30
+    # Give the environment required reviewers in the repository's settings:
+    # a run then waits for one of them before it uploads.
+    environment: crates-io
+    permissions:
+      contents: read
+      # Trusted Publishing: crates.io trusts this workflow's OIDC token, so
+      # no long-lived crates.io token is stored in the repository.
+      id-token: write
+
+    steps:
+    - uses: actions/checkout@v7
+    # Only a release: no `-dev`, and run from the tag of that version.
+    - name: Check the version is a release's
+      run: |
+        version=$(cargo metadata --format-version 1 --no-deps \
+          | jq -r '.packages[] | select(.name == "glidex-api") | .version')
+        echo "workspace version: $version"
+        case "$version" in
+          *-*) echo "::error::$version is not a release version"; exit 1 ;;
+        esac
+        if [ "$GITHUB_REF" != "refs/tags/v$version" ]; then
+          echo "::error::run this from the tag v$version, not $GITHUB_REF"
+          exit 1
+        fi
+    - uses: rust-lang/crates-io-auth-action@v1
+      id: auth
+    - name: Publish
+      run: cargo publish --workspace --locked
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}

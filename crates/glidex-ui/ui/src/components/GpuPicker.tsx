@@ -2,8 +2,9 @@
 // or a node's own GPUs picked from its topology.
 import { useEffect, useState } from "react";
 import { getNodeTopology } from "../api";
+import { useCan } from "../session";
 import type { PciPoolJson } from "../gen/glidex/cluster/v1/cluster_pb";
-import type { PciFunction } from "../types";
+import type { EntityRef, PciFunction } from "../types";
 
 /** Vendors worth a name next to their ids. */
 const VENDORS: Record<string, string> = {
@@ -33,16 +34,22 @@ interface GpuPickerProps {
   sizesVm: boolean;
   /** The node whose GPUs are listed; null: none chosen yet (a cluster). */
   node: string | null;
+  /** The host resource of that node (`hostOf`). */
+  host: EntityRef;
   /** Addresses picked on that node. */
   picked: string[];
   onPick: (addresses: string[]) => void;
 }
 
-export default function GpuPicker({ pools, asks, onAsk, sizesVm, node, picked, onPick }: GpuPickerProps) {
+export default function GpuPicker({ pools, asks, onAsk, sizesVm, node, host, picked, onPick }: GpuPickerProps) {
+  // Asked without the right, the topology is a denial in the audit.
+  const can = useCan([{ action: "readHostTopology", resource: host }]);
+  const may = can === null ? null : can[0];
   // undefined: loading; null: can't be read (no host role, an old node).
   const [gpus, setGpus] = useState<PciFunction[] | null | undefined>(undefined);
   useEffect(() => {
-    if (!node) {
+    if (may === null) return;
+    if (!node || !may) {
       setGpus(null);
       return;
     }
@@ -60,7 +67,7 @@ export default function GpuPicker({ pools, asks, onAsk, sizesVm, node, picked, o
     return () => {
       stop = true;
     };
-  }, [node]);
+  }, [node, may]);
   // GPUs picked on another node, gone or taken since, aren't asked for.
   useEffect(() => {
     if (gpus === undefined) return;

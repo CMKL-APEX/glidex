@@ -33,6 +33,10 @@ tab each, shown to those allowed to see it:
 | **Policies** | Base and site policies (see [Site policies](#site-policies)). |
 | **Settings** | What the web UI calls a tenant, and self-service tenants (see [Directory settings](#directory-settings)). |
 
+A user who may create tenants of their own (see [Directory
+settings](#directory-settings)) sees the **Directory** page too, with
+its **Tenants** tab and the form to create one.
+
 The directory holds users, teams, connectors, tenants, projects, tenant
 and project roles, and tokens; every server of a cluster has the same
 copy. System roles, site policies and admissions belong to the cluster.
@@ -94,7 +98,7 @@ Given on one project. Each includes the one above it.
 | `viewer` | See the project, its VMs, disks and usage. |
 | `operator` | Also start, stop and pause VMs, and open their consoles. |
 | `editor` | Also create, change and delete VMs and disks, manage credentials, and attach networks. |
-| `owner` | Also manage the project's bindings and service-account tokens, give a VM one of its service accounts, manage its networks and network sharing, and read its audit log. |
+| `owner` | Also manage the project's bindings and service-account tokens, give a VM one of its service accounts, manage its networks and network sharing, turn a NIC's port security off, and read its audit log. |
 
 ### Host roles
 
@@ -271,6 +275,8 @@ doesn't change that. The Admissions page has the same as its
 **Automatic admission** card, and marks the admissions that follow it
 *default cap*. Tenants of other organizations' directories are still
 admitted by offer ([Clusters](clusters.md#admitting-another-organizations-tenant)).
+Setting and removing it needs `system-admin` and a recent login
+(action `manageAdmissions`), as admitting by hand does.
 
 #### A new tenant's first administrator
 
@@ -309,16 +315,30 @@ with `gxctl directory settings`, or with `PUT /directory/settings`:
   administrator* if nobody holds `tenant-admin` on one any more: add
   one. Site policies can narrow who may (`forbid` on
   `createOwnTenant`), not widen it.
+- **A tenant at first sign-in** (`--auto-create on`, off by default).
+  A user who may create tenants and is a member of none (the
+  connector's default tenant aside) gets one of their own when they
+  sign in through one of the directory's connectors: the slug prefix
+  and their address before `@` (`lab-somchai-k`, `-2` when taken),
+  named *&lt;their name&gt;'s &lt;label&gt;*. It is made as if they had
+  created it (the limits, approval and automatic admission apply), once
+  per user: if they delete it, they don't get another. A user invited
+  to a tenant, or added to one before signing in, gets none. A refusal
+  (a limit, a site `forbid`) doesn't stop the sign-in; the audit log
+  has it (`createOwnTenant`, `auto: true`).
 
 ```bash
 gxctl directory settings                                   # show them
 gxctl directory settings --label Lab/Labs
 gxctl directory settings --self-service on --creators staff,faculty \
   --max-per-user 2 --max-total 200 --approval required --slug-prefix lab-
+gxctl directory settings --auto-create on                  # one for each new user
 ```
 
 `gxctl directory settings` changes only the options given. Each answer
-is the settings as stored, teams by id.
+is the settings as stored, teams by id. `--creators all` lets every user
+of the directory; `--max-total none` and `--slug-prefix none` remove
+those; `--approval none|required`; `--admins-may-delete on|off`.
 
 ## Removing people
 
@@ -494,11 +514,13 @@ Actions of these features, and who has them out of the box:
 | `placeVm` | `Glidex::Vm` | `system-admin`. |
 | `readHostTopology`, `listPciPools` | the host | `auditor`, `net-admin`. |
 | `prepareDevice`, `releaseDevice`, `cordonDevice` (also uncordons), `setSriovVfs` | the host | `net-admin`, on the cluster or that host. |
-| `usePciPool` | `Glidex::PciPool::"<pool>"` | `net-admin`, and projects the pool is granted to in `pci.allow` (base policy `base.pci-pool-grant`). |
+| `usePciPool` | `Glidex::PciPool::"<pool>"` | `net-admin`, and projects the pool is granted to in `pci.allow`, directly or through their tenant; an [open pool](host-resources.md#who-may-use-a-pool) (`"tenants": ["*"]`) is granted to every admitted tenant (base policy `base.pci-pool-grant`). |
 | `readTenantDevicePools` | `Glidex::Tenant` | `tenant-auditor`, `tenant-admin`. |
 | `manageTenantDevicePools` | `Glidex::Tenant` | `tenant-admin`. |
 | `syncConnector` | the directory | `directory-admin`. |
 | `confirmConnectorSync` | the directory | `directory-admin`, with a recent login; applying a sync the safety stop blocked needs it as well as `syncConnector`. |
+| `setPortSecurity` | `Glidex::Vm` (the project, at create), and the project's own `Glidex::Network` | `owner` of the VM's project and of the network's. Checked when a NIC's `port_security` is set to `false`, or changed (see [Port security](../user-guide/networks.md#port-security)). On a host network it is refused (base policy `base.port-security-project-network`): that side is `setHostPortSecurity`. |
+| `setHostPortSecurity` | a host `Glidex::Network` | `net-admin`. With `setPortSecurity` on the VM, for a NIC on a host network. Refused on a project network (base policy `base.project-network-private`). |
 | `useServiceAccount` | `Glidex::Project` (the service account's) | `owner` of that project (so `tenant-admin` and `system-admin` too); `context.project` is the VM's. Checked when a VM is given a service account (see [Workload identity](../user-guide/vms.md#workload-identity)). One of another tenant is always refused (base policy `base.service-account-same-tenant`). |
 
 `system-admin` has every host role above. A PCI device is
@@ -507,6 +529,19 @@ Actions of these features, and who has them out of the box:
 same address on two nodes is two devices, and a role on one host covers
 that host's devices. A site policy that names devices by their address
 alone no longer matches them: name the node too.
+
+### Self-service tenant actions
+
+| Action | Resource | Who |
+|---|---|---|
+| `createOwnTenant` | `Glidex::Directory` | Only base policy `base.self-service-tenant`: a user of the directory when its [settings](#directory-settings) allow them (everyone, or members of the creator teams), or a personal token of such a user that isn't narrowed to some roles (a service account can't). No role gives it; a site `forbid` can narrow it. |
+| `deleteOwnTenant` | `Glidex::Tenant` | `tenant-admin` of a self-service tenant, with a recent login, when the directory lets its administrators delete it. Others need `deleteTenant`. |
+| `approveTenant` | `Glidex::Tenant` | `directory-admin`. |
+| `readDirectorySettings` | `Glidex::Directory` | `directory-auditor`, `directory-admin`. |
+| `updateDirectorySettings` | `Glidex::Directory` | `directory-admin`. |
+
+The `Glidex::Directory` entity carries `self_service`,
+`self_service_all` and `self_service_teams` for policies to read.
 
 ### Workload federation actions
 
@@ -594,6 +629,17 @@ gxctl audit --limit 50
 gxctl audit --project web
 gxctl audit --user <user-id> --since 1767225600000   # Unix milliseconds
 ```
+
+Both show the newest entries. The **Audit** page shows 100 to a page,
+newest first: *Older* and *Newer* move between pages, and a column
+header sorts by that column (again, the other way). A sort by a column
+other than the time covers the newest 20,000 matching entries; the page
+says so when there are more: choose a project or a time to narrow it.
+The **Project** filter's first choice reads all of the log you may read:
+*All (cluster)*, or *All (my directory)* for someone of a hosted
+directory (below); a project owner who reads no more chooses among the
+projects they own. `gxctl audit` prints the newest page oldest first,
+and the command for the page before it.
 
 `auditor` and `system-admin` read all of it; a project's owners read
 their project's. A [hosted

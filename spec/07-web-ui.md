@@ -115,8 +115,10 @@ the `https://` URL.
   with the UI's self-signed certificate, which `glidex-ui --dev`
   generates if needed and passes to Vite).
 - **React 19** with **react-router-dom 7** for client-side routing.
-- **TypeScript 5** (strict).
-- **Tailwind CSS 3** for styling; config in `ui/tailwind.config.js`.
+- **TypeScript 7** (strict).
+- **Tailwind CSS 4** for styling, configured in CSS: `ui/src/index.css`
+  (`@import "tailwindcss"`, `@source` for the kit), through
+  `@tailwindcss/postcss`.
 - **ghostty-web** (default) and **@xterm/xterm + @xterm/addon-fit** for
   the VM console page, each loaded only when chosen.
 - **bun** is the package manager (the lockfile is `bun.lock`).
@@ -159,7 +161,7 @@ ui/src/
 ├── index.css               # Tailwind entry
 ├── components/
 │   ├── Header.tsx          # Nav (by capability), activity, project selector, user, Log out, API health
-│   ├── Footer.tsx          # Build info: version tag (if any), git branch, commit
+│   ├── Footer.tsx          # Build info: release, git branch, commit, linked to GitHub
 │   ├── Activity.tsx        # "N in progress" indicator and list; Spinner
 │   ├── ReauthDialog.tsx    # Step-up re-login, then retry (the kit's, with passkeys)
 │   ├── AddBindingForm.tsx  # Role + user/team picker for role links
@@ -170,6 +172,7 @@ ui/src/
 │   ├── VmActions.tsx       # Start/Shut down/Force off/Pause/Delete buttons (Shut down: power button, 60 s)
 │   ├── VmStateBadge.tsx    # State pill (→ desired) plus what the controller is still doing
 │   ├── VmMemory.tsx        # Change memory (UpdateVm mem_size_mib), from the next start
+│   ├── VmRename.tsx        # Rename under the VM's name (UpdateVm name, 12-reconciliation.md §7.7)
 │   ├── VmDisks.tsx         # Root and data disks; detach one, attach a free disk of the project
 │   └── VmCard.tsx          # Dashboard VM row: state badge, Ready reason
 └── pages/
@@ -286,6 +289,9 @@ and `last_exit`.
   `api.ts` sends `?wait=60` with start, pause, stop (at least the grace
   plus 20 s, at most 300) and delete; a failed reconcile comes back as
   an `ApiRequestError` like any other.
+- **Rename.** **Rename** under the VM's name and id sends `UpdateVm`
+  with `name`, to callers who may `updateVm`; the server's `409` for a
+  name taken in the project is shown in the form.
 - **Memory and data disks.** **Change memory** under Memory sends
   `UpdateVm` with `mem_size_mib`. Under Disks, each data disk has
   **Detach** (`DetachDisk`), and a picker lists the project's free disks
@@ -512,13 +518,26 @@ the disk moves; its status shows "· moving".
 ## Footer
 
 `components/Footer.tsx`, under every signed-in page, shows the build the
-UI came from: the version tag on the built commit (if any), the git
-branch and the commit (marked "(modified)" when built from a tree with
-uncommitted changes). `vite.config.ts` reads them from git at build (or
-dev-server start) time into `__GLIDEX_BUILD__`; `GLIDEX_BUILD_TAG`,
-`GLIDEX_BUILD_BRANCH` and `GLIDEX_BUILD_COMMIT` override them for builds
-without a checkout (CI also supplies `GITHUB_REF_NAME`). A detached HEAD
-shows no branch.
+UI came from:
+
+- **Version**: the version tag on the built commit (`v0.0.8`), linked to
+  that release on GitHub. A build of a later commit shows the release
+  before it and the commits since (`v0.0.8+12`), linked to GitHub's
+  comparison of that release with the commit.
+- **Branch**, unlinked; a detached HEAD shows none.
+- **Commit**, linked to the commit on GitHub, and marked "(modified)"
+  when built from a tree with uncommitted changes (the link then shows
+  the commit the changes were made on).
+
+Links open in a new tab. `vite.config.ts` reads all of it from git at
+build (or dev-server start) time into `__GLIDEX_BUILD__`;
+`GLIDEX_BUILD_TAG`, `GLIDEX_BUILD_RELEASE`, `GLIDEX_BUILD_BRANCH` and
+`GLIDEX_BUILD_COMMIT` override them for builds without a checkout (CI
+also supplies `GITHUB_REF_NAME`). The links go to
+`https://github.com/CMKL-APEX/glidex`, or `GLIDEX_BUILD_REPO`; the
+repository is never taken from the checkout's remote, whose URL can
+carry a credential. A checkout without tags (a shallow clone) shows no
+version.
 
 ## `VmConsole` contract
 

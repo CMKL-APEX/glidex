@@ -167,7 +167,7 @@ impl NodeLink {
                 .cluster
                 .client
                 .request_timeout(
-                    &addr,
+                    crate::cluster::net::Target::server(&addr),
                     method.clone(),
                     path,
                     &[("content-type", "application/json".into())],
@@ -281,7 +281,7 @@ impl NodeLink {
                 .cluster
                 .client
                 .request_timeout(
-                    &addr,
+                    crate::cluster::net::Target::server(&addr),
                     hyper::Method::GET,
                     path,
                     &[],

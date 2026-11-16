@@ -262,6 +262,12 @@ pub struct Image {
     pub file_size_bytes: u64,
     /// sha256 of the stored file (hex); empty until Ready.
     pub sha256: String,
+    /// sha256 of a firmware image's stored variable-store template (hex),
+    /// however it came (a download, a package, a host file): what another
+    /// node's copy is checked against. `None` without a template, and on
+    /// records made before it was kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vars_sha256: Option<String>,
     pub arch: Arch,
     pub created_at: u64,
     #[serde(default)]
@@ -1239,7 +1245,10 @@ impl ImageManager {
         let disks: Vec<Disk> = self.disks.read().unwrap().values().cloned().collect();
         for d in &disks {
             let path = self.disk_path(d);
-            if !path.exists() {
+            // Only a file is looked for here: a hyperstor volume's path is
+            // no file, and an inactive LVM volume has no device node. The
+            // disk controller asks their drivers.
+            if self.on_files(d) && !path.exists() {
                 tracing::warn!(disk = %d.name, path = %path.display(), "disk file is missing");
             }
             known.insert(path);
@@ -1412,6 +1421,21 @@ impl ImageManager {
     /// The node this manager works for (cluster attach and detach).
     pub fn set_node_id(&self, id: &str) {
         self.node_id.store(Arc::new(id.to_string()));
+    }
+
+    /// Whether `d`'s volume is a file: on `local`, or a directory datastore.
+    fn on_files(&self, d: &Disk) -> bool {
+        use crate::datastore::record::DriverSpec;
+        d.datastore == crate::datastore::LOCAL
+            || crate::datastore::record::find(&self.db, &d.datastore)
+                .ok()
+                .flatten()
+                .is_some_and(|ds| {
+                    matches!(
+                        ds.driver,
+                        DriverSpec::Dir { .. } | DriverSpec::SharedDir { .. }
+                    )
+                })
     }
 
     /// Whether `d` is on a hyperstor datastore (spec/24-storage.md §11.2).
@@ -1619,13 +1643,19 @@ impl ImageManager {
         }
     }
 
-    /// Whether a disk of the projects `in_scope` accepts is named `name`.
-    pub fn disk_name_taken_in(&self, name: &str, in_scope: impl Fn(&str) -> bool) -> bool {
+    /// Whether a disk of the projects `in_scope` accepts, other than
+    /// `except`, is named `name`.
+    pub fn disk_name_taken_in(
+        &self,
+        name: &str,
+        in_scope: impl Fn(&str) -> bool,
+        except: Option<&str>,
+    ) -> bool {
         self.disks
             .read()
             .unwrap()
             .values()
-            .any(|d| d.name == name && in_scope(&d.project))
+            .any(|d| d.name == name && in_scope(&d.project) && Some(d.id.as_str()) != except)
     }
 
     pub fn linked_disks(&self, image_id: &str) -> Vec<Disk> {
@@ -1748,6 +1778,7 @@ impl ImageManager {
                         .unwrap_or(0),
                     backing_filename: None,
                     backing_format: None,
+                    format_specific: None,
                 }),
                 partition::read_table(&path, d.format, size.unwrap_or(d.size_bytes))
                     .ok()
@@ -2040,7 +2071,6 @@ mod tests {
     #[test]
     fn a_hyperstor_disk_shows_its_partition_table() {
         use crate::datastore::record::{Datastore, DriverSpec};
-        use std::os::unix::fs::PermissionsExt;
         let Some(sgdisk) = qemu_img::SGDISK.find() else {
             return;
         };
@@ -2073,16 +2103,14 @@ mod tests {
         // hyperstorctl, standing in: `read-volume` copies the range asked.
         let log = dir.path().join("args");
         let ctl = dir.path().join("hyperstorctl");
-        std::fs::write(
+        crate::test_script::write_script(
             &ctl,
-            format!(
+            &format!(
                 "#!/bin/sh\necho \"$@\" >> {log}\n[ \"$3\" = read-volume ] || exit 1\ndd if={img} of=\"${{11}}\" bs=512 skip=$(($7 / 512)) count=$(($9 / 512)) 2>/dev/null\n",
                 log = log.display(),
                 img = img.display()
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&ctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        );
         // SAFETY: test-only; no other test reads it.
         unsafe { std::env::set_var("GLIDEX_HYPERSTORCTL", &ctl) };
 
@@ -2095,6 +2123,7 @@ mod tests {
                 map: "m:1".into(),
                 pool: 1,
                 identity: None,
+                mgmt_url: None,
                 node_paths: Default::default(),
             },
             nodes: Vec::new(),
@@ -2151,6 +2180,7 @@ mod tests {
             virtual_size_bytes: GIB,
             file_size_bytes: 0,
             sha256: String::new(),
+            vars_sha256: None,
             arch: Arch::X86_64,
             created_at: 0,
             download: DownloadMeta::default(),

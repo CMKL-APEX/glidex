@@ -152,6 +152,11 @@ gxctl> network grant lab --tenant acme
 gxctl> network grant lab --all-projects
 ```
 
+A project is named by its id, as `<tenant>/<project>`, or by a bare name
+only one project has; a name that projects of several tenants have is
+refused (`409 ambiguous`). A tenant is named by its id or by its slug in
+the `local` directory.
+
 ## Share a project network
 
 A project's owner offers a share to another project, whose owner
@@ -177,9 +182,14 @@ in the web UI, the `Networks` prompt in `gxctl create`, or `networks` in
 the API. One NIC per network, in order, at most 8. A network named
 `default`, if the project can use one, is preselected.
 
-To change a VM's networks later, `PATCH` its `networks` (the whole list);
-it applies at the VM's next start. See
-[Virtual machines](vms.md#change-a-vm).
+To add or remove one NIC later: under **Network** on the VM's page,
+pick a network and **Attach**, or **Detach** a NIC; or
+`gxctl attach-network <vm> <network>` and
+`gxctl detach-network <vm> <network>`. A new NIC goes after the others,
+and the NICs you keep keep their MACs. On a running VM the change
+applies at the next start; until then the guest keeps its NICs, MACs and
+addresses. `PATCH` with `networks` replaces the whole
+list. See [Virtual machines](vms.md#networks).
 
 ## Addresses
 
@@ -195,9 +205,66 @@ it applies at the VM's next start. See
   in the guest.
 - **Isolated** (single host): no DHCP; configure addresses in the guest.
 
+
 NAT networks are IPv4 only. The address of each NIC shows in the VM's
 details: **Network** on its page in the web UI, `NIC <n>` in
 `gxctl get <vm>`, `nics[].ipv4` in the API.
+
+## Port security
+
+On a single host's networks, a NIC sends only from its own MAC. On NAT
+networks it also sends only from its own address (DHCP before it has
+one passes). On NAT and isolated networks a guest can't answer DHCP
+for other guests or send IPv6 router advertisements. Traffic that
+doesn't pass is dropped at the VM's port. (Cluster networks have OVN's
+port security: a NIC sends only from its own MAC and address.)
+
+A VM that forwards other hosts' traffic, such as a router or a
+firewall, needs a NIC without these checks: `port_security: false` on
+the NIC.
+
+```bash
+gxctl attach-network fw lab --no-port-security
+```
+
+```json
+{ "networks": [ { "network": "lab", "port_security": false } ] }
+```
+
+Setting it to `false`, or changing it on a VM's NIC, takes
+`setPortSecurity`: an `owner` of the VM's project, and, for a project
+network, of the network's project as well; for a host network, also
+`net-admin` (`setHostPortSecurity`). An `editor` attaches NICs but can't
+turn their checks off. Cluster networks refuse it. The VM's NICs show
+`port_security` (`gxctl get` prints **port security off**). Like other
+NIC changes, on a running VM it applies at the next start.
+
+### Allowed addresses
+
+A NIC can carry a second address, such as a virtual IP that moves
+between VMs (keepalived), without turning its checks off: list it in
+`allowed_addresses`, up to 16 IPv4 or IPv6 addresses or prefixes.
+
+```bash
+gxctl attach-network web1 lab --allow 10.88.0.200
+```
+
+```json
+{ "networks": [ { "network": "lab", "allowed_addresses": ["10.88.0.200", "10.88.0.208/29"] } ] }
+```
+
+- **NAT**: the NIC sends from its own address and the listed ones. NAT
+  networks are IPv4 only, and each entry must be inside the network's
+  subnet, and cover neither the gateway nor another NIC's address.
+- **Isolated and bridged**: with a list, the NIC sends IP and ARP only
+  from the listed addresses (and DHCP requests), and IPv6 only from
+  listed addresses, link-local addresses and `::`; neighbour
+  advertisements only for those. Without a list, only the MAC is checked.
+
+Two VMs' lists may not overlap on one network. A list that doesn't fit
+is refused with `422`. Changing it is part of editing the VM's networks
+(an `editor`'s); it needs no other permission. Cluster networks refuse a
+list.
 
 ## The host from a NAT network
 

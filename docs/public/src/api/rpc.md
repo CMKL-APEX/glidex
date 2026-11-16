@@ -504,6 +504,8 @@ same ids and names.
 |  | `RotateSecretsKey` | `POST /cluster/rotate-secrets-key` |
 |  | `GetOvnSettings` | `GET /cluster/settings/ovn` |
 |  | `PutOvnSettings` | `PUT /cluster/settings/ovn` |
+|  | `GetPciSettings` | `GET /cluster/settings/pci` |
+|  | `PutPciSettings` | `PUT /cluster/settings/pci` |
 |  | `GetEdgeDefaults` | `GET /cluster/settings/ovn/edge-defaults` |
 |  | `GetOvnOverview` | `GET /cluster/ovn` |
 |  | `GetOvnTunnels` | `GET /cluster/ovn/tunnels` |

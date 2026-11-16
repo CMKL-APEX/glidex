@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
-import type { SeriesResponse, VmStats } from "../types";
+import type { SeriesPoint, SeriesResponse, VmStats } from "../types";
 import { TimeChart, SERIES_COLORS, type ChartPoint } from "./TimeChart";
 
 /** Live rates come from the meter's last round (every 30 s by default). */
@@ -11,6 +11,15 @@ function points(s: SeriesResponse | null, keys: string[]): ChartPoint[] {
     t: Date.parse(p.slot),
     values: Object.fromEntries(keys.map((k) => [k, typeof p[k] === "number" ? (p[k] as number) : undefined])),
   }));
+}
+
+/** `s` with the host's points later than its last appended: in a cluster
+ * the series end at the last closed hour (spec/13-metering.md §9.4). */
+function withOpenHour(s: SeriesResponse, open: SeriesPoint[] | undefined): SeriesResponse {
+  const pts = s.points ?? [];
+  const last = pts.length ? Date.parse(pts[pts.length - 1].slot) : -Infinity;
+  const later = (open ?? []).filter((p) => Date.parse(p.slot) > last);
+  return later.length ? { ...s, points: [...pts, ...later] } : s;
 }
 
 function num(v: unknown): number | null {
@@ -42,18 +51,18 @@ export default function VmUsage({ vmId, hypervisor }: { vmId: string; hypervisor
   useEffect(() => {
     let live = true;
     const load = async () => {
+      // The live rates come from the VM's host and may fail on their own;
+      // the charts then keep their closed hours (§9.4, D19).
+      const statsReq = api.getVmStats(vmId).catch(() => null);
       try {
-        const [s, b, i, c] = await Promise.all([
-          api.getVmStats(vmId),
-          api.getVmBandwidth(vmId),
-          api.getVmIo(vmId),
-          api.getVmCompute(vmId),
-        ]);
+        const [b, i, c] = await Promise.all([api.getVmBandwidth(vmId), api.getVmIo(vmId), api.getVmCompute(vmId)]);
+        const s = await statsReq;
         if (!live) return;
+        const open = s?.open_hour;
         setStats(s);
-        setBw(b);
-        setIo(i);
-        setCm(c);
+        setBw(withOpenHour(b, open?.bandwidth));
+        setIo(withOpenHour(i, open?.io));
+        setCm(withOpenHour(c, open?.compute));
         setError(null);
       } catch (e) {
         if (live) setError(e instanceof api.ApiRequestError && e.status === 503 ? "Metering is not running." : String(e));

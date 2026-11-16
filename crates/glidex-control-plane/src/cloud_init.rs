@@ -18,9 +18,11 @@
 
 use crate::credentials::Credential;
 use crate::hypervisor::HypervisorError;
+use base64::Engine;
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 /// Name of the user created in the guest.
 pub const DEFAULT_USER: &str = "cloud";
@@ -41,6 +43,9 @@ pub struct SeedConfig {
     /// Ask cloud-init to grow the root partition (a managed root disk with
     /// `pending_growpart`, spec/10-images.md §6.4).
     pub growpart: bool,
+    /// Pylon's guest agent, for a Pylon VM: written into the guest and run
+    /// as a service, so `pylond` learns its demand (spec/30-pylon.md P19).
+    pub pylon_guest_agent: Option<Arc<Vec<u8>>>,
 }
 
 impl Default for SeedConfig {
@@ -53,9 +58,22 @@ impl Default for SeedConfig {
             passwd_hash: None,
             nic_macs: Vec::new(),
             growpart: false,
+            pylon_guest_agent: None,
         }
     }
 }
+
+/// The guest agent's unit: as root, on guest CPU 0, which never parks.
+const PYLON_GUEST_AGENT_UNIT: &str = "[Unit]\n\
+Description=Pylon guest agent (reports demand to pylond)\n\
+\n\
+[Service]\n\
+ExecStart=/usr/local/sbin/pylon-guest-agent --cpu 0\n\
+Restart=on-failure\n\
+RestartSec=2\n\
+\n\
+[Install]\n\
+WantedBy=multi-user.target\n";
 
 impl std::fmt::Debug for SeedConfig {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -67,6 +85,10 @@ impl std::fmt::Debug for SeedConfig {
             .field(
                 "passwd_hash",
                 &self.passwd_hash.as_ref().map(|_| "[REDACTED]"),
+            )
+            .field(
+                "pylon_guest_agent",
+                &self.pylon_guest_agent.as_ref().map(|a| a.len()),
             )
             .finish()
     }
@@ -94,6 +116,7 @@ impl SeedConfig {
             passwd_hash: credential.password_hash.clone(),
             nic_macs: Vec::new(),
             growpart: false,
+            pylon_guest_agent: None,
         }
     }
 
@@ -165,6 +188,27 @@ impl SeedConfig {
             s.push_str(
                 "growpart:\n  mode: auto\n  devices: [\"/\"]\n  ignore_growroot_disabled: false\n",
             );
+        }
+        if let Some(agent) = &self.pylon_guest_agent {
+            // Written and enabled once per instance; the agent then stays on
+            // the guest's disk.
+            s.push_str("write_files:\n");
+            s.push_str("  - path: /usr/local/sbin/pylon-guest-agent\n");
+            s.push_str("    permissions: '0755'\n");
+            s.push_str("    encoding: b64\n");
+            s.push_str(&format!(
+                "    content: {}\n",
+                base64::engine::general_purpose::STANDARD.encode(agent.as_slice())
+            ));
+            s.push_str("  - path: /etc/systemd/system/pylon-guest-agent.service\n");
+            s.push_str("    permissions: '0644'\n");
+            s.push_str("    content: |\n");
+            for line in PYLON_GUEST_AGENT_UNIT.lines() {
+                s.push_str(&format!("      {line}\n").replace("      \n", "\n"));
+            }
+            s.push_str("runcmd:\n");
+            s.push_str("  - [systemctl, daemon-reload]\n");
+            s.push_str("  - [systemctl, enable, --now, pylon-guest-agent.service]\n");
         }
         s
     }
@@ -353,6 +397,53 @@ mod tests {
         assert!(ud.contains("lock_passwd: false"));
         assert!(ud.contains("ssh_pwauth: true"));
         assert!(!ud.contains("ssh_authorized_keys"));
+    }
+
+    #[test]
+    fn user_data_installs_the_pylon_agent_only_when_given() {
+        let mut seed = SeedConfig {
+            instance_id: "i".into(),
+            hostname: "h".into(),
+            ..Default::default()
+        };
+        let ud = seed.user_data();
+        assert!(
+            !ud.contains("write_files:") && !ud.contains("runcmd:"),
+            "{ud}"
+        );
+
+        let agent: Vec<u8> = (0..=255u8).cycle().take(3000).collect();
+        seed.pylon_guest_agent = Some(Arc::new(agent.clone()));
+        let ud = seed.user_data();
+        let b64 = ud
+            .lines()
+            .skip_while(|l| *l != "  - path: /usr/local/sbin/pylon-guest-agent")
+            .find_map(|l| l.strip_prefix("    content: "))
+            .expect("the agent's content");
+        assert_eq!(
+            base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .unwrap(),
+            agent
+        );
+        assert!(
+            ud.contains("    permissions: '0755'\n    encoding: b64\n"),
+            "{ud}"
+        );
+        assert!(
+            ud.contains("  - path: /etc/systemd/system/pylon-guest-agent.service\n    permissions: '0644'\n    content: |\n      [Unit]\n"),
+            "{ud}"
+        );
+        assert!(
+            ud.contains("      ExecStart=/usr/local/sbin/pylon-guest-agent --cpu 0\n"),
+            "{ud}"
+        );
+        assert!(
+            ud.ends_with("runcmd:\n  - [systemctl, daemon-reload]\n  - [systemctl, enable, --now, pylon-guest-agent.service]\n"),
+            "{ud}"
+        );
+        // The bytes stay out of debug output.
+        assert!(format!("{seed:?}").contains("pylon_guest_agent: Some(3000)"));
     }
 
     #[test]

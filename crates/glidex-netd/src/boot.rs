@@ -43,8 +43,9 @@ pub fn apply_live(
     for (address, action) in plan_devices(exec, cfg) {
         match action {
             Action::AlreadyVfio => report.skipped.push((address, "already on vfio-pci".into())),
-            Action::Bind { .. } => match call(Op::PrepareDevice {
+            Action::Bind { bar_mib, .. } => match call(Op::PrepareDevice {
                 address: address.clone(),
+                bar_mib,
             }) {
                 Ok(_) => report.bound.push(address),
                 Err(e) => report.failed.push((address, e)),
@@ -73,6 +74,7 @@ mod tests {
         exec.file(pf, "");
         exec.link(&format!("{pf}/virtfn0"), "0000:61:00.2");
         let cfg = BootDevices {
+            exclude: vec![],
             sriov: vec![
                 SriovSetting {
                     pf: "0000:61:00.0".into(),

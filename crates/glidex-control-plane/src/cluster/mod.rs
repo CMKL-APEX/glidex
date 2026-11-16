@@ -9,6 +9,7 @@ pub mod pki;
 pub mod raft;
 pub mod runtime;
 pub mod server;
+pub mod store_writes;
 pub mod tokens;
 pub use runtime::{Cluster, ClusterError};
 pub mod agent;

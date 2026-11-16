@@ -30,11 +30,9 @@ pub struct ClusterConfig {
     pub import_plan_ttl_secs: u64,
     pub ca_rotation_grace_secs: u64,
     pub ovn: OvnConfig,
-    /// On an agent, relay the web UI's requests to a server, which
-    /// authenticates them (spec/16-clustering-ui.md §3.6). Off: the agent's UI
-    /// socket answers `421` with the servers to use instead.
-    /// Replaced: an agent's UI now sends browsers to a server
-    /// (spec/28-host-page.md W5, W6); still accepted, ignored.
+    /// Replaced: an agent's UI sends browsers to a server, and servers no
+    /// longer take relayed UI requests (spec/28-host-page.md W5, W8).
+    /// Still accepted, ignored.
     pub ui_relay: bool,
     /// The address this server's web UI is published at, over what its
     /// glidex-ui reports: e.g. a load balancer in front of the servers
@@ -130,9 +128,11 @@ impl Default for ClusterConfig {
 impl Default for RaftConfig {
     fn default() -> Self {
         RaftConfig {
-            heartbeat_ms: 250,
-            election_ms: (1000, 2000),
-            log_keep_entries: 10_000,
+            // An append must arrive within a heartbeat (D24).
+            heartbeat_ms: 1000,
+            election_ms: (3000, 6000),
+            // About a week of history at a few VMs (D25).
+            log_keep_entries: 70_000,
         }
     }
 }
@@ -199,9 +199,18 @@ impl ClusterConfig {
             heartbeat_ms: self.raft.heartbeat_ms,
             election_ms: self.raft.election_ms,
             log_keep_entries: self.raft.log_keep_entries,
+            // Always, with no key in the configuration (D31): an older build
+            // refuses keys it doesn't know, and a rollback must start.
+            checkpointed_applies: std::env::var_os(DURABLE_APPLIES_ENV).is_none_or(|v| v != "1"),
         }
     }
 }
+
+/// `GLIDEX_RAFT_DURABLE_APPLIES=1` in the control plane's environment
+/// flushes every Raft apply, as builds before D31 did
+/// (spec/14-clustering.md §6.2b): the way out, should checkpointed applies
+/// misbehave.
+pub const DURABLE_APPLIES_ENV: &str = "GLIDEX_RAFT_DURABLE_APPLIES";
 
 /// `https://host[:port]` (a trailing `/` allowed) as an origin; `None`
 /// for anything else.

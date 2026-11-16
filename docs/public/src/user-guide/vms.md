@@ -115,6 +115,23 @@ The VM is created stopped; start it with `start web-1`. `gxctl create`
 doesn't ask for a node, a restart policy or a host-boot policy: they
 take their defaults (use the web UI or the API to set them).
 
+To create a VM from a script, give the name and flags instead; nothing
+is asked, and what you leave out takes the default the prompt would
+offer. The same VM as above, started at once:
+
+```bash
+gxctl create web-1 --image ubuntu-26.04 --disk-size 20 --vcpus 2 --memory 2048 --start
+```
+
+Give exactly one boot disk: `--image`, `--root-disk` (an existing disk)
+or `--rootfs` (a host path). Other flags are `--network` (repeatable;
+`none` for no NIC), `--credential`, `--data-disk`, `--firmware`
+(`none` for kernel boot), `--kernel`, `--gpus`, `--node` and more:
+`gxctl help create` lists them, and [gxctl](../reference/gxctl.md) says
+what each does. An unknown flag is refused, and the command exits 1 when
+the VM can't be created, as any gxctl command run on its own exits 1
+when it fails.
+
 ### API
 
 ```bash
@@ -298,7 +315,9 @@ Each entry of `networks` adds one NIC, in order (at most 8):
 
 `network` is a network's name or id that your project may use. `mac` is
 optional: by default each NIC gets a stable MAC derived from the VM's
-id. `queue_pairs` (1 to 8) is optional. The address each NIC got shows
+id. A MAC is unique on its network: a MAC another VM already has on the
+same network is refused (`409`); on another network it is fine.
+`queue_pairs` (1 to 8) is optional. The address each NIC got shows
 in the VM's details. See [Networks](networks.md).
 
 To add or remove a NIC later: under **Network** on the VM's page, pick
@@ -319,7 +338,8 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" \
 ```
 
 A new NIC goes after the others. The NICs you keep keep their MACs, and
-a new one gets a MAC no other NIC of the VM has. When the VM has more
+a new one gets a MAC no other NIC of the VM, and no other VM on the
+network, has. When the VM has more
 than one NIC on the network, say which to remove with its MAC
 (`--mac 02:…`, `?mac=02:…`). On a running VM the change applies at the
 next start (`gxctl` says so); inside the guest, NICs after a removed one
@@ -437,7 +457,10 @@ and sizes the VM.
 | `hugepages`, `cpu_policy` | The pool's, when the operator set them | Yours are kept. |
 
 - **The pool:** a cluster pool or a tenant pool by name. Without
-  `pool`, the project's only GPU pool is used.
+  `pool`, the project's only GPU pool is used. Once your tenant has set
+  up tenant pools on a cluster pool, your project uses that cluster
+  pool through them, unless the operator granted it to the project
+  itself.
 - **Sizing:** what each GPU brings is set by the operator. The web UI
   shows it next to the pool (*14 vCPUs and 56 GiB each*), and
   `GET /pci-pools?project=<p>` as `per_device_vcpus` and
@@ -527,7 +550,8 @@ gxctl> stop my-vm --graceful 120      # wait up to 120 s (at most 300)
 
 The web UI's **Shut down** waits 60 seconds. **Force off** stops the VM
 like pulling the plug, after you confirm; it also cuts short a shutdown
-that is still waiting for the guest.
+that is still waiting for the guest, and stops a VM that is still
+trying to start.
 
 The timeout you give is kept as the VM's stop grace (`stop_grace_secs`)
 and used again by later stops that don't give one, such as `stop`
@@ -570,7 +594,7 @@ curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json
 
 ### Change a VM
 
-Change vCPUs, memory, networks, data disks, PCI devices, device pool
+Change the name ([Rename](#rename)), vCPUs, memory, networks, data disks, PCI devices, device pool
 requests, kernel arguments, the kernel image and following it (`kernel`,
 `kernel_from_disk`), the credential, hugepages and the policies
 with
@@ -613,6 +637,30 @@ NUMA node, dedicated CPUs and pool devices are picked again. If it no
 longer fits there, the change is refused with `409` and the reason, for
 example `node agent1: not enough 2M hugepages (1024 of 2048 MiB taken)`.
 
+### Rename
+
+Rename a VM in any state with **Rename** under its name on the VM's page,
+`gxctl rename my-vm db-1`, or over the API with `name` in `change`:
+
+```bash
+curl -H "Authorization: Bearer $GLIDEX_TOKEN" -H 'Content-Type: application/json' \
+  -X PATCH https://host.example.org:8841/vms/<id> \
+  -d '{"change": {"name": "db-1"}}'
+```
+
+The new name must be free in the VM's project (`409` otherwise), and
+renaming needs the same permission as other changes (an editor's). A
+rename restarts nothing. The VM's id stays, and so does everything
+keyed by it: its network ports, addresses and console log. A root disk
+the VM made from an image is renamed with it (`db-1-root`, or
+`db-1-` and the first 8 characters of the VM's id when that name is
+taken). A disk the VM was given keeps its name.
+
+The guest's hostname follows at the VM's next start, when cloud-init
+sets it from the VM's name. A running guest keeps its hostname until
+then. Scripts that name the VM by its old name stop finding it; use its
+id where a name may change.
+
 ### Delete
 
 ```
@@ -652,6 +700,9 @@ state is `desired_state`. The VM's `conditions` say what is in the way
 (the `Ready` condition), and `last_exit` says how the last run ended:
 stopped on request, stopped by the host, guest powered off, crashed (with
 its exit code or signal), failed to launch, host rebooted, or lost.
+A condition's status (`True`, `False`, `Unknown`) is up to date; its
+message and reason can be up to 10 minutes behind when nothing else about
+the VM changed.
 
 On a cluster, a VM that boots through a firmware image, or boots a
 kernel image, needs that image's copy on its node. Until the node has
@@ -802,7 +853,16 @@ not the host's, and a GPU and a NIC that share a PCIe switch on the
 host don't share one in the guest. Both hypervisors lay the guest out
 this way.
 
-<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) in multi-segment / pxb-pcie layouts; a pool's `bar_mib` (the MMIO aperture size) isn't built yet (spec/27-gpu-vms.md GV6). Confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+<!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) across several PCI roots. G13's per-segment check refuses what Cloud Hypervisor can't place; confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
+
+On Cloud Hypervisor and Pylon, each guest NUMA node's GPUs share that
+node's slice of the guest's 64-bit address space, and each large window
+is aligned to its own size. A VM whose GPUs on one node don't fit is
+refused at start, naming the GPU (`… doesn't fit PCI segment …'s
+window`): ask for fewer GPUs per node, or use QEMU.
+
+A guest needs the GPU's driver and firmware: for AMD GPUs, see
+[The guest image](../operator-guide/pci-passthrough.md#the-guest-image).
 
 ## Elastic CPU
 
@@ -820,10 +880,18 @@ elastic.
 
 How the range is used depends on the hypervisor:
 
-- **Pylon.** The guest boots with all `max_vcpus` and keeps them.
-  `pylond`, the host's core arbiter, parks the vCPUs the guest doesn't
-  need and wakes them on demand, between `min_vcpus` and `max_vcpus`,
-  in microseconds and without CPU hotplug. So an elastic Pylon VM's
+- **Pylon.** The guest has all `max_vcpus` and keeps them. `pylond`,
+  the host's core arbiter, parks the vCPUs the guest doesn't need and
+  wakes them on demand, between `min_vcpus` and `max_vcpus`, in
+  microseconds and without CPU hotplug. It does so only on a host where
+  Pylon's `scx_pylon` scheduler runs, where a parked vCPU wakes when the
+  guest sends it an interrupt: there the guest starts with `min_vcpus`
+  running (at least 1), and Glidex installs `pylon-guest-agent`, which
+  tells `pylond` the guest's demand, through cloud-init at the first
+  boot (`/usr/local/sbin/pylon-guest-agent`, service
+  `pylon-guest-agent`). On other hosts every vCPU runs all the time and
+  `pylond` manages none of them: a guest stalls on vCPUs parked without
+  that wake-up. So an elastic Pylon VM's
   `vcpu_count` is always its `max_vcpus`: Glidex sets it, and the web UI
   and `gxctl` show it so. `lscpu` in the guest shows `max_vcpus` CPUs.
 - **Cloud Hypervisor and QEMU.** The guest boots with `vcpu_count`

@@ -156,6 +156,15 @@ organizations that **operate** it, and lets each keep its own identity.
 | D79 | Automatic admission and the default cap | A cluster's operator can admit, as they become active, the self-service tenants (or all new user tenants) of a directory the cluster **hosts**, with a **default cap** and labels (`AutoAdmission`, per directory). An admission made so follows later changes to the default cap until the operator sets that tenant's cap by hand. Tenants of trusted directories of other organizations are not admitted this way; fleets do that (D34). | A tenant nobody admits can make projects but no VMs, which defeats self-service. Following the default lets IT raise every lab at once and still give a special lab its own cap. |
 | D80 | Open pools | A `pci.allow` entry with `"tenants": ["*"]` grants its pool to every tenant admitted on the cluster. It is a grant like any other: VM requests, tenant pools (§9.1a of 22-host-topology.md) and the project's pool listing see it. How much each tenant takes is its cap's `devices.<pool>`. | A site policy that permits `usePciPool` lets VMs use a pool, but tenant pools check `pci.allow` grants only; one place for grants keeps both right. |
 | D81 | The display label | A directory sets what its users' web UI calls a tenant (`tenant_label`, singular and plural, default *Tenant*). The API, gxctl, audit, errors and docs keep *tenant*. | Each organization has its word (lab, team, workspace); one model underneath keeps the policies, the API and the docs the same. Per directory, because a host's directories are different organizations. |
+| D82 | A tenant at first sign-in | With `self_service.auto_create` on, a user who signs in through one of the directory's connectors, may create tenants (D78), and is a member of no tenant (the connector's `default_tenant` aside) gets one made for them, as if they had created it: the same limits, prefix, approval and automatic admission. Once per user: deleting it doesn't bring it back. Its slug is the prefix and the user's sign-in name (the address before `@`), made a valid slug, `-2`, `-3`… when taken; its display name is *&lt;name&gt;'s &lt;label&gt;*. A failure doesn't stop the sign-in; it is audited. Off by default. | Onboarding in one step: a new user lands in a tenant of their own, ready for projects, without finding the create form. A user invited to a lab, or added to one before signing in, is already a member and gets none. Once, so a user who deletes theirs isn't handed another at every sign-in. |
+| D83 | Members by email | Where a request adds a user to a tenant (`AddMember`, a tenant role) or gives a user a project role (`AddProjectBinding`), the user may be named by email instead of id (`EntityRef.email`). It matches, ignoring case, the addresses an identity provider verified at the user's sign-ins, the addresses of users an IdP provisions, and pre-added users' addresses (D77), of enabled users of the caller's own directory only; it is resolved after the caller is authorized. No match answers as an unknown id does; two users with the address are refused (`409 ambiguous`). Identities record whether their address was verified, refreshed at each IdP sign-in. | Ids are UUIDs nobody knows; only directory readers see the user list, so a lab's administrator had to ask each person for theirs. A verified address is what invitations and pre-adding already trust. Resolving only for those allowed to add, in their directory, and answering a miss as an unknown id, keeps the form from becoming a way to look people up. |
+| D84 | The cluster side of trust as a crate | `glidex-trust` holds what crosses between a cluster and a trusted directory, and the cluster's side of it: the wire types (offer token, redeem, end, feed, report and logout bodies, the `TrustedDirectory` record, snapshots and feed state), peer assertions and pinned requests (D63), the cluster's calls (feed, report, ending trust, logout, a browser login's code exchange), its checks of a redeem and an end, freshness (D13), and checking a trusted directory's access, ID and API tokens. It signs through a `Signer`: the control plane's sealed keys, or a `ClusterKey` held in memory. It keeps no records; each cluster stores them its own way. Feature `fake` adds a directory in-process, over HTTPS on loopback, serving the rows a test gives it. Nothing on the wire changes. | Hyperstor's management service trusts glidex directories as a cluster does (hyperstor's 19-administration.md §23.12, D306). One implementation of the protocol keeps the two from drifting apart, and the fake directory lets hyperstor test it without a glidex host. The directory's side stays in the control plane: only glidex hosts directories. |
+| D85 | Storage in reports | Each tenant's entry in a cluster's report (D70) may carry `storage`, the totals a storage cluster holds of that tenant: `volumes`, `volume_gib` (provisioned), `volume_used_bytes` (the space they actually take), `buckets`, `bucket_bytes` and `s3_keys`. The VM counts (and `suspended`, `cap`) default to zero, so a storage cluster sends only `storage`; a report without it reads as before. `TenantClusterReport.storage` carries it, and the tenant's page shows it, provisioned and used side by side, when a cluster sent it. Settled by the owner on 2026-11-13. | A tenant sees its storage on hyperstor clusters where it sees its VMs (hyperstor's 19-administration.md §23.12). Provisioned and used both: thin volumes make the two differ, and each answers a different question (what was asked for, what it costs). Totals only: per-project usage comes from the storage cluster's own API. |
+| D86 | The storage relay | The web UI reads a tenant's storage on a trusted hyperstor cluster through glidex's own server, never from the cluster: `POST /tenants/{id}/clusters/{cluster}/storage/{call}` takes the browser's session and CSRF value as any call here, and forwards one of five reads, `hyperstor.v1.ClusterService/ListVolumes`, `S3Service/ListS3Buckets`, `S3Service/ListS3Keys`, `TenantService/ListTenants` and `GET /auth/whoami`, to the cluster's API: the `api` its redeem gave, its certificate pinned as the trust pins it (D63). The call carries an access token (D55) the control plane mints inside the relay for the session's person, `aud` the cluster's id, at most 15 minutes, kept per session and cluster until a minute before it expires, and never returned to the browser. Only a member of the tenant from the tenant's own directory, from a browser session, while the tenant isn't suspended and uses that cluster (D69); the cluster then answers under that person's grants. Its answers and errors come back as they are, except that its `401` comes back as `403` (a `401` here ends the session); a request over 64 KiB is refused, an answer over 8 MiB or slower than 15 s is `502 cluster_unreachable`, as is a cluster that doesn't answer. Relayed calls are audited as any other. Settled by the owner on 2026-11-14. | The browser talks only to glidex: no cross-origin calls, no CORS on the cluster, no change to the UI's `Content-Security-Policy`, and no bearer token in the page's JavaScript. The pin, not the operator's word, ties the relay to the cluster the tenant trusted. A short token per session is what D69 already gives a cluster's own UI; minting it in the server keeps it there. The allowed list keeps the relay a window on reads, not a proxy to the cluster's whole API. |
+| D87 | A tenant's storage on the tenant page | The tenant page's clusters card opens a storage cluster's storage (one that sent `storage`, D85): usage per project (volumes, provisioned bytes, buckets and their data, S3 keys), then the volumes, buckets and S3 keys, read through the relay (D86), of the cluster's tenant whose `glidex_id` is this tenant. Rows go by glidex project: the cluster's project linked to it, named as this person sees it here, else the cluster's name; a volume, bucket or key of no project counts to the tenant's default project. Volumes are listed with `pool` 0, every pool the person reaches there (hyperstor I401), each naming its pool. Read-only; administering the cluster stays in its own UI, linked from the datastore (24-storage.md S33). Used space isn't shown until hyperstor counts it per project. Settled by the owner on 2026-11-14. | Tenants work where their VMs are, and both UIs read the same API under the same grants (hyperstor's 19-administration.md §23.12, D310). |
+| D88 | A cluster's renewed certificate | A cluster's report (D70) may carry `next_tls_sha256`, the pin of the certificate it will serve next. The directory keeps it on the `TrustedCluster` (normalized; junk, or the pin it holds, is ignored; a report without one leaves it), audits a change (`announcePin`), and accepts either pin on its calls to the cluster: ending trust, and the storage relay (D86). The first call that sees the announced certificate makes it the pin and drops the old one. A new offer's pin replaces both. A cluster announces before switching and keeps serving the old certificate until the directory has had a report with it, or that certificate's expiry is near. Only the directory's side and `glidex-trust`'s (`push_report_announcing`, the fake directory) are built: hyperstor announces its own renewals; a glidex cluster doesn't announce its renewals yet (#507). Settled by the owner on 2026-11-15. | A renewed certificate (Let's Encrypt every 60–90 days, Tailscale's, a cluster CA's) broke the directory's calls until the tenant was offered the cluster again. The report is signed with the cluster key the handshake pinned, so the directory can believe it, as with D73's callback. The calls the other way pin the directory's certificate and were never affected. |
+| D89 | A project holding storage on a trusted cluster isn't deleted | A tenant's entry in a storage cluster's report (D70, D85) may carry `project_storage`: per project of the tenant that holds any, its id here and the same totals as `storage`. The directory keeps only entries for the tenant's own projects. Deleting a project is refused (`409 conflict`, naming each cluster and its volumes, buckets and S3 keys) while a trusted cluster's last report lists a volume, a bucket or an S3 key of it. The field is `project_storage`, not `projects`: a VM cluster's entry already has `projects`, a count. The report is the cluster's last word, up to one report interval old, so it may be stale either way: something just emptied there still blocks until the next report, and something just created there doesn't yet. A project no report lists, and a cluster that never reported, don't block. When trust with the cluster ends, its record and its report go, and it no longer blocks. Settled by the owner on 2026-11-15. | hyperstor unlinks a project that leaves the feed while it still holds storage (hyperstor D316): the data is safe, but the tenant loses sight of it there. Refusing the delete keeps a project's storage visible to its tenant until it is emptied, as glidex already refuses deleting a tenant that still holds projects. The report already crosses, signed, and works when the cluster is out of reach; asking the cluster at delete time would need a new call both ways and would block deletes while a cluster is down. |
+| D90 | A glidex cluster holds a renewed API certificate until its directories know it | A node whose API certificate files are replaced (a certificate of the operator's, Tailscale's written to files, ACME's) keeps serving the old one and holds the new one. It publishes both pins in its node record (`status.api_pin`, `api_pin_pending`). The leader, each feed round, connects to the cluster's API address, matches the certificate it presents to the node serving it, and announces that node's pending pin in its reports (D88). For each trusted directory it records the pin it met there and the renewal the directory accepted (table `trusted_directory_pins`). The node switches once every directory that met its certificate has accepted the renewal, or when the old certificate expires within 7 days, whichever comes first. A node no directory met switches at once, as before: with no trusted directories, before the leader's first round, and on nodes not behind the API address. When the API address presents no node's certificate (a proxy in front, the address unreachable), nothing is announced and it is logged; renewals then wait for the 7-day fallback. `GET /auth/server-info` and new offers give the pin served, not the file's. A self-signed certificate is made only at startup, so it isn't held. Settled by the owner on 2026-11-15 (#507). | D88 let a directory follow a renewal, but a glidex cluster switched at once, and the directory's calls failed until the tenant was offered the cluster again. Holding the old certificate until the directory knows the new one leaves no gap. The leader pushes the reports but the pin is whichever node serves the API address, so nodes publish their pins and the leader matches by what the address presents, with no setting to keep in step. The 7-day fallback keeps a directory that is out of reach from making the cluster serve an expired certificate. |
 
 ## 3. Threat model additions
 
@@ -449,6 +458,34 @@ Without linking, one person signing in two ways is two users.
   `user list` shows *not signed in yet*.
 - **Web UI.** The Access page's **Add user** (email, tenant, role,
   connector), for `host.manageUsers`.
+
+### 6.4 Members by email (D83)
+
+- **Request.** `EntityRef` gets `email` (optional). `AddMember` and
+  `AddBinding` on a tenant, and `AddProjectBinding`, take `{type:
+  "User", email}` in place of an id; anything else that takes an
+  `EntityRef` still needs an id.
+- **Order.** The caller's right to add (`manageTenantMembers`,
+  `manageTenantBindings`, `manageBindings`) is checked first; only then
+  is the address resolved, in the tenant's directory (a project: the
+  caller's).
+- **Matches** (lower case): an `Identity` with `email` and
+  `email_verified`; a provisioned user's `email`; a pre-added user's
+  `pending_login.email`. Disabled users don't match.
+- **Answers.** One user: added as by id; the audit entry names the user
+  id, not the address. None: `400 invalid` "no user with that address in
+  this directory", as an unknown id. Several: `409 ambiguous`, "give the
+  user's id".
+- **Verified addresses.** `Identity.email_verified` (absent: `false`).
+  An IdP sign-in (§6 step 2) records the identity's address and whether
+  the IdP verified it, at creation and, when either changed, at later
+  sign-ins on the leader (IdP sign-ins run there, #245). Identities from
+  before this have none verified until their user signs in again.
+- **gxctl.** `user:<email>` wherever `user:<id>` names a member or a
+  role holder (ids never hold `@`).
+- **Web UI.** The member and role forms' text box takes a user id or an
+  email. On a tenant, an address with no user offers an invitation to it
+  (§6.1) instead.
 
 ## 7. Using a cluster
 
@@ -957,7 +994,7 @@ and clusters and manages the account's members.
 links, opt-ins and federations, and sees every admission, delegated
 link and operator support action affecting it.
 
-### 11.1 Self-service tenants (D78–D81)
+### 11.1 Self-service tenants (D78–D82)
 
 A directory can let its own users create tenants, for example a
 university where anyone may start a lab, with resources from a default
@@ -978,6 +1015,7 @@ action `updateDirectorySettings` in `directory.tenants`; audited):
 | `self_service.approval_required` | `false` | `false`: the tenant is active at once. `true`: it is created **pending** until a directory administrator approves it (`approveTenant`, D78). |
 | `self_service.slug_prefix` | `""` | Prepended to the slug a user picks (`lab-`), so self-service tenants are told apart and can't take names IT keeps. |
 | `self_service.admins_may_delete` | `true` | The tenant's admins may delete it themselves once it holds nothing (`deleteOwnTenant`). Off: only directory administrators delete. |
+| `self_service.auto_create` | `false` | A user who may create tenants and is a member of none gets one at their first sign-in (D82). |
 | `tenant_label` | `{"singular": "Tenant", "plural": "Tenants"}` | What the web UI calls a tenant for this directory's users (D81), such as `Lab`/`Labs`. 1–24 characters each. |
 
 **The cluster's settings**, per directory the cluster hosts
@@ -1038,6 +1076,17 @@ create tenants: not service accounts, federated workloads, API tokens
 of another tenant, personal tokens narrowed to some roles (they
 wouldn't carry the new tenant's admin role), or break-glass (`base.break-glass` passes it, but
 there is no user to count).
+
+**At sign-in (D82).** With `auto_create` on, a sign-in through one of
+the directory's connectors (OIDC, Google, PAM; browser or gxctl) of a
+user who is a member of no tenant, other than the connector's
+`default_tenant`, and has never had one made this way, creates one as
+the user (`createOwnTenant`, the steps above). The slug is
+`slug_prefix` and the address before `@` (or the display name), lower
+case, other characters as `-`, cut to fit, with `-2`, `-3`… when taken;
+the display name is *&lt;display name&gt;'s &lt;label&gt;*. The audit
+entry is `createOwnTenant` with `auto: true`. A refusal (a limit, a
+site `forbid`) or an error leaves the sign-in as it was.
 
 **Pending tenants.** A pending tenant is listed to its creator and to
 the directory's administrators (Tenants, *Pending*); its members can't
@@ -1214,6 +1263,56 @@ offers are never affected by fleet changes.
 and to look up pins for a new pair. Its outage stops those; every
 established pair keeps working, including logins and feeds.
 
+
+### 12.3 Clusters that aren't glidex (D84)
+
+A cluster is anything that holds the cluster side of the handshake:
+an offer, a cluster key, a `TrustedDirectory` per directory, a feed
+replica, and the checks of §12.1 and D63–D73. Hyperstor's management
+service is one. Both build on the `glidex-trust` crate, so a directory
+can't tell them apart: they share the wire formats, the assertions and
+the token checks. Each keeps its records in its own store and maps the
+feed's roles to its own.
+
+### 12.4 A trusted storage cluster's storage, through glidex (D86, D87)
+
+A tenant that uses a hyperstor cluster sees its volumes, buckets and S3
+keys on the tenant page. The browser asks glidex's server, which asks
+the cluster:
+
+```
+browser ──session, CSRF──▶ control plane ──pinned TLS, Bearer at+jwt──▶ hyperstor mgmt
+         POST /tenants/{id}/clusters/{c}/storage/{call}     the cluster's `api`
+```
+
+- **Who:** a member of the tenant, from the tenant's directory, signed in
+  in a browser; the tenant uses the cluster and isn't suspended. The
+  cluster applies the person's own grants from the feed (D308 there).
+- **The token:** an access token as D55 makes one for a cluster (`aud`
+  its id), signed by the tenant's directory, for the person and their
+  session's login (`auth_time`, `amr`), at most 15 minutes, kept in the
+  server per session and cluster. Its `sid` is derived from the session,
+  never the session's id. It never reaches the browser.
+- **What:** five reads (D86); anything else is `404 not_relayed`.
+- **Answers:** the cluster's, as they are, but `401` becomes `403`;
+  `502 cluster_unreachable` when it doesn't answer in 15 s, or its
+  answer is over 8 MiB; `413 too_large` for a request over 64 KiB.
+- **Not yet:** writes (making a bucket, a key) from glidex; a cluster
+  can't end a relayed token early (it lasts at most 15 minutes after the
+  session ends).
+
+### 12.5 A cluster's renewed certificate (D88)
+
+The directory pins a cluster's API certificate (D63). Before a cluster
+serves a renewed certificate, it announces the new pin in its signed
+report (`next_tls_sha256`). The directory then accepts either pin on its
+calls to the cluster, and the first call that sees the new certificate
+makes it the pin. A certificate nobody announced is refused, as before.
+
+A glidex cluster announces its own renewals (D90): the node serving the
+API address holds a renewed certificate, the leader announces its pin
+and records which directories took it, and the node switches once all
+have, or 7 days before the old certificate expires.
 
 ## 13. Directory secrets (D21, D27)
 
@@ -1514,10 +1613,11 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T4** pull sync and attributes | §8.2 for Google Workspace (D44–D47): runs, the safety stop, status; SSH keys from Google | Pull tests against a mock Directory API; manual checks against a real Workspace. |
 | **T4b** more sources | LDAP (login and pull; AD, FreeIPA, OpenLDAP, JumpCloud LDAP), Microsoft Graph and GitHub (after T2b), on T4's runs | LDAP against OpenLDAP in CI. |
 | **T5** workload federation | §9 and D48–D51, kind `jwt`: federations per tenant, `POST /auth/exchange`, federated tokens; `aws` later | Federation tests against a mock issuer; a GitHub Actions job exchanges its OIDC token and calls glidex without a stored token. |
-| **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider (D52–D57), access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, gxctl `auth login --directory`, `trust`, UI; standby and promote moved to **T6b** | §17 trust tests (but the standby's); a check with two organizations' directories and two clusters across a real network link: gpu-dev2 with prism1, and spark-1 made a cluster of its own. Can start once T1 has landed. |
+| **T6** directories and clusters apart | hosted directories (D27), the directory as OIDC provider (D52–D57), access and refresh tokens, cluster sessions from ID tokens, the handshake, filtered feeds, admission reports, partitions and staleness, gxctl `auth login --directory`, `trust`, UI; standby and promote moved to **T6b** | §17 trust tests (but the standby's); a check with two organizations' directories and two clusters across a real network link: the R9700 host with the HGX host, and a standalone host made a cluster of its own. Can start once T1 has landed. |
 | **T6b** directory standby | §12.1 "Losing a directory": streaming to a standby, `gxctl directory promote`, epochs | The §17 promote test. Not scheduled. |
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
-| **T9** self-service tenants | §11.1, D78–D81: directory settings, `createOwnTenant`, limits, pending tenants and approval, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the prism cluster with the Google connector. |
+| **T9** self-service tenants | §11.1, D78–D82: directory settings, `createOwnTenant`, limits, pending tenants and approval, a tenant at first sign-in, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the three-server test cluster with the Google connector. |
+| **T10** members by email | §6.4, D83: a user named by a verified email where members and roles are added; identities record whether their address was verified | Service tests; gxctl and the forms take an address. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Directory`, `Tenant`, `Admission` and stores;
@@ -1701,8 +1801,9 @@ useful on one host first):
    - UI: Trusted directories and clusters, offers, the directory picker
      at login;
    - the operator guide;
-   - 20-idp-checks.md's T6 row: spark-1 made a cluster with its own
-     directory, its tenant admitted on gpu-dev2's cluster, its users
+   - 20-idp-checks.md's T6 row: a standalone host made a cluster with its
+     own directory, its tenant admitted on the R9700 host's cluster, its
+     users
      logging in from there.
 
 T7 gets its own task list when it starts; per-protocol code under
@@ -1725,7 +1826,7 @@ one PR each, in order):
    unverified or other address, another connector, a provisioned
    connector, a duplicate), UI e2e, docs.
 
-**T9 tasks** (self-service tenants, §11.1, D78–D81; one PR each, in
+**T9 tasks** (self-service tenants, §11.1, D78–D82; one PR each, in
 order):
 
 1. **Settings and the label** (D81): `Directory.settings`
@@ -1756,9 +1857,25 @@ order):
    (or an `open` flag); tests (a VM and a tenant pool from an open
    pool; capped by `devices.<pool>`), docs; the note in
    22-host-topology.md §9.1.
-5. **The real check** (spec/20-idp-checks.md): on the prism cluster,
+5. **The real check** (spec/20-idp-checks.md): on the three-server test
+   cluster,
    with the Google connector: a user creates a lab, invites a member,
    runs a VM from the open pool, and is refused past the limit.
+6. **A tenant at first sign-in** (D82): `self_service.auto_create`
+   (settings, proto, gxctl, the **Settings** tab); creating it at a
+   connector sign-in; tests (off, made once, not for a member of a
+   tenant, the connector's default tenant aside, a taken slug, the
+   limits, a refusal doesn't stop the sign-in), docs.
+
+**T10 tasks** (members by email, §6.4, D83; one PR):
+
+1. `Identity.email_verified`, recorded and refreshed at IdP sign-ins;
+   `EntityRef.email`, resolved in `AddMember`, `AddBinding` and
+   `AddProjectBinding`; gxctl `user:<email>`; the forms; tests (a
+   verified address, an unverified one, another directory's user, a
+   disabled user, a provisioned and a pre-added user, two users with the
+   address, refused before resolving for a caller who may not add),
+   docs.
 
 ## 19. Out of scope
 
@@ -1833,8 +1950,8 @@ order):
 
 T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started;
-T9 has tasks 1–4 (settings and the label; creating one's own tenant; automatic admission; open pools); task 5, the real check, is not run yet.
-T8 (D75–D77) is implemented.
+T9 has tasks 1–6 (settings and the label; creating one's own tenant; automatic admission; open pools; the real check, passed on 2026-11-05; a tenant at first sign-in).
+T8 (D75–D77) is implemented; its real check passed on 2026-11-03.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
@@ -1899,6 +2016,16 @@ Closed out after T1 (the T0 parts):
   ones are `gx-<id>`, and new node networks' bridges are `gxbr-<first 8
   of the id>`. An import gives a network a new id if one here has it.
   Metering rows from before keep the name as the network's subject id.
+- **Projects named in a request (D24)**: `Caller::find_project` (used
+  by `target_project` and the project routes) looks a key up as an id,
+  else as a name among the projects the caller sees (`readProject`, or a
+  link to the project, its tenant or the cluster); a name it sees
+  several projects have is `409 ambiguous`. A project it can't see
+  answers the same `404` (status and body) as a missing one, also on
+  `GET /pci-pools?project=`. `POST /vms` and `POST /scheduler/preview`
+  check the project (`createVm`, and admission on create) before a
+  `gpus` request looks at its pools. Tests:
+  `tenancy_tests.rs::a_project_of_another_tenant_answers_like_a_missing_one`.
 
 Left for later, and why:
 - **Per-cluster project quotas** and **guest credentials apart from the
@@ -2130,7 +2257,7 @@ Task 2, issuer and keys (also 29-workload-identity.md WI0's issuer):
 | Spec | Code |
 |---|---|
 | D52 | `Directory.issuer`, fixed by `TenantStore::set_issuer` when the directory first signs (`api::issuer::sign`); until then `api::issuer::issuer_url`: `auth.issuer_base` (`config::issuer_base`), else the web UI's published address (`VmManager::ui_url`), plus `/d/<directory>`; glidex-ui serves `/d/…` from the control plane, without its own `Cache-Control` |
-| D53 | `directory/issuer.rs`: `signing_keys` (directory scope), ES256 on P-256 (`p256`), the private scalar sealed with the directory's data key (`secrets::seal`, field `signing-key`); `rotate_signing_key`, `maintain_signing_keys` (a key when there is none, a new one after 30 days, retired keys deleted 13 h after retirement), `jwks`, `sign_jwt`; `issuer::spawn` runs the upkeep every 10 minutes on the leader or a standalone host |
+| D53 | `directory/issuer.rs`: `signing_keys` (directory scope), ES256 on P-256 (aws-lc-rs, since #353; stored keys unchanged), the private scalar sealed with the directory's data key (`secrets::seal`, field `signing-key`); `rotate_signing_key`, `maintain_signing_keys` (a key when there is none, a new one after 30 days, retired keys deleted 13 h after retirement), `jwks`, `sign_jwt`; `issuer::spawn` runs the upkeep every 10 minutes on the leader or a standalone host |
 | Discovery | `GET /d/{dir}/.well-known/openid-configuration` and `GET /d/{dir}/jwks.json`, public, `Cache-Control: public, max-age=300`; `404` for another directory, `503 no_issuer` without a public address |
 | API | `SigningKeyService.ListSigningKeys` (`readSigningKeys`, `GET /directory/keys`) and `RotateSigningKey` (`rotateSigningKey`, step-up, in `directory.keys` of `role.directory-admin`; `POST /directory/keys/rotate`); gxctl `directory keys [rotate]` |
 | Tests | `issuer.rs` unit tests (a token verified with `jsonwebtoken` against the JWKS, rotation and retention, separate directories); `connector_tests.rs::a_directory_publishes_its_issuer_and_keys` |
@@ -2156,7 +2283,7 @@ Task 4a, records in one directory:
 | Filters | lists keep the caller's directory (`list_users`, `list_teams`, `list_tokens`, `list_connectors`, `list_tenants`); another directory's user, team or connector answers `404` (`user_here`, `team`, `get_visible`); tenant slugs resolve in the caller's directory (`TenantStore::resolve_in`) and are unique there (`create_in`) |
 | Membership | `AuthService::principal_directory`: members and role holders of a tenant, team or project must be of its directory (another's answer as missing, `400`) |
 | Tests | `connector_tests.rs::hosted_directories_dont_see_each_other` (a second directory made with `TenantStore::create_directory`) |
-| D74 | Table `directory_audit` (63, directory scope); `AuthService::write_audit` (by the principal's directory, `auth::is_hosted`; `system_directory` for `directory:`, `system:scim:`, `system:sync:`, `system:federation:` actors); `IdentityStore::{append_directory_audit, directory_audit, remove_directory_audit}`, `prune_audit` pruning both; `ReadAuditRequest.directory` (REST `?directory=`), `service::access::read_directory_audit` (`readDirectoryAudit`, `directory.read`); `DeleteDirectory` removes it; gxctl `audit --directory`; the web UI's Audit page for a hosted directory's readers |
+| D74 | Table `directory_audit` (63, directory scope); `AuthService::write_audit` (by the principal's directory, `auth::is_hosted`; `system_directory` for `directory:`, `system:scim:`, `system:sync:`, `system:federation:` actors); `IdentityStore::{append_directory_audit, directory_audit, remove_directory_audit}`, `prune_audit` pruning both; `ReadAuditRequest.directory` (REST `?directory=`), `service::access::read_directory_audit` (`readDirectoryAudit`, `directory.read`); `DeleteDirectory` removes it; gxctl `audit --directory`; the web UI's Audit page for a hosted directory's readers, its capabilities checked on the caller's `Directory` (as the server checks them) |
 | Tests | `connector_tests.rs::a_hosted_directory_keeps_its_own_audit` |
 
 Task 4b, creating directories:
@@ -2180,7 +2307,7 @@ Task 4d, the web UI and docs:
 |---|---|
 | UI | `pages/Directories.tsx` (`/directories`, menu **Hosting**, with `listDirectories`; create with `manageDirectories`, the invitation link shown once; delete); `pages/Invite.tsx` creates the invitee's passkey for a passkey invitation (`api.acceptPasskeyInvitation`); `/login/<directory>` loads that directory's methods (`session.tsx`), and the host's login page has **Your email** (`/auth/discover`) sending an organization's people to their directory's page |
 | Docs | the operator guide's "Hosting other organizations' directories"; 07-web-ui.md routes |
-| UI e2e | `hosted-directories.spec.ts`: a directory created on the Hosting page, its administrator's passkey in another browser (virtual authenticator), only themselves in its users, its login page |
+| UI e2e | `hosted-directories.spec.ts`: a directory created on the Hosting page, its administrator's passkey in another browser (virtual authenticator), only themselves in its users, its Audit page (*All (my directory)*: their sign-in, not the operator's entries), its login page |
 
 Task 5a, peer assertions and offers:
 
@@ -2259,7 +2386,7 @@ Task 8a, the UI and gxctl for another organization's cluster:
 | Tests | UI e2e `trust.spec.ts` (the Admissions page's cards, an offer refused without TLS, a token that isn't an offer refused on the tenant page); `gxctl config::a_directory_login_reads_with_or_without_via` |
 | Not yet | the real check with two organizations (8b) |
 
-Task 8b, the real check: spec/20-idp-checks.md "Two organizations (T6)", passed on 2026-10-22 between gpu-dev2's cluster and spark-1 as a standalone host with its own directory. It found three bugs, fixed in the same PR: `gxctl auth logout --revoke` now ends a directory login's chain (and takes the session's profile); server-info's `token_audience` (a standalone host's `standalone-…` id, which gxctl's directory login now asks tokens for) and `AuthService::linked_projects` counting tenant links (a tenant admin without project roles listed none of its projects). gxctl also says when a pinned certificate doesn't name the host dialled, instead of calling it a pin mismatch.
+Task 8b, the real check: spec/20-idp-checks.md "Two organizations (T6)", passed on 2026-10-22 between the R9700 host's cluster and a standalone host with its own directory. It found three bugs, fixed in the same PR: `gxctl auth logout --revoke` now ends a directory login's chain (and takes the session's profile); server-info's `token_audience` (a standalone host's `standalone-…` id, which gxctl's directory login now asks tokens for) and `AuthService::linked_projects` counting tenant links (a tenant admin without project roles listed none of its projects). gxctl also says when a pinned certificate doesn't name the host dialled, instead of calling it a pin mismatch.
 
 T8, verified addresses and pre-added users:
 
@@ -2271,7 +2398,7 @@ T8, verified addresses and pre-added users:
 | Tests (D76) | `connector_tests::an_oidc_allowlist_picks_who_gets_an_account`; UI e2e `connectors.spec.ts` (the same OIDC test) |
 | D77: pre-added users (§6.3) | `auth::store::User.pending_login` (`PendingLogin`), `IdentityStore::take_pending_login`; `AuthService::external_login_invited` (binds before the allowlist and JIT); `service::access::create_user` → `preadd_user` (`invitations::may_give_role`, `usable_connector`); proto `CreateUserRequest.pending` (`PendingUser`), `User.pending_connector`; gxctl `user add`, `user list`; the Access page's **Add user** and *not signed in yet* |
 | Tests (D77) | `connector_tests::a_pre_added_user_is_taken_by_its_first_verified_login` (role there before the login; refused twice, outside the domains, not an address, with identities, an unknown or provisioned connector; unverified, another connector and another subject take nothing; taken once, JIT off); UI e2e `access.spec.ts` "users: add one by email before they sign in" |
-| Not yet | the real check on the prism cluster with a Google Workspace connector |
+| Real check | passed on 2026-11-03 on the three-server test cluster (`72b9d7f`) with the Google Workspace connector, through the cluster's public name (a Cloudflare tunnel): [20-idp-checks.md](20-idp-checks.md) "Verified addresses and pre-added users (T8)" |
 
 T9, self-service tenants (§11.1):
 
@@ -2285,4 +2412,33 @@ T9, self-service tenants (§11.1):
 | Tests (task 3) | `tenancy_tests::new_tenants_are_admitted_with_the_default_cap` (self_service and all, a directory not hosted, a cap required, never an operator, the new default to those that follow, a hand-set cap stops following and a suspension doesn't, pending admitted on approval, off keeps what was made) |
 | Task 4: open pools (D80) | `config::PciGrant.tenants` `["*"]` (checked: alone, on a pool); `api::vms::pool_tenant_grants` answers every tenant with an admission here for such a pool, which the Cedar `PciPool.tenant_grants`, tenant pools and the project's pool listing all use |
 | Tests (task 4) | `config` tests (`"*"` alone and on a pool only); `tenancy_tests::an_open_pool_is_granted_to_every_admitted_tenant` (listed for an admitted tenant's project and not another's, a tenant pool from it, refused before admission) |
-| Not yet | task 5: the real check on the prism cluster. Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |
+| Task 6: a tenant at first sign-in (D82) | `SelfService.auto_create` (`SelfServiceSettings.auto_create`, gxctl `directory settings --auto-create`, the **Settings** tab's checkbox); `service::tenancy::tenant_at_sign_in` after a connector sign-in (the browser OIDC callback, the gxctl device login, the PAM login and PAM token), through `make_own_tenant` (shared with `create_own_tenant`) as the user (`api::Caller::on_behalf`, audited as `createOwnTenant` with `auto`); once per user (`auto-tenant/<user>` marker) |
+| Tests (task 6) | `tenancy_tests::a_user_in_no_tenant_gets_one_at_first_sign_in` (off, named from the address or the display name, the user its admin, once and not again after deleting it, a taken slug, a tenant member gets none, the connector's default tenant aside, over a limit none and made at the next sign-in). Not through a real connector login: the call is the same after each |
+| T10: members by email (D83) | `Identity.email_verified`, `IdentityStore::{record_identity_email (at each connector sign-in, on the leader, when changed), users_by_email}`; `EntityRef.email`; `service::common::{email_of, user_by_email}` used by `AddMember`, `AddBinding` (`tenancy::member_principal`) and `AddProjectBinding`, after the caller's right to add; gxctl `user:<email>`; the member and role forms take an id or an email, and the tenant page offers an invitation for an address with no user |
+| Tests (T10) | `tenancy_tests::members_and_roles_by_verified_email` (a verified address in any case, pre-added and provisioned users, an unverified address, another directory's user, a disabled one and nobody as an unknown id, two users `409 ambiguous`, a caller who may not add refused first, a tenant and a project role, a sign-in recording the address); gxctl `parse_principal`. No UI e2e: the harness signs in as a directory administrator, who picks users from a list |
+| Real check | task 5 passed on 2026-11-05 on the three-server test cluster (`6e61817`, then `2c05489`) with the Google Workspace connector, members added by email (D83) included: [20-idp-checks.md](20-idp-checks.md) "Self-service tenants (T9) and members by email (T10)" |
+| Not yet | Labels on automatic admissions (they need admission labels, D35, first). Tenants of trusted directories are never admitted automatically (fleets, D34) |
+
+`glidex-trust`, the cluster side of trust as a crate (§12.3, D84):
+
+| Spec | Code |
+|---|---|
+| Wire types and records | `glidex-trust/src/wire.rs`: the purposes, `OfferToken`, `normalize_issuer`, `trusted_id`, `TrustedDirectory`, `RemoteTenant`, `Row`, `Snapshot`, `revision_of`, `FeedState`, the request bodies (`RedeemRequest`, `RedeemAnswer`, `EndAtCluster`, `EndAtDirectory`, `FeedAsk`, `ReportBody`, `LogoutBody`), `PendingLogins`, `EndedChains`; the control plane's `trust.rs` re-exports them and keeps `TrustStore`, `TrustedCluster` and its reports |
+| Peer assertions and pinned requests (D63) | `peer.rs` (`assertion`, `verify`, `client_assertion`, `verify_client_assertion`, `Replays`, `post`, `post_unsigned`); `key.rs`: the `Signer` trait and `ClusterKey` (P-256, PKCS#8 in and out, its JWKS). The control plane's `directory/peer.rs` signs with its stored keys (`OwnerKey`, `cluster_key`) |
+| The cluster's calls | `client.rs`: `pull_feed` (the revision checked against the content), `push_report`, `end_trust`, `logout`, `authorize_url`, `exchange_code`; used by `api/trust.rs` (`pull_feed`, `push_report`, `end_chains`, `tell_directory_ended`) and `api/trusted_login.rs` |
+| The cluster's checks | `cluster.rs`: `check_redeem`, `redeemed_directory`, `check_end`, `lag`, `freshness`; `tokens.rs`: `verify_access_token`, `verify_id_token`, `unverified_issuer`, `api_token_hash`, `mfa_of`; used by `api/trust.rs::{redeem, end_at_cluster, freshness}` and `api/op.rs::access_principal` |
+| The feed's rows for other clusters | `feed.rs`: `User`, `Team`, `Tenant`, `Project`, `Member`, `Link`, `ApiToken`, `Entity`, read leniently; `rows` |
+| A fake directory (feature `fake`) | `fake.rs`: `FakeDirectory` (`start`, `redeem`, `end_trust`, `put_row` and the helpers for tenants, users, projects, members, links and API tokens, `end_chain`, `login_as`, `browse`, `access_token`, `set_down`, `cluster`, `logouts`, `feed_pulls`) and `serve_https` for a test's own side; gxctl's device login as the real directory runs it (`device_authorization`, the device-code grant and refresh tokens at `token`, `revoke`; `approve_device`, `deny_device`, `expire_device`; #502) |
+| Tests | unit tests in each module (the checks' refusals, tokens for another cluster or key, stale credentials, rows as glidex writes them); `tests/fake_directory.rs`: a cluster built from the crate redeems, pulls the feed (a disabled user, another key refused), reports, takes access and API tokens, logs a browser in (a wrong verifier, nobody logged in), logs out, reads ended chains, goes stale in a partition, and ends trust from either side; `the_fake_runs_a_device_login` (pending, too fast, approved, denied, expired, a refresh and its reuse, revoke); the control plane's `trust_tests.rs` unchanged |
+| Storage in reports (D85) | `glidex_trust::{StorageReport, StorageTenantReport, ClusterReport}`; the control plane's `trust::TenantReport` with every count defaulting to zero and `storage`; proto `TenantClusterReport.storage` (`TenantStorageReport`), filled by `service::tenancy::tenant_cluster_pb`; `gxctl tenant clusters` prints it; `TenantDetail.tsx`'s clusters table gets a *Storage* column (volumes with provisioned and used side by side, buckets with their bytes, S3 keys) once any cluster sent storage; the fake directory refuses a report whose storage doesn't read and keeps it per tenant (`FakeCluster.storage`) |
+| Tests (D85) | `trust::tests::reports_read_with_or_without_storage` (only storage; an old report; written without `storage`); `wire::tests::storage_reports_read_with_any_field_missing`; `trust_tests::the_cluster_reports_its_tenants_back` (a storage-only report through the tenant's cluster list); `fake_directory` (a storage report through `cluster(id)`, a VM report, a malformed one refused); UI e2e `trust.spec.ts` "the tenant page shows a storage cluster's report" (the list mocked) |
+| The storage relay (D86) | `api/storage_relay.rs`: `relay` (`POST /tenants/{id}/clusters/{cluster}/storage/{*call}`, action `authenticated`), `ALLOWED`, `forward` (pinned TLS as `glidex-trust`'s calls, `Bearer`, Connect JSON, 64 KiB in, 8 MiB out, 15 s), the token cache; `service::tenancy::relayed_cluster` (session, member from the tenant's directory, not suspended, uses the cluster); `api::op::ui_cluster_token` (`aud` the cluster, at most 15 minutes, `sid` from the session) |
+| The storage view (D87) | `components/StorageView.tsx` (usage per project, the volumes of every pool the person reaches with their pool, buckets, S3 keys), opened from `TenantDetail.tsx`'s clusters card; `api.storageCall` |
+| A renewed certificate (D88) | `glidex_trust::{ReportBody.next_tls_sha256, accepted_pins, announce_pin, promote_pin}`, `client::push_report_announcing`, `peer::{post_any, presented_pin}` (the pin of the certificate a call saw); the control plane's `TrustedCluster.{next_tls_sha256, pins()}`, `TrustStore::saw_pin`; `api::trust::report` keeps the announced pin (audited `announcePin`); `opt_out_cluster`'s end call and `storage_relay::forward` accept either pin and promote; `opt_in_cluster` resets both to the offer's; the fake directory's `FakeCluster.next_tls_sha256`, `end_trust` with either pin, `Https::renew` |
+| Tests (D88) | `wire::tests::an_announced_pin_is_kept_until_seen_then_becomes_the_pin` (junk and the current pin ignored, kept across a report without one, seen old changes nothing, an old report reads); `fake_directory::a_renewed_certificate_is_pinned_once_announced` (an unannounced certificate refused; announced in a report, then the end call reaches it); `storage_relay_tests::a_renewal_the_cluster_announced_is_pinned_once_seen` (unannounced `502`, a signed report keeps it, the next relayed call promotes it, junk ignored). Not run against a real hyperstor cluster's renewal |
+| A renewal held (D90) | `api_cert::{may_switch, gate, serving, announcement}` (`HOLD_UNTIL_EXPIRY_SECS`), `glidex_tls::FileCert::{poll_gated, watch_gated, pending}`, `NodeStatus.{api_pin, api_pin_pending}`, `VmManager::{set_api_pins, api_pins}`, `trust::DirectoryPins` (table `trusted_directory_pins`), `api::trust::{feed_round, push_report_announcing}`, `glidex_trust::peer::presented`; `api_fingerprint` gives the pin served |
+| Tests (D90) | `api_cert::tests::a_renewal_is_held_until_every_directory_meeting_it_knows_it` (none met, one not accepted, all accepted, near expiry); `glidex_tls` `a_gated_file_cert_holds_a_renewal_until_allowed`; `trust_tests::a_renewed_api_certificate_is_held_until_the_directory_knows_it` (two control planes: held and published as pending, announced, accepted, served; the directory's end call reaches the cluster after the switch) |
+| Not yet (D90) | Run on a real host with a renewal (not run yet) |
+| Tests (D86, D87) | `storage_relay_tests::the_relay_reads_a_trusted_clusters_storage_as_the_person` (forwarded with a bearer token for the person, `aud` the cluster, at most 15 minutes, never in the answer; reused for the next call; the cluster's refusal as it is and its 401 as 403; other calls `not_relayed` and never sent; a cluster the tenant doesn't use, an unknown one and a non-member refused before the cluster is called; a cluster gone `502 cluster_unreachable`); UI e2e `storage-view.spec.ts` (the view through a mocked relay, volumes asked with `pool` 0, the session's CSRF and no bearer token, nothing sent anywhere but glidex, a relay error shown) |
+| A project holding storage (D89) | `glidex_trust::{StorageProjectReport, StorageReport::holds_any}`, `StorageTenantReport.project_storage`; the control plane's `trust::TenantReport.project_storage` and `TrustedCluster::holds_storage_of`; `api::trust::report` keeps only the tenant's own projects; `service::access::delete_project` refuses; the fake directory keeps it per project (`FakeCluster.project_storage`) |
+| Tests (D89) | `wire::tests::storage_reports_read_with_any_field_missing` (with and without `project_storage`; not written when empty); `fake_directory` (a per-project report through `cluster(id)`); `trust_tests::the_cluster_reports_its_tenants_back` (another tenant's project dropped; the delete refused naming the counts, then allowed after a report without it) |

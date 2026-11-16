@@ -164,7 +164,7 @@ export default function FederationsCard({ tenant, canManage }: { tenant: Tenant;
               </ol>
               <details className="mt-1">
                 <summary className="cursor-pointer text-sky-700">How a job uses it</summary>
-                <pre className="mt-1 p-2 bg-gray-50 rounded text-xs overflow-x-auto" data-testid="exchange-snippet">
+                <pre className="mt-1 p-2 bg-gray-50 rounded-sm text-xs overflow-x-auto" data-testid="exchange-snippet">
                   {f.issuer.includes("githubusercontent")
                     ? `permissions:\n  id-token: write\nsteps:\n  - run: |\n      JWT=$(curl -sH "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \\\n        "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=${f.audience}" | jq -r .value)\n      GLIDEX_TOKEN=$(curl -s ${window.location.origin}/api/auth/exchange \\\n        -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \\\n        -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \\\n        -d federation=${tenant.slug}/${f.id} -d subject_token="$JWT" | jq -r .access_token)`
                     : `curl -s ${window.location.origin}/api/auth/exchange \\\n  -d grant_type=urn:ietf:params:oauth:grant-type:token-exchange \\\n  -d subject_token_type=urn:ietf:params:oauth:token-type:jwt \\\n  -d federation=${tenant.slug}/${f.id} -d subject_token="$JWT"`}

@@ -498,3 +498,95 @@ async fn access_services_over_connect_and_grpc() {
         },
     );
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_audit_pages_newest_first_and_sorts_by_a_column() {
+    let h = harness();
+    let admin = h.admin("ada");
+    let t = h.token(&admin);
+    // Six entries of one made-up user, a second apart, actions z…u.
+    for (i, action) in ["z", "y", "x", "w", "v", "u"].iter().enumerate() {
+        h.app
+            .auth
+            .store
+            .append_audit(&glidex_control_plane::auth::store::AuditEntry {
+                time: 1_000_000 + i as u64 * 1000,
+                request_id: format!("r{i}"),
+                principal: json!({"user": "pager"}),
+                source: "test".into(),
+                action: action.to_string(),
+                project: None,
+                target: None,
+                result: "ok".into(),
+                error_code: None,
+                policies: vec![],
+                details: Value::Null,
+            })
+            .unwrap();
+    }
+    let actions = |v: &Value| -> Vec<String> {
+        v["entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|e| e["action"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let pages = |query: String| {
+        let h = &h;
+        let t = t.clone();
+        async move {
+            let mut out = Vec::new();
+            let mut token = String::new();
+            loop {
+                let (st, v) = h
+                    .rest(
+                        "GET",
+                        &format!("/audit?user=pager&limit=4{query}{token}"),
+                        None,
+                        &t,
+                    )
+                    .await;
+                assert_eq!(st, StatusCode::OK, "{v}");
+                out.push(actions(&v));
+                match v["next_page_token"].as_str().filter(|s| !s.is_empty()) {
+                    Some(n) => token = format!("&page_token={n}"),
+                    None => return out,
+                }
+            }
+        }
+    };
+
+    // Newest first, the default, in pages of four.
+    assert_eq!(
+        pages(String::new()).await,
+        [vec!["u", "v", "w", "x"], vec!["y", "z"]]
+    );
+    // Oldest first.
+    assert_eq!(
+        pages("&ascending=true".into()).await,
+        [vec!["z", "y", "x", "w"], vec!["v", "u"]]
+    );
+    // From a time on, newest first.
+    assert_eq!(pages("&since=1003000".into()).await, [vec!["u", "v", "w"]]);
+    // By a column, A–Z.
+    assert_eq!(
+        pages("&order_by=action&ascending=true".into()).await,
+        [vec!["u", "v", "w", "x"], vec!["y", "z"]]
+    );
+
+    // A token is refused with other filters, and an unknown order.
+    let (_, v) = h.rest("GET", "/audit?user=pager&limit=2", None, &t).await;
+    let n = v["next_page_token"].as_str().unwrap().to_string();
+    let (st, _) = h
+        .rest(
+            "GET",
+            &format!("/audit?user=other&limit=2&page_token={n}"),
+            None,
+            &t,
+        )
+        .await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+    let (st, _) = h.rest("GET", "/audit?order_by=details", None, &t).await;
+    assert_eq!(st, StatusCode::BAD_REQUEST);
+}

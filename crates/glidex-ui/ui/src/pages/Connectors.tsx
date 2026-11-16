@@ -719,7 +719,7 @@ function ScimTokens({ connector, manage }: { connector: Connector; manage: boole
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
       <div>
         <div className="font-medium text-gray-700">Endpoint (the IdP's “base URL”)</div>
-        <code className="block mt-1 p-2 bg-gray-50 rounded font-mono break-all" data-testid="scim-url">
+        <code className="block mt-1 p-2 bg-gray-50 rounded-sm font-mono break-all" data-testid="scim-url">
           {url}
         </code>
         <p className="mt-1 text-gray-500">
@@ -917,9 +917,9 @@ export default function Connectors() {
       {connectors === null ? (
         <LoadingCard />
       ) : connectors.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">No login connectors.</div>
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">No login connectors.</div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">

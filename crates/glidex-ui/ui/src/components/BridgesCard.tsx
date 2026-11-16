@@ -233,7 +233,7 @@ export default function BridgesCard({
   };
 
   return (
-    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 text-sm">
+    <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-4 text-sm">
       <div className="flex items-center justify-between mb-2">
         <h2 className="font-medium text-gray-700">glidex bridges</h2>
         {canBridge && (

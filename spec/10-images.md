@@ -341,12 +341,20 @@ hypervisor.
 URL. `sha256` is optional. Without it, glidex still computes and stores the
 digest but cannot vouch for the file, and the response carries
 `"verified": false`. `file://` and other schemes are rejected with
-`400 invalid_image`. So are URLs whose host is, or resolves to, a loopback,
-private (RFC 1918, ULA), link-local or CGNAT address. Names that do not
-resolve are refused too. `GLIDEX_ALLOW_PRIVATE_IMAGE_URLS=1` allows private
-addresses, and only those may then use plain `http://` (a LAN mirror).
-Every redirect hop is checked the same way (`download::http_client`), so a
-public URL cannot bounce to an internal one. Why: the control plane would
+`400 invalid_image`. So are URLs whose host is, or resolves to, an
+address that isn't public: loopback, private (RFC 1918, ULA), link-local,
+CGNAT, multicast, reserved, benchmarking or documentation, or an IPv4
+address carried in IPv6 (mapped, NAT64, 6to4) that is one of these
+(`public_net::is_public`, shared with federation issuers). Names that do
+not resolve are refused too. The download connects only to the public
+addresses a name resolves to when it connects, not to those it resolved
+to when the URL was checked (`public_net::PublicOnly`).
+`GLIDEX_ALLOW_PRIVATE_IMAGE_URLS=1` allows private addresses, and only
+those may then use plain `http://` (a LAN mirror). Every redirect hop is
+checked the same way (`download::http_client`), so a public URL cannot
+bounce to an internal one. Through an HTTP proxy (`https_proxy` in the
+control plane's environment), the proxy resolves names and these checks
+apply only to the URL. Why: the control plane would
 otherwise fetch internal endpoints on a caller's behalf (SSRF).
 
 ## 5. Download pipeline

@@ -87,6 +87,7 @@ import type {
   HostTopology,
   Datastore,
   DatastoreInput,
+  PrincipalInput,
 } from "./types";
 
 import { fromJson, toJson, type DescMethodUnary, type JsonValue, type MessageJsonType } from "@bufbuild/protobuf";
@@ -111,7 +112,17 @@ import {
 import { CredentialService, DatastoreService, DiskService, ImageService } from "./gen/glidex/storage/v1/storage_pb";
 import { NetworkService, NetworkShareService, RouterService } from "./gen/glidex/network/v1/network_pb";
 import { HostNetworkService, PciService } from "./gen/glidex/host/v1/host_pb";
-import { ClusterService, ImportService, NodeService, type PciPoolJson, type PutOvnSettingsRequestJson } from "./gen/glidex/cluster/v1/cluster_pb";
+import {
+  ClusterService,
+  ImportService,
+  NodeService,
+  type GetPciSettingsResponseJson,
+  type PciGrantJson,
+  type PciPoolJson,
+  type PciPoolMatchJson,
+  type PciPoolSpecJson,
+  type PutOvnSettingsRequestJson,
+} from "./gen/glidex/cluster/v1/cluster_pb";
 import {
   AdmissionService,
   DirectoryService,
@@ -802,6 +813,12 @@ export const setVmServiceAccount = (id: string, serviceAccount: string | null) =
 export const listServiceAccounts = (project: string) =>
   listTokens().then((all) => all.filter((t) => isServiceToken(t) && t.project === project));
 
+/** Rename a VM; a root disk it made is renamed with it. */
+export function setVmName(id: string, name: string) {
+  const vm = { name };
+  return vmWrite(rpc(VmService.method.updateVm, { id, change: vm, update_mask: maskOf(vm) }) as Promise<VmWriteResponse>);
+}
+
 /** Change a VM's memory; on a running VM from its next start. */
 export function setVmMemory(id: string, mib: number) {
   const vm = { mem_size_mib: mib };
@@ -1086,7 +1103,7 @@ export const deleteProject = (id: string) => rpc(ProjectService.method.deletePro
 
 export const listBindings = (project: string) =>
   rpc(ProjectService.method.listProjectBindings, { id: project }).then((r) => (r.bindings ?? []) as Binding[]);
-export const addBinding = (project: string, role: string, principal: EntityRef) =>
+export const addBinding = (project: string, role: string, principal: PrincipalInput) =>
   rpc(ProjectService.method.addProjectBinding, { id: project, role, principal }).then((r) => r.binding as Binding);
 export const removeBinding = (project: string, link: string) =>
   rpc(ProjectService.method.removeProjectBinding, { id: project, link }).then(none);
@@ -1144,13 +1161,40 @@ export const deletePolicy = (id: string, version: number) =>
   rpc(PolicyService.method.deletePolicy, { id, version: String(version) }).then(none);
 
 /** `since` is Unix milliseconds. */
-export function readAudit(q: { project?: string; user?: string; since?: number; limit?: number }): Promise<AuditEntry[]> {
+/** A column the audit sorts by (spec/11-security.md decision 23). */
+export type AuditOrder = "time" | "user" | "action" | "project" | "target" | "source" | "result";
+
+export interface AuditPage {
+  entries: AuditEntry[];
+  /** Empty on the last page. */
+  next: string;
+  /** A sort other than time stopped at its cap: narrow the filters. */
+  truncated: boolean;
+}
+
+/** One page of the audit, newest first unless `order`/`ascending` say otherwise (decision 22). */
+export function readAudit(q: {
+  project?: string;
+  user?: string;
+  since?: number;
+  limit?: number;
+  order?: AuditOrder;
+  ascending?: boolean;
+  page?: string;
+}): Promise<AuditPage> {
   return rpc(AuditService.method.readAudit, {
     project: q.project || undefined,
     user: q.user || undefined,
     since: q.since ? new Date(q.since).toISOString() : undefined,
     limit: q.limit || undefined,
-  }).then((r) => (r.entries ?? []) as AuditEntry[]);
+    order_by: q.order && q.order !== "time" ? q.order : undefined,
+    ascending: q.ascending || undefined,
+    page_token: q.page || undefined,
+  }).then((r) => ({
+    entries: (r.entries ?? []) as AuditEntry[],
+    next: r.next_page_token ?? "",
+    truncated: !!r.truncated,
+  }));
 }
 
 // ---- usage (spec/13-metering.md §9) ---------------------------------------------
@@ -1277,6 +1321,22 @@ export const getNodeTopology = (id: string) =>
 /** The device pools a project may use and how many are free (spec/22-host-topology.md §9.1). */
 export const listProjectPciPools = (project: string) =>
   rpc(NodeService.method.listPciPools, { project }).then((r) => (r.pools ?? []) as PciPoolJson[]);
+/** Every device pool, defined or discovered, with its devices per node (needs a host role). */
+export const listPciPools = () => rpc(NodeService.method.listPciPools, {}).then((r) => (r.pools ?? []) as PciPoolJson[]);
+/** The cluster's device pools and grants, and whether they come from the setting or this server's file (spec/22-host-topology.md H20). */
+export type PciSettingsView = GetPciSettingsResponseJson;
+export const getPciSettings = () => rpc(ClusterService.method.getPciSettings).then((r) => r as PciSettingsView);
+/** Replaces the device pools and grants for every server. */
+export const putPciSettings = (s: { pools: PciPoolSpecJson[]; allow: PciGrantJson[] }) =>
+  rpc(ClusterService.method.putPciSettings, s).then((r) => r as PciSettingsView);
+/** The match a discovered pool's name stands for: its model (`amd-7551`), or for `-vf` the VFs of cards of that model (`15b3-1021-vf`; spec/22-host-topology.md §9.1b). */
+export function discoveredMatch(name: string): PciPoolMatchJson | null {
+  const m = /^(nvidia|amd|intel|[0-9a-f]{4})-([0-9a-f]{4})(-vf)?$/.exec(name);
+  if (!m) return null;
+  const vendor = ({ nvidia: "10de", amd: "1002", intel: "8086" } as Record<string, string>)[m[1]] ?? m[1];
+  const ids = { vendor_id: `0x${vendor}`, device_id: `0x${m[2]}` };
+  return m[3] ? { vf_of: ids } : ids;
+}
 /** Bind a device's IOMMU group to vfio-pci on its node, or put it back (spec/22-host-topology.md §5.3). */
 export const prepareDevice = (id: string, address: string) => rpc(NodeService.method.prepareDevice, { id, address });
 export const releaseDevice = (id: string, address: string) => rpc(NodeService.method.releaseDevice, { id, address });
@@ -1423,6 +1483,58 @@ export type TenantDevicePool = TenantDevicePoolJson;
 /** Another organization's cluster the tenant uses, with its last report
  *  (spec/19-tenancy.md D65, D70). */
 export type TenantCluster = TenantClusterJson;
+
+/** A hyperstor cluster's storage as the relay gives it (spec/19-tenancy.md
+ *  D86): its own messages, as Connect's JSON. Only the fields shown. */
+export interface HsVolume {
+  id?: string;
+  name?: string;
+  pool?: number;
+  size?: U64;
+  tenant?: number;
+  project?: number;
+  project_name?: string;
+  attached_by?: string;
+}
+export interface HsBucket {
+  name?: string;
+  tenant?: number;
+  project?: number;
+  project_name?: string;
+  counted?: boolean;
+  objects?: U64;
+  bytes?: U64;
+}
+export interface HsKey {
+  id?: string;
+  tenant?: number;
+  description?: string;
+  project?: number;
+}
+export interface HsProject {
+  id?: number;
+  name?: string;
+  glidex_id?: string;
+  is_default?: boolean;
+}
+export interface HsTenant {
+  id?: number;
+  name?: string;
+  glidex_id?: string;
+  default_project?: number;
+  projects?: HsProject[];
+}
+/** The calls the relay forwards; nothing else. */
+export type StorageCall =
+  | "hyperstor.v1.ClusterService/ListVolumes"
+  | "hyperstor.v1.S3Service/ListS3Buckets"
+  | "hyperstor.v1.S3Service/ListS3Keys"
+  | "hyperstor.v1.TenantService/ListTenants"
+  | "auth/whoami";
+/** One call to cluster `cluster` through this server's storage relay, as
+ *  the signed-in person (D86): the browser never talks to the cluster. */
+export const storageCall = <T>(tenant: string, cluster: string, call: StorageCall, body: unknown = {}) =>
+  request<T>("POST", `/tenants/${encodeURIComponent(tenant)}/clusters/${encodeURIComponent(cluster)}/storage/${call}`, body);
 export const listTenantClusters = (id: string) =>
   rpc(TenantService.method.listTenantClusters, { id }).then((r) => (r.clusters ?? []) as TenantCluster[]);
 /** Opt the tenant in to another organization's cluster with the offer its
@@ -1478,7 +1590,7 @@ export const setTenantDevicePools = (id: string, pools: TenantDevicePool[]) =>
 
 export const listTenantMembers = (id: string) =>
   rpc(TenantService.method.listMembers, { id }).then((r) => (r.members ?? []) as TenantMember[]);
-export const addTenantMember = (id: string, principal: EntityRef) => rpc(TenantService.method.addMember, { id, principal });
+export const addTenantMember = (id: string, principal: PrincipalInput) => rpc(TenantService.method.addMember, { id, principal });
 /** `principal` is a User or Team; the request names it `user:<id>` / `team:<id>`. */
 export const removeTenantMember = (id: string, principal: EntityRef) =>
   rpc(TenantService.method.removeMember, {
@@ -1488,7 +1600,7 @@ export const removeTenantMember = (id: string, principal: EntityRef) =>
 
 export const listTenantBindings = (id: string) =>
   rpc(TenantService.method.listBindings, { id }).then((r) => (r.bindings ?? []) as TenantBinding[]);
-export const addTenantBinding = (id: string, role: string, principal: EntityRef) =>
+export const addTenantBinding = (id: string, role: string, principal: PrincipalInput) =>
   rpc(TenantService.method.addBinding, { id, role, principal });
 export const removeTenantBinding = (id: string, link: string) => rpc(TenantService.method.removeBinding, { id, link }).then(none);
 

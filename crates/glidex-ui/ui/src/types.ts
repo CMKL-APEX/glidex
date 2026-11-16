@@ -152,6 +152,10 @@ export interface NicState {
   mac: string;
   port?: string;
   ipv4?: string;
+  /** False: the NIC's port isn't checked (spec/09-networking.md decision 19). */
+  port_security?: boolean;
+  /** Addresses it may also send from (decision 20). */
+  allowed_addresses?: string[];
 }
 
 /** A NIC's network for display: its name, else its id. */
@@ -292,7 +296,8 @@ export interface CreateVmRequest {
   credential?: string;
   /** A service account (token id) for its workload identity (spec/29-workload-identity.md W5). */
   service_account?: string;
-  networks?: { network: string }[];
+  /** `port_security: false` needs `setPortSecurity` (spec/09-networking.md decision 19). */
+  networks?: { network: string; port_security?: boolean; allowed_addresses?: string[] }[];
   rootfs_path?: string;
   /** Image id/name: glidex creates and owns a root disk from it. */
   image?: string;
@@ -792,6 +797,8 @@ export interface Datastore {
   hyperstor_pool?: number;
   hyperstor_identity?: string;
   hyperstor_identity_expires?: string;
+  /** `hyperstor`: its management UI, linked as "Manage cluster" (spec/24-storage.md S33). */
+  hyperstor_mgmt_url?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */
@@ -821,6 +828,8 @@ export interface DatastoreInput {
   hyperstor_api?: string[];
   hyperstor_pool?: number;
   hyperstor_token?: string;
+  /** A hyperstor datastore's management UI, `https://host[:port]`; empty clears it. */
+  hyperstor_mgmt_url?: string;
   volume_group?: string;
   thin_pool?: string;
   path?: string;
@@ -946,6 +955,14 @@ export function unscheduledReason(vm: VmResponse): string | null {
   return s.message || s.reason || null;
 }
 
+/** Why pylond doesn't manage a running Pylon VM's cores, when it doesn't
+ * (the `PylonManaged` condition, spec/30-pylon.md P16). */
+export function pylonUnmanagedReason(vm: VmResponse): string | null {
+  const c = vm.conditions?.find((c) => c.kind === "PylonManaged");
+  if (!c || conditionStatus(c) !== "False") return null;
+  return c.message || c.reason || "pylond doesn't manage this VM";
+}
+
 export function notReadyReason(vm: VmResponse): string | null {
   const ready = notReady(vm.conditions);
   if (!ready) return null;
@@ -998,6 +1015,8 @@ export type SingletonEntityType = "Cluster" | "Host";
 /** `Cluster` is the root of everything cluster-wide (projects, identity,
  * policy); `Host` is the node serving the request and `Node` another node. */
 export type EntityRef = { type: SingletonEntityType } | { type: Exclude<EntityType, SingletonEntityType>; id: string };
+/** Who a member or role is given to: an entity, or a user named by email (spec/19-tenancy.md D83). */
+export type PrincipalInput = EntityRef | { type: "User"; email: string };
 
 export function isSingleton(t: EntityType): t is SingletonEntityType {
   return t === "Cluster" || t === "Host";
@@ -1458,6 +1477,14 @@ export interface VmStats {
   vm?: Record<string, number>;
   nics?: LiveEntry[];
   disks?: LiveEntry[];
+  /** In a cluster, the points only the VM's host has yet: its open hour
+   * and last closed hour (spec/13-metering.md §9.4, D19). */
+  open_hour?: {
+    from?: string;
+    compute?: SeriesPoint[];
+    bandwidth?: SeriesPoint[];
+    io?: SeriesPoint[];
+  };
 }
 
 // ---- the cluster, nodes, imports and departures (glidex.cluster.v1) -----------
@@ -1643,6 +1670,8 @@ export interface ClusterStatus {
     last_applied?: U64;
     last_log_index?: U64;
     purged?: U64;
+    /** While this server's log applies nothing (14-clustering.md D30). */
+    stalled_since?: string;
   };
   nodes?: ClusterNodeRow[];
   ports?: { node: string; port: number; proto: string; reachable?: boolean }[];
@@ -2165,6 +2194,34 @@ export interface OvsStatus {
   netd: { available?: boolean; access?: NetdAccess; error?: string };
   /** What netd found; absent when it didn't answer. */
   host?: HostCapabilities;
+  /** Subnets two or more ports share (09-networking.md §8.6); absent
+   * without full access to netd. */
+  source_routes?: SourceRoutes;
+}
+
+export type SourceAddressState =
+  | "SOURCE_ADDRESS_STATE_OK"
+  | "SOURCE_ADDRESS_STATE_MISSING"
+  | "SOURCE_ADDRESS_STATE_UNMANAGED"
+  | "SOURCE_ADDRESS_STATE_CONFLICT";
+
+/** `SOURCE_ADDRESS_STATE_OK` → `ok` (the label shown). */
+export const sourceAddressStateLabel = (s: SourceAddressState | undefined) => enumLabel(s, "SOURCE_ADDRESS_STATE_");
+
+export interface SourceRoutes {
+  subnets?: {
+    subnet: string;
+    managed?: boolean;
+    ports?: {
+      ifname: string;
+      table?: number;
+      addresses?: { address: string; state?: SourceAddressState; conflict?: string }[];
+      rp_filter?: number;
+      arp_ignore?: number;
+      arp_announce?: number;
+    }[];
+  }[];
+  notes?: string[];
 }
 
 export type OvsProfile = "OVS_PROFILE_KERNEL" | "OVS_PROFILE_DPDK";

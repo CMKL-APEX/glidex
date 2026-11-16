@@ -179,11 +179,11 @@ export default function Projects() {
       {projects === null || shown === null ? (
         <LoadingCard />
       ) : projects.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">
           You aren't a member of any project yet. Ask a project owner or an administrator to add you.
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">

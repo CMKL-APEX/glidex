@@ -181,6 +181,7 @@ impl VmManager {
                 loop {
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     m2.migrate_ovn_settings();
+                    m2.migrate_pci_settings();
                     m2.reconcile_ovn().await;
                 }
             }),
@@ -379,9 +380,14 @@ async fn wait_for_exit(pid: u32, start: u64) {
         if !glidex_vm_shim::util::same_process(pid, start).unwrap_or(false) {
             return;
         }
-        if let Ok(afd) =
-            tokio::io::unix::AsyncFd::with_interest(PidFd(fd), tokio::io::Interest::READABLE)
-        {
+        // SAFETY: `PidFd` owns the descriptor and always returns it, so it
+        // stays open and the same for as long as the `AsyncFd` lives.
+        if let Ok(afd) = unsafe {
+            tokio::io::unix::AsyncFd::register_with_interest(
+                PidFd(fd),
+                tokio::io::Interest::READABLE,
+            )
+        } {
             let _ = afd.readable().await;
             return;
         }

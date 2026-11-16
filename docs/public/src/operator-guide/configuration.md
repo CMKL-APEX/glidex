@@ -97,8 +97,10 @@ sudo systemctl restart glidex-control-plane
 | `authz.policy_files_dir` | path | `"/etc/glidex/policies"` | Directory of read-only site policy files (`*.cedar`). See [Access control](access-control.md#policy-files). |
 | `authz.policy_history` | integer, 1–1000 | `50` | Versions kept of each site policy. |
 | `quotas.default` | object | `{"networks": 2}` | Quotas of new projects, and of the `default` project when it is first created. Keys: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, and `devices` (`{"a100": 2}`: devices per pool). An omitted key is unlimited, except `networks` (2), `routers` (1) and `external_ips` (1); `null` is unlimited. |
-| `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool; `"tenants": ["*"]` on a pool grants it to every admitted tenant ([open pools](host-resources.md#who-may-use-a-pool)). See [PCI passthrough](pci-passthrough.md). |
-| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself (`vcpus` and `memory_mib` required, `hugepages` and `cpu_policy` (`"shared"` or `"dedicated"`) optional, other keys refused). See [Device pools](host-resources.md#device-pools) and [GPU requests](host-resources.md#gpu-requests). |
+| `pci.allow` | array | `[]` | PCI devices projects may pass through without host rights: `{"bdf": "0000:01:00.0", "projects": [...], "tenants": [...], "node": "gpu-01"}` (ids or names; `node` optional: without it, the device at that address on every node), or `{"pool": "a100", ...}` for a pool; `"tenants": ["*"]` on a pool grants it to every admitted tenant ([open pools](host-resources.md#who-may-use-a-pool)). See [PCI passthrough](pci-passthrough.md) and its [pool and grant reference](pci-passthrough.md#pool-and-grant-reference). Read until the cluster setting is written, then ignored ([Device pools](pci-passthrough.md#device-pools)). |
+| `pci.pools` | array | `[]` | Device pools VMs ask for by count: `{"name": "a100", "class": "gpu", "match": {"vendor_id": "0x10de", "device_id": "0x20b0"}, "nodes": [...], "prepare": true}`; `match` takes `vendor_id`, `device_id`, `class_code` and `addresses` (PCI addresses); `prepare` binds the pool's devices to `vfio-pci` when glidex starts; `bar_mib` (MiB, a power of two) is the largest GPU memory window the pool's devices get when a node prepares them for the pool ([Prepare devices](host-resources.md#prepare-devices)); `match.vf_of` (a match of PFs) takes their SR-IOV VFs; `per_device: {"vcpus": 14, "memory_mib": 57344, "hugepages": true, "cpu_policy": "dedicated"}` is what a VM asking `gpus` gets per device unless it sizes itself (`vcpus` and `memory_mib` required, `hugepages` and `cpu_policy` (`"shared"` or `"dedicated"`) optional, other keys refused). See [Device pools](host-resources.md#device-pools), [GPU requests](host-resources.md#gpu-requests) and the [pool and grant reference](pci-passthrough.md#pool-and-grant-reference). Read until the cluster setting is written, then ignored ([Device pools](pci-passthrough.md#device-pools)). |
+| `pci.exclude` | array | `[]` | Devices this host keeps, as pool matches (`{"addresses": ["0000:43:00.0"]}`, `{"vendor_id": "0x1a03"}`): in no pool and never given to a VM here. Per host. |
+| `pci.overrides` | object | `{}` | A pool's `bar_mib` and `prepare` on this host, by pool name: `{"r9700": {"bar_mib": 16384}}`. Per host. |
 | `audit.retention_days` | integer | `90` | Audit log entries older than this are deleted. |
 | `trust.default_max_staleness_minutes` | integer | `60` | How long a trusted directory's sessions and tokens stay good here after its last feed, unless set for that directory (`gxctl admission staleness`); see [Clusters](clusters.md#admitting-another-organizations-tenant). |
 
@@ -107,10 +109,14 @@ up, with one of:
 
 - `pci.pools: pool names must be set and unique (…)`;
 - `pci.pools: pool <name> matches every device; give it a match`;
+- `pci.pools: pool <name>: vf_of matches every PF; give it ids or addresses`;
+- `pci.pools: pool <name>: bar_mib must be a power of two (MiB), as GPU windows are`;
 - `pci.pools: pools <a> and <b> match the same devices`;
 - `pci.allow: no pool <name>`: a grant names an unknown pool;
 - `pci.allow: each grant names one bdf or one pool`;
-- `pci.allow: "tenants": ["*"] (every admitted tenant) goes alone, on a pool`.
+- `pci.allow: "tenants": ["*"] (every admitted tenant) goes alone, on a pool`;
+- `pci.exclude: an entry matches every device; give it a match`;
+- `pci.overrides: <pool>: bar_mib must be a power of two (MiB), as GPU windows are`.
 
 ### `reconcile` and `console`
 
@@ -149,9 +155,9 @@ See [Clusters](clusters.md).
 | `cluster.advertise` | `"addr:port"` | `listen`, with this host's first non-loopback address | Where other nodes reach this one. |
 | `cluster.node_grace_secs` | integer, 5–3600 | `40` | How long a node may be silent before it counts as unreachable. Every node, servers included, reports to the leader every 5 seconds: keep this well above that. |
 | `cluster.shared_local_accounts` | bool | `false` | Treat a local account name as the same person on every node (only if your hosts share one account database). |
-| `cluster.raft.heartbeat_ms` | integer, 50–5000 | `250` | Raft heartbeat. |
-| `cluster.raft.election_ms` | `[min, max]` | `[1000, 2000]` | Raft election timeout; `min` at least 3 heartbeats, `max` above `min`. |
-| `cluster.raft.log_keep_entries` | integer, ≥ 100 | `10000` | Raft log entries kept once every server has applied them. |
+| `cluster.raft.heartbeat_ms` | integer, 50–5000 | `1000` | Raft heartbeat. Each Raft append between servers must arrive within it (at most 4 entries of up to 1 MiB each, 5 MiB in all), so keep it above the slowest link's transfer time for that much. |
+| `cluster.raft.election_ms` | `[min, max]` | `[3000, 6000]` | Raft election timeout; `min` at least 3 heartbeats, `max` above `min`. |
+| `cluster.raft.log_keep_entries` | integer, ≥ 100 | `70000` | Raft log entries kept once every server has applied them: history to trace a change by, about a week with a few VMs (the log takes about 4 KB an entry; more VMs write more entries a day). The log is trimmed to it at every start and as it grows. |
 | `cluster.scheduler.cpu_overcommit` | number, ≥ 1.0 | `4.0` | vCPUs placed per host CPU. |
 | `cluster.scheduler.memory_overcommit` | number, ≥ 1.0 | `1.0` | Guest memory placed per MiB of host memory. |
 | `cluster.node_reserved.cpus` | integer | `1` | CPUs per node kept for the host. |
@@ -212,6 +218,9 @@ keep running.
 | `gateway_check_secs` | integer | `20` | How long a [moved host address](host-networking.md#moving-the-hosts-address-onto-the-bridge) waits for the gateway to answer through the bridge. |
 | `commit_window_secs` | integer | `60` | How long an address move waits for the client's commit before netd rolls it back. |
 | `ovs_bin_dir` | path | unset | Where `ovs-vsctl` and the other OVS tools are, when not on `PATH`. |
+| `source_routes.subnets` | list of CIDRs | `[]` | Subnets where netd gives each port its own routes ([Ports that share a subnet](host-networking.md#ports-that-share-a-subnet)). Empty: netd only reports. |
+| `source_routes.rule_priority` | integer | `1000` | The rules' priority, 1–32765. One of the host's own rules at this priority stops netd. |
+| `source_routes.table_range` | `[from, to]` | `[4200, 4299]` | The routing table numbers netd gives ports. It must stay clear of 253–255. |
 
 ### Example
 
@@ -332,6 +341,7 @@ control plane makes these outbound HTTPS connections:
 | `GLIDEX_HYPERSTOR_VHOST_DIR` | `/run/hyperstor/vhost` | Where this node's `hyperstor-vhost` keeps its sockets. |
 | `GLIDEX_STORD_SOCKET` | `/run/glidex-stord/stord.sock` | `glidex-stord`'s socket, for [LVM-thin datastores](datastores.md#lvm-thin). Leave it for the installed services. |
 | `GLIDEX_OIDC_CLIENT_SECRET_FILE` | unset | File with the OIDC client secret, used when there is no `oidc-client-secret` credential (for a control plane run by hand). |
+| `GLIDEX_RAFT_DURABLE_APPLIES` | unset | Servers of a cluster only. `1` flushes the state database at every Raft entry it applies, as earlier builds did. Unset, a server flushes it at checkpoints instead: every 100 entries or second, at a clean shutdown and when a snapshot is taken. A crash between checkpoints loses nothing, since every entry is in the Raft log first and is applied again at the next start. A copy of the state database taken while a server runs is up to a checkpoint old: back up through the API instead. |
 | `RUST_LOG` | `glidex_control_plane=info,tower_http=info` | Log filter. |
 
 Set them for the service in a drop-in (`sudo systemctl edit

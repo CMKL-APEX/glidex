@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import * as api from "../api";
+import { useAllowed } from "../nodes";
 import { useCan, useSession } from "../session";
 import type { CredentialInfo } from "../types";
 import { tsSecs } from "../types";
@@ -306,6 +307,10 @@ export default function Credentials() {
   const { project } = useSession();
   const [canAdd] = useCan(project ? [{ action: "createCredential", resource: { type: "Project", id: project } }] : []) ?? [];
   const [credentials, setCredentials] = useState<CredentialInfo[] | null>(null);
+  // Edit and Delete on each credential (`project/username`), for those who may.
+  const ref = (c: CredentialInfo) => ({ type: "Credential" as const, id: `${c.project ?? project}/${c.username}` });
+  const may = useAllowed(["updateCredential", "deleteCredential"], (credentials ?? []).map(ref));
+  const can = (c: CredentialInfo, action: string) => !!may?.(ref(c), action);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<CredentialInfo | null>(null);
@@ -364,11 +369,11 @@ export default function Credentials() {
       {credentials === null ? (
         <LoadingCard />
       ) : credentials.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">
           No credentials yet. Add one to choose it when creating a firmware-boot VM.
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-hidden">
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-gray-600 text-left">
               <tr>
@@ -389,18 +394,22 @@ export default function Credentials() {
                     {formatTime(c.updated_at)}
                   </td>
                   <td className="px-4 py-3 text-right space-x-2 whitespace-nowrap">
-                    <button
-                      className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
-                      onClick={() => setEditing(c)}
-                    >
-                      Edit
-                    </button>
-                    <button
-                      className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg"
-                      onClick={() => remove(c.username)}
-                    >
-                      Delete
-                    </button>
+                    {can(c, "updateCredential") && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg"
+                        onClick={() => setEditing(c)}
+                      >
+                        Edit
+                      </button>
+                    )}
+                    {can(c, "deleteCredential") && (
+                      <button
+                        className="px-3 py-1 text-xs font-medium text-red-700 bg-red-50 hover:bg-red-100 rounded-lg"
+                        onClick={() => remove(c.username)}
+                      >
+                        Delete
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}

@@ -247,15 +247,14 @@ impl VmManager {
             .image_caches(&img.id)
             .into_iter()
             .filter(|(n, r)| *n != me && r.phase == CachePhase::Ready)
-            .find_map(|(n, _)| self.nodes().get(&n).ok().flatten()?.status.advertise)
+            .find_map(|(n, _)| {
+                let a = self.nodes().get(&n).ok().flatten()?.status.advertise?;
+                Some(crate::cluster::net::Target::node(n, a))
+            })
             .ok_or("no node has a ready copy to copy from")?;
         let cluster = self.cluster().ok_or("no node has a copy")?;
         let path = format!("/cluster/v1/images/{}/file?part=main", img.id);
-        match cluster
-            .client
-            .get_to_file(&holder.to_string(), &path, tmp)
-            .await
-        {
+        match cluster.client.get_to_file(&holder, &path, tmp).await {
             Ok(200) => Ok(()),
             Ok(code) => Err(format!("{holder} answered {code}")),
             Err(e) => Err(e.to_string()),

@@ -886,6 +886,9 @@ message Datastore {
   // and when its certificate expires (renewed before that, S20).
   string hyperstor_identity = 18 [json_name = "hyperstor_identity"];
   google.protobuf.Timestamp hyperstor_identity_expires = 19 [json_name = "hyperstor_identity_expires"];
+  // `hyperstor`: its management UI (`https://host[:port]`), linked as
+  // "Manage cluster"; empty: none set (spec/24-storage.md S33).
+  string hyperstor_mgmt_url = 20 [json_name = "hyperstor_mgmt_url"];
 }
 
 message ListDatastoresRequest {}
@@ -920,6 +923,8 @@ message CreateDatastoreRequest {
   repeated string hyperstor_api = 10 [json_name = "hyperstor_api"];
   uint32 hyperstor_pool = 11 [json_name = "hyperstor_pool"];
   string hyperstor_token = 12 [json_name = "hyperstor_token"];
+  // `hyperstor`, optional: its management UI's address, `https://host[:port]`.
+  string hyperstor_mgmt_url = 13 [json_name = "hyperstor_mgmt_url"];
 }
 message CreateDatastoreResponse {
   Datastore datastore = 1;
@@ -933,6 +938,8 @@ message UpdateDatastoreRequest {
   optional bool overcommit = 5;
   // REST derives it from the fields present.
   google.protobuf.FieldMask update_mask = 6 [json_name = "update_mask"];
+  // `hyperstor`: its management UI's address; empty clears it.
+  string hyperstor_mgmt_url = 7 [json_name = "hyperstor_mgmt_url"];
 }
 message UpdateDatastoreResponse {
   Datastore datastore = 1;

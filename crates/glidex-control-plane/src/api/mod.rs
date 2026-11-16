@@ -28,6 +28,7 @@ pub mod relay;
 mod rpc;
 mod scim;
 mod storage;
+mod storage_relay;
 mod tenants;
 pub mod trust;
 mod trusted_login;
@@ -74,22 +75,14 @@ pub enum Listener {
     /// A request another server authenticated and forwarded over :8842
     /// (spec/14-clustering.md §6.4); the principal comes from its header.
     Cluster,
-    /// A browser request an agent's UI socket relayed over :8842
-    /// (spec/16-clustering-ui.md §3.6): authenticated here like `Ui`, with the
-    /// Origin already checked by the agent.
-    Relay,
     /// `metad.sock`: glidex-metad, with its own router
     /// (spec/29-workload-identity.md W11).
     Metad,
 }
 
-/// The node that relayed a UI request (`Listener::Relay`).
-#[derive(Debug, Clone)]
-pub struct RelayedBy(pub String);
-
-/// A relayed host-local request meant for this other node's host: the
-/// route's action is authorized here on that node's `Host`, then the
-/// request runs there (spec/16-clustering-ui.md §3.6).
+/// A host-local request meant for this other node's host: the route's
+/// action is authorized here on that node's `Host`, then the request runs
+/// there (spec/28-host-page.md W2).
 #[derive(Debug, Clone)]
 pub struct RemoteHost(pub String);
 
@@ -157,12 +150,18 @@ pub fn create_router(manager: Arc<VmManager>) -> Router {
 pub fn router(app: AppState) -> Router {
     // What a server publishes as its web UI's address until its glidex-ui
     // reports one (spec/28-host-page.md W3); the next self-report writes it.
+    // The address it published before a restart stands meanwhile: glidex-ui
+    // reports the same one again, so a restart writes nothing for it.
     let cfg = &app.auth.config;
-    app.manager.set_ui_url(
-        cfg.cluster
-            .ui_origin()
-            .or_else(|| cfg.auth.allowed_origins.first().cloned()),
-    );
+    app.manager.set_ui_url(cfg.cluster.ui_origin().or_else(|| {
+        app.manager
+            .nodes()
+            .get(&app.manager.local_node_id())
+            .ok()
+            .flatten()
+            .and_then(|n| n.status.ui_url)
+            .or_else(|| cfg.auth.allowed_origins.first().cloned())
+    }));
     let (r, _) = routes(&app);
     r.merge(rpc::routes(&app))
         .layer(from_fn_with_state(app.clone(), gate::cluster_gate))
@@ -653,6 +652,18 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/cluster/settings/ovn",
         "configureOvn",
         axum::routing::put(cluster::put_ovn_settings),
+    )
+    .add(
+        "GET",
+        "/cluster/settings/pci",
+        "readCluster",
+        get(cluster::get_pci_settings),
+    )
+    .add(
+        "PUT",
+        "/cluster/settings/pci",
+        "configurePciPools",
+        axum::routing::put(cluster::put_pci_settings),
     )
     .add(
         "GET",
@@ -1525,6 +1536,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         delete(tenants::opt_out_cluster),
     )
     .add(
+        "POST",
+        "/tenants/{id}/clusters/{cluster}/storage/{*call}",
+        AUTHENTICATED,
+        post(storage_relay::relay),
+    )
+    .add(
         "DELETE",
         "/admissions/offers/{id}",
         "manageAdmissions",
@@ -1812,7 +1829,7 @@ pub(crate) fn client_ip(
     listener: Listener,
 ) -> Option<IpAddr> {
     match listener {
-        Listener::Ui | Listener::Relay => headers
+        Listener::Ui => headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
             .and_then(|v| v.split(',').next())
@@ -1842,8 +1859,8 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
         .and_then(|v| v.to_str().ok())
         .map(String::from);
     if let Some(o) = &origin {
-        // A forwarded or relayed request was checked by the node that took it.
-        if !matches!(listener, Listener::Cluster | Listener::Relay)
+        // A forwarded request was checked by the server that took it.
+        if listener != Listener::Cluster
             && (!safe || websocket)
             && !app.auth.config.auth.origin_allowed(o)
             && !(listener == Listener::Ui
@@ -1886,7 +1903,7 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
             Listener::Metad => {
                 return plain_error(StatusCode::FORBIDDEN, "forbidden", "not on this socket");
             }
-            Listener::Ui | Listener::Tcp | Listener::Relay => {
+            Listener::Ui | Listener::Tcp => {
                 if listener == Listener::Ui && !ui_peer_ok(&app, req.extensions().get::<PeerUid>())
                 {
                     return plain_error(
@@ -2191,6 +2208,37 @@ impl Caller {
     }
 }
 
+impl Caller {
+    /// A caller for what the server does for `p` outside a request of
+    /// theirs (a tenant at sign-in, spec/19-tenancy.md D82): their policies
+    /// apply, and [`Caller::write_audit`] records it like a request.
+    pub fn on_behalf(app: &AppState, p: Principal, action: &'static str, request_id: &str) -> Self {
+        Caller {
+            p,
+            action,
+            app: app.clone(),
+            request_id: request_id.to_string(),
+            audit: AuditSlot::default(),
+            pre: Vec::new(),
+        }
+    }
+
+    /// The audit entry of an [`on_behalf`](Self::on_behalf) caller's
+    /// write; `failure` is its error code.
+    pub fn write_audit(&self, failure: Option<&str>, how: &str) {
+        write_audit(
+            &self.app,
+            Some(&self.p),
+            &self.request_id,
+            self.action,
+            true,
+            &self.audit,
+            failure.map(|c| ("error".to_string(), c.to_string())),
+            ("via", how.to_string()),
+        );
+    }
+}
+
 /// `401 reauth_required` for step-up, else `403`.
 fn deny_response(action: &str, d: &Decision) -> ApiErr {
     if d.denied_by("base.step-up") {
@@ -2434,16 +2482,17 @@ impl Caller {
     /// The project a new resource goes into: the requested one (id or
     /// name), else the caller's default project, else the only project
     /// the caller has a link in.
+    ///
+    /// A project the caller can't see answers as a missing one does
+    /// (spec/19-tenancy.md D24, [`Self::find_project`]).
     pub fn target_project(&self, requested: Option<&str>) -> Result<String, ApiErr> {
-        let projects = self.manager().projects();
-        let resolve = |k: &str| {
-            projects.resolve(k).map(|p| p.id).map_err(|_| {
-                err(
-                    StatusCode::NOT_FOUND,
-                    "not_found",
-                    format!("project {} not found", k),
-                )
-            })
+        let resolve = |k: &str| match self.find_project(k)? {
+            Some(p) => Ok(p.id),
+            None => Err(err(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                format!("project {} not found", k),
+            )),
         };
         if let Some(r) = requested {
             return resolve(r);
@@ -2462,6 +2511,65 @@ impl Caller {
                 "name a project (\"project\" field or ?project=); you have no default project",
             )),
         }
+    }
+
+    /// The project `key` (an id, or a name) among those the caller can
+    /// see: `None` when there is no such project or the caller can't see
+    /// it, so that both answer alike (spec/19-tenancy.md D24). Names are
+    /// unique per tenant only: a name the caller sees several projects
+    /// have is `409 ambiguous`, as for networks.
+    pub fn find_project(&self, key: &str) -> Result<Option<crate::tenancy::Project>, ApiErr> {
+        let projects = self.manager().projects();
+        let store_err = |e: crate::tenancy::TenancyError| {
+            err(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "persistence_error",
+                e.to_string(),
+            )
+        };
+        let candidates = match projects.get(key).map_err(store_err)? {
+            Some(p) => vec![p],
+            None => projects.named(key).map_err(store_err)?,
+        };
+        if candidates.is_empty() {
+            return Ok(None);
+        }
+        let mut linked = None;
+        let mut seen = Vec::new();
+        for p in candidates {
+            if self.sees_project(&p.id, &mut linked)? {
+                seen.push(p);
+            }
+        }
+        if seen.is_empty() {
+            self.audit.0.lock().unwrap().denied = true;
+            return Ok(None);
+        }
+        if seen.len() > 1 {
+            return Err(err(
+                StatusCode::CONFLICT,
+                "ambiguous",
+                format!("several projects you can see are named {key}: give the project's id"),
+            ));
+        }
+        Ok(seen.pop())
+    }
+
+    /// Whether the caller can see project `id`: it may read it, or has a
+    /// link to it, its tenant or the cluster ([`Self::visible_projects`]).
+    fn sees_project(
+        &self,
+        id: &str,
+        linked: &mut Option<auth::LinkedProjects>,
+    ) -> Result<bool, ApiErr> {
+        if self.allowed("readProject", Ent::Project(id.into()), project_entities(id)) {
+            return Ok(true);
+        }
+        let l = match linked {
+            Some(l) => l,
+            None => linked.insert(self.visible_projects()?),
+        };
+        Ok(l.contains(id))
     }
 
     /// Whether the caller may go over `project`'s quotas.

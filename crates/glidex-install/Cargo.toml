@@ -3,6 +3,9 @@ name = "glidex-install"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Installs glidex and its dependencies on a host"
+# Installed by glidex-install, not from crates.io.
+publish = false
 
 [[bin]]
 name = "glidex-install"
@@ -12,9 +15,10 @@ path = "src/main.rs"
 glidex-ovs = { path = "../glidex-ovs" }
 glidex-netd = { path = "../glidex-netd" }
 glidex-tls = { path = "../glidex-tls" }
+glidex-topology = { path = "../glidex-topology" }
 serde_json = { workspace = true }
 anyhow = "1"
 colored = "3"
-dirs = "6"
+dirs = "7"
 libc = "0.2"
 tempfile = "3"

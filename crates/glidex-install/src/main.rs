@@ -20,6 +20,36 @@ const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.
 const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
+/// Pylon release (github.com/CMKL-APEX/pylon/releases), verified against
+/// `PYLON_ASSETS` (the release's SHA256SUMS, and GitHub's digest for the
+/// guest agent, which SHA256SUMS doesn't list). Bump together. Installed
+/// only with `--with-pylon` (spec/30-pylon.md P10, P11, P19).
+const PYLON_VERSION: &str = "v0.0.8-rc4";
+/// Where the guest agent goes: the control plane puts it in Pylon VMs'
+/// seed disks (spec/30-pylon.md P19).
+const PYLON_GUEST_AGENT: &str = "/usr/local/share/glidex/pylon-guest-agent";
+/// Each Pylon release asset, where it is installed, its mode and its
+/// sha256. x86_64 only.
+const PYLON_ASSETS: [(&str, &str, &str, &str); 3] = [
+    (
+        "pylon-x86_64",
+        "/usr/local/bin/pylon",
+        "0755",
+        "3413b2d170173671ec269ea9572b0ba72146e8e0de81d7145e5d620311b4bfbd",
+    ),
+    (
+        "pylond-x86_64",
+        "/usr/local/bin/pylond",
+        "0755",
+        "39cc3949c90100e237c834b2208b1341bb9cf4602bd412dbff823db6c3138e25",
+    ),
+    (
+        "pylon-guest-agent-static",
+        PYLON_GUEST_AGENT,
+        "0644",
+        "25ee38f7780d6020602653aff524fdac9d5e6f08cf3325266285d8915e62064b",
+    ),
+];
 /// rustup-init from `static.rust-lang.org/rustup/archive/<version>/<target>/`,
 /// verified against `rustup_asset` (the `rustup-init.sha256` published next
 /// to it) before it runs. Only used when Rust is missing; after that
@@ -58,7 +88,8 @@ const NETD_UNIT: &str = "/etc/systemd/system/glidex-netd.service";
 const VFIO_BOOT_UNIT: &str = "/etc/systemd/system/glidex-vfio-boot.service";
 /// Loads vfio-pci at boot for it.
 pub(crate) const VFIO_MODULES: &str = "/etc/modules-load.d/glidex-vfio.conf";
-/// Where pools are defined (`pci.pools`).
+/// This host's control-plane config: its `pci.pools` until the cluster
+/// setting is written, and always its `pci.exclude` and `pci.overrides`.
 const CP_CONFIG: &str = "/etc/glidex/control-plane.json";
 const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
@@ -176,7 +207,7 @@ fn main() -> Result<()> {
         ensure_service_user(user.as_deref())?;
     }
     install_cloud_hypervisor(&platform)?;
-    install_pylon(&opts, &mut changed)?;
+    install_pylon(&opts, &platform, &mut changed)?;
     install_binaries(&opts, &user_home, &mut changed)?;
     install_ui_assets()?;
     // Our own home, not SUDO_USER's: a root run mustn't leave root-owned
@@ -584,6 +615,7 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
             sudo(&argv(&[
                 "env",
                 "DEBIAN_FRONTEND=noninteractive",
+                "NEEDRESTART_MODE=l",
                 "apt-get",
                 "install",
                 "-y",
@@ -832,15 +864,19 @@ struct Options {
     /// in, added to stord.json (spec/24-storage.md §11.1). Never saved: the
     /// file keeps them.
     stord_allow_vgs: Vec<String>,
-    /// `--vfio-devices a100,0000:87:00.0`: pools (control-plane.json) or PCI
-    /// addresses bound to vfio-pci at boot (spec/27-gpu-vms.md §10).
+    /// `--vfio-devices a100,0000:87:00.0`: pools (the cluster's setting,
+    /// control-plane.json, or a discovered pool's name) or PCI addresses
+    /// bound to vfio-pci at boot (spec/27-gpu-vms.md §10).
     vfio_devices: Vec<String>,
     /// `--sriov PF=N`: VF counts set at boot, before the binding.
     sriov: Vec<(String, u32)>,
     /// `--now`: apply the boot devices now as well. Never saved.
     vfio_now: bool,
-    /// `--with-pylon`: install Pylon hypervisor and pylond daemon (spec/30-pylon.md §9).
+    /// `--with-pylon`: install the pinned Pylon release (spec/30-pylon.md §9).
     with_pylon: Option<bool>,
+    /// `--pylon-from DIR`: install a local Pylon build instead, this run
+    /// only (P12). Never saved.
+    pylon_from: Option<PathBuf>,
 }
 
 /// `a,b , c` → `[a, b, c]`.
@@ -929,6 +965,7 @@ impl Default for Options {
             sriov: Vec::new(),
             vfio_now: false,
             with_pylon: None,
+            pylon_from: None,
         }
     }
 }
@@ -986,6 +1023,7 @@ impl Options {
                 "--tailscale-cert" => o.tailscale_cert = Some(true),
                 "--with-pylon" | "--pylon" => o.with_pylon = Some(true),
                 "--no-pylon" => o.with_pylon = Some(false),
+                "--pylon-from" => o.pylon_from = Some(PathBuf::from(value("--pylon-from")?)),
                 "--datastore" => o
                     .datastores
                     .push(DatastoreReg::parse(&value("--datastore")?, true)?),
@@ -1150,8 +1188,12 @@ fn print_help() {
          \x20                            profile reserved (kept by default)\n\
          \x20     --no-ovn               skip OVN (cluster networks need it; default: installed,\n\
          \x20                            its services off until the host is in a cluster)\n\
-         \x20     --with-pylon           install Pylon hypervisor and pylond daemon (spec/30-pylon.md)\n\
-         \x20     --no-pylon             skip Pylon hypervisor and pylond\n\
+         \x20     --with-pylon           install the Pylon hypervisor and pylond, release {PYLON_VERSION}\n\
+         \x20                            (x86_64; checksums verified; spec/30-pylon.md)\n\
+         \x20     --no-pylon             stop installing and updating them (--remove-pylon on\n\
+         \x20                            uninstall deletes them)\n\
+         \x20     --pylon-from DIR       this run only: install DIR/pylon (or DIR/cloud-hypervisor)\n\
+         \x20                            and DIR/pylond, a local Pylon build, instead\n\
          \x20     --qemu, --networking, --services   undo an earlier --no-*\n\
          \x20     --tailscale-cert       serve the web UI with this node's Tailscale certificate\n\
          \x20                            (lets glidex-ui fetch it from tailscaled; its ts.net\n\
@@ -1166,7 +1208,9 @@ fn print_help() {
          \x20                            (added to /etc/glidex/stord.json; the VG and its thin\n\
          \x20                            pool are yours to make: spec/24-storage.md §11.1)\n\
          \x20     --vfio-devices LIST    bind these to vfio-pci at every boot, before any VM starts:\n\
-         \x20                            pools of control-plane.json or PCI addresses, comma-separated\n\
+         \x20                            pools (the cluster's, this host's control-plane.json, or a\n\
+         \x20                            discovered one: amd-7551) or PCI addresses, comma-separated;\n\
+         \x20                            never what pci.exclude keeps\n\
          \x20     --sriov PF=N           give physical function PF N SR-IOV VFs at every boot\n\
          \x20     --no-vfio-devices      stop doing both at boot\n\
          \x20     --now                  also apply them now (never touches a device on vfio-pci)\n\
@@ -1229,6 +1273,14 @@ fn print_plan(opts: &Options) {
         ADMIN_GROUP,
         on(opts.services)
     );
+    match &opts.pylon_from {
+        Some(dir) => println!("  - Pylon and pylond from {}", dir.display()),
+        None => println!(
+            "  - Pylon {} and pylond (checksums verified): {}",
+            PYLON_VERSION,
+            on(opts.with_pylon == Some(true))
+        ),
+    }
     if opts.services {
         println!(
             "  - web UI with this node's Tailscale certificate: {}",
@@ -1581,6 +1633,35 @@ const BASE_DEPS: &[Dep] = &[
     ),
 ];
 
+/// The libraries the Pylon release's `pylond` links (libbpf, for
+/// `scx_pylon`); the VMM needs only glibc.
+const PYLON_DEPS: &[Dep] = &[
+    dep(
+        Probe::AnyFile(&[
+            "/usr/lib/x86_64-linux-gnu/libelf.so.1",
+            "/usr/lib64/libelf.so.1",
+            "/usr/lib/libelf.so.1",
+        ]),
+        ["libelf1t64", "elfutils-libelf", "libelf"],
+    ),
+    dep(
+        Probe::AnyFile(&[
+            "/usr/lib/x86_64-linux-gnu/libz.so.1",
+            "/usr/lib64/libz.so.1",
+            "/usr/lib/libz.so.1",
+        ]),
+        ["zlib1g", "zlib", "zlib"],
+    ),
+    dep(
+        Probe::AnyFile(&[
+            "/usr/lib/x86_64-linux-gnu/libzstd.so.1",
+            "/usr/lib64/libzstd.so.1",
+            "/usr/lib/libzstd.so.1",
+        ]),
+        ["libzstd1", "libzstd", "zstd"],
+    ),
+];
+
 /// Where distributions put OVMF (kept in step with the control plane's
 /// `hypervisor::qemu::OVMF_CODE_CANDIDATES`).
 const OVMF_CODE_PATHS: &[&str] = &[
@@ -1669,6 +1750,9 @@ fn wanted_deps(opts: &Options, platform: &Platform, role: Option<&str>) -> Vec<D
     }
     if opts.networking {
         deps.extend_from_slice(NETWORKING_DEPS);
+    }
+    if (opts.with_pylon == Some(true) || opts.pylon_from.is_some()) && platform.arch == "x86_64" {
+        deps.extend_from_slice(PYLON_DEPS);
     }
     deps
 }
@@ -1789,12 +1873,16 @@ fn package_commands(manager: &str, missing: &[&str], update: &[&str]) -> Vec<Vec
         return vec![];
     }
     match manager {
+        // needrestart, from its apt hook, would otherwise restart every
+        // service using an upgraded library: Open vSwitch, OVN's databases
+        // and the units of running VMs (a QEMU VM was stopped this way).
         "apt-get" => vec![
             argv(&["apt-get", "update"]),
             with(
                 &[
                     "env",
                     "DEBIAN_FRONTEND=noninteractive",
+                    "NEEDRESTART_MODE=l",
                     "apt-get",
                     "install",
                     "-y",
@@ -2199,81 +2287,117 @@ fn warn_shadowed(name: &str, ours: &str) {
     }
 }
 
-fn find_pylon_source() -> Option<PathBuf> {
-    let release = target_dir().join("release");
-    let in_release = release.join("pylon");
-    if in_release.exists() {
-        return Some(in_release);
+/// The pinned Pylon release with `--with-pylon`, or a local build with
+/// `--pylon-from` (spec/30-pylon.md P10–P12). Each binary is replaced only
+/// when its sha256 differs; a new `pylond` restarts glidex-pylond, and a
+/// new `pylon` applies to VMs launched afterwards.
+fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> Result<()> {
+    if let Some(dir) = &opts.pylon_from {
+        section("Pylon & pylond (local build)");
+        return install_pylon_from(dir, changed);
     }
-    if let Some(parent) = workspace_root().parent() {
-        let pylon_target = parent.join("pylon/target/release");
-        let pylon_bin = pylon_target.join("pylon");
-        if pylon_bin.exists() {
-            return Some(pylon_bin);
+    if opts.with_pylon != Some(true) {
+        // Installed before P11 by picking up a local build, which no longer
+        // happens by itself.
+        if opts.with_pylon.is_none() && Path::new(&format!("{}/pylon", BIN_DIR)).exists() {
+            println!(
+                "{} {}/pylon is left as it is; --with-pylon keeps it at Pylon {}.",
+                "Note:".yellow(),
+                BIN_DIR,
+                PYLON_VERSION
+            );
         }
-        let ch_bin = pylon_target.join("cloud-hypervisor");
-        if ch_bin.exists() {
-            return Some(ch_bin);
-        }
-    }
-    None
-}
-
-fn find_pylond_source() -> Option<PathBuf> {
-    let release = target_dir().join("release");
-    let in_release = release.join("pylond");
-    if in_release.exists() {
-        return Some(in_release);
-    }
-    if let Some(parent) = workspace_root().parent() {
-        let pylond_bin = parent.join("pylon/target/release/pylond");
-        if pylond_bin.exists() {
-            return Some(pylond_bin);
-        }
-    }
-    None
-}
-
-/// Installs Pylon hypervisor and pylond daemon when requested or present
-/// in the local build / release bundle (spec/30-pylon.md §9).
-fn install_pylon(opts: &Options, changed: &mut Changes) -> Result<()> {
-    let pylon_src = find_pylon_source();
-    let pylond_src = find_pylond_source();
-    let want = match opts.with_pylon {
-        Some(true) => true,
-        Some(false) => false,
-        None => pylon_src.is_some() || pylond_src.is_some(),
-    };
-    if !want {
         return Ok(());
     }
     section("Pylon & pylond");
-    if let Some(src) = pylon_src {
-        let dst = format!("{}/pylon", BIN_DIR);
-        if install_if_changed(&src, &dst, "0755")? {
-            println!("{} {}", "Updated:".green(), dst);
-        } else {
-            println!("{} {}", "Up to date:".green(), dst);
-        }
-        let has_cap = run_capture("getcap", &[&dst]).is_ok_and(|o| o.contains("cap_net_admin"));
-        if !has_cap {
-            sudo(&argv(&["setcap", "cap_net_admin+ep", &dst]))?;
-            println!("{} cap_net_admin on {}", "Granted:".green(), dst);
-        }
-    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylon", BIN_DIR)).exists() {
-        bail!("--with-pylon: pylon binary not found in target/release or adjacent pylon repo");
+    if platform.arch != "x86_64" {
+        bail!(
+            "--with-pylon: Pylon {} is released for x86_64 only; on {} build it and use --pylon-from DIR",
+            PYLON_VERSION,
+            platform.arch
+        );
     }
-
-    if let Some(src) = pylond_src {
-        let dst = format!("{}/pylond", BIN_DIR);
-        if install_if_changed(&src, &dst, "0755")? {
-            println!("{} {}", "Updated:".green(), dst);
+    let tmp = TempDir::new()?;
+    for (asset, dst, mode, sha256) in PYLON_ASSETS {
+        if file_sha256(Path::new(dst)).ok().as_deref() == Some(sha256) {
+            println!("{} {} ({})", "Up to date:".green(), dst, PYLON_VERSION);
+            continue;
+        }
+        let url = format!(
+            "https://github.com/CMKL-APEX/pylon/releases/download/{}/{}",
+            PYLON_VERSION, asset
+        );
+        let download_path = tmp.path().join(asset);
+        download_verified(&url, &download_path, sha256)?;
+        install_if_changed(&download_path, dst, mode)?;
+        println!("{} {} ({})", "Installed:".green(), dst, PYLON_VERSION);
+        if dst.ends_with("/pylond") {
             changed.pylond = true;
+        }
+    }
+    grant_pylon_net_admin()
+}
+
+/// `--pylon-from DIR`: a local build, this run only. Its version is printed
+/// so the run's output says what went on the host.
+fn install_pylon_from(dir: &Path, changed: &mut Changes) -> Result<()> {
+    let vmm = ["pylon", "cloud-hypervisor"]
+        .iter()
+        .map(|n| dir.join(n))
+        .find(|p| p.is_file())
+        .with_context(|| {
+            format!(
+                "--pylon-from: neither pylon nor cloud-hypervisor in {}",
+                dir.display()
+            )
+        })?;
+    let pylond = dir.join("pylond");
+    if !pylond.is_file() {
+        bail!("--pylon-from: no pylond in {}", dir.display());
+    }
+    for (src, name) in [(&vmm, "pylon"), (&pylond, "pylond")] {
+        let version = run_capture(&src.to_string_lossy(), &["--version"])
+            .with_context(|| format!("{} --version failed", src.display()))?;
+        let version = version.trim();
+        println!("{} {} ({})", "Local build:".cyan(), version, src.display());
+        if pylon_build_is_dirty(version) {
+            println!(
+                "{} {} was built with uncommitted changes.",
+                "Warning:".yellow(),
+                src.display()
+            );
+        }
+        let dst = format!("{}/{}", BIN_DIR, name);
+        if install_if_changed(src, &dst, "0755")? {
+            println!("{} {}", "Installed:".green(), dst);
+            if name == "pylond" {
+                changed.pylond = true;
+            }
         } else {
             println!("{} {}", "Up to date:".green(), dst);
         }
-    } else if opts.with_pylon == Some(true) && !Path::new(&format!("{}/pylond", BIN_DIR)).exists() {
-        bail!("--with-pylon: pylond binary not found in target/release or adjacent pylon repo");
+    }
+    println!(
+        "{} the next run without --pylon-from installs Pylon {} again (with --with-pylon).",
+        "Note:".yellow(),
+        PYLON_VERSION
+    );
+    grant_pylon_net_admin()
+}
+
+/// `cloud-hypervisor v55.0.0-123-gabcdef-dirty` (`git describe --dirty`).
+fn pylon_build_is_dirty(version: &str) -> bool {
+    version.ends_with("-dirty")
+}
+
+/// Tap devices inside non-root glidex-vm@ units, as for cloud-hypervisor.
+/// Replacing the file drops the capability, so it is checked every run.
+fn grant_pylon_net_admin() -> Result<()> {
+    let dst = format!("{}/pylon", BIN_DIR);
+    let has_cap = run_capture("getcap", &[&dst]).is_ok_and(|o| o.contains("cap_net_admin"));
+    if !has_cap {
+        sudo(&argv(&["setcap", "cap_net_admin+ep", &dst]))?;
+        println!("{} cap_net_admin on {}", "Granted:".green(), dst);
     }
     Ok(())
 }
@@ -2407,6 +2531,8 @@ fn build_args(opts: &Options) -> Vec<&'static str> {
         "--release",
         "-p",
         "glidex-control-plane",
+        "-p",
+        "gxctl",
         "-p",
         "glidex-netd",
         "-p",
@@ -2820,16 +2946,31 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
 // --- Boot devices (spec/27-gpu-vms.md §10) ---
 
 /// The boot settings for `--vfio-devices` and `--sriov`: addresses as they
-/// are, pools as their `match` in control-plane.json. `None`: nothing set.
+/// are, pools as their `match` (spec/22-host-topology.md §9.1b). A pool is
+/// looked up in the cluster's setting (`cluster`, from the running control
+/// plane), else in this host's file, else read as a discovered pool's name
+/// (`amd-7551`, or `15b3-1021-vf` for the VFs of a card). The host's `pci.overrides` set its `bar_mib`, and its
+/// `pci.exclude` is never bound. `None`: nothing set.
 fn boot_devices_config(
     devices: &[String],
     sriov: &[(String, u32)],
     cp_config: Option<&str>,
+    cluster: Option<&serde_json::Value>,
 ) -> Result<Option<glidex_ovs::boot_devices::BootDevices>> {
     use glidex_ovs::boot_devices::{BootDevices, Selector, SriovSetting};
     if devices.is_empty() && sriov.is_empty() {
         return Ok(None);
     }
+    let cp: serde_json::Value = match cp_config {
+        Some(t) => serde_json::from_str(t).with_context(|| format!("{CP_CONFIG}: not JSON"))?,
+        None => serde_json::Value::Null,
+    };
+    let named = |pools: &serde_json::Value, d: &str| {
+        pools
+            .as_array()
+            .and_then(|ps| ps.iter().find(|p| p["name"] == d))
+            .cloned()
+    };
     let mut addresses = Vec::new();
     let mut select = Vec::new();
     for d in devices {
@@ -2837,20 +2978,29 @@ fn boot_devices_config(
             addresses.push(d.to_ascii_lowercase());
             continue;
         }
-        let cp: serde_json::Value = match cp_config {
-            Some(t) => serde_json::from_str(t).with_context(|| format!("{CP_CONFIG}: not JSON"))?,
-            None => bail!(
-                "--vfio-devices {d}: no {CP_CONFIG} to find pool {d} in; name PCI addresses (0000:87:00.0) instead"
-            ),
-        };
-        let pool = cp["pci"]["pools"]
-            .as_array()
-            .and_then(|ps| ps.iter().find(|p| p["name"] == d.as_str()))
+        let pool = cluster
+            .and_then(|c| named(&c["settings"]["pools"], d))
+            .or_else(|| named(&cp["pci"]["pools"], d))
+            .or_else(|| {
+                glidex_topology::pci::pool_slug_ids(d).map(|(v, dev)| {
+                    serde_json::json!({ "name": d, "match": { "vendor_id": v, "device_id": dev } })
+                })
+            })
+            .or_else(|| {
+                glidex_topology::pci::pool_vf_slug_ids(d).map(|(v, dev)| {
+                    serde_json::json!({ "name": d, "match": { "vf_of": { "vendor_id": v, "device_id": dev } } })
+                })
+            })
             .with_context(|| {
-                format!("--vfio-devices {d}: not a PCI address, and {CP_CONFIG} has no pool {d}")
+                format!(
+                    "--vfio-devices {d}: not a PCI address, a pool of the cluster or {CP_CONFIG}, or a discovered pool's name"
+                )
             })?;
-        let m: Selector = serde_json::from_value(pool["match"].clone())
+        let mut m: Selector = serde_json::from_value(pool["match"].clone())
             .with_context(|| format!("pool {d}: its match isn't one glidex-netd can apply"))?;
+        m.bar_mib = cp["pci"]["overrides"][d.as_str()]["bar_mib"]
+            .as_u64()
+            .or(pool["bar_mib"].as_u64());
         select.push(m);
     }
     if !addresses.is_empty() {
@@ -2859,6 +3009,11 @@ fn boot_devices_config(
             ..Default::default()
         });
     }
+    let exclude: Vec<Selector> = match &cp["pci"]["exclude"] {
+        serde_json::Value::Null => Vec::new(),
+        e => serde_json::from_value(e.clone())
+            .with_context(|| format!("{CP_CONFIG}: pci.exclude isn't a list of matches"))?,
+    };
     Ok(Some(BootDevices {
         sriov: sriov
             .iter()
@@ -2868,16 +3023,40 @@ fn boot_devices_config(
             })
             .collect(),
         select,
+        exclude,
     }))
+}
+
+/// The cluster's device pools as the running control plane has them
+/// (`gxctl pci settings`), or `None` when it can't say (not running yet).
+fn cluster_pci_settings() -> Option<serde_json::Value> {
+    let out = Command::new(format!("{}/gxctl", BIN_DIR))
+        .args(["pci", "settings"])
+        .output()
+        .ok()?;
+    serde_json::from_slice(&out.stdout).ok()
 }
 
 /// Write the boot settings and enable the unit that applies them, or take
 /// them away. Nothing is changed on the host now unless `--now`: the
 /// settings apply at the next boot, before any VM starts.
 fn setup_boot_devices(opts: &Options) -> Result<()> {
-    use glidex_ovs::boot_devices::{Action, BOOT_DEVICES_FILE, plan_devices};
+    use glidex_ovs::boot_devices::{
+        Action, BOOT_DEVICES_FILE, CLAIM_MODPROBE_FILE, CLAIM_UDEV_FILE, plan_devices,
+    };
     let cp = fs::read_to_string(CP_CONFIG).ok();
-    let Some(cfg) = boot_devices_config(&opts.vfio_devices, &opts.sriov, cp.as_deref())? else {
+    let cluster = if opts.vfio_devices.is_empty() {
+        None
+    } else {
+        cluster_pci_settings()
+    };
+    let Some(cfg) = boot_devices_config(
+        &opts.vfio_devices,
+        &opts.sriov,
+        cp.as_deref(),
+        cluster.as_ref(),
+    )?
+    else {
         if Path::new(BOOT_DEVICES_FILE).exists() || Path::new(VFIO_BOOT_UNIT).exists() {
             if unit_enabled("glidex-vfio-boot.service") {
                 sudo(&argv(&["systemctl", "disable", "glidex-vfio-boot.service"]))?;
@@ -2888,6 +3067,8 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
                 BOOT_DEVICES_FILE,
                 VFIO_BOOT_UNIT,
                 VFIO_MODULES,
+                CLAIM_MODPROBE_FILE,
+                CLAIM_UDEV_FILE,
             ]))?;
             sudo(&argv(&["systemctl", "daemon-reload"]))?;
             println!(
@@ -2919,12 +3100,43 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
         println!("  SR-IOV: {pf} gets {n} VFs");
     }
     let exec = glidex_ovs::SystemExec::new();
+    // Claimed before their host drivers load, so the boot unit never races
+    // one (G20).
+    let claim = claim_files(&exec, &cfg);
+    for (path, text) in [
+        (CLAIM_MODPROBE_FILE, claim.modprobe.as_deref()),
+        (CLAIM_UDEV_FILE, Some(claim.udev.as_str())),
+    ] {
+        match text {
+            Some(t) if fs::read_to_string(path).ok().as_deref() != Some(t) => {
+                sudo_write(path, t)?;
+                println!("{} {}", "Updated:".green(), path);
+            }
+            None if Path::new(path).exists() => sudo(&argv(&["rm", "-f", path]))?,
+            _ => {}
+        }
+    }
+    for d in &claim.drivers {
+        println!("  claimed before {d} loads");
+        if driver_in_initramfs(d) {
+            println!(
+                "  {} {d} is in the initramfs, where the claim doesn't run: \
+                 a device it binds there is unbound by the boot unit instead",
+                "Note:".yellow()
+            );
+        }
+    }
     for (address, action) in plan_devices(&exec, &cfg) {
         match action {
-            Action::AlreadyVfio => println!("  {address}: on vfio-pci already (left as it is)"),
-            Action::Bind { from } => println!(
-                "  {address}: bound to vfio-pci (now on {})",
-                from.as_deref().unwrap_or("no driver")
+            Action::AlreadyVfio => {
+                println!("  {address}: on vfio-pci already (left as it is until the next boot)")
+            }
+            Action::Bind { from, bar_mib } => println!(
+                "  {address}: goes to vfio-pci (now on {}){}",
+                from.as_deref().unwrap_or("no driver"),
+                bar_mib
+                    .map(|m| format!(", GPU windows at most {m} MiB"))
+                    .unwrap_or_default()
             ),
         }
     }
@@ -2942,6 +3154,50 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// What claims the boot devices before their host drivers load (G20).
+struct ClaimFiles {
+    /// The host drivers they are claimed from.
+    drivers: Vec<String>,
+    /// `/etc/modprobe.d/glidex-vfio.conf`; `None` with no driver to hook.
+    modprobe: Option<String>,
+    /// The udev rule for devices added later.
+    udev: String,
+}
+
+fn claim_files(
+    exec: &dyn glidex_ovs::Exec,
+    cfg: &glidex_ovs::boot_devices::BootDevices,
+) -> ClaimFiles {
+    use glidex_ovs::boot_devices::{claim_drivers, claim_modprobe_conf, claim_udev_rules};
+    let drivers = claim_drivers(exec, cfg);
+    let modprobe = (!drivers.is_empty())
+        .then(|| claim_modprobe_conf(&drivers, &format!("{BIN_DIR}/glidex-netd")));
+    ClaimFiles {
+        drivers,
+        modprobe,
+        udev: claim_udev_rules(cfg),
+    }
+}
+
+/// Whether the running kernel's initramfs carries `driver`'s module, which
+/// loads before the claim's hook exists. Unknown counts as no.
+fn driver_in_initramfs(driver: &str) -> bool {
+    let Ok(release) = fs::read_to_string("/proc/sys/kernel/osrelease") else {
+        return false;
+    };
+    let image = format!("/boot/initrd.img-{}", release.trim());
+    let Ok(out) = Command::new("lsinitramfs").arg(&image).output() else {
+        return false;
+    };
+    let module = driver.replace('-', "_");
+    String::from_utf8_lossy(&out.stdout).lines().any(|l| {
+        let name = l.rsplit('/').next().unwrap_or("");
+        name.split(".ko")
+            .next()
+            .is_some_and(|n| n != name && n.replace('-', "_") == module)
+    })
 }
 
 // --- Networking ---
@@ -3016,6 +3272,12 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
     configure_host(profile, opts, ovs_ok, &exec, &probe)?;
 
     // 3. glidex-netd (root: it is the privileged helper the rest use).
+    // Its routing protocol's name, so `ip rule` shows `glidex` (spec §8.6.3).
+    let protos = glidex_ovs::srcroute::RT_PROTOS_FILE;
+    sudo(&argv(&["mkdir", "-p", "/etc/iproute2/rt_protos.d"]))?;
+    if write_if_changed(protos, &glidex_ovs::srcroute::rt_protos_conf())? {
+        println!("{} {}", "Updated:".green(), protos);
+    }
     let netd_unit = workspace_root().join("packaging/glidex-netd.service");
     let unit_changed = install_if_changed(&netd_unit, NETD_UNIT, "0644")?;
     if unit_changed {
@@ -4124,11 +4386,11 @@ mod tests {
     #[test]
     fn boot_devices_take_pools_as_their_match_and_addresses_as_they_are() {
         let cp = r#"{"pci":{"pools":[
-            {"name":"a100","match":{"vendor_id":"0x10de","device_id":"0x20b0"}},
+            {"name":"a100","match":{"vendor_id":"0x10de","device_id":"0x20b0"},"bar_mib":16384},
             {"name":"cx7-vfs","match":{"vf_of":{"vendor_id":"0x15b3","device_id":"0xa2dc"}},"prepare":true}
         ]}}"#;
         assert_eq!(
-            boot_devices_config(&[], &[], Some(cp)).unwrap(),
+            boot_devices_config(&[], &[], Some(cp), None).unwrap(),
             None,
             "nothing set"
         );
@@ -4141,31 +4403,152 @@ mod tests {
             ],
             &[("0000:61:00.0".into(), 8)],
             Some(cp),
+            None,
         )
         .unwrap()
         .unwrap();
         assert_eq!(c.select.len(), 3, "{c:?}");
         assert_eq!(c.select[0].device_id.as_deref(), Some("0x20b0"));
+        assert_eq!(
+            c.select[0].bar_mib,
+            Some(16384),
+            "the pool's window size beside its match"
+        );
         assert!(c.select[1].vf_of.is_some());
+        assert_eq!(c.select[1].bar_mib, None);
         assert_eq!(c.select[2].addresses, ["0000:87:00.0", "0000:90:00.0"]);
         assert_eq!(
             (c.sriov[0].pf.as_str(), c.sriov[0].vfs),
             ("0000:61:00.0", 8)
         );
-        let e = boot_devices_config(&["h100".into()], &[], Some(cp))
+        let e = boot_devices_config(&["h100".into()], &[], Some(cp), None)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("no pool h100"), "{e}");
-        let e = boot_devices_config(&["a100".into()], &[], None)
+        assert!(e.contains("a pool of the cluster"), "{e}");
+        let e = boot_devices_config(&["a100".into()], &[], None, None)
             .unwrap_err()
             .to_string();
-        assert!(e.contains("PCI addresses"), "{e}");
+        assert!(e.contains("not a PCI address"), "{e}");
         // Addresses need no control-plane.json.
         assert!(
-            boot_devices_config(&["0000:87:00.0".into()], &[], None)
+            boot_devices_config(&["0000:87:00.0".into()], &[], None, None)
                 .unwrap()
                 .is_some()
         );
+    }
+
+    /// spec/22-host-topology.md §9.1b, H23: a pool comes from the cluster's
+    /// setting before this host's file, or from a discovered pool's name;
+    /// the host's overrides size it and its excludes are never bound.
+    #[test]
+    fn boot_pools_come_from_the_cluster_then_the_file_then_discovery() {
+        let cp = r#"{"pci":{
+            "pools":[{"name":"r9700","match":{"vendor_id":"0x1002","device_id":"0x7550"}}],
+            "exclude":[{"addresses":["0000:43:00.0"]}],
+            "overrides":{"r9700":{"bar_mib":8192}}
+        }}"#;
+        let cluster = serde_json::json!({ "source": "PCI_SETTINGS_SOURCE_CLUSTER",
+            "settings": { "pools": [{ "name": "r9700", "bar_mib": 16384,
+                "match": { "vendor_id": "0x1002", "device_id": "0x7551" } }] } });
+        let c = boot_devices_config(&["r9700".into()], &[], Some(cp), Some(&cluster))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            c.select[0].device_id.as_deref(),
+            Some("0x7551"),
+            "the cluster's"
+        );
+        assert_eq!(c.select[0].bar_mib, Some(8192), "the host's override");
+        assert_eq!(c.exclude[0].addresses, ["0000:43:00.0"]);
+        // Without the cluster (a fresh install): the file's.
+        let c = boot_devices_config(&["r9700".into()], &[], Some(cp), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(c.select[0].device_id.as_deref(), Some("0x7550"));
+        // A discovered pool's name stands for its model.
+        let c = boot_devices_config(&["amd-7551".into()], &[], None, None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            (
+                c.select[0].vendor_id.as_deref(),
+                c.select[0].device_id.as_deref()
+            ),
+            (Some("0x1002"), Some("0x7551"))
+        );
+        // A discovered VF pool's, for the VFs of its PF's model.
+        let c = boot_devices_config(&["15b3-1021-vf".into()], &[], None, None)
+            .unwrap()
+            .unwrap();
+        assert!(c.select[0].vendor_id.is_none());
+        let of = c.select[0].vf_of.as_deref().unwrap();
+        assert_eq!(
+            (of.vendor_id.as_deref(), of.device_id.as_deref()),
+            (Some("0x15b3"), Some("0x1021"))
+        );
+    }
+
+    #[test]
+    fn the_claim_hooks_the_host_drivers_of_what_is_selected() {
+        use glidex_ovs::exec::{Output, RecordingExec};
+        // gpu-dev2: one R9700 on amdgpu, one already on vfio-pci (its
+        // modalias says amdgpu), and a ConnectX VF a pool takes by vf_of.
+        let exec = RecordingExec::new();
+        for (bdf, vendor, device, driver) in [
+            ("0000:03:00.0", "0x1002", "0x7551", "amdgpu"),
+            ("0000:43:00.0", "0x1002", "0x7551", "vfio-pci"),
+            ("0000:61:00.2", "0x15b3", "0x101e", "mlx5_core"),
+        ] {
+            let d = format!("/sys/bus/pci/devices/{bdf}");
+            exec.file(&d, "");
+            exec.file(&format!("{d}/vendor"), vendor);
+            exec.file(&format!("{d}/device"), device);
+            exec.file(&format!("{d}/modalias"), &format!("pci:{bdf}\n"));
+            exec.link(&format!("{d}/driver"), driver);
+        }
+        exec.link("/sys/bus/pci/devices/0000:61:00.2/physfn", "0000:61:00.0");
+        exec.on(
+            "modprobe -R pci:0000:43:00.0",
+            Output::ok("vfio_pci\namdgpu\n"),
+        );
+        let cp = r#"{"pci":{"pools":[
+            {"name":"r9700","match":{"vendor_id":"0x1002","device_id":"0x7551"},"bar_mib":16384},
+            {"name":"cx7-vfs","match":{"vf_of":{"vendor_id":"0x15b3"}}}
+        ]}}"#;
+        let cfg = boot_devices_config(
+            &["r9700".into(), "cx7-vfs".into(), "0000:09:00.0".into()],
+            &[],
+            Some(cp),
+            None,
+        )
+        .unwrap()
+        .unwrap();
+        let f = claim_files(&exec, &cfg);
+        assert_eq!(f.drivers, ["amdgpu"], "once, and no hook for the VFs");
+        let modprobe = f.modprobe.unwrap();
+        assert!(
+            modprobe.contains(
+                "install amdgpu /usr/local/bin/glidex-netd --claim-boot-devices; \
+                 /sbin/modprobe --ignore-install amdgpu $CMDLINE_OPTS\n"
+            ),
+            "{modprobe}"
+        );
+        assert!(!modprobe.contains("install vfio"), "{modprobe}");
+        assert_eq!(
+            f.udev
+                .lines()
+                .filter(|l| !l.starts_with('#'))
+                .collect::<Vec<_>>(),
+            [
+                r#"ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x1002", ATTR{device}=="0x7551", ATTR{driver_override}="vfio-pci""#,
+                r#"ACTION=="add", SUBSYSTEM=="pci", KERNEL=="0000:09:00.0", ATTR{driver_override}="vfio-pci""#,
+            ]
+        );
+        // Only VFs: nothing to hook before.
+        let vfs = boot_devices_config(&["cx7-vfs".into()], &[], Some(cp), None)
+            .unwrap()
+            .unwrap();
+        assert_eq!(claim_files(&exec, &vfs).modprobe, None);
     }
 
     /// `--release-hugepages` is a one-time kernel-profile action: refused
@@ -4282,9 +4665,79 @@ mod tests {
             "a 'no' is remembered too"
         );
 
+        // A local Pylon build is for this run only.
+        let from = Options::parse(
+            Some(&pylon_on.render()),
+            &args(&["--pylon-from", "/src/pylon/target/release"]),
+        )
+        .unwrap();
+        assert_eq!(
+            from.pylon_from.as_deref(),
+            Some(Path::new("/src/pylon/target/release"))
+        );
+        assert!(!from.render().contains("pylon_from"));
+        assert!(Options::parse(None, &args(&["--pylon-from"])).is_err());
+
         assert!(Options::parse(None, &args(&["--bogus"])).is_err());
         assert!(Options::parse(None, &args(&["--ovs-profile", "fast"])).is_err());
         assert!(Options::parse(None, &args(&["--ovs-profile"])).is_err());
+    }
+
+    #[test]
+    fn pylon_libraries_only_with_pylon_on_x86_64() {
+        let x86 = Platform {
+            os: "linux",
+            arch: "x86_64",
+        };
+        let has_libelf = |deps: &[Dep]| deps.iter().any(|d| d.packages[0] == "libelf1t64");
+        let none = Options::default();
+        assert!(!has_libelf(&wanted_deps(&none, &x86, None)));
+        let on = Options::parse(None, &args(&["--with-pylon"])).unwrap();
+        let apt: Vec<_> = wanted_deps(&on, &x86, None)
+            .iter()
+            .filter(|d| PYLON_DEPS.iter().any(|p| p.packages == d.packages))
+            .map(|d| d.packages[0])
+            .collect();
+        assert_eq!(apt, ["libelf1t64", "zlib1g", "libzstd1"]);
+        let from = Options::parse(None, &args(&["--pylon-from", "/tmp/p"])).unwrap();
+        assert!(has_libelf(&wanted_deps(&from, &x86, None)));
+        let arm = Platform {
+            os: "linux",
+            arch: "aarch64",
+        };
+        assert!(!has_libelf(&wanted_deps(&on, &arm, None)));
+    }
+
+    #[test]
+    fn pylon_assets_are_pinned() {
+        assert!(PYLON_VERSION.starts_with('v'));
+        let dests: Vec<_> = PYLON_ASSETS.iter().map(|(_, d, _, _)| *d).collect();
+        assert_eq!(
+            dests,
+            [
+                "/usr/local/bin/pylon",
+                "/usr/local/bin/pylond",
+                "/usr/local/share/glidex/pylon-guest-agent"
+            ]
+        );
+        for (asset, dst, mode, sha256) in PYLON_ASSETS {
+            // The x86_64 host binaries, and the static (musl) x86_64 agent.
+            assert!(
+                asset.ends_with("-x86_64") || asset == "pylon-guest-agent-static",
+                "{asset}"
+            );
+            // The agent is read, not run, on the host.
+            assert_eq!(mode == "0644", dst == PYLON_GUEST_AGENT, "{dst}");
+            assert!(
+                sha256.len() == 64 && sha256.bytes().all(|b| b.is_ascii_hexdigit()),
+                "{asset}: {sha256}"
+            );
+        }
+        assert!(pylon_build_is_dirty(
+            "cloud-hypervisor v55.0.0-12-gabc1234-dirty"
+        ));
+        assert!(!pylon_build_is_dirty("cloud-hypervisor v55.0.0"));
+        assert!(!pylon_build_is_dirty("pylond 0.0.8-dev"));
     }
 
     fn pkgs(
@@ -4469,7 +4922,7 @@ mod tests {
             lines("apt-get", &["clang"], &["curl"]),
             [
                 "apt-get update",
-                "env DEBIAN_FRONTEND=noninteractive apt-get install -y clang curl"
+                "env DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l apt-get install -y clang curl"
             ]
         );
         assert_eq!(
@@ -5144,6 +5597,12 @@ mod tests {
                 .any(|w| w == ["-p", "glidex-authd"])
         );
         assert!(!build_args(&no_services).contains(&"glidex-authd"));
+        // Each binary installed is built, gxctl from its own package.
+        assert!(
+            build_args(&Options::default())
+                .windows(2)
+                .any(|w| w == ["-p", "gxctl"])
+        );
     }
 
     #[test]

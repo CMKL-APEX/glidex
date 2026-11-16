@@ -196,6 +196,10 @@ pub struct Identity {
     pub user_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    /// Whether the identity provider verified `email` at the last sign-in
+    /// (spec/19-tenancy.md D83); `false` for identities from before.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub email_verified: bool,
     pub created_at: u64,
 }
 
@@ -547,6 +551,56 @@ impl IdentityStore {
             .collect())
     }
 
+    /// Record a sign-in's address on its identity, and whether the IdP
+    /// verified it (D83): a write only when either changed, and only where
+    /// writes are made (IdP sign-ins run on the leader); elsewhere the next
+    /// sign-in there records it.
+    pub fn record_identity_email(
+        &self,
+        provider: &str,
+        subject: &str,
+        email: Option<&str>,
+        verified: bool,
+    ) -> Result<(), StoreError> {
+        let Some(mut i) = self.identity(provider, subject)? else {
+            return Ok(());
+        };
+        let email = email.map(str::to_lowercase);
+        let verified = verified && email.is_some();
+        if i.email == email && i.email_verified == verified || !self.db.can_write() {
+            return Ok(());
+        }
+        i.email = email;
+        i.email_verified = verified;
+        self.put_identity(&i)
+    }
+
+    /// The enabled users of `directory` that `email` names (D83): by an
+    /// address an IdP verified at their sign-in, a provisioned user's
+    /// address, or a pre-added user's. Ignores case.
+    pub fn users_by_email(&self, directory: &str, email: &str) -> Result<Vec<User>, StoreError> {
+        let email = email.trim();
+        let same = |e: &str| e.eq_ignore_ascii_case(email);
+        let mut ids: Vec<String> = list::<Identity>(&self.db, IDENTITIES)?
+            .into_iter()
+            .map(|(_, i)| i)
+            .filter(|i| i.email_verified && i.email.as_deref().is_some_and(same))
+            .map(|i| i.user_id)
+            .collect();
+        let mut out = Vec::new();
+        for u in self.users()? {
+            let own = (u.managed.is_some() && u.email.as_deref().is_some_and(same))
+                || u.pending_login.as_ref().is_some_and(|p| same(&p.email));
+            if own || ids.contains(&u.id) {
+                ids.retain(|i| *i != u.id);
+                if u.directory_id == directory && !u.disabled {
+                    out.push(u);
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn put_identity(&self, i: &Identity) -> Result<(), StoreError> {
         put(
             &self.db,
@@ -836,6 +890,7 @@ impl IdentityStore {
                     subject: subject.to_string(),
                     user_id: u.id.clone(),
                     email: verified_email.map(String::from),
+                    email_verified: verified_email.is_some(),
                     created_at: now(),
                 },
             )?;
@@ -882,6 +937,7 @@ impl IdentityStore {
                     subject: subject.to_string(),
                     user_id: u.id.clone(),
                     email: Some(verified_email.to_string()),
+                    email_verified: true,
                     created_at: now(),
                 },
             )?;
@@ -1072,6 +1128,7 @@ impl IdentityStore {
             subject: subject.to_string(),
             user_id: user.id.clone(),
             email,
+            email_verified: false,
             created_at: now(),
         })?;
         Ok(Some(user))
@@ -1420,6 +1477,66 @@ impl IdentityStore {
             let entry: AuditEntry = serde_json::from_slice(v.value())?;
             if filter(&entry) {
                 out.push(entry);
+                if out.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// One page of the cluster's audit, or of hosted directory `dir`'s
+    /// (spec/11-security.md decision 22): entries at or after `since`,
+    /// newest first unless `oldest_first`, past `after` (the last key of
+    /// the page before), at most `limit`, each with its key.
+    pub fn audit_page(
+        &self,
+        dir: Option<&str>,
+        since: u64,
+        after: Option<&str>,
+        oldest_first: bool,
+        limit: usize,
+        filter: impl Fn(&AuditEntry) -> bool,
+    ) -> Result<Vec<(String, AuditEntry)>, StoreError> {
+        use std::ops::Bound;
+        // A directory's keys sort before the next byte after its `/`.
+        let (table, prefix, end) = match dir {
+            Some(d) => (DIRECTORY_AUDIT, format!("{d}/"), Some(format!("{d}0"))),
+            None => (AUDIT, String::new(), None),
+        };
+        let start = format!("{prefix}{:016}", since);
+        let (lower, upper) = match after {
+            Some(a) if oldest_first && a >= start.as_str() => (Bound::Excluded(a), None),
+            Some(a) if !oldest_first => {
+                if a <= start.as_str() {
+                    return Ok(Vec::new());
+                }
+                (Bound::Included(start.as_str()), Some(Bound::Excluded(a)))
+            }
+            _ => (Bound::Included(start.as_str()), None),
+        };
+        let upper = upper.unwrap_or(match &end {
+            Some(e) => Bound::Excluded(e.as_str()),
+            None => Bound::Unbounded,
+        });
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(table) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let range = t.range::<&str>((lower, upper))?;
+        let entries: Box<dyn Iterator<Item = _>> = if oldest_first {
+            Box::new(range)
+        } else {
+            Box::new(range.rev())
+        };
+        let mut out = Vec::new();
+        for e in entries {
+            let (k, v) = e?;
+            let entry: AuditEntry = serde_json::from_slice(v.value())?;
+            if filter(&entry) {
+                out.push((k.value().to_string(), entry));
                 if out.len() >= limit {
                     break;
                 }
@@ -1879,6 +1996,7 @@ mod tests {
             subject: "dave@n2".into(),
             user_id: alice.id.clone(),
             email: None,
+            email_verified: false,
             created_at: 1,
         };
         s.put_identity(&other).unwrap();
@@ -2008,6 +2126,55 @@ mod tests {
         assert_eq!(s.audit(1500, 10, |_| true).unwrap().len(), 2);
         assert_eq!(s.prune_audit(2500).unwrap(), 2);
         assert_eq!(s.audit(0, 10, |_| true).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_audit_page_stays_in_its_directory_and_goes_both_ways() {
+        let (s, _d) = store();
+        let entry = |t: u64, action: &str| AuditEntry {
+            time: t,
+            request_id: "r".into(),
+            principal: serde_json::json!({"user": "u"}),
+            source: "test".into(),
+            action: action.into(),
+            project: None,
+            target: None,
+            result: "ok".into(),
+            error_code: None,
+            policies: vec![],
+            details: serde_json::Value::Null,
+        };
+        // `a` sorts before `a0` and `a/`'s keys before `a0/`'s.
+        for (dir, t, action) in [("a", 1000, "a1"), ("a", 2000, "a2"), ("a0", 3000, "b1")] {
+            s.append_directory_audit(dir, &entry(t, action)).unwrap();
+        }
+        let actions = |page: Vec<(String, AuditEntry)>| -> Vec<String> {
+            page.into_iter().map(|(_, e)| e.action).collect()
+        };
+        let newest = s
+            .audit_page(Some("a"), 0, None, false, 10, |_| true)
+            .unwrap();
+        let last = newest[0].0.clone();
+        assert_eq!(actions(newest), ["a2", "a1"]);
+        assert_eq!(
+            actions(
+                s.audit_page(Some("a"), 0, Some(&last), false, 10, |_| true)
+                    .unwrap()
+            ),
+            ["a1"]
+        );
+        assert_eq!(
+            actions(
+                s.audit_page(Some("a"), 0, None, true, 10, |_| true)
+                    .unwrap()
+            ),
+            ["a1", "a2"]
+        );
+        assert!(
+            s.audit_page(None, 0, None, false, 10, |_| true)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]

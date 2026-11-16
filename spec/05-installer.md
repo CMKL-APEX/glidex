@@ -119,7 +119,10 @@ by later runs (flags override the saved values):
 7. **Cloud-Hypervisor** — the static binary at the version pinned in
    `CLOUD_HYPERVISOR_VERSION` (currently `v53.0`), installed to
    `/usr/local/bin` when that copy's version differs. Running VMs keep
-   their process, so no restart follows. A replaced `glidex-vm-shim`
+   their process, so no restart follows. With `--with-pylon`, also
+   Pylon's `pylon` and `pylond` from the release pinned in
+   `PYLON_VERSION`, each checked against its pinned sha256, or a local
+   build given with `--pylon-from` (30-pylon.md P10–P12). A replaced `glidex-vm-shim`
    binary likewise only applies to VMs launched afterwards; running
    shims keep running, and the control plane speaks the previous shim
    protocol too (12-reconciliation.md §8.5).

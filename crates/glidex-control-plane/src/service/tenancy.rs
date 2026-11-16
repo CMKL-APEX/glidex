@@ -303,6 +303,20 @@ fn tenant_pb(call: &Call, t: &tenants::Tenant) -> ServiceResult<pb::Tenant> {
 /// `e` exists in `directory`: nobody is a member or holds a role in
 /// another directory's tenant (D3, D58); another directory's principals
 /// answer as missing.
+/// The principal a member or role is given to, one of `directory`: by id,
+/// or a user by email (D83). The caller is already allowed to add.
+fn member_principal(call: &Call, r: Option<&EntityRef>, directory: &str) -> ServiceResult<Ent> {
+    let r = r.ok_or_else(|| {
+        ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
+    })?;
+    if let Some(email) = super::common::email_of(r) {
+        return super::common::user_by_email(call, directory, email);
+    }
+    let principal = entity_from(r)?;
+    principal_exists(call, &principal, directory)?;
+    Ok(principal)
+}
+
 fn principal_exists(call: &Call, e: &Ent, directory: &str) -> ServiceResult<()> {
     let ok = call
         .auth()
@@ -479,6 +493,21 @@ fn create_own_tenant(
             "a tenant of your own takes a slug and a display name only",
         ));
     }
+    let t = make_own_tenant(call, user, &req.slug, req.display_name)?;
+    Ok(pb::CreateTenantResponse {
+        tenant: tenant_pb(call, &t)?.into(),
+        ..Default::default()
+    })
+}
+
+/// D78's steps once the request is known to be one's own tenant: the
+/// limits, the prefix, the tenant with `user` its admin, the admission.
+fn make_own_tenant(
+    call: &Call,
+    user: &crate::auth::store::User,
+    slug: &str,
+    display_name: String,
+) -> ServiceResult<tenants::Tenant> {
     let dir = call.p.directory_id();
     let store = &call.auth().tenants;
     let ss = store
@@ -505,13 +534,13 @@ fn create_own_tenant(
             "the directory has as many self-service tenants as it allows",
         ));
     }
-    let slug = if req.slug.starts_with(&ss.slug_prefix) {
-        req.slug.clone()
+    let slug = if slug.starts_with(&ss.slug_prefix) {
+        slug.to_string()
     } else {
-        format!("{}{}", ss.slug_prefix, req.slug)
+        format!("{}{}", ss.slug_prefix, slug)
     };
     let t = store
-        .create_own(dir, &slug, req.display_name, &user.id, ss.approval_required)
+        .create_own(dir, &slug, display_name, &user.id, ss.approval_required)
         .map_err(tenant_error)?;
     call.set_target(format!("tenant:{}", t.id));
     call.detail("slug", serde_json::json!(t.slug));
@@ -526,10 +555,93 @@ fn create_own_tenant(
         return Err(auth_error(e).into());
     }
     auto_admit(call, &t);
-    Ok(pb::CreateTenantResponse {
-        tenant: tenant_pb(call, &t)?.into(),
-        ..Default::default()
-    })
+    Ok(t)
+}
+
+/// D82: at a sign-in of `user` through connector `c`, a tenant of their
+/// own when the directory makes one and they are a member of none (`c`'s
+/// default tenant aside), once per user. `email` names it. Never fails
+/// the sign-in: a refusal or an error is audited and left there.
+pub fn tenant_at_sign_in(
+    app: &crate::api::AppState,
+    c: &crate::directory::Connector,
+    user: &crate::auth::store::User,
+    email: Option<&str>,
+    request_id: &str,
+) {
+    let store = &app.auth.tenants;
+    let once = format!("auto-tenant/{}", user.id);
+    let settings = match store.get_directory(&user.directory_id) {
+        Ok(Some(d)) => d.settings,
+        _ => return,
+    };
+    let ss = &settings.self_service;
+    if !ss.enabled || !ss.auto_create || store.done(&once).unwrap_or(true) {
+        return;
+    }
+    let Ok(all) = store.list() else { return };
+    let me = Ent::User(user.id.clone());
+    let member = all
+        .iter()
+        .filter(|t| t.directory_id == user.directory_id)
+        .filter(|t| c.default_tenant.as_deref() != Some(t.id.as_str()))
+        .any(|t| app.auth.is_member(&me, &t.id).unwrap_or(true));
+    if member {
+        return;
+    }
+    let Ok(Some(p)) = app.auth.principal_for(&me) else {
+        return;
+    };
+    let call = Call::on_behalf(app, p, "createOwnTenant", request_id);
+    call.detail("auto", serde_json::json!(true));
+    let name = email
+        .and_then(|e| e.split('@').next())
+        .unwrap_or(&user.display_name);
+    let base = slug_base(&ss.slug_prefix, name);
+    let taken = |s: &str| {
+        all.iter()
+            .any(|t| t.id == s || (t.slug == s && t.directory_id == user.directory_id))
+    };
+    let Some(slug) = std::iter::once(base.clone())
+        .chain((2..100).map(|n| format!("{base}-{n}")))
+        .find(|s| !taken(s))
+    else {
+        return;
+    };
+    let display = format!("{}'s {}", user.display_name, settings.tenant_label.singular);
+    let made = call
+        .require_action(
+            "createOwnTenant",
+            call.directory_ent(),
+            EntitySet::new(),
+            &[],
+        )
+        .map_err(ServiceError::from)
+        .and_then(|()| make_own_tenant(&call, user, &slug, display));
+    match made {
+        Ok(_) => {
+            let _ = store.mark_done(&once);
+            call.write_audit(None, &format!("sign-in:{}", c.id));
+        }
+        Err(e) => call.write_audit(Some(&e.code), &format!("sign-in:{}", c.id)),
+    }
+}
+
+/// `prefix` and `name` as a tenant slug, with room for a `-NN` after it.
+fn slug_base(prefix: &str, name: &str) -> String {
+    let mut out = String::new();
+    for ch in name.to_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    let room = 32usize.saturating_sub(prefix.len() + 3);
+    out.truncate(room);
+    let out = out.trim_end_matches('-');
+    let out = if out.is_empty() { "user" } else { out };
+    format!("{prefix}{out}")
 }
 
 /// A pending self-service tenant becomes usable (D78).
@@ -702,10 +814,7 @@ pub fn list_members(
 pub fn add_member(call: &Call, req: pb::AddMemberRequest) -> ServiceResult<pb::AddMemberResponse> {
     let t = visible(call, &req.id)?;
     call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
-    let principal = entity_from(req.principal.as_option().ok_or_else(|| {
-        ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
-    })?)?;
-    principal_exists(call, &principal, &t.directory_id)?;
+    let principal = member_principal(call, req.principal.as_option(), &t.directory_id)?;
     call.detail("principal", serde_json::json!(principal));
     let by = call.p.user_id().unwrap_or("-").to_string();
     let m = call
@@ -804,10 +913,7 @@ pub fn add_binding(
             format!("tenant roles are {}", TENANT_ROLES.join(", ")),
         ));
     }
-    let principal = entity_from(req.principal.as_option().ok_or_else(|| {
-        ServiceError::new(StatusCode::BAD_REQUEST, "invalid", "principal is required")
-    })?)?;
-    principal_exists(call, &principal, &t.directory_id)?;
+    let principal = member_principal(call, req.principal.as_option(), &t.directory_id)?;
     call.detail("role", serde_json::json!(req.role));
     call.detail("principal", serde_json::json!(principal));
     let by = call.p.user_id().unwrap_or("-").to_string();
@@ -1275,6 +1381,19 @@ fn tenant_cluster_pb(c: &crate::trust::TrustedCluster, tenant: &str) -> pb::Tena
             disks: t.disks,
             disk_gib: t.disk_gib,
             networks: t.networks,
+            storage: t
+                .storage
+                .as_ref()
+                .map(|s| pb::TenantStorageReport {
+                    volumes: s.volumes,
+                    volume_gib: s.volume_gib,
+                    volume_used_bytes: s.volume_used_bytes,
+                    buckets: s.buckets,
+                    bucket_bytes: s.bucket_bytes,
+                    s3_keys: s.s3_keys,
+                    ..Default::default()
+                })
+                .into(),
             ..Default::default()
         })
     });
@@ -1307,6 +1426,59 @@ pub fn list_tenant_clusters(
             .collect(),
         ..Default::default()
     })
+}
+
+/// The trusted cluster `cluster` that tenant `tenant` uses, for the browser
+/// session's person to reach through the storage relay (D86): only from a
+/// browser session, only for a member of the tenant from its own directory,
+/// while the tenant isn't suspended (as D69 gives a directory's access
+/// tokens). The cluster checks the person's grants itself.
+pub fn relayed_cluster(
+    call: &Call,
+    tenant: &str,
+    cluster: &str,
+) -> ServiceResult<crate::trust::TrustedCluster> {
+    let forbidden = |code: &str, m: &str| ServiceError::new(StatusCode::FORBIDDEN, code, m);
+    let not_found = || {
+        ServiceError::new(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "the tenant doesn't use that cluster",
+        )
+    };
+    let p = &call.p;
+    let Some(user) = p.user.as_ref().filter(|_| p.session_hash.is_some()) else {
+        return Err(forbidden(
+            "session_required",
+            "a cluster's storage is reached from a browser session",
+        ));
+    };
+    let t = call
+        .auth()
+        .tenants
+        .resolve_in(p.directory_id(), tenant)
+        .map_err(|_| not_found())?;
+    call.set_target(format!("tenant:{}", t.id));
+    let member = t.directory_id == user.directory_id
+        && call
+            .auth()
+            .is_member(&Ent::User(user.id.clone()), &t.id)
+            .map_err(auth_error)?;
+    if !member {
+        return Err(forbidden(
+            "not_member",
+            "only the tenant's members reach its clusters",
+        ));
+    }
+    if t.suspended {
+        return Err(forbidden("tenant_suspended", "the tenant is suspended"));
+    }
+    call.auth()
+        .trust
+        .cluster(&t.directory_id, cluster)
+        .map_err(trust_err)?
+        .filter(|c| c.tenants.contains(&t.id))
+        .ok_or_else(not_found)
 }
 
 /// Redeem a cluster's offer for tenant `id` (D65): this directory signs a
@@ -1402,6 +1574,7 @@ pub async fn opt_in_cluster(
             name: token.cluster_name.clone(),
             api: token.api.clone(),
             tls_sha256: token.tls_sha256.clone(),
+            next_tls_sha256: None,
             jwks: serde_json::json!({ "keys": [] }),
             tenants: Vec::new(),
             created_at: now,
@@ -1413,7 +1586,9 @@ pub async fn opt_in_cluster(
         .as_str()
         .filter(|u| crate::api::trust::valid_callback(u))
         .map(String::from);
+    // The offer's pin is the cluster's word now (D88).
     c.tls_sha256 = token.tls_sha256.clone();
+    c.next_tls_sha256 = None;
     c.jwks = answer["cluster_key"].clone();
     if !c.tenants.contains(&t.id) {
         c.tenants.push(t.id.clone());
@@ -1476,16 +1651,26 @@ pub async fn opt_out_cluster(
             crate::trust::END,
             crate::tenancy::now(),
         )
-        && let Err(e) = crate::directory::peer::post(
+    {
+        // Either pin: the cluster may have renewed its certificate (D88).
+        match crate::directory::peer::post_any(
             &c.api,
-            &c.tls_sha256,
+            &c.pins(),
             "/trust/v1/end",
             &a,
             &serde_json::json!({ "issuer": iss, "tenant": t.id }),
         )
         .await
-    {
-        tracing::warn!(cluster = %c.cluster_id, "telling the cluster trust ended: {}", e);
+        {
+            Ok((_, _, seen)) => {
+                if let Err(e) = call.auth().trust.saw_pin(&dir, &c.cluster_id, &seen) {
+                    tracing::warn!(cluster = %c.cluster_id, "keeping its renewed pin: {}", e);
+                }
+            }
+            Err(e) => {
+                tracing::warn!(cluster = %c.cluster_id, "telling the cluster trust ended: {}", e)
+            }
+        }
     }
     Ok(pb::OptOutClusterResponse::default())
 }

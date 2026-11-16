@@ -1,6 +1,10 @@
 # VM Networking with Open vSwitch (DPDK / AF_XDP)
 
-**Status: implemented (M1–M8).** All design questions are decided (§1).
+**Status: implemented (M1–M9); M9 checked on the HGX host's eight IPoIB
+ports (2026-11-04), loose and strict `rp_filter` (2026-11-05);
+hyperstor's check with endpoints not run yet. M10, port security on
+host bridges (§9.1): built (the default rules, `port_security: false`,
+`allowed_addresses`); not run on a host yet.** The design questions are decided (§1).
 This document is the implementation spec: component boundaries, wire
 protocol, data models, host commands, and milestones with acceptance
 tests (§15). §0 records what was verified on a real host and what host
@@ -21,6 +25,14 @@ protocol/client library), control-plane `network.rs`; packaging in
 | M6 bridged | yes | `bridged_uplink_e2e`: refused, rolled back, committed, VM on LAN, restored |
 | M7 DPDK / vhost-user | yes | `vhost_user_e2e` on OVS-DPDK 25.11.0 (no DPDK *NIC* uplink: no IOMMU on the test host) |
 | M8 AF_XDP + source build | yes | `afxdp_uplink_e2e` (generic mode, veth); the source build is unit-tested only |
+| M9 source routes (§8.6) | `glidex-ovs` `srcroute.rs` (plan, apply, report; 17 unit tests); netd: `source_routes` config and start check, `source_tables`/`arp_saved`, the start pass (before the OVS check), the `ip monitor address` watcher and 60 s pass, `list_source_routes` (4 tests); the installer's `rt_protos.d` file; `GET /ovs/status` `source_routes` (API test) and the host page's **Ports that share a subnet** card (UI e2e, mocked) | `in_a_network_namespace` (ignored, root, Linux 6.8): two veth ports in one subnet with strict filtering, each address answers out of its own port, without its rule the second address's pings are dropped, ARP settings set and restored. The netd binary in a namespace (2026-11-03): rules at start, a new address's rule within a second, a removed address's rule deleted, `list_source_routes` over the socket. On the HGX host (2026-11-04, main at `3f9bdf0`; Linux 6.8, eight IPoIB ports in one /24, `rp_filter` 2): before, every address's traffic left by one port; with the subnet in `netd.json`, the start pass added eight tables (4200–4207) and rules, `ip route get` and pings to a peer (20 from each address, all answered) left by each address's own port, a rule deleted by hand was back within 30 s, and `list_source_routes` reported every address `ok`. hyperstor's `check` passes but has no endpoints there, so its rule check didn't run. Strict (2026-11-05, netd from main at `3f9bdf0`, `conf/all` 0 and the IPoIB ports 1 for the test, then back to 2): with the rules, 10 pings from each of the eight addresses all answered and no reverse-path drops; with an address's rule deleted (three addresses), 0 of 10 answered and 10 drops each |
+| M10 port security (§9.1) | Task 1: `glidex-ovs` `port_security.rs` (the flows per mode, cookies, apply keeping the final drop, remove by cookie, the cookies in a dump; 9 unit tests), the metadata rule behind the checks (`metadata.rs`), the `static` DHCP range (`nat.rs`); netd: rules at attach, removed at detach and move, put back at start (`reconcile_startup`) and by the 5 s repair pass (`repair_rules`), none on OVN ports (5 tests in `netd_tests.rs`). Task 2: `port_security` on `VmPortSpec` (netd takes the checks off, the metadata rule stays without the source match; netd test), on `NetworkAttachment`, the proto's `NetworkAttachment`, `Nic` and `AttachNetworkRequest`; `setPortSecurity` and `setHostPortSecurity` (decision 22) in the schema and base policies (authz unit test `port_security_is_an_owners_and_the_networks`), asked at create, PATCH and attach (API test `port_security_off_needs_its_permission`); refused on cluster networks; `gxctl attach-network --no-port-security` and `get`; the VM form's per-network box and the VM page's badge (type-checked; UI e2e not run). Task 3: `AllowedAddress` and `parse_allowed`, the flows with a list per mode (3 unit tests); netd refuses a NAT entry outside the subnet or covering the gateway, another port's reservation or list, and new reservations pass over listed addresses (`allocate_excluding`; 2 netd tests); the API's checks (decision 23; API test `allowed_addresses_fit_the_network_and_dont_overlap`); `gxctl attach-network --allow`, `get`, the VM page | `port_security::tests::with_open_vswitch` (ignored; root and OVS): passed on the single-A100 host, 2026-11-14, at 913496f; netd on a host with running VMs not run yet |
+
+A NIC's MAC is unique on its network (§11), at create, edit and attach,
+and in the cluster IPAM (14-clustering.md §11.4): unit tests in
+`ipam.rs`, `store/mod.rs` and `state.rs`, API test
+`a_mac_is_unique_on_its_network` in `network_tests.rs`. Not run on a
+host yet.
 
 End-to-end tests are `#[ignore]`d in
 `crates/glidex-control-plane/tests/functional_tests.rs` and need a root
@@ -121,6 +133,19 @@ during the milestone that uses them.
 | 8 | Default NAT subnet | **`10.88.0.0/24`**, or the next free `/24` in `10.88.0.0/16` on collision. |
 | 9 | Tap capability | **`cap_net_admin+ep` on `cloud-hypervisor` is acceptable.** |
 | 10 | Missing OVS features | **Offer a pinned source build** (OVS 3.7.1 LTS + DPDK 25.11.2, §6.3). |
+| 11 | Ports that share a subnet (issue #256) | **netd adds per-port source routes** (a table and a `from` rule per address) for the subnets it is told to (§8.6). Linux picks the outgoing port by destination alone, so without them every reply in the subnet leaves by one port; hyperstor's D216 leaves the rules to the host network's owner, which on a glidex host is netd. |
+| 12 | Owning routing rules | **netd marks its rules and routes with its own routing protocol number** and changes or deletes only those (§8.6.3). The host's own addresses aren't glidex's, so a marker on the rule, not on the address, is what keeps the §8.1 invariant. |
+| 13 | Keeping them current | **netd re-plans on address changes and at start**, not only when asked (§8.6.4): addresses come and go with links, DHCP and reboots, and a stale rule sends traffic out of a port that has lost its address. |
+| 14 | Which subnets (#256) | **Only the subnets named in `netd.json`** (`source_routes.subnets`); every other shared subnet is reported, never changed (§8.6.2). netd changes only what glidex owns (§8.1), and a host may already manage these rules with netplan. |
+| 15 | Table numbers (#256) | **A configurable range** (`source_routes.table_range`, default `[4200, 4299]`), one number per interface name, kept in the state database (§8.6.3). A host that already uses those numbers moves the range. |
+| 16 | IPv6 (#256) | **In M9 with IPv4**, the same code with `-6` (§8.6.1). The pilot's IPoIB subnets are IPv4, so IPv6 is unit-tested until a host has it. |
+| 17 | ARP settings (#256) | **netd sets `arp_ignore=1` and `arp_announce=2` on the ports of managed subnets**, records the values it replaced, and puts them back when a port stops being managed (§8.6.6). `rp_filter` is left as it is: the rules make strict filtering pass. |
+| 18 | Port security on host bridges | **Each VM port on a glidex host bridge (`gxbr-*`, node-scoped networks) gets OpenFlow source rules by default** (§9.1). In every mode, the source MAC must be the NIC's MAC. On NAT networks, the source IPv4 address and the ARP sender address must also be the NIC's DHCP reservation; DHCP discovery and requests from `0.0.0.0` pass before the lease. On NAT and isolated networks, a guest can't send from UDP port 67 (act as a DHCP server) or send IPv6 router advertisements. Bridged networks check the MAC only: the LAN's DHCP assigns their addresses, and glidex never learns them. Isolated networks check the MAC only by default. | OVN networks already set `port_security` on each port (14-clustering.md §11.4); host bridges had only the metadata flow (§9). With MACs unique on a network (§11), a port that sends only from its own MAC and address keeps each VM's traffic its own. |
+| 19 | Opting a NIC out | **A per-NIC `port_security: false` removes every rule of decision 18 (and 20) from that port**, for router or firewall VMs that forward other hosts' traffic. Setting it is its own Cedar action, `setPortSecurity` (§9.1), separate from `updateVm`. | Such VMs must send from addresses that aren't theirs. Lifting the checks changes what a port may put on a network that other VMs share, so it is a separate permission from editing a VM. |
+| 20 | Allowed addresses | **An optional per-NIC `allowed_addresses` list** (IPv4 and IPv6 addresses or CIDRs). Absent, decision 18 applies. Present: on NAT networks, the reservation plus the listed addresses; on isolated and bridged networks, the source IP, the ARP sender and the IPv6 neighbour-discovery target must be in the list. Each entry must fit the network's subnet when it has one, and two VMs' lists may not overlap on one network (as for MACs, §11). Changing the list is part of editing the VM's networks; it needs no `setPortSecurity`. A per-network switch that requires every NIC to have a list is not built; it could be added later. | Gives bridged and isolated networks address checks where glidex knows the addresses, and lets a VM carry a second address (a virtual IP) without lifting all checks. |
+| 21 | NAT DHCP range | **`static`**: dnsmasq answers only MACs with a reservation in its hosts file (§10), so it leases nothing to anything else on the bridge. | Every VM port has a reservation from attach; nothing else on a NAT bridge needs an address. Settled from §9.1's open question. |
+| 22 | Who lifts port security (decision 19) | **Two actions.** `setPortSecurity` (`network.manage`, tenant-scoped) on the VM (the project, at create) and, for a project network, on the network; `setHostPortSecurity` (`host.network`, host-scoped) on a host network. A base policy refuses `setPortSecurity` on a host network and `setHostPortSecurity` on a project network. A create or attach asks for them when a NIC has `false`; a PATCH when a NIC's value differs from the VM's (the same NIC: same network and MAC; a new NIC: from `true`), so restoring the checks asks too. Cluster networks refuse `false` (`400`): OVN keeps its own port security there. | Every action sits in one marker group (11-security.md §7), so the host side can't share the project side's action. Refusing on cluster networks keeps `false` from looking set where nothing is lifted. |
+| 23 | Checking `allowed_addresses` (decision 20) | **On isolated and bridged networks with a list**, IP and ARP sources must be listed; DHCP from `0.0.0.0` passes (a bridged LAN's DHCP); IPv6 sources must be listed, link-local (`fe80::/10`) or `::` (duplicate address detection), and a neighbour advertisement's target listed or link-local. **On NAT networks** entries are IPv4 only and inside the subnet; netd also refuses an entry covering the gateway or another MAC's reservation, and a new reservation passes over addresses another port lists. The API refuses (`422 address_refused`) an entry that overlaps another VM's list on the network or covers another VM's current address there, and checks the NAT subnet where this host's netd has the network (netd checks it again at attach). An empty list is the same as none. Cluster networks refuse a list. | ND and DHCP need link-local and unspecified sources before a guest has its address; a list that could cover another NIC's reservation would let one port send as another. OVN networks have OVN's port security, which these fields don't change. |
 
 ## 2. Background
 
@@ -485,7 +510,7 @@ per connection. The first message must be `hello`.
 
 ```json
 {"id": 1, "op": "hello", "args": {"protocol": 1}}
-{"id": 1, "ok": {"protocol": 1, "netd_version": "0.1.0"}}
+{"id": 1, "ok": {"protocol": 1, "netd_version": "0.0.8"}}
 
 {"id": 2, "op": "attach_vm_port", "args": {"bridge": "gxbr-nat", "vm_id": "…", "nic_index": 0, "kind": "tap", "mac": "02:5a:1c:9e:44:00", "queue_pairs": 1}}
 {"id": 2, "ok": {"binding": {"tap": {"ifname": "gx1a2b3c4d-0"}}, "ipv4": "10.88.0.2"}}
@@ -523,6 +548,7 @@ sends it with `call_as` / `call_value_as`; `call` sends none.
 | `prepare_device` · `release_device` · `list_prepared_devices` | full | `{address}` → the IOMMU group bound to vfio-pci, with the drivers it had · `{address}` · the prepared groups (22-host-topology.md §5.3) |
 | `set_sriov_vfs` | full | `{address, vfs}` → `{address, total, enabled, vfs, changed}`: the PF's `sriov_numvfs` set (through 0 when it had some); refused for an OVS-DPDK uplink or more than `sriov_totalvfs`; prepared groups of the VFs a change removes are forgotten (22-host-topology.md §10.1) |
 | `release_vm` | full | `{vm_id}` → – (VM deleted: detach ports, free NAT reservations) |
+| `list_source_routes` | full, read-only | – → per shared subnet: its ports, addresses, the table and rule of each, whether it is managed, conflicts, and each port's ARP and `rp_filter` settings (§8.6.5) |
 | `sync_vms` | full | `{running: [vm_id]}` → `ReconcileReport` |
 
 "full" means both full sockets (`netd.sock`, `netd-admin.sock`), subject
@@ -548,6 +574,8 @@ ReDB tables with JSON values:
 | `uplinks` | `bridge/name` | `UplinkSpec` + `orig_driver?`, `ip_snapshot?`, `pending: {token, deadline}?` |
 | `nat` | bridge | `NatState` + `dns` + `reservations: {mac → ip}` |
 | `vm_ports` | `vm_id/nic` | `VmPortSpec` + port name, binding, `ipv4?`, owner uid |
+| `source_tables` | ifname | the routing table number given to the port (§8.6.3) |
+| `arp_saved` | ifname | the `arp_ignore` and `arp_announce` the port had before netd set them (§8.6.6) |
 
 ### 7.5 Configuration (`/etc/glidex/netd.json`, optional)
 
@@ -611,14 +639,16 @@ directories, runs `probe`, then **reconciles**:
 2. **NAT:** gateway address, `ip_forward`, the `inet glidex` table
    (replaced atomically with `nft -f`), `GLIDEX-FORWARD` where iptables
    drops forwarded traffic, dnsmasq processes.
-3. **VM ports:** kept until the control plane calls `sync_vms`; then
+3. **Source routes** (§8.6): plan from the addresses as they are now,
+   add what is missing, remove netd's rules for addresses that are gone.
+4. **VM ports:** kept until the control plane calls `sync_vms`; then
    ports whose VM isn't in `running` are detached (port, tap, socket).
    `running` is every VM that **owns ports** — whose `status.nics` is
    non-empty — not every VM that is running right now (D16,
    [12-reconciliation.md](12-reconciliation.md#94-startup-order)): a VM keeps
    its tap and NAT address while it crash-restarts, and an adopted VM is
    never cut off.
-4. **Orphans:** glidex-tagged objects with no record are reported in
+5. **Orphans:** glidex-tagged objects with no record are reported in
    `ReconcileReport`, never deleted.
 
 **Invariant.** The control plane sends `sync_vms` only after it has
@@ -646,6 +676,7 @@ restart.
 | iptables | only chain `GLIDEX-FORWARD` and its jump from `DOCKER-USER`/`FORWARD` |
 | dnsmasq | only processes whose pid files are in `/run/glidex/dnsmasq/` |
 | taps | `gx` prefix **and** a `vm_ports` record |
+| routing rules and routes | protocol `glidex` (§8.6.3) |
 
 **Invariant:** netd modifies or deletes only marked objects. An untagged
 existing bridge name → `not_owned`, unless `adopt: true` (adds tags,
@@ -737,12 +768,147 @@ uplink alone. Verified end to end on the nested cluster: a host's only
 NIC moved onto a bridge through the agent's web UI, the host rebooted,
 and came back reachable with the address re-applied.
 
+### 8.6 Source routes for ports that share a subnet (decisions 11–17)
+
+**The problem** (issue #256). When several ports of a host have
+addresses in one subnet (an HGX host's eight IPoIB ports, say), the main
+table has one route to the subnet per port, and the kernel uses the
+first. Traffic from any of those addresses leaves by that one port, so
+the others carry nothing outbound. With strict reverse-path filtering
+(`rp_filter` 1), a packet arriving on another port fails the check and
+the connection fails. hyperstor's storage endpoints bind these addresses
+(its `spec/26-networks.md` §29.5); `hyperstor-install check` warns about
+an endpoint without a rule, and its D216 leaves the rules to netd.
+On the HGX host's IPoIB ports (Linux 6.8) made strict, a ping from an address
+without its rule left by the main table's port and every reply, arriving
+on the address's own port, was dropped (the kernel's
+`IPReversePathFilter` counter rose by one per reply); with the rules,
+none was (§0). The kernel filters by the higher of `conf/all` and the
+port's own value: a port at 2 stays loose even with `all` at 1, which is
+why the namespace test first saw no drop (`all` 1, ports inheriting the
+host's 2). It now sets `all` 0 and its ports 1, and checks the drop.
+Any service that binds one of those addresses has the same problem.
+
+These ports aren't OVS uplinks: netd adds nothing to OVS here. It
+writes routing tables and rules, through `ip`, and two ARP settings per
+port (§8.6.6).
+
+#### 8.6.1 What netd adds
+
+For each **managed subnet** (§8.6.2), each port with an address in it,
+and each such address `A` on port `P`:
+
+```
+ip route replace <subnet> dev P src A table T(P) proto glidex
+ip rule add from A lookup T(P) priority <rule_priority> protocol glidex
+```
+
+IPv6 addresses get the same with `ip -6` (decision 16).
+
+`T(P)` is the port's table (§8.6.3). The table has only the subnet's
+route: traffic from `A` to anywhere else falls through to the main
+table, as it does today. The rule's `from A` also makes the reverse-path
+check pass: the kernel checks a packet arriving on `P` for `A` against
+`T(P)`, which routes the sender back out of `P`.
+
+A subnet with a single port needs nothing and gets nothing. An address
+that moves to a bridge (IP migration, §8.5) is planned on the bridge,
+since netd plans from the addresses as they are.
+
+#### 8.6.2 Which subnets
+
+`netd.json` (§7.5) gets `source_routes`:
+
+```json
+{ "source_routes": { "subnets": ["10.40.0.0/16"], "rule_priority": 1000,
+                     "table_range": [4200, 4299] } }
+```
+
+- `subnets`: the subnets netd manages, IPv4 or IPv6 (decision 14). Empty,
+  the default, means none: netd only reports (§8.6.5).
+- `rule_priority`: the rules' priority, before `main` (32766); default
+  1000, which is ahead of Tailscale's (5210–5270). It must
+  not be a priority the host's own rules use; netd refuses to start
+  with one in use by a rule that isn't its own.
+- `table_range`: the routing table numbers netd may give ports,
+  inclusive (decision 15). Default `[4200, 4299]`. It must stay clear
+  of 253–255 (`default`, `main`, `local`); netd refuses to start
+  otherwise. A port whose table falls outside a changed range gets a
+  new number on the next pass.
+
+#### 8.6.3 Ownership and table numbers
+
+- **Marker.** Every route and rule netd adds carries protocol `glidex`.
+  This is a fixed number the installer names in
+  `/etc/iproute2/rt_protos.d/glidex.conf`, chosen from those iproute2
+  doesn't assign; the task picks it. netd changes and deletes only
+  routes and rules with that protocol (the §8.1 invariant). `ip rule`
+  has carried a protocol since Linux 4.17.
+- **Tables.** Each port gets a number from `table_range`, kept by
+  interface name in `source_tables` (§7.4) so it survives reboots.
+  Interface indexes can change across a reboot, so they aren't used. A
+  number already holding routes that aren't netd's is skipped. A full
+  range is reported, and the ports left over get no rules.
+- **Conflicts.** If an address already has a `from` rule that isn't
+  netd's (netplan's `routing-policy`, NetworkManager, a hand-made one),
+  netd leaves the address alone and reports the conflict. It doesn't
+  fight another manager.
+
+#### 8.6.4 Keeping them current
+
+- **At start**, as a reconcile step (§7.7 step 3).
+- **On address changes:** netd listens for rtnetlink address events
+  (`RTMGRP_IPV4_IFADDR` and `RTMGRP_IPV6_IFADDR`) and
+  re-plans. A short debounce (1 s) makes a burst of changes one pass.
+- **Every 60 s** as well, to catch an event missed while netd was busy.
+
+A pass computes the wanted rules and routes from the current addresses,
+then adds what is missing and deletes netd's own that aren't wanted:
+those whose address is gone or whose subnet is no longer managed.
+Removing a subnet from `source_routes.subnets` and restarting netd
+therefore removes its rules.
+
+#### 8.6.5 Reporting
+
+`list_source_routes` (§7.3, full socket, read-only) returns each subnet
+that two or more ports share, managed or not. For each one it lists the
+ports, addresses, tables and rules, and for each address one of:
+`ok`, `missing` (managed, not yet applied), `unmanaged` (not in
+`subnets`), or `conflict` (another manager's rule; that rule is shown).
+It also gives each port's `rp_filter`, `arp_ignore` and `arp_announce`.
+The control plane shows this in `GET /ovs/status`'s host
+part, and the host page shows a warning for `missing`, `unmanaged` and
+`conflict`.
+
+#### 8.6.6 ARP settings (decision 17)
+
+On each port of a managed subnet, netd sets
+`net.ipv4.conf.<port>.arp_ignore=1` (answer ARP only for addresses on
+the port asked) and `arp_announce=2` (use the port's own address as
+the ARP source). Without them, a host with several ports in one subnet
+answers ARP for every address from every port, and peers send traffic
+for one address to whichever port answered first.
+
+- netd writes them with `sysctl -w`, per port, never `all` or `default`:
+  other ports keep the host's policy.
+- Before the first change it records the port's values in `arp_saved`
+  (§7.4). When the port stops being managed (its subnet is removed from
+  `subnets`, or it no longer has an address there), netd puts them back
+  and forgets them. A port that disappears is simply forgotten.
+- Each pass sets them again if something else changed them, and reports
+  that it did.
+- `rp_filter` is not changed: the rules make strict reverse-path
+  filtering pass (§8.6.1), and loose or off filtering already passes.
+- IPv6 has no equivalent: neighbour discovery already answers per
+  interface.
+
 ## 9. VM ports
 
 - **Names** (`names.rs`) for VM id `U` (UUID) and NIC `i`:
   - port/tap `gx<first 8 hex of U>-<i>` (≤ 15 chars);
   - MAC `02:` + 5 bytes of `sha256(U ‖ i)`: locally administered
-    unicast, stable across restarts;
+    unicast, stable across restarts; the lowest `i` whose MAC neither
+    another NIC of the VM nor another VM on the network has (§11);
   - vhost socket `/run/glidex/vhost/<U>.net<i>.sock` (< 108 bytes).
 - **Tap:** `ip tuntap add dev <port> mode tap [multi_queue] user <uid>`
   (`multi_queue` only when `queue_pairs > 1`, matching what the
@@ -760,6 +926,76 @@ and came back reachable with the address re-applied.
   rewrites the dnsmasq hosts file (`SIGHUP`).
 - `detach_vm_port`: `--if-exists del-port`, `ip link del <tap>`, remove
   the socket. Idempotent.
+
+### 9.1 Port security (decisions 18–20)
+
+Task 1 of M10 (§15) is built: the default checks below. netd installs,
+with each VM port on a glidex host bridge, OpenFlow rules that check
+what the port sends. OVN networks are unaffected: they have OVN's
+`port_security`.
+
+| Mode | Default checks | With `allowed_addresses` |
+|---|---|---|
+| NAT | source MAC = the NIC's MAC; IPv4 source and ARP sender = the NIC's reservation (DHCP from `0.0.0.0` to UDP port 67 passes); no UDP source port 67; no IPv6 router advertisements | as default, with the listed addresses besides the reservation |
+| Isolated | source MAC; no UDP source port 67; no IPv6 router advertisements | as default, and the IP source, ARP sender and IPv6 ND target must be in the list |
+| Bridged | source MAC | as default, and the IP source, ARP sender and IPv6 ND target must be in the list |
+
+- **Rules** (`glidex-ovs` `port_security.rs`). On the port's `in_port`,
+  in table 0, above the bridge's own `priority=0` `NORMAL`:
+
+  | Priority | Rule | Modes |
+  |---|---|---|
+  | 320 | drop `udp,tp_src=67` and `icmp6,icmp_type=134` | NAT, isolated |
+  | 200 | the metadata mark rule (§9), with `dl_src` and `nw_src` of the port | NAT |
+  | 150 | `NORMAL` for `ip` from the MAC and reservation, `udp` from the MAC and `0.0.0.0` to port 67, `arp` with `arp_spa` the reservation and `arp_sha` the MAC | NAT |
+  | 140 | drop the rest of `ip` and `arp` | NAT |
+  | 130 | `NORMAL` from the MAC (`dl_src`) | all |
+  | 100 | drop | all |
+
+  The ARP rule also checks the sender hardware address against the MAC.
+  Other traffic from the NIC's MAC (IPv6 but router advertisements, on a
+  NAT network too) passes at 130. The metadata rule matches only traffic
+  that passes the checks, so a request from another address isn't
+  marked and is dropped at 140.
+- **Cookies.** A port's rules carry one cookie, `0x7073` (16 bits), the
+  32 bits of the VM id in its port name (`gx<8 hex>-<nic>`), the NIC
+  index (8 bits) and a last byte that is `0` for the checks and `1` for
+  the final drop. Port names are unique on a host, so the cookies are.
+  `apply` adds the final drop first, then replaces the checks (`del-flows
+  cookie=<c>/-1`, then `add-flows -`), so while they change the port's
+  traffic is dropped, not switched unchecked. Detach and move remove both
+  (`cookie=<c>/0xffffffffffffff00`). Idempotent.
+- **Putting them back.** OpenFlow rules aren't kept in the OVS
+  database: netd puts every port's rules back at start, and every 5 s
+  reads `ovs-ofctl dump-flows` of each bridge with ports and puts back
+  the rules of a port whose cookies (checks, final drop, metadata) are
+  missing, as after a restart of `ovs-vswitchd`. A bridge it can't read
+  (OVS stopped) is skipped; a failure is logged when it first shows. Tap
+  and vhost-user ports get the same rules.
+- **The NAT address.** netd already reserves one pool address per MAC at
+  attach and writes it to dnsmasq's hosts file (`<mac>,<ip>`, §10), so
+  dnsmasq hands out the reservation to that MAC, and the rule uses the
+  same address. The `dhcp-range` is `static` (decision 21): dnsmasq
+  answers only MACs with a reservation.
+- **`port_security: false`** (on `NetworkAttachment`, default `true`;
+  built, task 2): no rules on that port; netd removes any it had, and
+  keeps the metadata rule without its source match. Cluster networks
+  refuse it (decision 22). Setting or clearing it is `setPortSecurity`,
+  on the VM, in the `network.manage` group (a project owner), and is
+  checked again on the network: for a project network, `network.manage`
+  on the network's project; for a host network, `host.network`
+  (`setHostPortSecurity`, decision 22). A
+  project can't lift the checks on a network another project owns. The
+  create and edit calls that carry it ask for `setPortSecurity` when
+  the value is `false` or changes.
+- **`allowed_addresses`** (on `NetworkAttachment`, default absent;
+  built, task 3, decision 23):
+  IPv4 and IPv6 addresses or CIDRs, at most 16. Refused with `422` when
+  an entry is outside the network's subnet (NAT, and any network that
+  has one) or overlaps another VM's list on the same network; the
+  cluster IPAM checks overlap as it checks MACs (14-clustering.md
+  §11.4).
+- `VmResponse.networks[]` shows `port_security` and `allowed_addresses`.
 
 ## 10. NAT networks (decisions 4, 8)
 
@@ -829,7 +1065,7 @@ and came back reachable with the address re-applied.
    interface=<br>
    bind-interfaces
    except-interface=lo
-   dhcp-range=<pool-start>,<pool-end>,12h
+   dhcp-range=<pool-start>,static,<netmask>,12h   # decision 21
    dhcp-option=option:router,<gw>
    dhcp-hostsfile=/run/glidex/dnsmasq/<br>.hosts
    dhcp-leasefile=/var/lib/glidex/dnsmasq/<br>.leases
@@ -840,7 +1076,8 @@ and came back reachable with the address re-applied.
    # dns = false:
    # port=0
    ```
-   `<br>.hosts` holds one `<mac>,<ip>` line per attached VM port.
+   `<br>.hosts` holds one `<mac>,<ip>` line per attached VM port; the
+   range is `static`, so dnsmasq answers only those MACs.
 
 **No default network:** neither the installer nor the control plane
 creates a network; the administrator creates the ones they want. A
@@ -977,6 +1214,15 @@ Error mapping:
 | `permission_denied` | 503 | `netd_permission_denied` (control plane not in `glidex`) |
 
 `create_vm` validation: unknown network (400); ≤ 8 attachments; a custom MAC must be unicast;
+a MAC is unique on its network: a NIC whose MAC another VM's NIC has on
+the same network (in its spec, or on its port while it runs) is `409`,
+at create, at an edit of `networks` and at `AttachNetwork`. It is
+checked under the VM write lock on the leader, which sees every VM of the
+cluster, so two writes can't both take one. A generated MAC another VM
+has there is passed over for the next one derived from the VM id. A NIC
+the VM already has is not checked again, so a VM stored with a taken MAC
+before this check still saves. The same MAC on another network is
+another NIC;
 VhostUser forces `memory.shared = true`. Deleting a network used by any
 VM (spec or live NICs) → `409` (`deleteNetwork`, or `deleteProjectNetwork`
 for a project network). While a network is being deleted, attaching a VM
@@ -1114,11 +1360,49 @@ its tests passing in CI.
 | **M6** bridged networks | `Kernel` uplinks, classification, IP migration with gateway check, commit/rollback, re-apply at start | Unit tests for classification and every rollback path (gateway check fails, no commit, wrong token); ignored e2e in a netns with a veth "NIC" carrying an address: migrate, commit, flush + reconcile, rollback. |
 | **M7** DPDK | `dpdk` profile, `init_dpdk`, `netdev` bridges, `Dpdk` uplinks (bind/restore, re-bind at start), vhost-user ports, `MemoryConfig.shared/hugepages`, VFIO conflict | Unit tests for sysfs writes and restore; ignored e2e with `GLIDEX_TEST_OVS_DPDK=1`: two VMs over vhost-user ping each other. |
 | **M8** AF_XDP + source build | `Afxdp` uplinks, effective-mode reporting, pinned source build | Unit tests for build steps and checksum failure; ignored e2e: AF_XDP generic mode over a veth pair. |
+| **M9** source routes (§8.6) | `glidex-ovs` `srcroute.rs`: plan (addresses → wanted rules and routes), diff against `ip -j rule`/`ip -j route show table all` filtered to protocol `glidex`, apply; netd: `source_routes` config (`subnets`, `rule_priority`, `table_range`), `source_tables` and `arp_saved`, the ARP settings (§8.6.6), IPv4 and IPv6, the reconcile step, the address watcher and 60 s pass, `list_source_routes`; the installer's `rt_protos.d` file; the host status in the control plane and a warning on the host page | Unit tests with `RecordingExec` and canned `ip -j` output: one port gets nothing; two ports get two tables and rules; a removed address loses its rule; another manager's rule is a `conflict` and left alone; a non-glidex route in a candidate table skips that number; a priority in use by others, or a range touching 253–255, stops netd; IPv6 gets `ip -6` rules; ARP settings are saved, set on managed ports only, and restored when a port stops being managed. Ignored e2e in a netns: two veth ports in one subnet towards a peer namespace with `rp_filter=1`, traffic from each address leaves by its own port and a connection to the second address succeeds, then delete the address and see its rule removed. On a pilot GPU host: hyperstor's `check` passes. |
+| **M10** port security on host bridges (§9.1) | Three tasks, one PR each. **1.** Decision 18: the rules per mode in `glidex-ovs`, netd adding them at attach, removing them at detach and putting them back at start and after an `ovs-vswitchd` restart; the metadata flow behind them. **2.** Decision 19: `port_security` on `NetworkAttachment`, the `setPortSecurity` action (schema, policies, `ui_capabilities.rs`, 11-security.md's action list), the API, `gxctl` and the VM form, and netd leaving the port without rules. **3.** Decision 20: `allowed_addresses`, its validation in the API and the cluster IPAM, and the rules for each mode | Unit tests with `RecordingExec`: the exact flows per mode, with and without a list, with `port_security: false`, removed by cookie; API tests: `setPortSecurity` refused without the permission and on another project's network, `allowed_addresses` outside the subnet or overlapping another VM's refused. Ignored e2e in a netns, per mode: a guest sending from another MAC (and, on NAT, another address) is dropped and from its own passes; DHCP works; a DHCP server and a router advertisement from a guest are dropped; with `port_security: false` all pass |
 
 Every ignored e2e test runs in a throwaway network namespace, uses veth
 pairs instead of real NICs, and tears down its bridges, the `inet
 glidex` table and dnsmasq even on failure. CI runs only unit and API
 tests.
+
+### Future work: DHCP, DNS and network boot
+
+Not planned yet (2026-11-07); recorded so the discussion isn't lost. A
+spec section with decisions comes first when it is taken up.
+
+- **Replace dnsmasq on NAT networks** with a small glidex daemon in
+  Rust: DHCP on `dhcproto`, DNS forwarding on `hickory-server`'s
+  forwarder. The preferred shape is its own systemd service, not a part
+  of netd: it parses guests' packets, so it should run as its own user
+  with only the capabilities to bind ports 53 and 67, away from netd's
+  root and its control of OVS and nftables. A crash then costs DHCP and
+  DNS only, and systemd restarts it. netd tells it the bridges, pools
+  and reservations over a local socket. Each socket is bound to its
+  bridge (`SO_BINDTODEVICE`), so it never answers on an uplink. It runs
+  beside dnsmasq behind a switch until it has run on the hosts.
+  - Considered and not chosen: the same code inside netd (guest-facing
+    parsing in the most privileged daemon); rDHCP (a separate program,
+    young, its interface binding on Linux undocumented); dora (a
+    standalone server, likely to need vendoring).
+  - Open: how dnsmasq's leases move over.
+- **Cluster (OVN) networks keep OVN's DHCP.** ovn-controller answers
+  on each host from the port's address and `DHCP_Options`: no process,
+  no lease store, no guest packets parsed by glidex. Replacing it would
+  need a local port in a namespace for every network on every host.
+- **Network boot.** DHCP replies carry the boot server and file, chosen
+  by client architecture (option 93) and vendor or user class (PXE,
+  UEFI HTTP boot, iPXE chain-loading). OVN can already send these
+  (`next_server`, `tftp_server`, `bootfile_name`, `bootfile_name_alt`
+  for iPXE). The files are served by TFTP from the same daemon,
+  read-only, or by HTTP from glidex's image store. Open:
+  - whether Cloud Hypervisor's firmware can boot from the network at
+    all (QEMU with OVMF or SeaBIOS and iPXE can);
+  - the API for which networks or VMs boot from the network, and from
+    which images;
+  - HTTP boot only, or classic PXE (TFTP) too.
 
 ## Appendix A: QEMU
 

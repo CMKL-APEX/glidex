@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import * as api from "../api";
-import type { Binding, EntityRef, Tenant, TenantBinding, TenantMember } from "../types";
-import { TENANT_ROLES, entityLabel, formatTimestamp, isOidcKind } from "../types";
+import type { Binding, PrincipalInput, Tenant, TenantBinding, TenantMember } from "../types";
+import { TENANT_ROLES, entityLabel, formatBytes, formatTimestamp, isOidcKind } from "../types";
 import Modal from "../components/Modal";
 import ConfirmDialog from "../components/ConfirmDialog";
-import AddBindingForm from "../components/AddBindingForm";
+import AddBindingForm, { typedPrincipal } from "../components/AddBindingForm";
 import FederationsCard from "../components/FederationsCard";
 import { Loading } from "../components/Loading";
 import {
@@ -27,6 +27,7 @@ import {
 import { useCan, useTenantLabel } from "../session";
 import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 import { AdmissionBadge, TenantFlags } from "./Tenants";
+import StorageView from "../components/StorageView";
 
 /** What the page offers, each checked on the tenant. */
 const CAPS = [
@@ -54,6 +55,26 @@ type Cap = (typeof CAPS)[number];
 
 /** The tenant's shares of cluster device pools, split among its projects
  *  (spec/22-host-topology.md §9.1a). */
+/** A storage cluster's totals for the tenant (spec/19-tenancy.md D85):
+ *  volumes with their provisioned and used space side by side, then
+ *  buckets and S3 keys. */
+function StorageCell({ s }: { s: NonNullable<NonNullable<api.TenantCluster["report"]>["storage"]> }) {
+  const used = formatBytes(s.volume_used_bytes);
+  return (
+    <div className="space-y-0.5">
+      <div>
+        {s.volumes ?? 0} volumes{" "}
+        <span className="text-xs text-gray-500">
+          ({s.volume_gib ?? 0} GiB provisioned · {used} used)
+        </span>
+      </div>
+      <div>
+        {s.buckets ?? 0} buckets <span className="text-xs text-gray-500">({formatBytes(s.bucket_bytes)})</span> · {s.s3_keys ?? 0} S3 keys
+      </div>
+    </div>
+  );
+}
+
 /** The clusters of other organizations the tenant uses, and what each last
  *  reported of it (spec/19-tenancy.md D70). */
 function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
@@ -62,6 +83,10 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
   const [offer, setOffer] = useState("");
   const [busy, setBusy] = useState(false);
   const [leaving, setLeaving] = useState<api.TenantCluster | null>(null);
+  // The storage cluster whose volumes, buckets and keys are open (D86).
+  const [open, setOpen] = useState<string | null>(null);
+  // A storage cluster's totals (D85) get a column once any cluster sent them.
+  const anyStorage = (clusters ?? []).some((c) => c.report?.storage);
   const refresh = useCallback(() => {
     api
       .listTenantClusters(tenant.id)
@@ -122,6 +147,7 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
                 <th className="py-1 pr-3 font-medium">VMs</th>
                 <th className="py-1 pr-3 font-medium">Disks</th>
                 <th className="py-1 pr-3 font-medium">Networks</th>
+                {anyStorage && <th className="py-1 pr-3 font-medium">Storage</th>}
                 <th className="py-1 font-medium">Reported</th>
                 {canManage && <th className="py-1" />}
               </tr>
@@ -148,10 +174,28 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
                           {Number(r.disk_gib ?? 0) > 0 && <span className="text-xs text-gray-500"> ({r.disk_gib} GiB)</span>}
                         </td>
                         <td className="py-1.5 pr-3">{r.networks ?? 0}</td>
+                        {anyStorage && (
+                          <td className="py-1.5 pr-3" data-testid="tenant-cluster-storage">
+                            {r.storage ? (
+                              <>
+                                <StorageCell s={r.storage} />
+                                <button
+                                  type="button"
+                                  className="mt-1 text-xs text-blue-600 hover:underline"
+                                  onClick={() => setOpen(open === c.cluster_id ? null : (c.cluster_id ?? null))}
+                                >
+                                  {open === c.cluster_id ? "Close storage" : "Open storage"}
+                                </button>
+                              </>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                        )}
                         <td className="py-1.5 text-xs text-gray-500">{r.reported_at ? new Date(r.reported_at).toLocaleString() : "—"}</td>
                       </>
                     ) : (
-                      <td colSpan={6} className="py-1.5 text-xs text-gray-500">
+                      <td colSpan={anyStorage ? 7 : 6} className="py-1.5 text-xs text-gray-500">
                         No report yet
                       </td>
                     )}
@@ -169,6 +213,11 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
           </table>
         </div>
       )}
+      {open &&
+        (() => {
+          const c = (clusters ?? []).find((x) => x.cluster_id === open);
+          return c ? <StorageView key={open} tenant={tenant} cluster={c} /> : null;
+        })()}
       {leaving && (
         <ConfirmDialog
           title="Opt Out"
@@ -397,10 +446,20 @@ function EditTenantForm({ tenant, onDone, onCancel }: { tenant: Tenant; onDone: 
 
 /** User or team picker for a new member: from the directory when the caller
  * may list it, otherwise the id typed. */
-function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: EntityRef) => Promise<void> }) {
+function AddMemberForm({
+  dir,
+  onAdd,
+  onInvite,
+}: {
+  dir: Directory | null;
+  onAdd: (p: PrincipalInput) => Promise<void>;
+  /** Offered when an address names nobody here yet (D83). */
+  onInvite?: (email: string) => void;
+}) {
   const [kind, setKind] = useState<"User" | "Team">("User");
   const [id, setId] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [missed, setMissed] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   const options =
@@ -415,11 +474,14 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
     if (!id.trim()) return;
     setBusy(true);
     setError(null);
+    setMissed(null);
+    const p = typedPrincipal(kind, id);
     try {
-      await onAdd({ type: kind, id: id.trim() });
+      await onAdd(p);
       setId("");
     } catch (err) {
       setError(errorMessage(err));
+      if ("email" in p) setMissed(p.email);
     } finally {
       setBusy(false);
     }
@@ -455,7 +517,7 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
         ) : (
           <input
             className={inputClass}
-            placeholder={kind === "User" ? "user id" : "team id or unix:<group>"}
+            placeholder={kind === "User" ? "user id or email" : "team id or unix:<group>"}
             value={id}
             onChange={(e) => setId(e.target.value)}
             required
@@ -467,7 +529,19 @@ function AddMemberForm({ dir, onAdd }: { dir: Directory | null; onAdd: (p: Entit
           Add member
         </button>
       </div>
-      {error && <p className="md:col-span-3 text-sm text-red-600">{error}</p>}
+      {error && (
+        <p className="md:col-span-3 text-sm text-red-600">
+          {error}
+          {missed && onInvite && (
+            <>
+              {" "}
+              <button type="button" className="text-sky-700 hover:underline" onClick={() => onInvite(missed)}>
+                Invite {missed} instead
+              </button>
+            </>
+          )}
+        </p>
+      )}
     </form>
   );
 }
@@ -477,10 +551,18 @@ const inviteRoleLabel = (r: string) => (r === "member" ? "member (no tenant role
 
 /** A tenant's invitations (spec/19-tenancy.md §6.1): a link, shown once, that
  *  lets one email address in through one connector. */
-function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
+function InvitationsCard({ tenant, canManage, prefill }: { tenant: Tenant; canManage: boolean; prefill?: string }) {
   const [list, setList] = useState<api.Invitation[] | null>(null);
   const [connectors, setConnectors] = useState<{ id: string; label: string }[]>([]);
   const [email, setEmail] = useState("");
+  // An address the member form found nobody for: invite it.
+  useEffect(() => {
+    if (!prefill) return;
+    setEmail(prefill);
+    const input = document.getElementById("invite-email");
+    input?.scrollIntoView({ behavior: "smooth", block: "center" });
+    input?.focus();
+  }, [prefill]);
   const [role, setRole] = useState<string>("member");
   const [connector, setConnector] = useState("");
   const [link, setLink] = useState<string | null>(null);
@@ -544,7 +626,7 @@ function InvitationsCard({ tenant, canManage }: { tenant: Tenant; canManage: boo
         <div className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-sm" data-testid="invitation-link">
           <p className="text-amber-900">Send this link to the person invited. It is shown once and can't be shown again.</p>
           <div className="mt-2 flex items-center gap-2">
-            <code className="flex-1 break-all font-mono text-xs bg-white px-2 py-1 rounded border border-amber-200">{link}</code>
+            <code className="flex-1 break-all font-mono text-xs bg-white px-2 py-1 rounded-sm border border-amber-200">{link}</code>
             <button
               type="button"
               className={secondaryButton}
@@ -670,6 +752,7 @@ export default function TenantDetail() {
   const [error, setError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
+  const [inviting, setInviting] = useState<string | undefined>(undefined);
   const [confirm, setConfirm] = useState<"suspend" | "resume" | "delete" | null>(null);
   const label = useTenantLabel();
 
@@ -854,12 +937,15 @@ export default function TenantDetail() {
                 await api.addTenantMember(tenant.id, p);
                 refreshMembers();
               }}
+              onInvite={can("manageTenantInvitations") ? setInviting : undefined}
             />
           )}
         </Card>
       )}
 
-      {can("readTenantInvitations") && <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} />}
+      {can("readTenantInvitations") && (
+        <InvitationsCard tenant={tenant} canManage={can("manageTenantInvitations")} prefill={inviting} />
+      )}
 
       {can("readTenantDevicePools") && <DevicePoolsCard tenant={tenant} canManage={can("manageTenantDevicePools")} />}
       {can("readTenantClusters") && <ClustersCard tenant={tenant} canManage={can("manageTenantClusters")} />}
@@ -885,6 +971,7 @@ export default function TenantDetail() {
           )}
           {can("manageTenantBindings") && (
             <AddBindingForm
+              emails
               roles={TENANT_ROLES}
               dir={dir}
               onAdd={async (role, principal) => {

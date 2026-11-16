@@ -763,6 +763,109 @@ async fn test_patch_edits_spec_and_refuses_immutable_fields() {
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 }
 
+/// A rename changes the name and the resource version, not the spec: no
+/// new generation and no restart, in any state (spec/12-reconciliation.md
+/// §7.7).
+#[tokio::test]
+async fn test_patch_renames_a_vm_without_a_spec_change() {
+    let (app, _temp_dir) = create_test_app();
+    let vm_id = create_simple_vm(&app, "old-name").await;
+    let other = create_simple_vm(&app, "taken").await;
+    let path = format!("/vms/{}", vm_id);
+    let (status, body) = send(&app, "POST", format!("{path}/start"), None, &[]).await;
+    assert_eq!(status, StatusCode::ACCEPTED, "{body}");
+    let before = vm_of(&body).clone();
+
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        path.clone(),
+        Some(json!({"change": {"name": "new-name"}})),
+        &[],
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    let vm = vm_of(&body);
+    assert_eq!(vm["name"], "new-name");
+    assert_eq!(num(&vm["generation"]), num(&before["generation"]));
+    assert_eq!(
+        num(&vm["resource_version"]),
+        num(&before["resource_version"]) + 1
+    );
+    assert_ne!(vm["restart_required"], true, "{vm}");
+    let (_, list) = send(&app, "GET", "/vms".into(), None, &[]).await;
+    let names: Vec<&str> = list["vms"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v["name"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"new-name") && !names.contains(&"old-name"),
+        "{list}"
+    );
+    let (_, events) = send(&app, "GET", format!("{path}/events"), None, &[]).await;
+    assert!(
+        events["events"].as_array().unwrap().iter().any(
+            |e| e["reason"] == "Renamed" && e["message"].as_str().unwrap().contains("old-name")
+        ),
+        "{events}"
+    );
+
+    // The same name again changes nothing.
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        path.clone(),
+        Some(json!({"change": {"name": "new-name"}})),
+        &[],
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    assert_eq!(
+        num(&vm_of(&body)["resource_version"]),
+        num(&vm["resource_version"])
+    );
+
+    // Another VM's name in the project, or none, is refused.
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        path.clone(),
+        Some(json!({"change": {"name": "taken"}})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        path.clone(),
+        Some(json!({"change": {"name": ""}, "update_mask": "name"})),
+        &[],
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+    // With a spec change, the generation moves for that.
+    let (status, body) = send(
+        &app,
+        "PATCH",
+        format!("/vms/{}", other),
+        Some(json!({"change": {"name": "renamed", "vcpu_count": 2}})),
+        &[],
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    assert_eq!(
+        (
+            vm_of(&body)["name"].as_str(),
+            num(&vm_of(&body)["generation"])
+        ),
+        (Some("renamed"), 2)
+    );
+}
+
 #[tokio::test]
 async fn test_if_match_guards_writes() {
     let (app, _temp_dir) = create_test_app();

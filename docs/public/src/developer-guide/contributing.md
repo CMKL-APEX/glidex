@@ -18,7 +18,7 @@ walk-through of adding an API operation, and the pull request flow.
 
 ```bash
 cargo build                      # every crate
-cargo build -p glidex-control-plane --bin gxctl
+cargo build -p gxctl
 ```
 
 On a host where the installer runs Glidex as services, stop them first:
@@ -231,6 +231,7 @@ Two workflows run on every pull request to `main` and every push to
 |---|---|
 | `build` | `scripts/lint-store-writes.sh`; `cargo build`; `GLIDEX_CHECK_WRITE_SETS=1 cargo test`. Times out after 45 minutes. |
 | `fmt` | `cargo fmt --all --check` |
+| `audit` | `cargo audit`: `Cargo.lock` against the RustSec advisories. The ones accepted are in `.cargo/audit.toml`, each with its reason. A new advisory fails it on any pull request. |
 | `proto` | In `crates/glidex-api`: `buf lint`, `buf format --exit-code`; `buf generate` leaves `crates/glidex-ui/ui/src/gen` unchanged; `buf breaking` against `origin/main`. |
 
 [`docs.yml`](https://github.com/CMKL-APEX/glidex/blob/main/.github/workflows/docs.yml):
@@ -267,6 +268,7 @@ And when they apply:
 | A `.proto` | In `crates/glidex-api`: `buf lint`, `buf format --exit-code`, `buf generate` (commit the regenerated `crates/glidex-ui/ui/src/gen`), `buf breaking --against '../../.git#branch=main,subdir=crates/glidex-api'`. |
 | The web UI | `bun install` (after a package change) and `bun x tsc -b --noEmit` in `crates/glidex-ui/ui`; the UI e2e for the pages touched. |
 | Docs | `mdbook build docs/public` (and `docs/internal` for `spec/`). |
+| Dependencies (`Cargo.lock`, `bun.lock`) | `cargo audit` (install it with `cargo install --locked cargo-audit`) and `bun audit` in `crates/glidex-ui/ui`. Dependabot opens weekly update pull requests (`.github/dependabot.yml`). |
 | VM, disk, network or host paths | The `#[ignore]`d functional tests that cover them, on a host. |
 
 The cluster tests are timing-sensitive: a failed `build` job may be
@@ -332,6 +334,8 @@ renamed, because code cites them by path.
 - REST bodies are the proto3 JSON form of the same messages: enum
   values take their full names (`HYPERVISOR_QEMU`), and an unknown
   field is refused with `422` and code `invalid`.
+- Proto comments become rustdoc: put a placeholder such as `<id>` in
+  backquotes, since rustdoc rejects it bare.
 - After changing a proto, regenerate the UI's TypeScript and commit it:
 
   ```bash
@@ -516,7 +520,7 @@ that each RPC's REST twin is registered with the same action.
 
 ### 8. gxctl
 
-Add the command in the area's file under `src/bin/gxctl/`, here
+Add the command in the area's file under `crates/gxctl/src/`, here
 `storage.rs` (`disk move <disk> --datastore D [--node N] [--flatten]`),
 calling the generated client:
 
@@ -614,6 +618,70 @@ mdbook build docs/internal        # the specs -> target/docs/internal
    [`spec/progress.md`](https://github.com/CMKL-APEX/glidex/blob/main/spec/progress.md)
    what is built, claimed and next; a pull request that starts or
    finishes a milestone updates it.
+
+## Versions and releases
+
+Every crate takes its version from `[workspace.package]` in the root
+`Cargo.toml`; the published workspace crates are also listed in
+`[workspace.dependencies]` with the same version, for the crates that
+depend on them, and move with it (a build fails while they differ). On `main` it is the **next** release's version with `-dev`
+after it: `0.0.8-dev` leads to `v0.0.8`. Binaries report it
+(`--version`, `gxctl`'s check against the server, a node's
+`status.versions.glidex`), so a build from `main` says it isn't a
+release, and which release it leads to.
+
+To make a release:
+
+1. Open a pull request that drops `-dev` from every version in the root
+   `Cargo.toml`, the workspace's and those in `[workspace.dependencies]`
+   (`sed -i 's/"0.0.8-dev"/"0.0.8"/' Cargo.toml`), and commits the
+   updated `Cargo.lock`.
+2. When it has merged, tag that commit `v<version>` (`v0.0.8`) and
+   publish the release notes. Then publish the library crates from that
+   tag (see [Publishing to crates.io](#publishing-to-cratesio); a crate's
+   first upload is by hand).
+3. Open a pull request that moves `main` to the next release, `-dev`
+   again (`0.0.9-dev`), in the same places, with its `Cargo.lock`.
+
+Versions only inform: compatibility between nodes and helpers comes from
+feature levels and protocol numbers, never from comparing versions.
+
+## Publishing to crates.io
+
+The library crates are published to crates.io: `glidex-api`,
+`glidex-auth`, `glidex-hv-client`, `glidex-ovn`, `glidex-ovs`,
+`glidex-raftstore`, `glidex-tls` and `glidex-topology`, and `glidex`,
+which re-exports them, each behind a feature of its name; and `gxctl`,
+the CLI, so that `cargo install gxctl` installs it on any machine. The daemons, the
+UI, the installer and the control plane have `publish = false`: they are
+installed by `glidex-install`, and the control plane depends on
+hyperstor's crates by git, which crates.io refuses.
+
+The `crates.io` workflow (`.github/workflows/publish.yml`) packages each
+publishable crate and builds it from its package, uploading nothing, on
+every pull request that changes a manifest or a crate. To check by hand:
+
+```bash
+cargo publish --workspace --dry-run
+```
+
+A version on crates.io can be yanked but never removed or uploaded
+again, so only a release is published, and only by hand: run the
+workflow from the release's tag (*Actions* → *crates.io* → *Run
+workflow*, the tag `v<version>`, `publish` checked). It refuses a `-dev`
+version or a tag that isn't the version's, waits for a reviewer of the
+`crates-io` environment, and signs in to crates.io with Trusted
+Publishing (the workflow's OIDC token; no crates.io token is stored).
+
+Trusted Publishing is set per crate on crates.io, so a crate's first
+upload is by hand, by an owner: `cargo login` (it reads the token from
+standard input; never pass it as an argument), then
+`cargo publish -p <crate>` for each crate, `glidex-ovs` before
+`glidex-ovn`, and `glidex` and `gxctl` last (or `cargo publish --workspace`, which
+takes them in that order). Then, for each crate, add the repository and
+`publish.yml` (environment `crates-io`) as a trusted publisher in its
+settings on crates.io, and add the other owners
+(`cargo owner --add github:CMKL-APEX:<team> <crate>`).
 
 Contributions are dual-licensed MIT OR Apache-2.0, as the [README](https://github.com/CMKL-APEX/glidex/blob/main/README.md#contribution)
 says.

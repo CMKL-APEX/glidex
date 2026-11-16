@@ -3,7 +3,7 @@
 // for offers; the tenant page offers to accept one and refuses a token that
 // isn't one. The two-organization flow runs in the control
 // plane's trust tests and on real hosts (spec/20-idp-checks.md).
-import { expect, test } from "../fixtures";
+import { expect, rpcRoute, test } from "../fixtures";
 
 test.use({ ignoredConsoleErrors: /status of (400|403)/ });
 
@@ -28,4 +28,52 @@ test("the tenant page refuses something that isn't an offer", async ({ page }) =
   await offer.fill("gxo_not-an-offer");
   await page.getByRole("button", { name: "Accept offer" }).click();
   await expect(page.getByText(/offer/i).filter({ hasText: /not|refused|invalid/i }).first()).toBeVisible();
+});
+
+// D85: a storage cluster reports only storage, as tenant totals; the tenant
+// page shows its volumes' provisioned and used space side by side, and a
+// VM cluster's row beside it shows none. The list is mocked: one host has
+// no cluster of another organization to report.
+test("the tenant page shows a storage cluster's report", async ({ page }) => {
+  await rpcRoute(page, "glidex.tenancy.v1.TenantService/ListTenantClusters", () => ({
+    message: {
+      clusters: [
+        {
+          cluster_id: "c-store",
+          name: "store-north",
+          api: "https://store.example:8443",
+          report: {
+            reported_at: new Date().toISOString(),
+            status: "ADMISSION_STATUS_ADMITTED",
+            storage: {
+              volumes: "2",
+              volume_gib: "100",
+              volume_used_bytes: "7516192768",
+              buckets: "1",
+              bucket_bytes: "12345",
+              s3_keys: "3",
+            },
+          },
+        },
+        {
+          cluster_id: "c-vms",
+          name: "vms-north",
+          api: "https://vms.example:8841",
+          report: { reported_at: new Date().toISOString(), status: "ADMISSION_STATUS_ADMITTED", vms: "4", running_vms: "1" },
+        },
+      ],
+    },
+  }));
+  await page.goto("/tenants/default");
+  const table = page.getByTestId("tenant-clusters");
+  await expect(table).toBeVisible();
+  await expect(table.getByRole("columnheader", { name: "Storage" })).toBeVisible();
+  const store = table.getByRole("row").filter({ hasText: "store-north" });
+  await expect(store.getByText("2 volumes")).toBeVisible();
+  await expect(store.getByText("(100 GiB provisioned · 7.0 GiB used)")).toBeVisible();
+  await expect(store.getByText("1 buckets")).toBeVisible();
+  await expect(store.getByText("(12.1 KiB)")).toBeVisible();
+  await expect(store.getByText("3 S3 keys")).toBeVisible();
+  const vms = table.getByRole("row").filter({ hasText: "vms-north" });
+  await expect(vms.getByTestId("tenant-cluster-storage")).toHaveText("—");
 });

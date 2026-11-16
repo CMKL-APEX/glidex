@@ -60,13 +60,15 @@ pub struct NetPort {
     pub master: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rdma: Option<RdmaPort>,
-    /// Addresses on it, or on its master when it has one (a bond's).
+    /// Addresses on it and on each master up its chain (port → bond →
+    /// bridge).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub addresses: Vec<PortAddr>,
 }
 
 /// The ports under `sys`, with `addresses` (by netdev) put on them: a
-/// port's own, or its master's. Only netdevs on a PCI function count:
+/// port's own, and those of each master up its chain (a bond's member
+/// under a bridge has the bridge's). Only netdevs on a PCI function count:
 /// virtual ones (bonds, bridges, veths, tunnels) have none.
 pub fn read(sys: &Path, addresses: &[(String, PortAddr)]) -> Vec<NetPort> {
     let attr = |p: &Path| {
@@ -99,9 +101,17 @@ pub fn read(sys: &Path, addresses: &[(String, PortAddr)]) -> Vec<NetPort> {
             _ => LinkLayer::Other,
         };
         let master = link_name(&dir.join("master"));
+        // Its masters, to the top; sysfs makes no loop, but a bad one
+        // mustn't hang the read.
+        let mut chain = vec![name.clone()];
+        let mut up = master.clone();
+        while let Some(m) = up.filter(|m| !chain.contains(m)) {
+            up = link_name(&sys.join("class/net").join(&m).join("master"));
+            chain.push(m);
+        }
         let addresses = addresses
             .iter()
-            .filter(|(n, _)| *n == name || Some(n) == master.as_ref())
+            .filter(|(n, _)| chain.contains(n))
             .map(|(_, a)| a.clone())
             .collect();
         // A port's RDMA device is the one whose netdev it is, else (a bond's

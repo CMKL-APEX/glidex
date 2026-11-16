@@ -124,22 +124,35 @@ impl Ca {
 
     /// Sign a node's CSR (§5.2 step 3). Whatever the CSR says about its
     /// subject is ignored: the subject is `CN=node:<id>, OU=<role>`; only
-    /// its public key and the IP/DNS names it asks for are taken.
+    /// its public key and the addresses it asks for are taken, and those
+    /// only among `addresses`, the node's own (D36). A CSR naming any
+    /// other address, or a DNS name, is refused.
     pub fn sign_node(
         &self,
         csr_pem: &str,
         node_id: &str,
         server: bool,
         validity_days: i64,
+        addresses: &[IpAddr],
     ) -> Result<(String, NodeCert), PkiError> {
         let mut csr = CertificateSigningRequestParams::from_pem(csr_pem)?;
-        let sans: Vec<SanType> = csr
-            .params
-            .subject_alt_names
-            .iter()
-            .filter(|s| matches!(s, SanType::IpAddress(_) | SanType::DnsName(_)))
-            .cloned()
-            .collect();
+        let mut sans: Vec<SanType> = Vec::new();
+        for san in &csr.params.subject_alt_names {
+            match san {
+                SanType::IpAddress(ip) if addresses.contains(ip) => sans.push(san.clone()),
+                SanType::IpAddress(ip) => {
+                    return Err(PkiError::Invalid(format!(
+                        "the request names {ip}, which is not this node's address"
+                    )));
+                }
+                SanType::DnsName(_) => {
+                    return Err(PkiError::Invalid(
+                        "a node certificate names addresses, not DNS names".into(),
+                    ));
+                }
+                _ => {}
+            }
+        }
         let mut p = CertificateParams::default();
         p.subject_alt_names = sans;
         let mut dn = DistinguishedName::new();
@@ -245,6 +258,35 @@ pub fn pem_bundle_ders(pem: &str) -> Result<Vec<Vec<u8>>, PkiError> {
     Ok(out)
 }
 
+/// The one certificate of `bundle` whose public key has the SHA-256
+/// `fingerprint` (a join token's pin), as PEM; `None` if none has. A bundle
+/// fetched before any trust is untrusted as a whole: only this certificate
+/// is vouched for by the token, so only it may be trusted.
+pub fn pinned_ca(bundle: &str, fingerprint: &str) -> Result<Option<String>, PkiError> {
+    for der in pem_bundle_ders(bundle)? {
+        let (_, c) = parse_x509_certificate(&der).map_err(|e| PkiError::Parse(e.to_string()))?;
+        if hex(&Sha256::digest(c.public_key().raw)) == fingerprint {
+            return Ok(Some(pem_of(&der)));
+        }
+    }
+    Ok(None)
+}
+
+/// A DER certificate as PEM.
+pub fn pem_of(der: &[u8]) -> String {
+    use base64::Engine;
+    let b = base64::engine::general_purpose::STANDARD.encode(der);
+    let lines: Vec<&str> = b
+        .as_bytes()
+        .chunks(64)
+        .map(|c| std::str::from_utf8(c).unwrap())
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----\n",
+        lines.join("\n")
+    )
+}
+
 pub fn public_key_fingerprint(cert_pem: &str) -> Result<String, PkiError> {
     let der = parse_pem_cert(cert_pem)?;
     let (_, c) = parse_x509_certificate(&der).map_err(|e| PkiError::Parse(e.to_string()))?;
@@ -320,17 +362,75 @@ mod tests {
     fn a_node_cert_is_signed_for_its_id_and_role() {
         let ca = Ca::generate("c1").unwrap();
         let key = NodeKey::generate().unwrap();
-        let csr = key.csr(&["192.0.2.11".parse().unwrap()], &[]).unwrap();
-        let (pem, info) = ca.sign_node(&csr, "n1", true, NODE_VALIDITY_DAYS).unwrap();
+        let ip: IpAddr = "192.0.2.11".parse().unwrap();
+        let csr = key.csr(&[ip], &[]).unwrap();
+        let (pem, info) = ca
+            .sign_node(&csr, "n1", true, NODE_VALIDITY_DAYS, &[ip])
+            .unwrap();
         let der = &pem_bundle_ders(&pem).unwrap()[0];
         let seen = inspect_node_cert(der).unwrap();
         assert_eq!((seen.node_id.as_str(), seen.server), ("n1", true));
         assert_eq!(seen.serial, info.serial);
         assert!(seconds_left(&seen) > 364 * 86400);
         // The CSR can't talk its way into another identity: the CA names the subject.
-        let (pem, _) = ca.sign_node(&csr, "other", false, 30).unwrap();
+        let (pem, _) = ca.sign_node(&csr, "other", false, 30, &[ip]).unwrap();
         let seen = inspect_node_cert(&pem_bundle_ders(&pem).unwrap()[0]).unwrap();
         assert_eq!((seen.node_id.as_str(), seen.server), ("other", false));
+    }
+
+    #[test]
+    fn a_node_cert_names_only_the_nodes_own_address() {
+        let ca = Ca::generate("c1").unwrap();
+        let key = NodeKey::generate().unwrap();
+        let (own, other): (IpAddr, IpAddr) =
+            ("192.0.2.11".parse().unwrap(), "192.0.2.12".parse().unwrap());
+        // Its own address: signed, and the certificate names it.
+        let csr = key.csr(&[own], &[]).unwrap();
+        let (pem, _) = ca.sign_node(&csr, "n1", false, 30, &[own]).unwrap();
+        let der = &pem_bundle_ders(&pem).unwrap()[0];
+        let (_, cert) = x509_parser::parse_x509_certificate(der).unwrap();
+        let named: Vec<IpAddr> = cert
+            .subject_alternative_name()
+            .unwrap()
+            .unwrap()
+            .value
+            .general_names
+            .iter()
+            .filter_map(|n| match n {
+                x509_parser::extensions::GeneralName::IPAddress(b) if b.len() == 4 => {
+                    Some(IpAddr::from(<[u8; 4]>::try_from(*b).unwrap()))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(named, vec![own]);
+        // Another node's address, alone or beside its own, or a DNS name: refused.
+        for csr in [
+            key.csr(&[other], &[]).unwrap(),
+            key.csr(&[own, other], &[]).unwrap(),
+            key.csr(&[own], &["n1.example".into()]).unwrap(),
+        ] {
+            assert!(ca.sign_node(&csr, "n1", false, 30, &[own]).is_err());
+        }
+    }
+
+    #[test]
+    fn only_the_pinned_ca_of_a_bundle_is_kept() {
+        let real = Ca::generate("c1").unwrap();
+        let other = Ca::generate("c1").unwrap();
+        let fp = real.public_key_fingerprint().unwrap();
+        // Another CA after the pinned one, as an attacker in the path would add.
+        let bundle = format!("{}{}", real.cert_pem, other.cert_pem);
+        let kept = pinned_ca(&bundle, &fp).unwrap().unwrap();
+        assert_eq!(pem_bundle_ders(&kept).unwrap().len(), 1);
+        assert_eq!(public_key_fingerprint(&kept).unwrap(), fp);
+        // Order doesn't matter, and a bundle without it pins nothing.
+        let bundle = format!("{}{}", other.cert_pem, real.cert_pem);
+        assert_eq!(
+            public_key_fingerprint(&pinned_ca(&bundle, &fp).unwrap().unwrap()).unwrap(),
+            fp
+        );
+        assert!(pinned_ca(&other.cert_pem, &fp).unwrap().is_none());
     }
 
     #[test]
@@ -353,9 +453,9 @@ mod tests {
     fn serials_are_unique_and_positive() {
         let ca = Ca::generate("c1").unwrap();
         let key = NodeKey::generate().unwrap();
-        let csr = key.csr(&[], &["n1.example".into()]).unwrap();
+        let csr = key.csr(&[], &[]).unwrap();
         let s: std::collections::HashSet<_> = (0..20)
-            .map(|_| ca.sign_node(&csr, "n", true, 1).unwrap().1.serial)
+            .map(|_| ca.sign_node(&csr, "n", true, 1, &[]).unwrap().1.serial)
             .collect();
         assert_eq!(s.len(), 20);
     }

@@ -57,6 +57,52 @@ impl AerCounts {
     }
 }
 
+/// A discovered device pool's name, `<vendor>-<device>`: `amd-7551`,
+/// `nvidia-2330`, `15b3-1021` (glidex's spec/22-host-topology.md §9.1b).
+pub fn pool_slug(vendor_id: &str, device_id: &str) -> String {
+    let hex4 = |id: &str| {
+        format!(
+            "{:0>4}",
+            id.trim().trim_start_matches("0x").to_ascii_lowercase()
+        )
+    };
+    let v = hex4(vendor_id);
+    let vendor = match v.as_str() {
+        "10de" => "nvidia",
+        "1002" => "amd",
+        "8086" => "intel",
+        other => other,
+    };
+    format!("{vendor}-{}", hex4(device_id))
+}
+
+/// The vendor and device ids a discovered pool's name stands for, as a
+/// pool matches them (`amd-7551` → `0x1002`, `0x7551`).
+pub fn pool_slug_ids(name: &str) -> Option<(String, String)> {
+    let (vendor, device) = name.split_once('-')?;
+    let hex4 = |s: &str| s.len() == 4 && s.chars().all(|c| c.is_ascii_hexdigit());
+    let vendor = match vendor {
+        "nvidia" => "10de",
+        "amd" => "1002",
+        "intel" => "8086",
+        v if hex4(v) => v,
+        _ => return None,
+    };
+    hex4(device).then(|| (format!("0x{vendor}"), format!("0x{device}")))
+}
+
+/// The name of a discovered pool of VFs: their PF's model and `-vf`
+/// (`15b3-1021-vf`).
+pub fn pool_vf_slug(pf_vendor_id: &str, pf_device_id: &str) -> String {
+    format!("{}-vf", pool_slug(pf_vendor_id, pf_device_id))
+}
+
+/// The PF vendor and device ids a discovered VF pool's name stands for, as
+/// its pool's `vf_of` matches them (`15b3-1021-vf` → `0x15b3`, `0x1021`).
+pub fn pool_vf_slug_ids(name: &str) -> Option<(String, String)> {
+    pool_slug_ids(name.strip_suffix("-vf")?)
+}
+
 /// The `TOTAL_ERR_*` line of an `aer_dev_*` file (`TOTAL_ERR_FATAL 0`).
 pub fn aer_total(text: &str) -> Option<u64> {
     text.lines()

@@ -353,7 +353,20 @@ trip, and that round trip needs the async runtime's I/O. So synchronous
 code must never block a Tokio worker on the lane, on another lock held
 across a store write, or on a slow helper call: two control planes hung
 that way (PRs #221, #227, #228). Such waits go through
-`glidex_raftstore::wait`, which waits in `block_in_place`.
+`glidex_raftstore::wait`, which waits in `block_in_place`. The lane's
+holder never waits on Raft for ever either: a member that lost its
+leadership while no leader committed held the lane, and two control
+planes never finished starting (PR #269). Its read barrier and its
+proposal now give up after a few election timeouts.
+
+openraft 0.9 gives an append one heartbeat to arrive and resends one
+that doesn't, for ever: one large entry stopped the log on every
+follower. So a write set is at most 1 MiB, an append carries at most 4
+entries, the Raft endpoints take that much (once the peer is known),
+and the heartbeat is 1 s, with elections in 3–6 s (14-clustering.md
+D24, PR #270). A failover of a few seconds is fine for a control plane;
+a write over 1 MiB is refused up front rather than stalling the
+cluster.
 
 ### Leader-computed write sets
 
@@ -618,7 +631,34 @@ to it (D11, §7.3).
 workloads and serving credentials it can verify, and stops accepting that
 directory's credentials after `max_staleness` (D13): an operator-chosen
 balance between availability and revocation. The model is large (over
-seventy decisions); the implemented parts are tracked in 19-tenancy.md §23.
+eighty decisions); the implemented parts are tracked in 19-tenancy.md §23.
+
+### Self-service tenants
+
+**Decision.** A directory's administrators can let its users create
+their own tenants, off by default (19-tenancy.md D78). The directory's
+settings choose who may (everyone, or members of some teams), how many
+per user and in all, whether an administrator approves each, and a slug
+prefix; the creator becomes the tenant's `tenant-admin`. Only users who
+signed in through the directory's connectors may, and such a tenant is
+never an operator tenant. A user can also get one at first sign-in
+(D82). A cluster's operator can admit these tenants automatically with a
+default cap that admissions follow until set by hand (D79), and grant a
+device pool to every admitted tenant (open pools, D80). Each directory
+names what its web UI calls a tenant (D81).
+
+**Why.** An organization such as a university wants its labs to
+organize themselves without asking IT for each tenant. The connectors
+already decide who is a user; limits, the approval switch and site
+policies bound the rest, so this is still not open signup (it narrows
+D31). A tenant nobody admits can make projects but no VMs, which defeats
+self-service; a default cap that admissions follow lets IT raise every
+lab at once.
+
+**Consequences.** Only a directory a cluster hosts is admitted
+automatically; tenants of other organizations' directories still need
+an admission by hand, or a fleet (D34). The API, gxctl, audit and errors
+keep the word *tenant*; only the web UI uses the directory's label.
 
 ### Workload federation
 

@@ -158,6 +158,8 @@ fn attachment_of(a: &pb::NetworkAttachment) -> m::NetworkAttachment {
         network: a.network.clone(),
         mac: a.mac.clone(),
         queue_pairs: a.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
+        port_security: a.port_security.unwrap_or(true),
+        allowed_addresses: a.allowed_addresses.clone(),
     }
 }
 
@@ -206,6 +208,8 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
                     mac: a.mac.clone().unwrap_or_default(),
                     port: live.and_then(|n| n.port.clone()),
                     ipv4: live.and_then(|n| n.ipv4).map(|ip| ip.to_string()),
+                    port_security: Some(a.port_security),
+                    allowed_addresses: a.allowed_addresses.clone(),
                     ..Default::default()
                 }
             })
@@ -388,14 +392,10 @@ fn expand_gpus(call: &Call, project: &str, g: &pb::GpuRequest) -> ServiceResult<
         .tenants
         .device_pools(&tenant)
         .unwrap_or_default();
-    // A cluster pool `project` may use.
-    let usable = |p: &crate::config::PciPool| {
-        let with_project: &[(&'static str, Ent)] =
-            &[("project", Ent::Project(project.to_string()))];
-        let (e, mut es) = crate::api::vms::pci_pool_entities(call, &p.name);
-        es.project(project);
-        call.allowed_action("usePciPool", e, es, with_project)
-    };
+    // A cluster pool `project` may use directly (not one its tenant
+    // reaches only through tenant pools, H25).
+    let usable =
+        |p: &crate::config::PciPool| crate::api::vms::may_use_pool_directly(call, &p.name, project);
     // (name asked for, the cluster pool behind it)
     let (name, base) = match &g.pool {
         Some(n) => {
@@ -527,7 +527,9 @@ fn apply_gpus(
 }
 
 /// Each requested pool exists, and the caller may use it for `project`
-/// (`usePciPool`, spec/22-host-topology.md §9).
+/// (`usePciPool`, spec/22-host-topology.md §9). A request naming the
+/// cluster pool itself, once the project's tenant has tenant pools on
+/// it, needs more than the tenant's grant (H25).
 fn check_pools(call: &Call, project: &str, rs: &[m::DeviceRequest]) -> ServiceResult<()> {
     let pools = call.manager().pci_pools();
     let with_project: &[(&'static str, Ent)] = &[("project", Ent::Project(project.to_string()))];
@@ -538,6 +540,23 @@ fn check_pools(call: &Call, project: &str, rs: &[m::DeviceRequest]) -> ServiceRe
                 "invalid_config",
                 format!("no device pool {}", r.pool),
             ));
+        }
+        if r.tenant_pool.is_none() {
+            let (e, es, split) = crate::api::vms::direct_pool_entities(call, &r.pool, project);
+            if split.is_empty() {
+                call.require_action("usePciPool", e, es, with_project)?;
+            } else if !call.allowed_action("usePciPool", e, es, with_project) {
+                return Err(ServiceError::new(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    format!(
+                        "this project's tenant uses pool {} through its tenant pools: ask for one of {}",
+                        r.pool,
+                        split.join(", ")
+                    ),
+                ));
+            }
+            continue;
         }
         let (e, mut es) = crate::api::vms::pci_pool_entities(call, &r.pool);
         es.project(project);
@@ -704,6 +723,12 @@ pub async fn preview_placement(
     mut req: pb::PreviewPlacementRequest,
 ) -> ServiceResult<pb::PreviewPlacementResponse> {
     let project = call.target_project(req.project.as_deref())?;
+    call.require_action(
+        "createVm",
+        Ent::Project(project.clone()),
+        project_entities(&project),
+        &[],
+    )?;
     if let Some(g) = req.gpus.as_option() {
         let x = expand_gpus(call, &project, g)?;
         apply_gpus(
@@ -716,12 +741,6 @@ pub async fn preview_placement(
             &mut req.mem_size_mib,
         )?;
     }
-    call.require_action(
-        "createVm",
-        Ent::Project(project.clone()),
-        project_entities(&project),
-        &[],
-    )?;
     let hypervisor = hypervisor_of(req.hypervisor.as_known().unwrap_or_default());
     let mut pool_requests = device_requests_of(&req.devices);
     resolve_tenant_pools(call, &project, &mut pool_requests)?;
@@ -800,6 +819,12 @@ fn names_host_path(req: &pb::CreateVmRequest) -> bool {
 pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResult<VmReply> {
     let project = call.target_project(req.project.as_deref())?;
     call.set_project(&project);
+    let pent = Ent::Project(project.clone());
+    let pes = project_entities(&project);
+    call.require(pent.clone(), pes.clone())?;
+    call.require_admitted(&project)?;
+    // Only after the project's own check: what pools it may use is the
+    // project's business.
     let gpus = match req.gpus.as_option() {
         Some(g) => {
             let x = expand_gpus(call, &project, g)?;
@@ -816,10 +841,6 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         }
         None => None,
     };
-    let pent = Ent::Project(project.clone());
-    let pes = project_entities(&project);
-    call.require(pent.clone(), pes.clone())?;
-    call.require_admitted(&project)?;
     let with_project: &[(&'static str, Ent)] = &[("project", pent.clone())];
 
     for key in req.data_disks.iter().chain(req.root_disk.iter()) {
@@ -843,6 +864,9 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
                 let mut es = pes.clone();
                 let e = crate::api::add_network(&mut es, &n);
                 call.require_action("useNetwork", e, es, with_project)?;
+                if att.port_security == Some(false) {
+                    require_port_security(call, pent.clone(), pes.clone(), &n)?;
+                }
             }
         }
     }
@@ -871,6 +895,9 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         let mut es = EntitySet::new();
         es.image(image);
         call.require_action("readImage", Ent::Image(image.clone()), es, &[])?;
+    }
+    if let Some(k) = &req.kernel {
+        crate::service::storage::require_kernel_for(call, k, &project).await?;
     }
     // An image means a new root disk, on the default datastore.
     if req.image.is_some() {
@@ -1031,6 +1058,7 @@ pub async fn pause_vm(call: &Call, req: pb::PauseVmRequest) -> ServiceResult<VmR
 
 /// The fields `UpdateVm` changes, by their mask path.
 pub const UPDATABLE: &[&str] = &[
+    "name",
     "power",
     "restart_policy",
     "on_host_boot",
@@ -1062,6 +1090,7 @@ fn patch_of(change: &pb::VmChange, mask: &[String]) -> ServiceResult<VmPatch> {
     let mut config = false;
     for path in mask {
         match path.as_str() {
+            "name" => p.name = Some(change.name.clone().unwrap_or_default()),
             "power" => p.power = power_of(change.power.as_known().unwrap_or_default()),
             "restart_policy" => {
                 p.restart_policy = restart_of(change.restart_policy.as_known().unwrap_or_default())
@@ -1193,6 +1222,27 @@ fn check_service_account(
     Ok(())
 }
 
+/// A NIC's port security lifted or put back (spec/09-networking.md
+/// decision 19, §9.1): `setPortSecurity` on the VM (`vm`: the project, at
+/// create), and again on the network: on its project for a project
+/// network, `setHostPortSecurity` for a host network. A project can't
+/// lift the checks on a network another project owns.
+fn require_port_security(
+    call: &Call,
+    vm: Ent,
+    vm_es: EntitySet,
+    n: &crate::network::Network,
+) -> ServiceResult<()> {
+    call.require_action("setPortSecurity", vm, vm_es, &[])?;
+    let mut es = EntitySet::new();
+    let e = crate::api::add_network(&mut es, n);
+    match &n.project {
+        Some(_) => call.require_action("setPortSecurity", e, es, &[])?,
+        None => call.require_action("setHostPortSecurity", e, es, &[])?,
+    }
+    Ok(())
+}
+
 /// Authorized per changed field (§12.1): power → start/stop/pauseVm,
 /// devices → attach/detachDevice + usePciDevice, data disks →
 /// attach/detachDisk + useDisk, networks → attach/detachNetwork +
@@ -1231,6 +1281,8 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             call.require_admitted(&project)?;
         }
     }
+    let renamed = patch.name.as_ref().filter(|n| **n != vm.name).cloned();
+    update |= renamed.is_some();
     update |= patch
         .restart_policy
         .is_some_and(|r| r != vm.spec.restart_policy)
@@ -1267,6 +1319,7 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             let mut kes = EntitySet::new();
             kes.image(k);
             call.require_action("readImage", Ent::Image(k.clone()), kes, &[])?;
+            crate::service::storage::require_kernel_for(call, k, &project).await?;
         }
         if let Some(cred) = &cp.credential {
             update = true;
@@ -1343,12 +1396,42 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
             {
                 call.require_action("detachNetwork", e.clone(), es.clone(), &[])?;
             }
+            // A NIC whose port security differs from what the VM has (a
+            // new NIC: from the default, on): `setPortSecurity`. A NIC is
+            // the same one by network and MAC.
+            for (a, (id, n)) in nets.iter().zip(&new) {
+                let had = cur
+                    .networks
+                    .iter()
+                    .find(|b| {
+                        &b.network == id
+                            && a.mac.is_some()
+                            && b.mac.as_deref().map(str::to_ascii_lowercase)
+                                == a.mac.as_deref().map(str::to_ascii_lowercase)
+                    })
+                    .is_none_or(|b| b.port_security);
+                if a.port_security != had
+                    && let Some(n) = n
+                {
+                    require_port_security(call, e.clone(), es.clone(), n)?;
+                }
+            }
         }
     }
     if update {
         call.require_action("updateVm", e.clone(), es.clone(), &[])?;
     }
     patch.device_nodes = new_device_nodes;
+    let root_disk = |vm: &Vm| {
+        let c = vm.config();
+        c.root_disk
+            .as_ref()
+            .filter(|_| c.owns_root_disk)
+            .and_then(|id| call.manager().images.get_disk(id).ok())
+            .map(|d| d.name)
+    };
+    let old_root_disk = renamed.as_ref().and_then(|_| root_disk(&vm));
+    let old_name = vm.name.clone();
     let quota = call.quota_mode(&project);
     let (vm, over) = call
         .manager()
@@ -1362,6 +1445,17 @@ pub async fn update_vm(call: &Call, req: pb::UpdateVmRequest) -> ServiceResult<V
         .await
         .map_err(manager_err)?;
     call.note_overruns(&over);
+    if renamed.is_some() {
+        call.detail(
+            "name",
+            serde_json::json!({ "from": old_name, "to": vm.name }),
+        );
+        if let (Some(from), Some(to)) = (old_root_disk, root_disk(&vm))
+            && from != to
+        {
+            call.detail("root_disk", serde_json::json!({ "from": from, "to": to }));
+        }
+    }
     respond(call, vm, req.wait_secs, Vec::new()).await
 }
 
@@ -1656,10 +1750,16 @@ pub async fn attach_network(call: &Call, req: pb::AttachNetworkRequest) -> Servi
         es,
         &[("project", Ent::Project(vm.project.clone()))],
     )?;
+    if req.port_security == Some(false) {
+        let (ve, ves) = vm_entities(&vm);
+        require_port_security(call, ve, ves, &n)?;
+    }
     let att = m::NetworkAttachment {
         network: n.id,
         mac: req.mac,
         queue_pairs: req.queue_pairs.map(|q| q.min(u32::from(u8::MAX)) as u8),
+        port_security: req.port_security.unwrap_or(true),
+        allowed_addresses: req.allowed_addresses,
     };
     let vm = call
         .manager()
@@ -1686,7 +1786,7 @@ pub enum ConsoleTarget {
     Local(String),
     /// On another node: relayed over `/cluster/v1/vms/{id}/console` (§8.4).
     Remote {
-        addr: String,
+        addr: crate::cluster::net::Target,
         vm: String,
     },
 }

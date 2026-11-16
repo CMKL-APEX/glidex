@@ -1,0 +1,6 @@
+# cargo audit's settings (CI's `audit` job). Each ignored advisory says why
+# it is accepted and what removes it; drop the entry when that lands.
+[advisories]
+# None accepted now: RUSTSEC-2023-0071 (rsa) and RUSTSEC-2026-0387
+# (crypto-bigint 0.5 via p256 0.13) went with those crates (#353).
+ignore = []

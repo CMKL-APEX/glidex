@@ -70,6 +70,51 @@ was the leader, another one takes over while it restarts. If a build
 with those fixes still hangs, report it with the journal from before
 the restart.
 
+## A cluster stops committing
+
+The servers answer, but changes fail on every one of them: with
+`cluster_unavailable` or `leader_changed`, or with *the write was not
+committed within …s (no leader commits); it may still be applied
+later*.
+
+Each server also says so itself once its log has applied nothing for 10
+election timeouts (60 seconds with the defaults) while entries wait, no
+leader is known or elections repeat:
+
+- its journal has the warning *the Raft log has applied nothing for
+  …s: term …, leader …, … entries wait*, again every 5 minutes, and
+  *the Raft log applies again, after a stall of …s* when it ends;
+- `gxctl cluster status` adds `! STALLED since …` under its `Raft:`
+  line, and the Cluster page's **Raft** card a warning.
+
+Point your log monitoring at the first line to hear of a stall early:
+
+```bash
+journalctl -u glidex-control-plane -g 'the Raft log has applied nothing'
+```
+
+To find the cause, run this on each server, twice, a minute apart:
+
+```bash
+gxctl cluster status
+```
+
+Its `Raft:` line gives the server's state, `term`, `leader`, `applied`
+(the last entry it applied) and `last log`. Compare them:
+
+| You see | Means | Do |
+| --- | --- | --- |
+| `applied` stays the same on every server, while `term` climbs and the leader keeps changing (or is `none`) | Elections without end: no leader gets its next entry to a majority. Releases before v0.0.6 stopped this way on one large entry: openraft sends an append again for ever when it takes longer than a heartbeat, and the node API refused bodies over 2 MB. | Update every server to v0.0.6 or later, one at a time; it limits a change to 1 MiB and an append to 4 entries (see [How changes are replicated](clusters.md#how-changes-are-replicated)). Check TCP 8842 between every pair of servers. If the servers are far apart, raise `cluster.raft.heartbeat_ms` and `cluster.raft.election_ms` together on every server. |
+| One server's `applied` stays behind while the others' moves on | That server doesn't get the leader's appends. | Check TCP 8842 from the leader to it, and `journalctl -u glidex-control-plane` there. |
+| `leader: none` and `term` doesn't move | Fewer than a majority of voters are up. | Bring the servers back; if a majority is gone for good, see [Backups and lost quorum](clusters.md#backups-and-lost-quorum). |
+
+Releases before v0.0.6 could also leave a server's control plane
+hanging at start during a rolling restart: a write waited for Raft with
+no limit, and every later write waited behind it. In v0.0.6 a write
+gives up after 10 election timeouts (60 seconds with the defaults).
+Restart such a server with `sudo systemctl restart
+glidex-control-plane`; its VMs keep running.
+
 ## gxctl can't connect
 
 | Message | Cause and fix |
@@ -285,7 +330,10 @@ lsmod | grep kvm
 - **After a reboot, devices are back on their host drivers, or VFs are
   gone.** Keep them with the installer's `--vfio-devices` and `--sriov`;
   `journalctl -u glidex-vfio-boot` shows what was bound, skipped or
-  failed. See [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots).
+  failed. A GPU that failed with `driver/unbind: Permission denied` was
+  still being started by its host driver: re-run `glidex-install`, which
+  claims the devices before that driver loads. See [Keep it across
+  reboots](pci-passthrough.md#keep-it-across-reboots).
 - **A GPU request is refused: `PCI device … has no NUMA node`.** The
   firmware reports no NUMA node for the device (`-1`), common on
   one-socket hosts; `gpus` aligns to NUMA nodes. Send `numa_policy:

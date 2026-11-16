@@ -89,6 +89,10 @@ pub enum DriverSpec {
         /// [`hyperstor_secret_owner`].
         #[serde(default, skip_serializing_if = "Option::is_none")]
         identity: Option<HyperstorIdentity>,
+        /// Its management UI (`https://host[:port]`), linked from the
+        /// datastore (S33); the operator's, not checked against the cluster.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mgmt_url: Option<String>,
         /// Unused: a hyperstor datastore is the same from every node.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_paths: BTreeMap<String, String>,
@@ -107,6 +111,26 @@ pub struct HyperstorIdentity {
     pub name: String,
     /// When it expires (Unix seconds).
     pub not_after: u64,
+}
+
+/// A management UI's address as an origin, `https://host[:port]` (S33): the
+/// datastore links to it ("Manage cluster"); nothing calls it. Only
+/// `https`, with a host and nothing past the origin but `/`.
+pub fn web_origin(s: &str) -> Result<String, String> {
+    let u = url::Url::parse(s.trim()).map_err(|e| format!("{s:?}: {e}"))?;
+    if u.scheme() != "https" {
+        return Err(format!("{s:?}: an https:// address"));
+    }
+    if u.host_str().is_none_or(str::is_empty)
+        || !u.username().is_empty()
+        || u.password().is_some()
+        || u.path() != "/"
+        || u.query().is_some()
+        || u.fragment().is_some()
+    {
+        return Err(format!("{s:?}: an origin, https://host[:port]"));
+    }
+    Ok(u.origin().ascii_serialization())
 }
 
 /// Where a hyperstor datastore's key is sealed (`SecretsKey::seal_value`).

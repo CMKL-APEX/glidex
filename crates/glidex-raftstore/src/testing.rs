@@ -8,7 +8,7 @@ use crate::raft::*;
 use crate::store::{Db, Schema, StoreError, definition};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -230,11 +230,26 @@ pub struct TestCluster {
     pub settings: RaftSettings,
 }
 
+/// The `last_applied` index of the state file at `path`, as a fresh open
+/// of it finds it (copied, so the file itself stays as it is).
+pub fn durable_applied(path: &Path) -> Option<u64> {
+    let dir = tempfile::tempdir().unwrap();
+    let copy = dir.path().join("state.db");
+    std::fs::copy(path, &copy).unwrap();
+    let db = redb::Database::create(&copy).unwrap();
+    let txn = redb::ReadableDatabase::begin_read(&db).unwrap();
+    let t = txn.open_table(definition::<Test>(Test::LOCAL)).unwrap();
+    let v = t.get(crate::store::LAST_APPLIED).unwrap()?;
+    let id: crate::raft::LogId = serde_json::from_slice(v.value()).unwrap();
+    Some(id.index)
+}
+
 pub fn fast_settings() -> RaftSettings {
     RaftSettings {
         heartbeat_ms: 100,
         election_ms: (800, 1600),
         log_keep_entries: 100,
+        checkpointed_applies: true,
     }
 }
 
@@ -333,15 +348,117 @@ impl TestCluster {
         self.by_id(id).node.shutdown().await;
     }
 
+    /// Stop member `id` and start it again from its database and log, as
+    /// a control plane's restart does: it comes back replicating.
+    pub async fn restart(&mut self, id: RaftId) {
+        self.restart_from(id, None).await;
+    }
+
+    /// Crash member `id` now and start it again: its state is what the
+    /// crash left (the last checkpoint, with checkpointed applies), its
+    /// log what it had flushed and more. Returns the revision it had
+    /// applied and the `last_applied` index its state rolled back to.
+    pub async fn crash(&mut self, id: RaftId) -> (u64, Option<u64>) {
+        let n = self.by_id(id);
+        let image = n.dir.join("store.db.crash");
+        let applied = n.db.revision();
+        n.db.crash_image(&n.dir.join("store.db"), &image).unwrap();
+        let rolled_back = durable_applied(&image);
+        self.restart_from(id, Some(image)).await;
+        (applied, rolled_back)
+    }
+
+    async fn restart_from(&mut self, id: RaftId, image: Option<PathBuf>) {
+        self.kill(id).await;
+        let i = self.nodes.iter().position(|n| n.id == id).unwrap();
+        let dir = self.nodes[i].dir.clone();
+        // The old member's handles let go of the database file first.
+        self.nodes.remove(i);
+        // A crash: the state the old member had flushed, whatever its
+        // handles still write to the file they hold.
+        if let Some(image) = image {
+            std::fs::rename(image, dir.join("store.db")).unwrap();
+        }
+        // A caller's write in flight holds it until that write gives up.
+        let mut tries = 0;
+        let db = loop {
+            match Db::create(dir.join("store.db")) {
+                Ok(db) => break Arc::new(db),
+                Err(e) if tries < 1500 => {
+                    let _ = e;
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("reopening n{id}'s store: {e}"),
+            }
+        };
+        // So does a log append or purge still running on a blocking thread
+        // when Raft shut down: its task holds the log's database until it
+        // ends. A restarted process never sees this (the kernel drops the
+        // old process's lock); only an in-process restart does.
+        let log = dir.join("raft").join("log.redb");
+        let mut tries = 0;
+        while log.exists() {
+            match redb::Database::open(&log) {
+                Ok(_) => break,
+                Err(redb::DatabaseError::DatabaseAlreadyOpen) if tries < 1500 => {
+                    tries += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(e) => panic!("reopening n{id}'s log: {e}"),
+            }
+        }
+        let node = ClusterNode::start(
+            db.clone(),
+            &dir.join("raft"),
+            id,
+            &self.settings,
+            self.mesh.transport(id),
+        )
+        .await
+        .unwrap();
+        self.mesh.register(id, node.service.clone());
+        self.mesh.set_down(id, false);
+        node.replicate();
+        self.nodes.insert(i, TestNode { id, node, db, dir });
+    }
+
     /// One write through member `id`'s store: sets `key` in the `meta` table.
     pub fn put(&self, id: RaftId, key: &str, value: &str) -> Result<(), StoreError> {
         let db = self.by_id(id).db.clone();
         let (k, v) = (key.to_string(), value.to_string());
-        db.write(TestOrigin::Api, move |tx| -> Result<(), StoreError> {
-            tx.open_table(definition::<Test>(TestTable::Data))?
-                .insert(&k, v.as_bytes())?;
-            Ok(())
-        })
+        let write = move || {
+            db.write(TestOrigin::Api, move |tx| -> Result<(), StoreError> {
+                tx.open_table(definition::<Test>(TestTable::Data))?
+                    .insert(&k, v.as_bytes())?;
+                Ok(())
+            })
+        };
+        // The write waits for Raft to commit it. Made on a runtime worker,
+        // that wait holds a thread the members' own tasks need; many in a
+        // row starve their heartbeats until a follower calls an election.
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => {
+                tokio::task::block_in_place(write)
+            }
+            _ => write(),
+        }
+    }
+
+    /// One write through whichever of `among` leads, following leadership
+    /// if it moves. Returns the member that took it.
+    pub async fn put_on_leader(&self, among: &[RaftId], key: &str, value: &str) -> RaftId {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+        loop {
+            let leader = self.leader(among).await;
+            match self.put(leader, key, value) {
+                Ok(()) => return leader,
+                Err(StoreError::NotLeader { .. }) if tokio::time::Instant::now() < deadline => {
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                Err(e) => panic!("writing {key} through n{leader}: {e:?}"),
+            }
+        }
     }
 
     /// Wait until every one of `among` has applied at least what `from` has.

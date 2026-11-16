@@ -482,18 +482,77 @@ pub fn firmware_catalog(
     })
 }
 
+/// What a caller sees of images. Images are shared, but an image a VM
+/// owns (a kernel taken from its disk, spec/23-kernel-boot.md §3) goes with
+/// that VM's project, and of the VMs and disks an image names, a caller
+/// sees only those it may read.
+pub(crate) struct ImageScope {
+    /// VM id → whether the caller may read it.
+    owners: std::collections::HashMap<String, bool>,
+    vm_names: std::collections::HashSet<String>,
+    disk_names: std::collections::HashSet<String>,
+}
+
+impl ImageScope {
+    pub(crate) async fn new(call: &Call) -> Self {
+        let mut s = ImageScope {
+            owners: Default::default(),
+            vm_names: Default::default(),
+            disk_names: Default::default(),
+        };
+        for vm in call.manager().list_vms().await {
+            let (e, es) = crate::api::vm_entities(&vm);
+            let ok = call.allowed("readVm", e, es);
+            if ok {
+                s.vm_names.insert(vm.name.clone());
+            }
+            s.owners.insert(vm.id.clone(), ok);
+        }
+        for d in call.manager().list_disks() {
+            let (e, es) = disk_entities(&d.id, &d.project);
+            if call.allowed("readDisk", e, es) {
+                s.disk_names.insert(d.name.clone());
+            }
+        }
+        s
+    }
+
+    /// `i` as the caller may see it; `None` if it may not see it at all.
+    /// An owned image whose VM is gone is left to those who may delete it.
+    pub(crate) fn view(&self, call: &Call, mut i: ImageResponse) -> Option<ImageResponse> {
+        if let Some(owner) = &i.owner {
+            let ok = match self.owners.get(owner) {
+                Some(ok) => *ok,
+                None => {
+                    let mut es = EntitySet::new();
+                    es.image(&i.id);
+                    call.allowed("deleteImage", Ent::Image(i.id.clone()), es)
+                }
+            };
+            if !ok {
+                return None;
+            }
+        }
+        i.used_by_vms.retain(|n| self.vm_names.contains(n));
+        i.linked_disks.retain(|n| self.disk_names.contains(n));
+        Some(i)
+    }
+}
+
 pub async fn list_images(
     call: &Call,
     _req: pb::ListImagesRequest,
 ) -> ServiceResult<pb::ListImagesResponse> {
     call.require(Ent::Cluster, EntitySet::new())?;
+    let scope = ImageScope::new(call).await;
     Ok(pb::ListImagesResponse {
         images: call
             .manager()
             .list_images()
             .await
-            .iter()
-            .map(image_pb)
+            .into_iter()
+            .filter_map(|i| scope.view(call, i))
+            .map(|i| image_pb(&i))
             .collect(),
         ..Default::default()
     })
@@ -507,16 +566,47 @@ fn require_image(call: &Call, id: &str) -> ServiceResult<()> {
     Ok(())
 }
 
+/// An image by id or name, as the caller may see it: one it may not see
+/// (another project's VM's own kernel) is not found.
+pub(crate) async fn visible_image(call: &Call, key: &str) -> ServiceResult<ImageResponse> {
+    let i = call.manager().get_image(key).await.map_err(manager_err)?;
+    ImageScope::new(call).await.view(call, i).ok_or_else(|| {
+        ServiceError::from(crate::api::err(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            format!("image {key} not found"),
+        ))
+    })
+}
+
+/// A VM in `project` may boot kernel image `key`: a kernel another VM owns
+/// (taken from its disk) only in that VM's project.
+pub(crate) async fn require_kernel_for(call: &Call, key: &str, project: &str) -> ServiceResult<()> {
+    let i = visible_image(call, key).await?;
+    if let Some(owner) = &i.owner {
+        let same = call
+            .manager()
+            .get_vm(owner)
+            .await
+            .is_ok_and(|vm| vm.project == project);
+        if !same {
+            return Err(crate::api::err(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                format!("kernel image {key} is a VM's own and boots only VMs of that VM's project"),
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
 pub async fn get_image(
     call: &Call,
     req: pb::GetImageRequest,
 ) -> ServiceResult<pb::GetImageResponse> {
     require_image(call, &req.id)?;
-    let i = call
-        .manager()
-        .get_image(&req.id)
-        .await
-        .map_err(manager_err)?;
+    let i = visible_image(call, &req.id).await?;
     Ok(pb::GetImageResponse {
         image: image_pb(&i).into(),
         ..Default::default()
@@ -652,11 +742,7 @@ pub async fn image_events(
     req: pb::ListImageEventsRequest,
 ) -> ServiceResult<pb::ListImageEventsResponse> {
     require_image(call, &req.id)?;
-    let i = call
-        .manager()
-        .get_image(&req.id)
-        .await
-        .map_err(manager_err)?;
+    let i = visible_image(call, &req.id).await?;
     let events = call
         .manager()
         .object_events("image", &i.id)
@@ -945,23 +1031,26 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
             pb::DatastoreTopology::DATASTORE_TOPOLOGY_SHARED,
         ),
     };
-    let (hyperstor_api, hyperstor_pool, hyperstor_identity, expires) = match &d.driver {
-        DriverSpec::Hyperstor {
-            api,
-            pool,
-            identity,
-            ..
-        } => (
-            api.clone(),
-            *pool,
-            identity
-                .as_ref()
-                .map(|i| i.name.clone())
-                .unwrap_or_default(),
-            identity.as_ref().map(|i| i.not_after),
-        ),
-        _ => (Vec::new(), 0, String::new(), None),
-    };
+    let (hyperstor_api, hyperstor_pool, hyperstor_identity, expires, hyperstor_mgmt_url) =
+        match &d.driver {
+            DriverSpec::Hyperstor {
+                api,
+                pool,
+                identity,
+                mgmt_url,
+                ..
+            } => (
+                api.clone(),
+                *pool,
+                identity
+                    .as_ref()
+                    .map(|i| i.name.clone())
+                    .unwrap_or_default(),
+                identity.as_ref().map(|i| i.not_after),
+                mgmt_url.clone().unwrap_or_default(),
+            ),
+            _ => (Vec::new(), 0, String::new(), None, String::new()),
+        };
     let (path, volume_group, thin_pool) = match &d.driver {
         DriverSpec::Lvm { vg, thin_pool, .. } => (String::new(), vg.clone(), thin_pool.clone()),
         _ => (path.clone(), String::new(), String::new()),
@@ -1003,8 +1092,25 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
         hyperstor_pool,
         hyperstor_identity,
         hyperstor_identity_expires: crate::service::common::ts_opt(expires.unwrap_or(0)).into(),
+        hyperstor_mgmt_url,
         ..Default::default()
     }
+}
+
+/// A hyperstor datastore's management UI from a request: empty is none.
+fn mgmt_url_of(s: &str) -> ServiceResult<Option<String>> {
+    if s.trim().is_empty() {
+        return Ok(None);
+    }
+    crate::datastore::record::web_origin(s)
+        .map(Some)
+        .map_err(|e| {
+            ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid_datastore",
+                format!("hyperstor_mgmt_url: {e}"),
+            )
+        })
 }
 
 fn require_datastore(call: &Call, id: &str) -> ServiceResult<()> {
@@ -1069,6 +1175,7 @@ pub async fn create_datastore(
                 api: req.hyperstor_api.clone(),
                 pool: req.hyperstor_pool,
                 token: zeroize::Zeroizing::new(req.hyperstor_token.clone()),
+                mgmt_url: mgmt_url_of(&req.hyperstor_mgmt_url)?,
             });
             (true, None)
         }
@@ -1132,12 +1239,13 @@ pub async fn update_datastore(
                 ch.default_for_disks = Some(req.default_for_disks.unwrap_or(false))
             }
             "overcommit" => ch.overcommit = Some(req.overcommit.unwrap_or(true)),
+            "hyperstor_mgmt_url" => ch.mgmt_url = Some(mgmt_url_of(&req.hyperstor_mgmt_url)?),
             other => {
                 return Err(ServiceError::new(
                     StatusCode::BAD_REQUEST,
                     "invalid",
                     format!(
-                        "can't update {other}: node_paths, nodes, default_for_disks or overcommit"
+                        "can't update {other}: node_paths, nodes, default_for_disks, overcommit or hyperstor_mgmt_url"
                     ),
                 ));
             }

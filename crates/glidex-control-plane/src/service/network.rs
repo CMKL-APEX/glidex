@@ -264,6 +264,8 @@ fn viewed(call: &Call, n: Network) -> ServiceResult<Network> {
     network_view(call, &visible, n).ok_or_else(|| not_found("network", &key))
 }
 
+/// Tenants a host network is granted to: by id, or by the `local`
+/// directory's slug (spec/22-host-topology.md H27).
 fn resolve_tenants(call: &Call, keys: &[String]) -> ServiceResult<Vec<String>> {
     keys.iter()
         .map(|k| {
@@ -276,14 +278,29 @@ fn resolve_tenants(call: &Call, keys: &[String]) -> ServiceResult<Vec<String>> {
         .collect()
 }
 
+/// Projects a host network is granted to, by the rule of device grants
+/// (spec/22-host-topology.md H26, H27): a bare name several projects have
+/// is `409 ambiguous`.
 fn resolve_projects(call: &Call, keys: &[String]) -> ServiceResult<Vec<String>> {
+    use crate::tenancy::GrantProject;
     keys.iter()
         .map(|k| {
-            call.manager()
+            match call
+                .manager()
                 .projects()
-                .resolve(k)
-                .map(|p| p.id)
-                .map_err(|_| not_found("project", k))
+                .resolve_grant(&call.auth().tenants, k)
+                .map_err(|e| manager_err(e.into()))?
+            {
+                GrantProject::Found(p) => Ok(p.id),
+                GrantProject::NotFound => Err(not_found("project", k)),
+                GrantProject::Ambiguous(n) => Err(ServiceError::new(
+                    StatusCode::CONFLICT,
+                    "ambiguous",
+                    format!(
+                        "{n} projects are named {k}: name the project as <tenant>/<project> or by its id"
+                    ),
+                )),
+            }
         })
         .collect()
 }

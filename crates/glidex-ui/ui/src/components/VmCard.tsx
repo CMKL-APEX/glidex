@@ -2,15 +2,17 @@ import { Link } from "react-router-dom";
 import type { VmResponse } from "../types";
 import { desiredState, nodeUnreachable, notReadyReason, vmHypervisor, vmState, HYPERVISOR_LABELS } from "../types";
 import NodeName from "./NodeName";
-import VmActions, { type VmAction } from "./VmActions";
+import VmActions, { type VmAction, type VmAllow } from "./VmActions";
 import VmStateBadge from "./VmStateBadge";
 
 interface VmCardProps {
   vm: VmResponse;
   onAction: (vmId: string, action: VmAction) => void;
+  /** The caller's power and delete rights on this VM; absent: all buttons. */
+  allow?: VmAllow;
 }
 
-export default function VmCard({ vm, onAction }: VmCardProps) {
+export default function VmCard({ vm, onAction, allow }: VmCardProps) {
   const vfioCount = (vm.vfio_devices ?? []).length;
   const unreachable = nodeUnreachable(vm);
   const state = vmState(vm);
@@ -82,7 +84,7 @@ export default function VmCard({ vm, onAction }: VmCardProps) {
       </div>
 
       <div className="mt-4 pt-4 border-t border-gray-100 flex items-center gap-2 flex-wrap">
-        <VmActions vmId={vm.id} state={state} desired={desiredState(vm)} deleting={vm.deleting} onAction={onAction} />
+        <VmActions vmId={vm.id} state={state} desired={desiredState(vm)} deleting={vm.deleting} onAction={onAction} allow={allow} />
         {hasConsole && (
           <Link
             to={`/vms/${vm.id}/console`}

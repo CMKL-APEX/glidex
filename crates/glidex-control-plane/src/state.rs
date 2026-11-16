@@ -190,6 +190,7 @@ impl From<PersistenceError> for VmManagerError {
     fn from(e: PersistenceError) -> Self {
         match e {
             PersistenceError::Disk(e) => VmManagerError::Image(e),
+            PersistenceError::MacInUse(m) => VmManagerError::Network(NetError::Conflict(m)),
             e => VmManagerError::PersistenceError(e.to_string()),
         }
     }
@@ -231,6 +232,9 @@ pub struct VmOptions {
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct VmPatch {
+    /// A new name (spec/12-reconciliation.md §7.7): `meta`, not `spec`.
+    #[serde(default)]
+    pub name: Option<String>,
     #[serde(default)]
     pub power: Option<PowerState>,
     #[serde(default)]
@@ -365,14 +369,31 @@ pub struct VmManager {
     pub(crate) orphans: std::sync::Mutex<Vec<Orphan>>,
     /// netd's socket identity at the last port sync (restart detection).
     pub(crate) netd_seen: std::sync::Mutex<Option<(u64, u64)>>,
+    /// The leader's `ovn-nbctl` daemon (spec/14-clustering.md §11.1).
+    pub(crate) nb_daemon: std::sync::Mutex<glidex_ovn::daemon::NbDaemon>,
     pub(crate) controllers_started: std::sync::atomic::AtomicBool,
+    /// `initialize` has loaded the VMs into `vms`. Before that every VM is
+    /// unknown, and the probe keeps every hold (S26).
+    pub(crate) vms_loaded: std::sync::atomic::AtomicBool,
     sched: ArcSwap<crate::cluster::config::SchedulerConfig>,
     reserved: ArcSwap<crate::cluster::config::NodeReserved>,
     /// This host's web UI address, as a server publishes it
     /// (spec/28-host-page.md W3).
     ui_url: ArcSwap<Option<String>>,
-    /// `pci.pools` of the control-plane config (spec/22-host-topology.md §9).
+    /// The pins of the API certificate served, and of a renewed one held
+    /// (spec/19-tenancy.md D90): `(serving, pending)`.
+    api_pins: ArcSwap<(Option<String>, Option<String>)>,
+    /// The device pools and grants in force: the cluster setting if
+    /// written, else this host's file (spec/22-host-topology.md H20).
     pci_pools: ArcSwap<Vec<crate::config::PciPool>>,
+    /// `pci_pools` and the discovered pools over the nodes' summaries
+    /// (spec/22-host-topology.md H21): what requests resolve against.
+    pools_in_force: ArcSwap<Vec<crate::config::PciPool>>,
+    pci_grants: ArcSwap<Vec<crate::config::PciGrant>>,
+    /// `pci` as this host's file has it.
+    pci_file: ArcSwap<crate::config::PciConfig>,
+    /// The file's pools and grants were reported as ignored.
+    pci_file_warned: std::sync::atomic::AtomicBool,
     /// What this host runs OVN with: the cluster setting (if written) over
     /// the file's per-host part (spec/16-clustering-ui.md §8a).
     pub(crate) ovn: ArcSwap<crate::cluster::config::OvnConfig>,
@@ -564,11 +585,20 @@ impl VmManager {
             watched: std::sync::Mutex::new(Default::default()),
             orphans: std::sync::Mutex::new(Vec::new()),
             netd_seen: std::sync::Mutex::new(None),
+            nb_daemon: std::sync::Mutex::new(glidex_ovn::daemon::NbDaemon::new(
+                crate::paths::run_dir().join("ovn"),
+            )),
             controllers_started: std::sync::atomic::AtomicBool::new(false),
+            vms_loaded: std::sync::atomic::AtomicBool::new(false),
             sched: ArcSwap::from_pointee(Default::default()),
             reserved: ArcSwap::from_pointee(Default::default()),
             ui_url: ArcSwap::from_pointee(None),
+            api_pins: ArcSwap::from_pointee((None, None)),
             pci_pools: ArcSwap::from_pointee(Vec::new()),
+            pools_in_force: ArcSwap::from_pointee(Vec::new()),
+            pci_grants: ArcSwap::from_pointee(Vec::new()),
+            pci_file: ArcSwap::from_pointee(Default::default()),
+            pci_file_warned: std::sync::atomic::AtomicBool::new(false),
             ovn: ArcSwap::from_pointee(Default::default()),
             ovn_file: ArcSwap::from_pointee(Default::default()),
             ovn_file_warned: std::sync::atomic::AtomicBool::new(false),
@@ -601,9 +631,129 @@ impl VmManager {
         self.sched.store(Arc::new(cfg.cluster.scheduler.clone()));
         self.reserved
             .store(Arc::new(cfg.cluster.node_reserved.clone()));
-        self.pci_pools.store(Arc::new(cfg.pci.pools.clone()));
+        self.pci_file.store(Arc::new(cfg.pci.clone()));
         self.ovn_file.store(Arc::new(cfg.cluster.ovn.clone()));
         self.apply_ovn_settings();
+        self.apply_pci_settings();
+    }
+
+    /// Recompute the pools and grants in force from the cluster setting and
+    /// the file (at start, and whenever the setting changes).
+    pub fn apply_pci_settings(&self) {
+        let file = self.pci_file.load_full();
+        let next = match self.pci_settings() {
+            Some(s) => {
+                let file_says_something = !file.pools.is_empty() || !file.allow.is_empty();
+                if file_says_something
+                    && !s.same_as(&file)
+                    && !self
+                        .pci_file_warned
+                        .swap(true, std::sync::atomic::Ordering::AcqRel)
+                {
+                    tracing::warn!(
+                        "control-plane.json's pci.pools and pci.allow are ignored: the cluster's device setting decides (spec/22-host-topology.md H20)"
+                    );
+                }
+                s.config()
+            }
+            None => (*file).clone(),
+        };
+        if **self.pci_pools.load() != next.pools {
+            for name in file.overrides.keys() {
+                if !next.pools.iter().any(|p| p.name == *name) {
+                    tracing::warn!(
+                        "control-plane.json's pci.overrides names {name}, which is no pool (spec/22-host-topology.md H23)"
+                    );
+                }
+            }
+            self.pci_pools.store(Arc::new(next.pools));
+        }
+        if **self.pci_grants.load() != next.allow {
+            for (name, n) in self.ambiguous_grant_names(&next.allow) {
+                tracing::warn!(
+                    "pci.allow names project {name}, which {n} projects have: it grants none of them until it is named as <tenant>/{name} or by id (spec/22-host-topology.md H26)"
+                );
+            }
+            self.pci_grants.store(Arc::new(next.allow));
+        }
+        self.refresh_pools();
+    }
+
+    /// The bare project names in `grants` that several projects have
+    /// (spec/22-host-topology.md H26).
+    pub fn ambiguous_grant_names(
+        &self,
+        grants: &[crate::config::PciGrant],
+    ) -> Vec<(String, usize)> {
+        self.projects()
+            .ambiguous_names(
+                grants
+                    .iter()
+                    .flat_map(|g| g.projects.iter().map(String::as_str)),
+            )
+            .unwrap_or_default()
+    }
+
+    /// At start, when `control-plane.json`'s `pci.allow` is in force: an
+    /// error if it names a project by a bare name that several projects
+    /// have (spec/22-host-topology.md H26). Once the cluster's setting
+    /// decides, the file is ignored and a write of the setting is checked
+    /// instead.
+    pub fn check_pci_grant_names(&self) -> Result<(), String> {
+        if self.pci_settings().is_some() {
+            return Ok(());
+        }
+        let bad = self.ambiguous_grant_names(&self.pci_file.load().allow);
+        if bad.is_empty() {
+            return Ok(());
+        }
+        Err(ambiguous_grant_message(
+            "control-plane.json's pci.allow",
+            &bad,
+        ))
+    }
+
+    /// Recompute the pools in force: the defined ones and those discovered
+    /// over the nodes' summaries (at start, when the setting changes, and
+    /// when a node's record does).
+    pub fn refresh_pools(&self) {
+        let defined = self.pci_pools.load_full();
+        let nodes = self.nodes.list().unwrap_or_default();
+        let mut all = (*defined).clone();
+        all.extend(crate::pci_discovery::discover(&defined, &nodes));
+        if **self.pools_in_force.load() != all {
+            self.pools_in_force.store(Arc::new(all));
+        }
+    }
+
+    /// The cluster's device pools and grants, if a setting was written.
+    pub fn pci_settings(&self) -> Option<crate::pci_settings::PciSettings> {
+        crate::pci_settings::read(&self.store.database())
+    }
+
+    /// On the leader (or a standalone host) whose pools are in the file,
+    /// write the setting from the file once, so every server resolves the
+    /// same pools and joining a cluster changes nothing about where they
+    /// live.
+    pub fn migrate_pci_settings(&self) {
+        if !self.store.database().can_write() || self.pci_settings().is_some() {
+            return;
+        }
+        let file = self.pci_file.load_full();
+        if file.pools.is_empty() && file.allow.is_empty() {
+            return;
+        }
+        let by = format!("migrate:{}", self.local_node_id());
+        let s = crate::pci_settings::PciSettings::from_file(&file, &by, crate::auth::store::now());
+        match crate::pci_settings::write(&self.store.database(), &s) {
+            Ok(()) => {
+                tracing::info!(
+                    "wrote the cluster's device pools and grants from this server's control-plane.json"
+                );
+                self.apply_pci_settings();
+            }
+            Err(e) => tracing::warn!("writing the cluster's device setting: {}", e),
+        }
     }
 
     /// Recompute the OVN configuration from the cluster setting and the
@@ -716,9 +866,20 @@ impl VmManager {
             .or(Some(2048))
     }
 
-    /// The configured device pools (spec/22-host-topology.md §9).
+    /// The device pools in force: defined and discovered
+    /// (spec/22-host-topology.md §9, H20, H21).
     pub fn pci_pools(&self) -> Arc<Vec<crate::config::PciPool>> {
+        self.pools_in_force.load_full()
+    }
+
+    /// The defined pools only: the setting's, else this host's file.
+    pub fn defined_pools(&self) -> Arc<Vec<crate::config::PciPool>> {
         self.pci_pools.load_full()
+    }
+
+    /// The device grants in force (`pci.allow`; spec/22-host-topology.md H20).
+    pub fn pci_grants(&self) -> Arc<Vec<crate::config::PciGrant>> {
+        self.pci_grants.load_full()
     }
 
     /// Every node with what is placed on it, for the pool listing.
@@ -983,7 +1144,7 @@ impl VmManager {
             vfio: c.vfio_devices.clone(),
             device_nodes: None,
             pools: {
-                let defs = self.pci_pools.load();
+                let defs = self.pools_in_force.load();
                 c.devices
                     .iter()
                     .filter_map(|r| {
@@ -1124,38 +1285,25 @@ impl VmManager {
     }
 
     /// Lets go of this node's `hyperstor-vhost` holds on disks of datastore
-    /// `ds` whose VM isn't placed here (S26): left by a detach that failed,
-    /// or by a VM placed elsewhere while it was stopped. Blocks.
+    /// `ds` whose VM is placed on another node (S26): left by a detach that
+    /// failed, or by a VM placed elsewhere while it was stopped. Blocks.
     fn release_stale_holds(
         &self,
         driver: &crate::datastore::hyperstor::HyperstorDriver,
         ds: &str,
         me: &str,
     ) {
-        use crate::datastore::hyperstor::{stale_here, volume_id};
+        use crate::datastore::hyperstor::stale_here;
+        // Before the VMs are loaded every VM is unknown: keep every hold.
+        let Some(disks) = self.hold_nodes(ds) else {
+            return;
+        };
         let Ok(attached) = driver.attached_volumes() else {
             return;
         };
         if attached.is_empty() {
             return;
         }
-        let vms = self.vms.blocking_read();
-        let disks: Vec<(String, Option<String>)> = self
-            .images
-            .list_disks()
-            .into_iter()
-            .filter(|d| d.datastore == ds)
-            .map(|d| {
-                let node = d
-                    .attached_to
-                    .as_ref()
-                    .and_then(|vm| vms.get(vm))
-                    .and_then(|vm| vm.status.placement.as_ref())
-                    .map(|p| p.node.clone());
-                (volume_id(&d), node)
-            })
-            .collect();
-        drop(vms);
         for v in stale_here(&attached, &disks, me) {
             match driver.detach_volume(&v) {
                 Ok(()) => {
@@ -1164,6 +1312,34 @@ impl VmManager {
                 Err(e) => tracing::warn!(volume = %v, "letting go of a stale hold: {}", e),
             }
         }
+    }
+
+    /// Datastore `ds`'s disks, each as its volume and the node its VM is
+    /// placed on: `None` for a disk attached to no VM, to a VM not known
+    /// here, or to one placed nowhere (a VM starting is, S26). `None` in
+    /// all until `initialize` has loaded the VMs.
+    pub(crate) fn hold_nodes(&self, ds: &str) -> Option<Vec<(String, Option<String>)>> {
+        use crate::datastore::hyperstor::volume_id;
+        if !self.vms_loaded.load(std::sync::atomic::Ordering::Acquire) {
+            return None;
+        }
+        let vms = self.vms.blocking_read();
+        Some(
+            self.images
+                .list_disks()
+                .into_iter()
+                .filter(|d| d.datastore == ds)
+                .map(|d| {
+                    let node = d
+                        .attached_to
+                        .as_ref()
+                        .and_then(|vm| vms.get(vm))
+                        .and_then(|vm| vm.status.placement.as_ref())
+                        .map(|p| p.node.clone());
+                    (volume_id(&d), node)
+                })
+                .collect(),
+        )
     }
 
     /// Look at every datastore this node is on and say what it finds
@@ -1286,6 +1462,23 @@ impl VmManager {
         (**self.ui_url.load()).clone()
     }
 
+    /// Set the pins of the API certificate served and of a renewed one
+    /// held (D90); `true` when they changed, and the node record should be
+    /// refreshed.
+    pub fn set_api_pins(&self, serving: Option<String>, pending: Option<String>) -> bool {
+        let new = (serving, pending);
+        if **self.api_pins.load() == new {
+            return false;
+        }
+        self.api_pins.store(Arc::new(new));
+        true
+    }
+
+    /// `(serving, pending)`, as `set_api_pins` left them.
+    pub fn api_pins(&self) -> (Option<String>, Option<String>) {
+        (**self.api_pins.load()).clone()
+    }
+
     /// Whether this host is a cluster agent.
     pub fn is_agent(&self) -> bool {
         self.cluster().is_some_and(|c| c.node.is_none())
@@ -1303,19 +1496,19 @@ impl VmManager {
             }
         };
         let mut probe = crate::node::SelfProbe::detect(&reserved);
-        // Agents publish no UI address: browsers go to a server (W5).
+        let stored = self.nodes.get(&self.local_node_id()).ok().flatten();
+        // Agents publish no UI address: browsers go to a server (W5). Before
+        // the API sets one (startup reports first), the published one stands:
+        // reporting none would clear it, and a restart would write it twice.
         if !self.is_agent() {
-            probe.ui_url = (**self.ui_url.load()).clone();
+            probe.ui_url = self
+                .ui_url()
+                .or_else(|| stored.as_ref().and_then(|n| n.status.ui_url.clone()));
         }
+        (probe.api_pin, probe.api_pin_pending) = self.api_pins();
         // Unrecorded image files (spec/14-clustering.md §9.2.3): deleted when
         // asked (once per request), the rest reported.
-        if let Some(before) = self
-            .nodes
-            .get(&self.local_node_id())
-            .ok()
-            .flatten()
-            .and_then(|n| n.spec.drop_spare_files_before)
-        {
+        if let Some(before) = stored.and_then(|n| n.spec.drop_spare_files_before) {
             self.images.drop_spare_files(before);
         }
         probe.features.spare_image_files = self.images.spare_files();
@@ -1373,6 +1566,10 @@ impl VmManager {
                 self.held_groups(g)
             })
             .summary_devices();
+            let file = self.pci_file.load();
+            for d in &mut t.devices {
+                d.excluded = file.excludes(d);
+            }
         }
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
@@ -1428,7 +1625,7 @@ impl VmManager {
     /// Whether `vm` runs here. A VM without a placement is this host's (a
     /// record from before nodes).
     /// The node API address of the node `vm` runs on, if that is not this one.
-    pub fn remote_node_addr(&self, vm: &Vm) -> Option<String> {
+    pub fn remote_node_addr(&self, vm: &Vm) -> Option<crate::cluster::net::Target> {
         if self.is_local(vm) {
             return None;
         }
@@ -1438,7 +1635,7 @@ impl VmManager {
             .ok()
             .flatten()
             .and_then(|n| n.status.advertise)
-            .map(|a| a.to_string())
+            .map(|a| crate::cluster::net::Target::node(node, a))
     }
 
     pub(crate) fn is_local(&self, vm: &Vm) -> bool {
@@ -1594,6 +1791,7 @@ impl VmManager {
                 // A cache re-list replaces everything: no keys to say which.
                 Ok(a) if a.keys.is_empty() => {
                     self.apply_ovn_settings();
+                    self.apply_pci_settings();
                     self.reload_vms().await
                 }
                 // One write set may hold several tables (a VM is created with
@@ -1688,6 +1886,14 @@ impl VmManager {
                     {
                         self.apply_ovn_settings();
                     }
+                    if a.keys
+                        .iter()
+                        .any(|(t, k)| crate::pci_settings::is_key(*t, k))
+                    {
+                        self.apply_pci_settings();
+                    } else if a.tables.contains(&crate::store::TableId::Nodes) {
+                        self.refresh_pools();
+                    }
                     if a.tables.contains(&crate::store::TableId::Vms) {
                         let keys: Vec<String> = a
                             .keys
@@ -1700,6 +1906,7 @@ impl VmManager {
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
                     self.apply_ovn_settings();
+                    self.apply_pci_settings();
                     self.reload_vms().await
                 }
                 Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
@@ -1835,6 +2042,8 @@ impl VmManager {
                 vms.insert(vm.id.clone(), vm);
             }
         }
+        self.vms_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
         if writable {
             self.adopt_into_default_project()?;
         }
@@ -1887,6 +2096,31 @@ impl VmManager {
         let vm = self.put_locked(vms, vm, vec![ev])?;
         self.queue.add(Key::Vm(vm.id.clone()));
         Ok(vm)
+    }
+
+    /// The root disk `vm` made for itself, renamed for the VM's new name
+    /// with create's rule (§7.7); `None` when the VM doesn't own it.
+    fn renamed_root_disk(&self, vm: &Vm, name: &str) -> Result<Option<Disk>, VmManagerError> {
+        let config = vm.config();
+        let Some(id) = config.root_disk.as_ref().filter(|_| config.owns_root_disk) else {
+            return Ok(None);
+        };
+        let mut disk = self.images.get_disk(id)?;
+        let scope = self.tenant_scope(&vm.project);
+        let taken = |n: &str| self.images.disk_name_taken_in(n, &scope, Some(&disk.id));
+        let preferred = root_disk_name(name);
+        let fallback = format!("{}-{}", preferred.trim_end_matches("-root"), &vm.id[..8]);
+        let Some(new) = [preferred, fallback].into_iter().find(|n| !taken(n)) else {
+            return Err(ImageError::AlreadyExists(format!(
+                "the root disk's names for {name} are taken in the tenant"
+            ))
+            .into());
+        };
+        if new == disk.name {
+            return Ok(None);
+        }
+        disk.name = new;
+        Ok(Some(disk))
     }
 
     fn writable<'a>(
@@ -2071,6 +2305,7 @@ impl VmManager {
         &self,
         project: &str,
         networks: &mut [NetworkAttachment],
+        nat_subnets: &BTreeMap<String, glidex_ovs::net::Ipv4Net>,
     ) -> Result<(), VmManagerError> {
         if networks.len() > glidex_ovs::names::MAX_NICS as usize {
             return Err(invalid(format!(
@@ -2107,6 +2342,23 @@ impl VmManager {
                         att.network
                     )));
                 }
+                // OVN sets a cluster port's port security
+                // (spec/14-clustering.md §11.4); decision 19 lifts only
+                // the host bridges' rules (spec/09-networking.md §9.1).
+                Some(n)
+                    if !att.port_security && n.scope == crate::network::NetworkScope::Cluster =>
+                {
+                    return Err(invalid(format!(
+                        "port_security can be turned off only on a host's networks, not on cluster network '{}'",
+                        att.network
+                    )));
+                }
+                Some(n) if !att.allowed_addresses.is_empty() => {
+                    let here = n.node.as_deref().is_none_or(|x| x == self.local_node_id());
+                    let none = BTreeMap::new();
+                    let subnets = if here { nat_subnets } else { &none };
+                    Self::check_allowed_addresses(&n, &att.allowed_addresses, subnets)?;
+                }
                 Some(_) => {}
             }
             if let Some(mac) = &att.mac {
@@ -2119,6 +2371,166 @@ impl VmManager {
                 && !(1..=8).contains(&q)
             {
                 return Err(invalid("queue_pairs must be 1-8"));
+            }
+        }
+        Ok(())
+    }
+
+    /// A NIC's `allowed_addresses` (spec/09-networking.md decision 20): at
+    /// most 16 addresses or prefixes, none overlapping; on a NAT network
+    /// IPv4 only and, where this host's netd has the network
+    /// (`nat_subnets`: bridge → subnet, of this host's networks), inside
+    /// its subnet. netd checks the
+    /// subnet again at attach, on whichever host the VM runs. Cluster
+    /// networks refuse a list: OVN keeps their port security.
+    fn check_allowed_addresses(
+        n: &crate::network::Network,
+        list: &[String],
+        nat_subnets: &BTreeMap<String, glidex_ovs::net::Ipv4Net>,
+    ) -> Result<(), VmManagerError> {
+        let refused = |m: String| VmManagerError::Network(NetError::AddressRefused(m));
+        if n.scope == crate::network::NetworkScope::Cluster {
+            return Err(refused(format!(
+                "allowed_addresses apply only to a host's networks, not to cluster network '{}'",
+                n.name
+            )));
+        }
+        let parsed =
+            glidex_ovs::port_security::parse_allowed(list).map_err(|e| refused(e.to_string()))?;
+        if n.mode == crate::network::NetworkMode::Nat {
+            if let Some(a) = parsed.iter().find(|a| a.addr.is_ipv6()) {
+                return Err(refused(format!(
+                    "allowed address {a}: NAT network '{}' is IPv4 only",
+                    n.name
+                )));
+            }
+            if let Some(subnet) = nat_subnets.get(&n.bridge)
+                && let Some(a) = parsed.iter().find(|a| !a.within(subnet))
+            {
+                return Err(refused(format!(
+                    "allowed address {a} is outside network '{}' ({subnet})",
+                    n.name
+                )));
+            }
+        }
+        Ok(())
+    }
+
+    /// No two VMs' `allowed_addresses` overlap on one network, and none
+    /// covers the address another VM's NIC there has (decision 20).
+    /// Checked under the VM write lock, as MACs are.
+    fn refuse_overlapping_addresses(
+        vms: &HashMap<String, Vm>,
+        vm_id: &str,
+        networks: &[NetworkAttachment],
+    ) -> Result<(), VmManagerError> {
+        use glidex_ovs::port_security::{AllowedAddress, parse_allowed};
+        let refused = |m: String| VmManagerError::Network(NetError::AddressRefused(m));
+        for att in networks.iter().filter(|a| !a.allowed_addresses.is_empty()) {
+            let mine = parse_allowed(&att.allowed_addresses).map_err(|e| refused(e.to_string()))?;
+            for v in vms.values().filter(|v| v.id != vm_id) {
+                let theirs: Vec<AllowedAddress> = v
+                    .config()
+                    .networks
+                    .iter()
+                    .filter(|b| b.network == att.network)
+                    .flat_map(|b| parse_allowed(&b.allowed_addresses).unwrap_or_default())
+                    .collect();
+                if let Some(a) = mine.iter().find(|a| theirs.iter().any(|b| a.overlaps(b))) {
+                    return Err(refused(format!(
+                        "allowed address {a} overlaps VM {}'s on network {}",
+                        v.name, att.network
+                    )));
+                }
+                if let Some((a, ip)) = v
+                    .status
+                    .nics
+                    .iter()
+                    .filter(|x| x.network == att.network)
+                    .filter_map(|x| x.ipv4)
+                    .find_map(|ip| mine.iter().find(|a| a.contains(ip.into())).map(|a| (a, ip)))
+                {
+                    return Err(refused(format!(
+                        "allowed address {a} covers {ip}, VM {}'s address on network {}",
+                        v.name, att.network
+                    )));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The subnets of this host's NAT networks, by bridge, when `networks`
+    /// gives any NIC `allowed_addresses` (else none: netd isn't asked).
+    async fn nat_subnets_for(
+        &self,
+        networks: &[NetworkAttachment],
+    ) -> BTreeMap<String, glidex_ovs::net::Ipv4Net> {
+        if networks.iter().all(|a| a.allowed_addresses.is_empty()) {
+            return BTreeMap::new();
+        }
+        let netd = self.netd.clone();
+        tokio::task::spawn_blocking(move || netd.call::<Vec<NatInfo>>(Op::ListNat))
+            .await
+            .ok()
+            .and_then(Result::ok)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|n| (n.state.bridge, n.state.subnet))
+            .collect()
+    }
+
+    /// A VM other than `vm_id` with a NIC of `mac` on `network`, in its
+    /// spec or on its running ports. `vms` holds every VM of the cluster.
+    fn mac_holder<'a>(
+        vms: &'a HashMap<String, Vm>,
+        vm_id: &str,
+        network: &str,
+        mac: &str,
+    ) -> Option<&'a Vm> {
+        vms.values().find(|v| {
+            v.id != vm_id
+                && v.spec_nics()
+                    .into_iter()
+                    .chain(v.port_nics())
+                    .any(|(_, n, m)| n == network && m.eq_ignore_ascii_case(mac))
+        })
+    }
+
+    /// A NIC's MAC is unique on its network: refuse one another VM has
+    /// there. Checked under the VM write lock, so two writes can't both
+    /// take a MAC. A NIC `cur` (the VM as it is) already has is let be, so
+    /// a VM recorded with a taken MAC before this check still saves.
+    fn refuse_taken_macs(
+        vms: &HashMap<String, Vm>,
+        vm_id: &str,
+        networks: &[NetworkAttachment],
+        cur: Option<&Vm>,
+    ) -> Result<(), VmManagerError> {
+        let had = cur.map(|c| {
+            c.spec_nics()
+                .into_iter()
+                .chain(c.port_nics())
+                .collect::<Vec<_>>()
+        });
+        for att in networks {
+            let Some(mac) = &att.mac else {
+                return Err(NetError::Conflict(format!(
+                    "no free MAC for a NIC on network {}: give one",
+                    att.network
+                ))
+                .into());
+            };
+            let kept = had.as_ref().is_some_and(|h| {
+                h.iter()
+                    .any(|(_, n, m)| *n == att.network && m.eq_ignore_ascii_case(mac))
+            });
+            if !kept && Self::mac_holder(vms, vm_id, &att.network, mac).is_some() {
+                return Err(NetError::Conflict(format!(
+                    "MAC {mac} is in use on network {} by another VM's NIC",
+                    att.network
+                ))
+                .into());
             }
         }
         Ok(())
@@ -2304,7 +2716,8 @@ impl VmManager {
         Self::check_options(&opts)?;
         self.check_paths(&config)?;
         self.refuse_dpdk_uplink_devices(&config.vfio_devices)?;
-        self.check_networks(project, &mut config.networks)?;
+        let nat_subnets = self.nat_subnets_for(&config.networks).await;
+        self.check_networks(project, &mut config.networks, &nat_subnets)?;
 
         let mut vms = self.vms.write().await;
 
@@ -2418,8 +2831,14 @@ impl VmManager {
         vm.spec.on_host_boot = opts.on_host_boot.unwrap_or(self.settings().on_host_boot);
         vm.spec.stop_grace_secs = opts.stop_grace_secs.unwrap_or(0);
         // Stable MACs derived from the VM id, so they show up in the API
-        // and survive restarts.
-        fill_macs(&vm.id, &mut vm.spec.config.networks);
+        // and survive restarts; one another VM has on the network is
+        // passed over.
+        let id = vm.id.clone();
+        fill_macs(&id, &mut vm.spec.config.networks, |n, m| {
+            Self::mac_holder(&vms, &id, n, m).is_some()
+        });
+        Self::refuse_taken_macs(&vms, &id, &vm.spec.config.networks, None)?;
+        Self::refuse_overlapping_addresses(&vms, &id, &vm.spec.config.networks)?;
 
         // Managed disks. Checked under the VM write lock, so no other VM
         // can claim the same disk in between.
@@ -2458,7 +2877,7 @@ impl VmManager {
             let mut disk_name = root_disk_name(&vm.name);
             if self
                 .images
-                .disk_name_taken_in(&disk_name, self.tenant_scope(&vm.project))
+                .disk_name_taken_in(&disk_name, self.tenant_scope(&vm.project), None)
             {
                 disk_name = format!("{}-{}", disk_name.trim_end_matches("-root"), &vm.id[..8]);
             }
@@ -3059,6 +3478,11 @@ impl VmManager {
             stop_grace_secs: patch.stop_grace_secs,
             ..Default::default()
         })?;
+        // Asked before the lock: it may call netd.
+        let nat_subnets = match patch.config.as_ref().and_then(|c| c.networks.as_ref()) {
+            Some(nets) => self.nat_subnets_for(nets).await,
+            None => BTreeMap::new(),
+        };
         let mut vms = self.vms.write().await;
         let cur = Self::writable(&vms, vm_id, if_match)?.clone();
         let project = cur.project.clone();
@@ -3219,8 +3643,12 @@ impl VmManager {
             }
             if let Some(nets) = c.networks {
                 let mut nets = nets;
-                fill_macs(&vm.id, &mut nets);
-                self.check_networks(&project, &mut nets)?;
+                self.check_networks(&project, &mut nets, &nat_subnets)?;
+                fill_macs(vm_id, &mut nets, |n, m| {
+                    Self::mac_holder(&vms, vm_id, n, m).is_some()
+                });
+                Self::refuse_taken_macs(&vms, vm_id, &nets, Some(&cur))?;
+                Self::refuse_overlapping_addresses(&vms, vm_id, &nets)?;
                 vm.spec.config.networks = nets;
             }
             if let Some(keys) = c.data_disks {
@@ -3293,8 +3721,50 @@ impl VmManager {
                 self.refit_placement(&vms, &mut vm, &[])?;
             }
         }
+        let mut events = Vec::new();
+        if let Some(name) = patch.name
+            && name != cur.name
+        {
+            if name.is_empty() {
+                return Err(invalid("name must not be empty"));
+            }
+            // Names are unique per project, as at create (§7.7).
+            if vms
+                .values()
+                .any(|v| v.id != cur.id && v.name == name && v.project == project)
+            {
+                return Err(VmManagerError::VmAlreadyExists(name));
+            }
+            let mut message = format!("renamed from {} to {}", cur.name, name);
+            if let Some(d) = self.renamed_root_disk(&cur, &name)? {
+                message.push_str(&format!("; root disk now {}", d.name));
+                disk_writes.push(d);
+            }
+            vm.name = name;
+            events.push(Event::new(actor, EventKind::Normal, "Renamed", message));
+        }
+        let renamed = vm.name != cur.name;
         if vm.spec == cur.spec {
-            return Ok((cur, Vec::new()));
+            if !renamed {
+                return Ok((cur, Vec::new()));
+            }
+            // Not a spec change: no new generation, nothing to reconcile.
+            vm.resource_version += 1;
+            self.store.commit(Commit {
+                put_vm: Some(&vm),
+                put_disks: disk_writes.iter().collect(),
+                events: events
+                    .into_iter()
+                    .map(|ev| (event_key("vm", &vm.id), ev))
+                    .collect(),
+                ..Default::default()
+            })?;
+            for d in &disk_writes {
+                self.images.cache_disk(d);
+            }
+            vms.insert(vm.id.clone(), vm.clone());
+            self.notify_changed();
+            return Ok((vm, Vec::new()));
         }
         let mut bypassed = Vec::new();
         if (delta.running_vms + delta.vcpus + delta.memory_mib > 0 || !delta.devices.is_empty())
@@ -3305,11 +3775,28 @@ impl VmManager {
         }
         vm.generation += 1;
         vm.resource_version += 1;
-        let ev = Event::new(actor, EventKind::Normal, "SpecChanged", "spec updated");
+        events.push(Event::new(
+            actor,
+            EventKind::Normal,
+            "SpecChanged",
+            "spec updated",
+        ));
+        // A NIC added to a placed VM needs its address now, as at create:
+        // without one the leader leaves its OVN port out. Placement makes
+        // them for a VM placed later.
+        let reserve_ips = if vm.status.placement.is_some() {
+            self.cluster_nics(&vm)
+        } else {
+            Vec::new()
+        };
         self.store.commit(Commit {
             put_vm: Some(&vm),
             put_disks: disk_writes.iter().collect(),
-            events: vec![(event_key("vm", &vm.id), ev)],
+            events: events
+                .into_iter()
+                .map(|ev| (event_key("vm", &vm.id), ev))
+                .collect(),
+            reserve_ips,
             ..Default::default()
         })?;
         for d in &disk_writes {
@@ -4435,19 +4922,26 @@ impl VmManager {
             .flatten()
             .map(|n| n.spec.name)
             .unwrap_or_default();
-        let pools: Vec<_> = self
-            .pci_pools()
-            .iter()
+        let file = self.pci_file.load_full();
+        let pools: Vec<_> = file
+            .pools_here(&self.pci_pools())
+            .into_iter()
             .filter(|p| p.prepare)
             .filter(|p| p.nodes.is_empty() || p.nodes.iter().any(|n| *n == me || *n == name))
-            .cloned()
             .collect();
         if pools.is_empty() {
             return;
         }
         let mut prepared = 0;
-        for address in self.local_topology().to_prepare(&pools) {
-            match device_op_on(&self.netd, &address, "prepare") {
+        for (address, bar_mib) in self.local_topology().to_prepare(&pools, &file.exclude) {
+            let r = self
+                .netd
+                .call::<serde_json::Value>(Op::PrepareDevice {
+                    address: address.clone(),
+                    bar_mib,
+                })
+                .map_err(VmManagerError::Network);
+            match r {
                 Ok(_) => {
                     tracing::info!("prepared {address} for its pool");
                     prepared += 1;
@@ -4517,7 +5011,7 @@ impl VmManager {
         let r = cluster
             .client
             .request_timeout(
-                &addr.to_string(),
+                crate::cluster::net::Target::node(&node.meta.id, addr),
                 hyper::Method::POST,
                 &format!("/cluster/v1/devices/{address}/{op}"),
                 &[],
@@ -4569,7 +5063,7 @@ impl VmManager {
         let r = cluster
             .client
             .request_timeout(
-                &addr.to_string(),
+                crate::cluster::net::Target::node(&node.meta.id, addr),
                 hyper::Method::GET,
                 "/cluster/v1/topology",
                 &[],
@@ -4814,28 +5308,24 @@ impl VmManager {
     /// Reservations to make for `vm`'s NICs on cluster networks.
     pub(crate) fn cluster_nics(&self, vm: &Vm) -> Vec<(String, String, String, u8)> {
         let nets = self.networks.list().unwrap_or_default();
-        vm.config()
-            .networks
-            .iter()
-            .enumerate()
-            .filter(|(_, a)| {
-                nets.iter().any(|n| {
-                    n.id == a.network
-                        && n.scope == crate::network::NetworkScope::Cluster
-                        && n.mode != NetworkMode::Bridged
-                })
-            })
-            .filter_map(|(i, a)| {
-                Some((
-                    a.network.clone(),
-                    a.mac
-                        .clone()
-                        .or_else(|| glidex_ovs::names::mac_address(&vm.id, i as u8).ok())?,
-                    vm.id.clone(),
-                    i as u8,
-                ))
-            })
-            .collect()
+        let mut out: Vec<(String, String, String, u8)> = Vec::new();
+        // The running ports' as well as the spec's: a NIC edited on a
+        // running VM keeps its address until its next start.
+        for (i, network, mac) in vm.port_nics().into_iter().chain(vm.spec_nics()) {
+            let cluster = nets.iter().any(|n| {
+                n.id == network
+                    && n.scope == crate::network::NetworkScope::Cluster
+                    && n.mode != NetworkMode::Bridged
+            });
+            if cluster
+                && !out
+                    .iter()
+                    .any(|(n, m, _, _)| *n == network && m.eq_ignore_ascii_case(&mac))
+            {
+                out.push((network, mac, vm.id.clone(), i));
+            }
+        }
+        out
     }
 
     /// Create a network: host side in netd first, record only on success.
@@ -5891,7 +6381,10 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
 fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Value, VmManagerError> {
     let address = address.to_string();
     let r = match op {
-        "prepare" => netd.call(Op::PrepareDevice { address }),
+        "prepare" => netd.call(Op::PrepareDevice {
+            address,
+            bar_mib: None,
+        }),
         "release" => netd.call(Op::ReleaseDevice { address }),
         _ if let Some(vfs) = op.strip_prefix("sriov-").and_then(|n| n.parse().ok()) => {
             netd.call(Op::SetSriovVfs { address, vfs })
@@ -5907,28 +6400,213 @@ fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Valu
 
 /// Give each NIC without a MAC the one derived from the VM id and the
 /// lowest NIC index whose MAC no other NIC has: after a detach, a new NIC
-/// mustn't take the MAC a kept one already has.
-fn fill_macs(vm_id: &str, networks: &mut [NetworkAttachment]) {
+/// mustn't take the MAC a kept one already has. Nor one `taken` says
+/// another VM has on the NIC's network.
+fn fill_macs(vm_id: &str, networks: &mut [NetworkAttachment], taken: impl Fn(&str, &str) -> bool) {
     for i in 0..networks.len() {
         if networks[i].mac.is_some() {
             continue;
         }
-        networks[i].mac = (0..glidex_ovs::names::MAX_NICS)
+        let network = &networks[i].network;
+        let mac = (0..glidex_ovs::names::MAX_NICS)
             .filter_map(|n| glidex_ovs::names::mac_address(vm_id, n).ok())
             .find(|m| {
                 !networks
                     .iter()
                     .any(|a| a.mac.as_deref().is_some_and(|x| x.eq_ignore_ascii_case(m)))
+                    && !taken(network, m)
             });
+        networks[i].mac = mac;
     }
+}
+
+/// What to say about bare project names in device grants that several
+/// projects have (spec/22-host-topology.md H26).
+pub fn ambiguous_grant_message(what: &str, bad: &[(String, usize)]) -> String {
+    let names: Vec<String> = bad
+        .iter()
+        .map(|(name, n)| format!("{name} ({n} projects)"))
+        .collect();
+    format!(
+        "{what} names projects by a name that several projects have: {}. Name each as <tenant>/<project> or by its id",
+        names.join(", ")
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A generated MAC another VM has on the NIC's network is passed over.
+    #[test]
+    fn generated_macs_pass_over_taken_ones() {
+        let id = "0123456789abcdef";
+        let derived = |n| glidex_ovs::names::mac_address(id, n).unwrap();
+        let mut nets = vec![
+            NetworkAttachment {
+                network: "a".into(),
+                mac: None,
+                queue_pairs: None,
+                port_security: true,
+                allowed_addresses: vec![],
+            },
+            NetworkAttachment {
+                network: "b".into(),
+                mac: None,
+                queue_pairs: None,
+                port_security: true,
+                allowed_addresses: vec![],
+            },
+        ];
+        let first = derived(0);
+        fill_macs(id, &mut nets, |n, m| {
+            n == "a" && m.eq_ignore_ascii_case(&first)
+        });
+        assert_eq!(nets[0].mac.as_deref(), Some(derived(1).as_str()));
+        // On b the first is free, and no two NICs share one.
+        assert_eq!(nets[1].mac.as_deref(), Some(derived(0).as_str()));
+    }
+
+    /// #322: a restart's probe, run before `initialize` has loaded the VMs,
+    /// let go of the holds of VMs running here. Until the VMs are loaded no
+    /// disk has a node; after, only a VM placed on a node gives one.
+    #[test]
+    fn holds_name_a_node_only_for_a_loaded_vm_with_a_placement() {
+        use crate::images::qemu_img::DiskFormat;
+        use crate::images::{Disk, DiskOrigin};
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        let disk = |id: &str, vm: Option<&str>| {
+            let mut d = Disk::new(
+                id.into(),
+                id.into(),
+                String::new(),
+                DiskFormat::Qcow2,
+                1 << 20,
+                DiskOrigin::Blank,
+            );
+            d.datastore = "hs".into();
+            d.attached_to = vm.map(String::from);
+            manager.images.put_disk(&d).unwrap();
+            crate::datastore::hyperstor::volume_id(&d)
+        };
+        let here = disk("d-here", Some("vm-here"));
+        let away = disk("d-away", Some("vm-away"));
+        let starting = disk("d-starting", Some("vm-starting"));
+        let unknown = disk("d-unknown", Some("vm-unknown"));
+        let loose = disk("d-loose", None);
+        let attached = vec![
+            here.clone(),
+            away.clone(),
+            starting.clone(),
+            unknown.clone(),
+            loose.clone(),
+        ];
+
+        // Before the VMs are loaded: nothing to go on.
+        assert!(manager.hold_nodes("hs").is_none());
+
+        let config = test_config(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": ""
+        }));
+        let placed = |node: &str| crate::models::Placement {
+            node: node.into(),
+            at: 0,
+            page_kib: None,
+            numa_node: None,
+            numa: Vec::new(),
+            cpus: Vec::new(),
+            pool_devices: Vec::new(),
+        };
+        {
+            let mut vms = manager.vms.blocking_write();
+            for (id, node) in [
+                ("vm-here", Some("node-a")),
+                ("vm-away", Some("node-b")),
+                ("vm-starting", None),
+            ] {
+                let mut vm = Vm::new(id.into(), config.clone());
+                vm.id = id.into();
+                vm.status.placement = node.map(placed);
+                vms.insert(id.into(), vm);
+            }
+        }
+        // Loaded but not marked: still nothing.
+        assert!(manager.hold_nodes("hs").is_none());
+        manager
+            .vms_loaded
+            .store(true, std::sync::atomic::Ordering::Release);
+
+        let disks = manager.hold_nodes("hs").unwrap();
+        let node_of = |v: &str| {
+            disks
+                .iter()
+                .find(|(d, _)| d == v)
+                .map(|(_, n)| n.clone())
+                .unwrap()
+        };
+        assert_eq!(node_of(&here).as_deref(), Some("node-a"));
+        assert_eq!(node_of(&away).as_deref(), Some("node-b"));
+        assert_eq!(node_of(&starting), None, "a VM placed nowhere");
+        assert_eq!(node_of(&unknown), None, "a VM not known here");
+        assert_eq!(node_of(&loose), None, "a disk attached to no VM");
+        assert!(manager.hold_nodes("other").unwrap().is_empty());
+        // Only the disk of the VM placed on another node is let go.
+        assert_eq!(
+            crate::datastore::hyperstor::stale_here(&attached, &disks, "node-a"),
+            [away]
+        );
+    }
+
     fn test_config(json: serde_json::Value) -> VmConfig {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// §7.7: a VM being deleted keeps its name until it is gone, so neither
+    /// a rename nor a create takes it, and the VM itself can't be renamed.
+    #[tokio::test]
+    async fn a_vm_being_deleted_keeps_its_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        let config = || {
+            test_config(serde_json::json!({
+                "vcpu_count": 1, "mem_size_mib": 256,
+                "kernel_image_path": "/k", "rootfs_path": "/r", "kernel_args": ""
+            }))
+        };
+        let going = manager.create_vm("going".into(), config()).await.unwrap();
+        let other = manager.create_vm("other".into(), config()).await.unwrap();
+        // As delete_vm leaves a VM whose instance the controller must stop.
+        manager
+            .vms
+            .write()
+            .await
+            .get_mut(&going.id)
+            .unwrap()
+            .deletion_requested_at = Some(tenancy::now());
+        async fn rename(m: &VmManager, id: &str, name: &str) -> Result<Vm, VmManagerError> {
+            let patch = VmPatch {
+                name: Some(name.into()),
+                ..Default::default()
+            };
+            m.patch_vm(id, patch, QuotaMode::Enforce, "test", None)
+                .await
+                .map(|(vm, _)| vm)
+        }
+
+        let err = rename(&manager, &other.id, "going").await.unwrap_err();
+        assert!(
+            matches!(err, VmManagerError::VmAlreadyExists(ref n) if n == "going"),
+            "{err}"
+        );
+        let err = manager
+            .create_vm("going".into(), config())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, VmManagerError::VmAlreadyExists(_)), "{err}");
+        let err = rename(&manager, &going.id, "gone").await.unwrap_err();
+        assert!(matches!(err, VmManagerError::Deleting(_)), "{err}");
+        assert_eq!(manager.get_vm(&going.id).await.unwrap().name, "going");
     }
 
     #[test]

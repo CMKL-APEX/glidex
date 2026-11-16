@@ -36,7 +36,7 @@ pub fn listener() -> Option<std::io::Result<UnixListener>> {
         ))));
     }
     if let Err(e) = nix::fcntl::fcntl(
-        SD_LISTEN_FDS_START,
+        &listener,
         nix::fcntl::FcntlArg::F_SETFD(nix::fcntl::FdFlag::FD_CLOEXEC),
     ) {
         return Some(Err(e.into()));

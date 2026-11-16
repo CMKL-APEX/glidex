@@ -34,7 +34,7 @@ pub const REFRESH_MAX_SECS: u64 = 90 * 86_400;
 /// What a cluster is named as in `resource` (D57).
 pub const CLUSTER_URN: &str = "urn:glidex:cluster:";
 /// A trusted cluster's client id: `cluster:<id>` (D69).
-pub const CLUSTER_CLIENT: &str = "cluster:";
+pub const CLUSTER_CLIENT: &str = glidex_trust::client::CLUSTER_CLIENT;
 /// How long an ended chain is remembered for feeds.
 pub const ENDED_KEEP_SECS: u64 = 12 * 3600;
 

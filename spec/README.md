@@ -12,14 +12,14 @@ fresh reader cannot infer just by reading the source.
 ## Contents
 
 Each spec's file name starts with a number, in the order the specs were
-added. A new spec takes the next number (`31-…`); a spec's number never
+added. A new spec takes the next number (`32-…`); a spec's number never
 changes and is never reused. Cite a spec by its file name and section
 or decision, such as `27-gpu-vms.md §10` or `19-tenancy.md D48`.
 `progress.md`, this file and `SUMMARY.md` have no number.
 
 | Document | Scope |
 |---|---|
-| [progress.md](progress.md) | What is built, in flight and next across the areas; the test hosts; known flakes. Kept current by each PR ([AGENTS.md](../AGENTS.md)) |
+| [progress.md](progress.md) | What is built and next across the areas. Kept current by each PR ([AGENTS.md](../AGENTS.md)); work in flight, the test hosts, checks and flakes are GitHub issues it links to |
 | [00-architecture.md](00-architecture.md) | Processes, layers, and request/data flow |
 | [03-data-model.md](03-data-model.md) | VM envelope (`spec`/`status`), VmConfig, phases, persistence schema |
 | [12-reconciliation.md](12-reconciliation.md) | Desired state, the VM controller, detached VM instances (`glidex-vm-shim`, `glidex-vm@` units), adoption |

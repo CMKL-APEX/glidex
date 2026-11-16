@@ -37,6 +37,8 @@ fn harness_with(f: impl FnOnce(&mut Config)) -> H {
     cfg.authz.policy_files_dir = dir.path().join("policies");
     cfg.auth.allowed_origins = vec![ORIGIN.into()];
     f(&mut cfg);
+    // The manager reads the same file: pools and grants (main.rs configures it).
+    manager.configure(&cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
     H {
@@ -265,9 +267,10 @@ async fn project_isolation_and_not_found() {
     // `{vms: [...]}`; proto3 JSON leaves an empty list out.
     assert!(list.is_object(), "{list}");
     assert_eq!(list["vms"].as_array().map_or(0, |l| l.len()), 0, "{list}");
-    // Nor create in a project it has no role in.
+    // Nor create in a project it has no role in: a project it can't read
+    // answers as a missing one (spec/11-security.md §7.4).
     let (s, _, _) = h.call("POST", "/vms", Some(vm_body("v2", "pa")), &b).await;
-    assert_eq!(s, StatusCode::FORBIDDEN);
+    assert_eq!(s, StatusCode::NOT_FOUND);
 
     // A viewer sees it but can't operate it.
     let (s, _, _) = h.call("GET", &format!("/vms/{id}"), None, &c).await;
@@ -1574,8 +1577,6 @@ mod idp {
     use axum::{Json, Router, extract::State, routing::get, routing::post};
     use base64::Engine as _;
     use jsonwebtoken::{EncodingKey, Header};
-    use rsa::pkcs1::EncodeRsaPrivateKey;
-    use rsa::traits::PublicKeyParts;
     use std::sync::{Arc, Mutex, OnceLock};
 
     pub struct Key {
@@ -1587,15 +1588,26 @@ mod idp {
     pub fn key() -> &'static Key {
         static K: OnceLock<Key> = OnceLock::new();
         K.get_or_init(|| {
-            let k = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
-            let b = |v: Vec<u8>| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+            use aws_lc_rs::encoding::{AsDer as _, Pkcs8V1Der};
+            use aws_lc_rs::signature::KeyPair as _;
+            let k = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+            let der: Pkcs8V1Der = k.as_der().unwrap();
+            // PKCS#8 PEM, as in a Google service account's key file.
+            let body = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+            let lines: Vec<&str> = body
+                .as_bytes()
+                .chunks(64)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect();
+            let b = |v: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+            let p = k.public_key();
             Key {
-                pem: k
-                    .to_pkcs1_pem(rsa::pkcs8::LineEnding::LF)
-                    .unwrap()
-                    .to_string(),
-                n: b(k.n().to_bytes_be()),
-                e: b(k.e().to_bytes_be()),
+                pem: format!(
+                    "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+                    lines.join("\n")
+                ),
+                n: b(p.modulus().big_endian_without_leading_zero()),
+                e: b(p.exponent().big_endian_without_leading_zero()),
             }
         })
     }
@@ -1956,6 +1968,205 @@ async fn oidc_login_rules_and_device_grant() {
         .call("GET", "/auth/whoami", None, &As::Bearer(token))
         .await;
     assert_eq!(who["user"]["display_name"], "Alice");
+}
+
+/// An operator runs a project's VMs (power, console) but doesn't change
+/// them: vCPUs, memory and the like are an editor's (`updateVm` in
+/// `vm.write`, spec/11-security.md §7.2).
+#[tokio::test]
+async fn operators_run_vms_and_editors_change_them() {
+    let h = harness();
+    let pa = h.project("pa");
+    let (op, ed) = (h.user("op"), h.user("ed"));
+    h.link(
+        "role.operator",
+        Ent::User(op.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link(
+        "role.editor",
+        Ent::User(ed.clone()),
+        Ent::Project(pa.clone()),
+    );
+    let vm = h
+        .app
+        .manager
+        .create_vm_in(
+            &pa,
+            "v".into(),
+            serde_json::from_value(json!({"vcpu_count": 1, "mem_size_mib": 64, "kernel_image_path": "/tmp/k", "rootfs_path": "/tmp/r", "kernel_args": ""})).unwrap(),
+            Default::default(),
+            glidex_control_plane::tenancy::QuotaMode::MayExceed,
+        )
+        .await
+        .unwrap()
+        .0;
+    let path = format!("/vms/{}", vm.id);
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"vcpu_count": 2}})),
+            &h.session(&op),
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an operator changes no VM: {v}");
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"vcpu_count": 2}})),
+            &h.session(&ed),
+        )
+        .await;
+    assert!(s.is_success(), "an editor does: {v}");
+    let (s, v, _) = h
+        .call(
+            "POST",
+            &format!("/vms/{}/console/ticket", vm.id),
+            None,
+            &h.session(&op),
+        )
+        .await;
+    assert_eq!(
+        s,
+        StatusCode::OK,
+        "an operator still opens the console: {v}"
+    );
+}
+
+/// Renaming a VM is `updateVm` (an editor's), and the name must be free
+/// in the VM's project only (spec/12-reconciliation.md §7.7).
+#[tokio::test]
+async fn renaming_a_vm_needs_update_vm_and_a_name_free_in_its_project() {
+    let h = harness();
+    let (pa, pb) = (h.project("pa"), h.project("pb"));
+    let (op, ed) = (h.user("op"), h.user("ed"));
+    h.link(
+        "role.operator",
+        Ent::User(op.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link(
+        "role.editor",
+        Ent::User(ed.clone()),
+        Ent::Project(pa.clone()),
+    );
+    let mut ids = Vec::new();
+    for (project, name) in [(&pa, "v"), (&pa, "w"), (&pb, "x")] {
+        let vm = h
+            .app
+            .manager
+            .create_vm_in(
+                project,
+                name.into(),
+                serde_json::from_value(json!({"vcpu_count": 1, "mem_size_mib": 64, "kernel_image_path": "/tmp/k", "rootfs_path": "/tmp/r", "kernel_args": ""})).unwrap(),
+                Default::default(),
+                glidex_control_plane::tenancy::QuotaMode::MayExceed,
+            )
+            .await
+            .unwrap()
+            .0;
+        ids.push(vm.id);
+    }
+    let path = format!("/vms/{}", ids[0]);
+    let rename = |to: &str| Some(json!({"change": {"name": to}}));
+    let (s, v, _) = h.call("PATCH", &path, rename("y"), &h.session(&op)).await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an operator renames no VM: {v}");
+    let (s, v, _) = h.call("PATCH", &path, rename("w"), &h.session(&ed)).await;
+    assert_eq!(s, StatusCode::CONFLICT, "w is taken in pa: {v}");
+    let (s, v, _) = h.call("PATCH", &path, rename("x"), &h.session(&ed)).await;
+    assert!(s.is_success(), "x is only taken in pb: {v}");
+    assert_eq!(h.app.manager.get_vm(&ids[0]).await.unwrap().name, "x");
+}
+
+/// A rename's audit entry gives the old and new names, of the VM and of
+/// the root disk it owns (spec/12-reconciliation.md §7.7).
+#[tokio::test]
+async fn a_rename_is_audited_with_the_old_and_new_names() {
+    use glidex_control_plane::images::{Disk, DiskOrigin, qemu_img::DiskFormat};
+    let h = harness();
+    let pa = h.project("pa");
+    let ed = h.user("ed");
+    h.link(
+        "role.editor",
+        Ent::User(ed.clone()),
+        Ent::Project(pa.clone()),
+    );
+    // As create leaves a VM it made a root disk for.
+    let disk = Disk::new(
+        "d-root".into(),
+        "v-root".into(),
+        pa.clone(),
+        DiskFormat::Qcow2,
+        1 << 20,
+        DiskOrigin::Blank,
+    );
+    h.app.manager.images().put_disk(&disk).unwrap();
+    let vm = h
+        .app
+        .manager
+        .create_vm_in(
+            &pa,
+            "v".into(),
+            serde_json::from_value(json!({"vcpu_count": 1, "mem_size_mib": 64, "kernel_image_path": "/tmp/k", "rootfs_path": "/tmp/r", "kernel_args": "", "root_disk": "d-root", "owns_root_disk": true})).unwrap(),
+            Default::default(),
+            glidex_control_plane::tenancy::QuotaMode::MayExceed,
+        )
+        .await
+        .unwrap()
+        .0;
+
+    let path = format!("/vms/{}", vm.id);
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"name": "x"}})),
+            &h.session(&ed),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let entries = h
+        .app
+        .auth
+        .store
+        .audit(0, 100, |e| e.action == "updateVm")
+        .unwrap();
+    let [entry] = entries.as_slice() else {
+        panic!("one updateVm entry: {entries:#?}");
+    };
+    assert_eq!(entry.details["name"], json!({"from": "v", "to": "x"}));
+    assert_eq!(
+        entry.details["root_disk"],
+        json!({"from": "v-root", "to": "x-root"})
+    );
+
+    // A spec change alone names no rename.
+    let (s, v, _) = h
+        .call(
+            "PATCH",
+            &path,
+            Some(json!({"change": {"stop_grace_secs": 9}})),
+            &h.session(&ed),
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let entries = h
+        .app
+        .auth
+        .store
+        .audit(0, 100, |e| e.action == "updateVm")
+        .unwrap();
+    assert_eq!(entries.len(), 2, "{entries:#?}");
+    assert!(
+        entries
+            .iter()
+            .filter(|e| e.details.get("name").is_some())
+            .count()
+            == 1,
+        "{entries:#?}"
+    );
 }
 
 #[tokio::test]
@@ -2400,6 +2611,7 @@ async fn pools_are_granted_and_hand_out_devices() {
         nodes: vec![],
         prepare: false,
         per_device: None,
+        bar_mib: None,
     }];
     let h = harness_with(|c| {
         c.pci.pools = pools.clone();
@@ -2411,10 +2623,6 @@ async fn pools_are_granted_and_hand_out_devices() {
             node: None,
         }];
     });
-    // The manager has the pools from the same file (main.rs configures it).
-    let mut cfg = Config::default();
-    cfg.pci.pools = pools;
-    h.app.manager.configure(&cfg);
     h.app.manager.report_self().unwrap();
     let nodes = h.app.manager.nodes();
     let mut n = nodes.get("local").unwrap().unwrap();
@@ -2520,6 +2728,170 @@ async fn pools_are_granted_and_hand_out_devices() {
     assert_eq!(v["details"]["quota"][0]["resource"], "devices.a100", "{v}");
     let (_, v, _) = h.call("GET", &format!("/projects/{pa}"), None, &a).await;
     assert_eq!(v["project"]["usage"]["devices"]["a100"], 2, "{v}");
+
+    // spec/22-host-topology.md H20: the pools and grants as a cluster
+    // setting. Read with `readCluster`, written by a system admin only.
+    let (s, v, _) = h.call("GET", "/cluster/settings/pci", None, &u).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["source"], "PCI_SETTINGS_SOURCE_FILE", "{v}");
+    assert_eq!(v["settings"]["pools"][0]["name"], "a100", "{v}");
+    let (s, _, _) = h.call("GET", "/cluster/settings/pci", None, &a).await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let admin = h.user("admin");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
+    // Writing needs a recent login (step-up), so sessions here.
+    let adm = h.session(&admin);
+    let aud_session = h.session(&aud);
+    let a100 = json!({ "name": "a100", "class": "gpu", "match": { "vendor_id": "0x10de" } });
+    let (s, _, _) = h
+        .call(
+            "PUT",
+            "/cluster/settings/pci",
+            Some(json!({ "pools": [a100] })),
+            &aud_session,
+        )
+        .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "an auditor can't write it");
+    let (s, v, _) = h
+        .call("PUT", "/cluster/settings/pci", Some(json!({})), &adm)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("VM v1 (a100)"),
+        "{v}"
+    );
+    let mut odd = a100.clone();
+    odd["bar_mib"] = json!(3000);
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/cluster/settings/pci",
+            Some(json!({ "pools": [odd] })),
+            &adm,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    // Granting the pool to pb too: bob is now refused for want of a free
+    // device, not of a grant.
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/cluster/settings/pci",
+            Some(
+                json!({ "pools": [a100], "allow": [{ "pool": "a100", "projects": ["pa", "pb"] }] }),
+            ),
+            &adm,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["source"], "PCI_SETTINGS_SOURCE_CLUSTER", "{v}");
+    assert!(v["settings"]["updated_at"].is_string(), "{v}");
+    let (s, v, _) = h
+        .call("POST", "/vms", Some(with("v7", "pb", "a100")), &b)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+}
+
+/// spec/22-host-topology.md H21, H22: GPUs no pool covers form a pool per
+/// model that only host roles may use until it is adopted; adopting it under
+/// another name waits for the VMs that ask for the discovered name.
+#[tokio::test]
+async fn discovered_pools_are_for_host_roles_until_adopted() {
+    use glidex_control_plane::topology::{SummaryDevice, TopologySummary};
+    let h = harness();
+    h.app.manager.report_self().unwrap();
+    let nodes = h.app.manager.nodes();
+    let mut n = nodes.get("local").unwrap().unwrap();
+    let gpu = |a: &str| SummaryDevice {
+        address: a.into(),
+        vendor_id: "0x1002".into(),
+        device_id: "0x7551".into(),
+        class_id: "0x030000".into(),
+        ready: true,
+        ..Default::default()
+    };
+    n.status.topology = Some(TopologySummary {
+        devices: vec![gpu("0000:03:00.0"), gpu("0000:43:00.0")],
+        ..n.status.topology.clone().unwrap_or_default()
+    });
+    nodes.put(&n).unwrap();
+    h.app.manager.refresh_pools();
+    let pa = h.project("pa");
+    let (alice, ops, aud) = (h.user("alice"), h.user("ops"), h.user("aud"));
+    h.link(
+        "role.owner",
+        Ent::User(alice.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link("grant.host-paths", Ent::User(alice.clone()), Ent::Cluster);
+    h.link(
+        "role.owner",
+        Ent::User(ops.clone()),
+        Ent::Project(pa.clone()),
+    );
+    h.link("role.net-admin", Ent::User(ops.clone()), Ent::Cluster);
+    h.link("grant.host-paths", Ent::User(ops.clone()), Ent::Cluster);
+    h.link("role.auditor", Ent::User(aud.clone()), Ent::Cluster);
+    let (a, o, u) = (
+        As::Bearer(h.token(&alice)),
+        As::Bearer(h.token(&ops)),
+        As::Bearer(h.token(&aud)),
+    );
+    let with = |name: &str| {
+        let mut body = vm_body(name, "pa");
+        body["devices"] = json!([{ "pool": "amd-7551", "count": 1 }]);
+        body
+    };
+    let (s, v, _) = h.call("POST", "/vms", Some(with("v1")), &a).await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "a project owner can't use it: {v}"
+    );
+    let (s, v, _) = h.call("GET", "/pci-pools?project=pa", None, &a).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({}), "nor see it: {v}");
+    let (s, v, _) = h.call("POST", "/vms", Some(with("v2")), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "a host role can: {v}");
+    assert_eq!(v["vm"]["pool_devices"][0]["address"], "0000:03:00.0", "{v}");
+    let (_, v, _) = h.call("GET", "/pci-pools", None, &u).await;
+    assert_eq!(v["pools"][0]["name"], "amd-7551", "{v}");
+    assert_eq!(v["pools"][0]["discovered"], true, "{v}");
+    assert_eq!(v["pools"][0]["free"], 1, "{v}");
+
+    let admin = h.user("admin");
+    h.link("role.system-admin", Ent::User(admin.clone()), Ent::Cluster);
+    let adm = h.session(&admin);
+    let adopt = |name: &str| {
+        json!({ "pools": [{ "name": name, "class": "gpu",
+            "match": { "vendor_id": "0x1002", "device_id": "0x7551" } }] })
+    };
+    let (s, v, _) = h
+        .call("PUT", "/cluster/settings/pci", Some(adopt("r9700")), &adm)
+        .await;
+    assert_eq!(s, StatusCode::CONFLICT, "v2 asks for amd-7551: {v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("VM v2 (amd-7551)"),
+        "{v}"
+    );
+    // Setting an unrelated pool leaves the discovered one in force.
+    let other = json!({ "pools": [{ "name": "t4", "match": { "vendor_id": "0x10de" } }] });
+    let (s, v, _) = h
+        .call("PUT", "/cluster/settings/pci", Some(other), &adm)
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (s, v, _) = h
+        .call(
+            "PUT",
+            "/cluster/settings/pci",
+            Some(adopt("amd-7551")),
+            &adm,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let (_, v, _) = h.call("GET", "/pci-pools", None, &u).await;
+    assert_eq!(v["pools"][0]["name"], "amd-7551", "{v}");
+    assert_eq!(v["pools"][0].get("discovered"), None, "adopted: {v}");
 }
 
 /// spec/22-host-topology.md §10.1: a pool of a PF's VFs hands out ready VFs,
@@ -2543,6 +2915,7 @@ async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
         nodes: vec![],
         prepare: false,
         per_device: None,
+        bar_mib: None,
     }];
     let h = harness_with(|c| {
         c.pci.pools = pools.clone();
@@ -2554,9 +2927,6 @@ async fn vf_pools_hand_out_vfs_and_held_vfs_pin_their_pf() {
             node: None,
         }];
     });
-    let mut cfg = Config::default();
-    cfg.pci.pools = pools;
-    h.app.manager.configure(&cfg);
     h.app.manager.report_self().unwrap();
     let nodes = h.app.manager.nodes();
     let mut n = nodes.get("local").unwrap().unwrap();
@@ -2640,6 +3010,7 @@ async fn gpu_requests_expand_from_the_pool() {
         nodes: vec![],
         prepare: false,
         per_device: per,
+        bar_mib: None,
     };
     let pools = vec![
         pool(
@@ -2665,9 +3036,6 @@ async fn gpu_requests_expand_from_the_pool() {
         c.pci.pools = pools.clone();
         c.pci.allow = vec![grant("a100"), grant("t4")];
     });
-    let mut cfg = Config::default();
-    cfg.pci.pools = pools;
-    h.app.manager.configure(&cfg);
     h.app.manager.report_self().unwrap();
     let nodes = h.app.manager.nodes();
     let mut n = nodes.get("local").unwrap().unwrap();

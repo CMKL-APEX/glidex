@@ -412,56 +412,8 @@ pub struct Issuers {
     cache: Mutex<HashMap<String, IssuerKeys>>,
 }
 
-/// Whether `ip` is on the public internet: not loopback, private,
-/// link-local, unique-local, shared (CGNAT), unspecified, broadcast or
-/// multicast, whether written as IPv4 or IPv4-mapped IPv6.
-pub fn is_public(ip: std::net::IpAddr) -> bool {
-    use std::net::IpAddr;
-    match ip {
-        IpAddr::V4(v4) => {
-            let [a, b, ..] = v4.octets();
-            !(v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || v4.is_multicast()
-                || a == 0
-                || (a == 100 && (64..128).contains(&b)))
-        }
-        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
-            Some(v4) => is_public(IpAddr::V4(v4)),
-            None => {
-                !(v6.is_loopback()
-                    || v6.is_unspecified()
-                    || v6.is_multicast()
-                    || v6.is_unique_local()
-                    || v6.is_unicast_link_local())
-            }
-        },
-    }
-}
-
-/// Resolves issuer host names to their public addresses only, so a name
-/// can't lead the control plane to its own host or network, whenever it
-/// is looked up.
-struct PublicOnly;
-
-impl reqwest::dns::Resolve for PublicOnly {
-    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
-        let host = name.as_str().to_string();
-        Box::pin(async move {
-            let addrs: Vec<std::net::SocketAddr> = tokio::net::lookup_host((host.as_str(), 0))
-                .await?
-                .filter(|a| is_public(a.ip()))
-                .collect();
-            if addrs.is_empty() {
-                return Err(format!("{host} has no public address").into());
-            }
-            Ok(Box::new(addrs.into_iter()) as reqwest::dns::Addrs)
-        })
-    }
-}
+use crate::public_net::PublicOnly;
+pub use crate::public_net::is_public;
 
 impl Issuers {
     pub fn new(allow_private: bool) -> Self {

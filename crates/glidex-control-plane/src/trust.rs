@@ -1,240 +1,43 @@
 //! Trust between a cluster and the directories of other organizations
-//! (spec/19-tenancy.md §12.1, D63–D66): the offer token a cluster's operator
-//! sends, and (task 5b) redeeming it and ending trust.
+//! (spec/19-tenancy.md §12.1, D63–D66): the records both sides keep. What
+//! crosses between them, and the cluster's checks, are `glidex-trust`'s
+//! (D84), re-exported here.
 
-use base64::Engine as _;
 use redb::{ReadableTable as _, TableDefinition};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::sync::Arc;
 
+pub use glidex_trust::{
+    END, EndedChains, FEED, FEED_TABLES, FeedState, LOGIN_SECS, LOGOUT, OFFER_DAYS, OFFER_MAX_DAYS,
+    OFFER_PREFIX, OfferToken, PendingLogin, PendingLogins, REDEEM, REPORT, RemoteTenant, Row,
+    Snapshot, TrustedDirectory, normalize_issuer, revision_of, trusted_id,
+};
+
 const TRUSTED_DIRECTORIES: TableDefinition<&str, &[u8]> =
     TableDefinition::new("trusted_directories");
 const TRUSTED_CLUSTERS: TableDefinition<&str, &[u8]> = TableDefinition::new("trusted_clusters");
 
-/// What a peer request asks for (an assertion's `purpose`, D63).
-pub const REDEEM: &str = "redeem";
-pub const END: &str = "end";
-pub const FEED: &str = "feed";
-/// A cluster reporting what it holds of a directory's tenants (D70).
-pub const REPORT: &str = "report";
-/// A cluster telling a directory that one of its sessions ended (D72).
-pub const LOGOUT: &str = "logout";
-
 const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_state");
+/// Per trusted directory, what it knows of this cluster's API certificate
+/// (D90): `DirectoryPins`, keyed by the directory's id.
+const DIRECTORY_PINS: TableDefinition<&str, &[u8]> = TableDefinition::new("trusted_directory_pins");
 
-/// The tables a feed carries rows of (D67), by name.
-pub const FEED_TABLES: [&str; 7] = [
-    "users",
-    "teams",
-    "tenants",
-    "tenant_members",
-    "projects",
-    "policy_links",
-    // API tokens that list the cluster, by their hash (§7.4).
-    "api_tokens",
-];
+/// What a trusted directory knows of this cluster's API certificate
+/// (D90), as the leader last found: the pin of the certificate its API
+/// address presented, and the renewed pin a report it accepted announced.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryPins {
+    pub seen: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted: Option<String>,
+}
 
 fn table(name: &str) -> Option<TableDefinition<'static, &'static str, &'static [u8]>> {
     FEED_TABLES
         .iter()
         .find(|t| **t == name)
         .map(|t| TableDefinition::new(t))
-}
-
-/// One record of a feed: the table, its key there, its value.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Row {
-    pub table: String,
-    pub key: String,
-    pub value: Value,
-}
-
-/// A directory's filtered snapshot for one cluster (D67).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Snapshot {
-    pub revision: String,
-    pub jwks: Value,
-    pub rows: Vec<Row>,
-    /// The chains of this cluster's browser logins ended in the last
-    /// 12 h: the cluster ends the sessions it made from them (D68, D69).
-    #[serde(default)]
-    pub ended_sids: Vec<String>,
-}
-
-/// What the cluster last applied from a trusted directory (D68).
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct FeedState {
-    pub revision: String,
-    /// `(table, key)` of every row it wrote.
-    pub rows: Vec<(String, String)>,
-    pub applied_at: u64,
-    /// When the directory last answered a feed request (new content or
-    /// not), to the minute: the replica is that fresh (D13).
-    #[serde(default)]
-    pub checked_at: u64,
-}
-
-/// A browser login at a trusted directory under way (D69): what its
-/// callback checks.
-#[derive(Debug, Clone)]
-pub struct PendingLogin {
-    pub trusted: String,
-    pub nonce: String,
-    pub verifier: String,
-    pub return_to: String,
-    /// The secret of the browser's cookie that started it.
-    pub browser: String,
-    pub created: u64,
-}
-
-/// How long a browser login may take.
-pub const LOGIN_SECS: u64 = 600;
-
-/// Logins under way, by `state`.
-#[derive(Default)]
-pub struct PendingLogins(std::sync::Mutex<std::collections::HashMap<String, PendingLogin>>);
-
-impl PendingLogins {
-    pub fn put(&self, state: String, p: PendingLogin) {
-        let mut m = self.0.lock().unwrap();
-        m.retain(|_, v| v.created + LOGIN_SECS > p.created);
-        m.insert(state, p);
-    }
-
-    /// The login `state` names, once, while it is good.
-    pub fn take(&self, state: &str, now: u64) -> Option<PendingLogin> {
-        self.0
-            .lock()
-            .unwrap()
-            .remove(state)
-            .filter(|p| p.created + LOGIN_SECS > now)
-    }
-}
-
-/// Chains of trusted directories whose cluster sessions ended here, for
-/// those directories to end too (D72): `(trusted directory id, sid)`.
-#[derive(Default)]
-pub struct EndedChains {
-    queue: std::sync::Mutex<Vec<(String, String)>>,
-    wake: tokio::sync::Notify,
-}
-
-/// At most this many wait; older ones lapse at the directory anyway.
-const ENDED_CHAINS_MAX: usize = 1000;
-
-impl EndedChains {
-    pub fn push(&self, directory: String, sid: String) {
-        let mut q = self.queue.lock().unwrap();
-        if q.len() < ENDED_CHAINS_MAX {
-            q.push((directory, sid));
-        }
-        self.wake.notify_one();
-    }
-
-    pub fn take(&self) -> Vec<(String, String)> {
-        std::mem::take(&mut *self.queue.lock().unwrap())
-    }
-
-    /// Until something is pushed.
-    pub async fn wait(&self) {
-        self.wake.notified().await
-    }
-}
-
-/// An offer token's prefix.
-pub const OFFER_PREFIX: &str = "gxo_";
-/// An offer's default and longest life, in days.
-pub const OFFER_DAYS: u64 = 7;
-pub const OFFER_MAX_DAYS: u64 = 30;
-
-/// What an offer token carries (D64): enough for the directory to reach
-/// the cluster, pin it, and redeem the offer.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OfferToken {
-    pub cluster_id: String,
-    pub cluster_name: String,
-    /// The cluster's API, `https://host[:port]`.
-    pub api: String,
-    /// Its certificate's SHA-256, 64 hex digits.
-    pub tls_sha256: String,
-    /// The tenant's slug and its directory's issuer.
-    pub tenant: String,
-    pub directory: String,
-    pub offer: String,
-    pub secret: String,
-    pub expires_at: u64,
-}
-
-impl OfferToken {
-    pub fn encode(&self) -> String {
-        let json = serde_json::to_vec(self).expect("serializable");
-        format!(
-            "{OFFER_PREFIX}{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(json)
-        )
-    }
-
-    pub fn decode(s: &str) -> Option<OfferToken> {
-        let b = s.trim().strip_prefix(OFFER_PREFIX)?;
-        let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .decode(b)
-            .ok()?;
-        serde_json::from_slice(&json).ok()
-    }
-}
-
-/// The issuer URL as offers and trust records compare it: lower-case
-/// scheme and host, no trailing `/`.
-pub fn normalize_issuer(s: &str) -> Option<String> {
-    let u: axum::http::Uri = s.trim().parse().ok()?;
-    let a = u.authority()?;
-    (u.scheme_str() == Some("https") && u.query().is_none()).then(|| {
-        format!(
-            "https://{}{}",
-            a.as_str().to_ascii_lowercase(),
-            u.path().trim_end_matches('/')
-        )
-    })
-}
-
-/// A tenant of another directory, as a cluster that admits it knows it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RemoteTenant {
-    pub id: String,
-    pub slug: String,
-    #[serde(default)]
-    pub display_name: String,
-}
-
-/// A directory of another organization this cluster trusts (D65):
-/// cluster scope, keyed by its issuer's id (`id`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TrustedDirectory {
-    /// `trusted-<first 16 hex of the issuer's SHA-256>`: the admissions'
-    /// `directory_id`, never one of this host's own directory ids.
-    pub id: String,
-    pub issuer: String,
-    /// Its id at its own host.
-    pub directory: String,
-    /// Its API for this cluster's calls (`/d/<directory>/trust/v1/…`),
-    /// and that API's certificate SHA-256.
-    pub api: String,
-    pub tls_sha256: String,
-    /// Its signing keys as the handshake brought them (a JWKS).
-    pub jwks: Value,
-    pub tenants: Vec<RemoteTenant>,
-    pub created_at: u64,
-    /// How long its credentials stay good after its last feed (D13);
-    /// `None`: `trust.default_max_staleness_minutes`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub max_staleness_minutes: Option<u64>,
-}
-
-/// The id a trusted directory's records take here.
-pub fn trusted_id(issuer: &str) -> String {
-    let h = crate::auth::sha256_hex(issuer.as_bytes());
-    format!("trusted-{}", &h[..16])
 }
 
 /// A cluster of another organization a directory's tenants use (D65):
@@ -247,6 +50,10 @@ pub struct TrustedCluster {
     pub name: String,
     pub api: String,
     pub tls_sha256: String,
+    /// The pin of the certificate it will serve next, as its reports
+    /// announced it (D88): accepted next to `tls_sha256` until a call sees it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_tls_sha256: Option<String>,
     /// The cluster's key (a JWKS): its assertions and client assertions.
     pub jwks: Value,
     /// The tenants of this directory opted in to it.
@@ -261,6 +68,13 @@ pub struct TrustedCluster {
     pub report: Option<ClusterReport>,
 }
 
+impl TrustedCluster {
+    /// The pins its certificate may have (D88).
+    pub fn pins(&self) -> Vec<&str> {
+        glidex_trust::accepted_pins(&self.tls_sha256, self.next_tls_sha256.as_deref())
+    }
+}
+
 /// A cluster's report to a trusted directory (D70): per tenant, its
 /// admission and what it holds there.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -269,19 +83,51 @@ pub struct ClusterReport {
     pub tenants: Vec<TenantReport>,
 }
 
+/// One tenant's entry in a report (D70). The VM counts default to zero, so
+/// a storage cluster sends only `storage` (D85).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TenantReport {
     /// The tenant's id (the same at both).
     pub tenant: String,
     /// Admitted, or suspended (D9).
+    #[serde(default)]
     pub suspended: bool,
+    #[serde(default)]
     pub cap: crate::tenancy::Quotas,
+    #[serde(default)]
     pub projects: u64,
+    #[serde(default)]
     pub vms: u64,
+    #[serde(default)]
     pub running_vms: u64,
+    #[serde(default)]
     pub disks: u64,
+    #[serde(default)]
     pub disk_gib: u64,
+    #[serde(default)]
     pub networks: u64,
+    /// What a storage cluster holds of the tenant, as totals (D85).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub storage: Option<glidex_trust::StorageReport>,
+    /// The same per project that holds any (D89): such a project can't be
+    /// deleted here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub project_storage: Vec<glidex_trust::StorageProjectReport>,
+}
+
+impl TrustedCluster {
+    /// What its last report says it holds of project `id` of `tenant`, if
+    /// anything (D89).
+    pub fn holds_storage_of(&self, tenant: &str, id: &str) -> Option<&glidex_trust::StorageReport> {
+        self.report
+            .as_ref()?
+            .tenants
+            .iter()
+            .filter(|t| t.tenant == tenant)
+            .flat_map(|t| &t.project_storage)
+            .find(|p| p.project == id && p.storage.holds_any())
+            .map(|p| &p.storage)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -369,7 +215,28 @@ impl TrustStore {
     }
 
     pub fn remove_directory(&self, id: &str) -> Result<(), StoreError> {
+        self.put::<DirectoryPins>(DIRECTORY_PINS, id, None)?;
         self.put::<TrustedDirectory>(TRUSTED_DIRECTORIES, id, None)
+    }
+
+    /// Each trusted directory's `DirectoryPins`, by its id.
+    pub fn directory_pins(&self) -> Result<Vec<(String, DirectoryPins)>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(DIRECTORY_PINS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let mut out = Vec::new();
+        for e in t.iter()? {
+            let (k, v) = e?;
+            out.push((k.value().to_string(), serde_json::from_slice(v.value())?));
+        }
+        Ok(out)
+    }
+
+    pub fn put_directory_pins(&self, id: &str, p: &DirectoryPins) -> Result<(), StoreError> {
+        self.put(DIRECTORY_PINS, id, Some(p))
     }
 
     pub fn clusters(&self, directory: &str) -> Result<Vec<TrustedCluster>, StoreError> {
@@ -398,15 +265,19 @@ impl TrustStore {
     pub fn remove_cluster(&self, directory: &str, id: &str) -> Result<(), StoreError> {
         self.put::<TrustedCluster>(TRUSTED_CLUSTERS, &format!("{directory}/{id}"), None)
     }
-}
 
-/// A snapshot's revision: the SHA-256 of what it holds.
-pub fn revision_of(jwks: &Value, rows: &[Row], ended_sids: &[String]) -> String {
-    crate::auth::sha256_hex(
-        serde_json::to_string(&(jwks, rows, ended_sids))
-            .unwrap_or_default()
-            .as_bytes(),
-    )
+    /// A call to cluster `id` saw certificate `seen` (D88): the announced
+    /// pin, once seen, becomes the cluster's pin.
+    pub fn saw_pin(&self, directory: &str, id: &str, seen: &str) -> Result<(), StoreError> {
+        let Some(mut c) = self.cluster(directory, id)? else {
+            return Ok(());
+        };
+        if glidex_trust::promote_pin(&mut c.tls_sha256, &mut c.next_tls_sha256, seen) {
+            tracing::info!(cluster = %id, "a renewed certificate's pin is now the cluster's");
+            self.put_cluster(&c)?;
+        }
+        Ok(())
+    }
 }
 
 impl TrustStore {
@@ -523,9 +394,7 @@ impl TrustStore {
     /// How far behind `d`'s replica is at `now`, in seconds: since the
     /// directory last answered a feed (since trust began, before any).
     pub fn lag(&self, d: &TrustedDirectory, now: u64) -> Result<u64, StoreError> {
-        let st = self.feed_state(&d.id)?;
-        let last = st.checked_at.max(st.applied_at).max(d.created_at);
-        Ok(now.saturating_sub(last))
+        Ok(glidex_trust::cluster::lag(d, &self.feed_state(&d.id)?, now))
     }
 
     /// Forget trusted directory `id`'s replica (trust ended, D66).
@@ -548,6 +417,36 @@ impl TrustStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reports_read_with_or_without_storage() {
+        // A storage cluster's: only storage (D85).
+        let r: ClusterReport = serde_json::from_value(serde_json::json!({
+            "at": 5,
+            "tenants": [{ "tenant": "t1", "storage": {
+                "volumes": 2, "volume_gib": 100, "volume_used_bytes": 7, "buckets": 1,
+                "bucket_bytes": 9, "s3_keys": 3,
+            } }],
+        }))
+        .unwrap();
+        let t = &r.tenants[0];
+        assert_eq!((t.vms, t.disks, t.suspended), (0, 0, false));
+        assert_eq!(t.cap, crate::tenancy::Quotas::default());
+        let s = t.storage.as_ref().unwrap();
+        assert_eq!((s.volume_gib, s.volume_used_bytes, s.s3_keys), (100, 7, 3));
+        // A glidex cluster's, as clusters sent them before storage.
+        let old: ClusterReport = serde_json::from_value(serde_json::json!({
+            "at": 5,
+            "tenants": [{ "tenant": "t1", "suspended": true, "cap": {}, "projects": 1, "vms": 2,
+                          "running_vms": 1, "disks": 3, "disk_gib": 40, "networks": 1 }],
+        }))
+        .unwrap();
+        assert_eq!(old.tenants[0].vms, 2);
+        assert!(old.tenants[0].storage.is_none());
+        // And it is written as before: no `storage` key.
+        let v = serde_json::to_value(&old).unwrap();
+        assert!(v["tenants"][0].get("storage").is_none());
+    }
 
     #[test]
     fn a_feed_never_overwrites_this_hosts_records() {
@@ -594,30 +493,5 @@ mod tests {
         assert!(auth.user("u2").unwrap().is_some());
         s.drop_replica("trusted-x").unwrap();
         assert!(auth.user("u1").unwrap().is_none() && auth.user("u2").unwrap().is_none());
-    }
-
-    #[test]
-    fn offer_tokens_round_trip_and_refuse_junk() {
-        let t = OfferToken {
-            cluster_id: "c1".into(),
-            cluster_name: "north".into(),
-            api: "https://north.example:8841".into(),
-            tls_sha256: "ab".repeat(32),
-            tenant: "acme".into(),
-            directory: "https://id.acme.example/d/acme".into(),
-            offer: "o1".into(),
-            secret: "s".into(),
-            expires_at: 5,
-        };
-        let s = t.encode();
-        assert!(s.starts_with(OFFER_PREFIX));
-        assert_eq!(OfferToken::decode(&s), Some(t));
-        assert_eq!(OfferToken::decode("gxo_!!"), None);
-        assert_eq!(OfferToken::decode("gxt_abc"), None);
-        assert_eq!(
-            normalize_issuer("https://ID.Acme.example/d/acme/").as_deref(),
-            Some("https://id.acme.example/d/acme")
-        );
-        assert_eq!(normalize_issuer("http://id.acme.example/d/acme"), None);
     }
 }

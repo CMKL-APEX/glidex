@@ -69,9 +69,9 @@ everything of the roles above it.
 | Role | Can |
 |------|-----|
 | `viewer` | See the project, its VMs, disks and usage |
-| `operator` | Also start, stop, pause and change VMs, and open their consoles |
-| `editor` | Also create and delete VMs and disks, attach disks and networks to VMs, and see and manage guest credentials |
-| `owner` | Also manage members and service-account tokens, read the project's audit log, and create and share project networks |
+| `operator` | Also start, stop and pause VMs, and open their consoles |
+| `editor` | Also create, change (vCPUs, memory, kernel, policies) and delete VMs and disks, attach disks and networks to VMs, and see and manage guest credentials |
+| `owner` | Also manage members and service-account tokens, give a VM one of the project's service accounts, read the project's audit log, and create and share project networks |
 
 Viewers and operators don't see guest credentials.
 
@@ -87,20 +87,25 @@ manage members.
 **Web UI:** the project's page, **Members** card. The table lists each
 binding; **Remove** deletes one. To add one, choose a **Role**, a
 **Principal type** (User or Team) and the user or team, then **Add role**.
-If you can't list users, type the user's id (they can find it with
-`gxctl whoami`).
+If you can't list users, type the user's email address, or their id
+(they can find it with `gxctl whoami`). An address finds a user of your
+directory whose identity provider verified it when they signed in, or
+whom an administrator added by that address; a user who hasn't signed in
+that way yet can't be found by it. On a tenant's page, an address that
+finds nobody offers to send them an invitation instead.
 
 **gxctl:**
 
 ```bash
 gxctl binding list lab
 gxctl binding add lab editor user:<user-id>
+gxctl binding add lab viewer user:ada@example.org
 gxctl binding add lab viewer team:<team-id>
 gxctl binding remove lab <binding-id>
 ```
 
 Roles can be written short (`editor`) or in full (`role.editor`). A
-principal is `user:<id>`, `team:<id>` or `token:<id>`. `binding list`
+principal is `user:<id>` (or `user:<email>`), `team:<id>` or `token:<id>`. `binding list`
 shows each binding's id.
 
 Over the API: `GET`/`POST /projects/{id}/bindings` and
@@ -223,7 +228,12 @@ the project's tenant.
 
 To delete a project it must not own any VMs, disks or credentials:
 **Delete project** on its page, or `gxctl project delete lab` (it asks
-for confirmation). Its service-account tokens are revoked with it.
+for confirmation). Its service-account tokens are revoked with it. Nor
+may it hold storage on a hyperstor cluster its tenant uses: while that
+cluster's last report lists volumes, buckets or S3 keys of the project,
+the delete is refused and names them. Empty them there first; the
+delete goes through once the cluster's next report no longer lists
+them.
 
 On an installation with several tenants (organisations), each project
 belongs to one tenant, shown in the **Tenant** column. See
@@ -233,15 +243,18 @@ belongs to one tenant, shown in the **Tenant** column. See
 
 Where your directory allows it, you can create tenants yourself: for a
 lab, a course or a team. Your directory may call them something else
-(*Labs*, say); the web UI uses its word. On **Directory**, the
-**Tenants** tab shows **+ Create Tenant** when you may: give a slug and
-a name. Or:
+(*Labs*, say); the web UI uses its word. When you may, the header shows
+**Directory**, and its **Tenants** tab shows **+ Create Tenant**: give a
+slug and a name. The form says how many more you may create, and whether
+a directory administrator approves it first. Or:
 
 ```bash
 gxctl tenant create ml-lab --name "Machine learning lab"
 ```
 
-You become its `tenant-admin`: you add its members, give them roles and
+Your directory may also make one for you the first time you sign in, if
+you aren't yet a member of any; it is named after you (only a directory
+administrator can rename a tenant). You become its `tenant-admin`: you add its members, give them roles and
 create its projects. The directory decides:
 
 - who may (everyone, or members of some teams);

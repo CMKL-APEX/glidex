@@ -5,7 +5,16 @@ import type { ApiToken, VmResponse } from "../types";
 /** A VM's service account (spec/29-workload-identity.md W5, W6): the glidex
  * identity its guest gets short-lived tokens for from its metadata
  * endpoint. Changing it applies to the next token, no restart. */
-export default function VmServiceAccount({ vm, onChanged }: { vm: VmResponse; onChanged: () => void }) {
+export default function VmServiceAccount({
+  vm,
+  onChanged,
+  editable = true,
+}: {
+  vm: VmResponse;
+  onChanged: () => void;
+  /** May change it (`updateVm`, and `useServiceAccount` on its project); otherwise only shown. */
+  editable?: boolean;
+}) {
   const [accounts, setAccounts] = useState<ApiToken[]>([]);
   const [choice, setChoice] = useState(vm.service_account ?? "");
   const [busy, setBusy] = useState(false);
@@ -34,13 +43,14 @@ export default function VmServiceAccount({ vm, onChanged }: { vm: VmResponse; on
   };
 
   // Nothing to show or pick.
-  if (!vm.service_account && accounts.length === 0) return null;
+  if (!vm.service_account && (!editable || accounts.length === 0)) return null;
   return (
     <div data-testid="vm-service-account">
       <h3 className="text-sm font-medium text-gray-500">Service Account</h3>
       <p className="text-sm text-gray-700">
         {vm.service_account ? <span className="font-mono">{name(vm.service_account)}</span> : "None"}
       </p>
+      {editable && (
       <div className="mt-2 flex flex-wrap items-center gap-2 text-sm">
         <select
           className="px-2 py-1 border border-gray-300 rounded-lg bg-white"
@@ -63,6 +73,7 @@ export default function VmServiceAccount({ vm, onChanged }: { vm: VmResponse; on
           Use
         </button>
       </div>
+      )}
       <p className="mt-1 text-xs text-gray-500">
         The guest gets short-lived tokens acting as it from its metadata endpoint; it holds no secret.
       </p>

@@ -332,8 +332,20 @@ async fn create_project(cp: &Cp, name: &str) -> (StatusCode, Value) {
     }
 }
 
+/// GET /projects, read through the leader (linearizable). Retries a 503:
+/// the leader confirms its leadership with a heartbeat round before it
+/// answers, and on a loaded runner that round can time out (100 ms here),
+/// so the read answers `cluster_unavailable` and asks for a retry.
 async fn project_names(cp: &Cp) -> Vec<String> {
-    let (s, v) = call(cp, "GET", "/projects", None, &[]).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let (s, v) = loop {
+        let (s, v) = call(cp, "GET", "/projects", None, &[]).await;
+        if s == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        break (s, v);
+    };
     assert_eq!(s, StatusCode::OK, "{v}");
     v["projects"]
         .as_array()
@@ -964,6 +976,17 @@ async fn wait_for<F: std::future::Future<Output = bool>>(what: &str, mut f: impl
     }
 }
 
+/// Waits out a new disk's create: the disk controller makes it after
+/// `POST /disks` returns, and until then a VM that claims it is refused
+/// as busy.
+async fn disk_created(cp: &Cp, id: &str) {
+    wait_for(&format!("disk {id}'s create"), || async {
+        let (_, v) = call(cp, "GET", &format!("/disks/{id}"), None, &[]).await;
+        v["disk"].is_object() && v["disk"]["busy_op"].is_null()
+    })
+    .await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_vm_placed_on_an_agent_is_that_agents_and_its_status_comes_back() {
     let _one = serial().await;
@@ -1265,6 +1288,16 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{vm}");
     let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    // The server answers at once; the agent serves the relay from its own
+    // copy, which follows a moment later.
+    wait_for("the agent's copy of the VM, placed", || async {
+        agent
+            .manager
+            .get_vm(&id)
+            .await
+            .is_ok_and(|v| v.status.placement.is_some())
+    })
+    .await;
 
     // The log lives on the agent's disk (here, the same machine).
     let paths = glidex_control_plane::paths::vm_paths(&id);
@@ -1375,6 +1408,88 @@ async fn a_server_relays_the_console_log_of_a_vm_on_an_agent() {
     }
     drop(tx);
     std::fs::remove_dir_all(&paths.dir).unwrap();
+}
+
+/// A server relays a VM's live stats from its node, with the points only
+/// the node has yet (spec/13-metering.md §9.4, D19).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_server_relays_live_stats_with_the_nodes_open_hour() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
+    agent.manager.initialize().await.unwrap();
+    // The node's meter, with its own ledger; no rounds, so no samples.
+    let metering = glidex_control_plane::config::MeteringConfig {
+        enabled: false,
+        ..Default::default()
+    };
+    agent.manager.start_metering(&metering).unwrap();
+    let (s, vm) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("metered", "agent1")),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    // The server answers at once; the agent serves the relay from its own
+    // copy, which follows a moment later.
+    wait_for("the agent's copy of the VM, placed", || async {
+        agent
+            .manager
+            .get_vm(&id)
+            .await
+            .is_ok_and(|v| v.status.placement.is_some())
+    })
+    .await;
+
+    let (s, stats) = call(&server, "GET", &format!("/vms/{id}/stats"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{stats}");
+    assert!(
+        stats["open_hour"].is_object(),
+        "the node's open hour: {stats}"
+    );
 }
 
 /// spec/14-clustering.md §9.2.1–3: copies on chosen nodes, letting one go, a
@@ -1950,6 +2065,104 @@ async fn a_vm_boots_through_its_nodes_copy_of_the_firmware() {
     );
 }
 
+/// A node copies a firmware image's variable-store template only if it
+/// matches the digest the image records: a holder can't hand other nodes a
+/// template of its own.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_firmware_template_copy_is_checked_against_its_digest() {
+    use glidex_control_plane::store::{Origin, TableId};
+    use sha2::{Digest, Sha256};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let hex = |d: &[u8]| glidex_control_plane::cluster::pki::hex(&Sha256::digest(d));
+    let agent_id = agent.manager.local_node_id();
+
+    let code = vec![9u8; 4096];
+    let vars = vec![7u8; 1024];
+    // `good` holds the template it records; `bad` holds another one.
+    for (id, held) in [("fw-good", vars.clone()), ("fw-bad", vec![6u8; 1024])] {
+        let img = json!({
+            "id": id, "name": id, "kind": "firmware", "hypervisor": "qemu",
+            "source": { "kind": "firmware", "key": "test", "url": "http://example.invalid/fw", "version": "1" },
+            "status": { "state": "ready" }, "format": "raw", "virtual_size_bytes": code.len(), "file_size_bytes": code.len(),
+            "sha256": hex(&code), "vars_sha256": hex(&vars), "arch": "x86_64", "created_at": 1,
+            "pinned": [agent_id],
+        });
+        let images = server.manager.images();
+        std::fs::create_dir_all(images.firmware_path(id).parent().unwrap()).unwrap();
+        std::fs::write(images.firmware_path(id), &code).unwrap();
+        std::fs::write(images.firmware_vars_template(id), &held).unwrap();
+        server
+            .manager
+            .database()
+            .write(
+                Origin::Api,
+                |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                    tx.open_table(TableId::Images.definition())?
+                        .insert(id, img.to_string().as_bytes())?;
+                    Ok(())
+                },
+            )
+            .unwrap();
+    }
+
+    let row = |id: &'static str| {
+        let db = agent.manager.database();
+        let agent_id = agent_id.clone();
+        async move {
+            let txn = db.begin_read().unwrap();
+            txn.open_table(TableId::ImageCaches.definition())
+                .ok()
+                .and_then(|t| t.get(format!("{id}/{agent_id}").as_str()).ok().flatten())
+                .and_then(|v| serde_json::from_slice::<Value>(v.value()).ok())
+                .unwrap_or(Value::Null)
+        }
+    };
+    wait_for("the agent's copy of the matching template", || async {
+        row("fw-good").await["phase"] == "Ready"
+    })
+    .await;
+    assert_eq!(
+        std::fs::read(agent.manager.images().firmware_vars_template("fw-good")).unwrap(),
+        vars
+    );
+    // The row as it was when failed: a retry may rewrite it before a
+    // second read (#512).
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    let r = loop {
+        let r = row("fw-bad").await;
+        if r["phase"] == "Failed" {
+            break r;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for the agent refusing the other template: {r}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    };
+    assert!(
+        r["error"]
+            .as_str()
+            .is_some_and(|e| e.contains("does not match")),
+        "{r}"
+    );
+    assert!(
+        !agent
+            .manager
+            .images()
+            .firmware_vars_template("fw-bad")
+            .exists()
+    );
+    // Nor is there ever a half copy, through the retries that follow: the
+    // code file goes in place only with its checked template.
+    let until = std::time::Instant::now() + Duration::from_secs(6);
+    while std::time::Instant::now() < until {
+        assert_ne!(row("fw-bad").await["phase"], "Ready");
+        assert!(!agent.manager.images().firmware_path("fw-bad").exists());
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 /// A server and an agent named `agent1`, both running their controllers.
 async fn server_and_agent() -> (Cp, Cp) {
     let mut cfg = test_config();
@@ -2329,6 +2542,7 @@ async fn a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk() {
         "{d}"
     );
     let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    disk_created(&server, &disk_id).await;
     vm["data_disks"] = json!(["ld"]);
     let (s, v) = call(&server, "POST", "/vms", Some(vm), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
@@ -2399,6 +2613,7 @@ async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
     let (s, d) = call(&server, "POST", "/disks", Some(disk("mv", "nfs-move")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{d}");
     let disk_id = d["disk"]["id"].as_str().unwrap().to_string();
+    disk_created(&server, &disk_id).await;
     // A VM on the agent, never started, with the shared disk and no
     // host-path root.
     let vm_req = |name: &str, disks: Value| {
@@ -2442,6 +2657,7 @@ async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
     // A node-local disk can't go with its VM.
     let (s, d) = call(&server, "POST", "/disks", Some(disk("stuck", "local")), &[]).await;
     assert_eq!(s, StatusCode::CREATED, "{d}");
+    disk_created(&server, d["disk"]["id"].as_str().unwrap()).await;
     let (s, v) = call(
         &server,
         "POST",
@@ -3264,6 +3480,170 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
         && p.ip.is_some()));
     assert!(d.edge.is_some() && !d.node_addresses.is_empty());
 
+    // A NIC added to a placed VM gets its address, and so its port, at once.
+    let b_id = vm_of(&b)["id"].as_str().unwrap().to_string();
+    server
+        .manager
+        .attach_network(
+            &b_id,
+            glidex_control_plane::models::NetworkAttachment {
+                network: "lab".into(),
+                mac: None,
+                queue_pairs: None,
+                port_security: true,
+                allowed_addresses: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    let lab = glidex_control_plane::ipam::list_reservations(&server.manager.database())
+        .unwrap()
+        .into_iter()
+        .find(|r| r.vm_id == b_id && r.nic == 1)
+        .expect("the added NIC's address");
+    assert!(lab.ip.to_string().starts_with("10.89.200."), "{}", lab.ip);
+    let ports = || async {
+        server
+            .manager
+            .__desired_ovn_for_tests()
+            .await
+            .unwrap()
+            .ports
+            .len()
+    };
+    assert_eq!(ports().await, 3);
+
+    // One missing (a NIC added before changes reserved addresses) is made
+    // by the leader's next pass.
+    server
+        .manager
+        .database()
+        .write(glidex_control_plane::store::Origin::Network, |tx| {
+            glidex_control_plane::ipam::release(tx, &lab.network, &lab.mac)
+        })
+        .unwrap();
+    assert_eq!(ports().await, 2);
+    server.manager.clone().reconcile_ovn().await;
+    let res = glidex_control_plane::ipam::list_reservations(&server.manager.database()).unwrap();
+    assert!(
+        res.iter()
+            .any(|r| r.vm_id == b_id && r.nic == 1 && r.ip == lab.ip),
+        "{res:?}"
+    );
+    assert_eq!(ports().await, 3);
+
+    // A NIC given another MAC while its VM runs: the port and the address
+    // stay the guest's until the next start, which takes the new ones.
+    let set_nics = |nics: Vec<glidex_control_plane::models::NicStatus>| {
+        let (server, b_id) = (&server, &b_id);
+        async move {
+            let mut rec = server.manager.get_vm(b_id).await.unwrap();
+            rec.resource_version += 1;
+            rec.status.nics = nics;
+            let ws = glidex_control_plane::store::WriteSet {
+                format: 1,
+                origin: glidex_control_plane::store::Origin::Controller,
+                ops: vec![glidex_control_plane::store::Op::Put {
+                    table: glidex_control_plane::store::TableId::Vms,
+                    key: b_id.as_bytes().to_vec(),
+                    value: serde_json::to_vec(&rec).unwrap(),
+                }],
+            };
+            let r = cluster(server)
+                .client
+                .request(
+                    &server.addr.to_string(),
+                    hyper::Method::POST,
+                    "/cluster/v1/status-write",
+                    &[("content-type", "application/json".into())],
+                    serde_json::to_vec(&ws).unwrap().into(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                r.status,
+                StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&r.body)
+            );
+            wait_for("the NICs written", || async {
+                server.manager.get_vm(b_id).await.unwrap().status.nics.len()
+                    == rec.status.nics.len()
+            })
+            .await;
+        }
+    };
+    let running: Vec<_> = server
+        .manager
+        .get_vm(&b_id)
+        .await
+        .unwrap()
+        .spec_nics()
+        .into_iter()
+        .map(
+            |(i, network, mac)| glidex_control_plane::models::NicStatus {
+                network,
+                nic_index: i,
+                mac,
+                port: None,
+                ipv4: None,
+                port_ok: true,
+                metadata_index: None,
+            },
+        )
+        .collect();
+    set_nics(running).await;
+    server
+        .manager
+        .detach_network(&b_id, "lab", None)
+        .await
+        .unwrap();
+    let new_mac = "02:00:00:00:aa:01";
+    server
+        .manager
+        .attach_network(
+            &b_id,
+            glidex_control_plane::models::NetworkAttachment {
+                network: "lab".into(),
+                mac: Some(new_mac.into()),
+                queue_pairs: None,
+                port_security: true,
+                allowed_addresses: vec![],
+            },
+        )
+        .await
+        .unwrap();
+    server.manager.clone().reconcile_ovn().await;
+    let lab_port = || async {
+        let d = server.manager.__desired_ovn_for_tests().await.unwrap();
+        d.ports
+            .into_iter()
+            .find(|p| p.vm_id == b_id && p.nic == 1)
+            .map(|p| (p.mac, p.ip))
+    };
+    assert_eq!(lab_port().await, Some((lab.mac.clone(), Some(lab.ip))));
+    let lab_macs = || async {
+        let mut m: Vec<String> =
+            glidex_control_plane::ipam::list_reservations(&server.manager.database())
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.vm_id == b_id && r.nic == 1)
+                .map(|r| r.mac)
+                .collect();
+        m.sort();
+        m
+    };
+    let mut both = vec![lab.mac.clone(), new_mac.to_string()];
+    both.sort();
+    assert_eq!(lab_macs().await, both);
+    // Stopped, its ports go; at the next start the new MAC is the port's.
+    set_nics(Vec::new()).await;
+    server.manager.clone().reconcile_ovn().await;
+    assert_eq!(lab_macs().await, vec![new_mac.to_string()]);
+    let (mac, ip) = lab_port().await.expect("the new port");
+    assert_eq!(mac, new_mac);
+    assert!(ip.is_some_and(|ip| ip != lab.ip), "{ip:?}");
+
     // A network in use can't go; a VM that goes frees its address.
     let (s, _) = call(&server, "DELETE", "/networks/web", None, &[]).await;
     assert_eq!(s, StatusCode::CONFLICT);
@@ -3281,7 +3661,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
         glidex_control_plane::ipam::list_reservations(&server.manager.database())
             .unwrap()
             .len(),
-        1
+        2
     );
 }
 
@@ -5098,32 +5478,25 @@ async fn an_agents_ui_points_at_a_server_whose_ui_acts_on_the_agent() {
         );
     }
 
-    // W6: what an older agent relays is still served by the server.
-    let r = cluster(&agent)
-        .client
-        .request(
-            &server.addr.to_string(),
-            axum::http::Method::GET,
-            &format!("/cluster/v1/ui/nodes/{agent_id}"),
-            &[],
-            bytes::Bytes::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status, StatusCode::OK);
-    // A relay can't vouch for anyone.
-    let r = cluster(&agent)
-        .client
-        .request(
-            &server.addr.to_string(),
-            axum::http::Method::GET,
-            "/cluster/v1/ui/vms",
-            &[("x-glidex-principal", "e30=".to_string())],
-            bytes::Bytes::new(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(r.status, StatusCode::FORBIDDEN);
+    // W8: servers no longer serve UI requests an agent relays. The path
+    // falls to the server-to-server forwarding route, which agents may not use.
+    for path in [
+        format!("/cluster/v1/ui/nodes/{agent_id}"),
+        "/cluster/v1/ui".into(),
+    ] {
+        let r = cluster(&agent)
+            .client
+            .request(
+                &server.addr.to_string(),
+                axum::http::Method::GET,
+                &path,
+                &[],
+                bytes::Bytes::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(r.status, StatusCode::FORBIDDEN, "{path}");
+    }
     // Nor may a node send another node's host what it authorized (servers only).
     let r = cluster(&agent)
         .client
@@ -5199,6 +5572,100 @@ async fn a_standalone_ui_targets_only_itself_and_publishes_a_custom_address() {
     assert_eq!(
         ui.clone().oneshot(req).await.unwrap().status(),
         StatusCode::FORBIDDEN
+    );
+}
+
+/// W3 across a restart (a one-server cluster): a server keeps the address it last published
+/// until glidex-ui reports one, so glidex-ui reporting the same address
+/// again writes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_restart_keeps_the_published_ui_address() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let host = new_cp();
+    manage::init(
+        &host.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(host.addr),
+            tunnel_ip: None,
+            listen: Some(host.addr),
+        },
+    )
+    .await
+    .unwrap();
+    host.manager.initialize().await.unwrap();
+    let ui_with_fallback = |cp: &Cp| {
+        let mut cfg = Config {
+            ui_user: nix::unistd::User::from_uid(nix::unistd::getuid())
+                .unwrap()
+                .unwrap()
+                .name,
+            ..Default::default()
+        };
+        cfg.auth.allowed_origins = vec!["https://fallback.example".into()];
+        let auth =
+            glidex_control_plane::auth::AuthService::disabled_with(cp.manager.database(), cfg)
+                .unwrap();
+        glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App {
+            manager: cp.manager.clone(),
+            auth,
+        }))
+    };
+    let reported = json!({"url": "https://host1.example.ts.net:5173"});
+    let ui = ui_with_fallback(&host);
+    assert_eq!(
+        host.manager.ui_url().as_deref(),
+        Some("https://fallback.example"),
+        "nothing published yet: the first allowed origin"
+    );
+    let (s, _, v) = via_ui_with(&ui, "PUT", "/ui/self", &[], Some(reported.clone())).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // The changed address is written by a self-report of its own.
+    let me = host.manager.local_node_id();
+    let published = || {
+        host.manager
+            .nodes()
+            .get(&me)
+            .unwrap()
+            .filter(|n| n.status.ui_url.as_deref() == Some("https://host1.example.ts.net:5173"))
+    };
+    wait_for("the reported address to be published", || async {
+        published().is_some()
+    })
+    .await;
+    let before = published().unwrap();
+
+    // A restarted process holds no address yet, and reports itself while it
+    // loads, before the router sets one: that keeps the published address.
+    host.manager.set_ui_url(None);
+    host.manager.report_self().unwrap();
+    assert_eq!(
+        host.manager
+            .nodes()
+            .get(&me)
+            .unwrap()
+            .unwrap()
+            .meta
+            .resource_version,
+        before.meta.resource_version,
+        "the startup report kept the published address"
+    );
+    // Then it builds the router again over the same store.
+    let ui = ui_with_fallback(&host);
+    assert_eq!(
+        host.manager.ui_url().as_deref(),
+        Some("https://host1.example.ts.net:5173"),
+        "the published address stands, not the fallback"
+    );
+    host.manager.report_self().unwrap();
+    let (s, _, v) = via_ui_with(&ui, "PUT", "/ui/self", &[], Some(reported)).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    host.manager.report_self().unwrap();
+    let after = host.manager.nodes().get(&me).unwrap().unwrap();
+    assert_eq!(
+        after.meta.resource_version, before.meta.resource_version,
+        "the node record is not written again"
     );
 }
 
@@ -5409,6 +5876,80 @@ async fn a_file_enabled_cluster_moves_to_the_setting() {
         "{v}"
     );
     assert_eq!(v["settings"]["updated_by"], "file", "{v}");
+}
+
+/// spec/22-host-topology.md H20: a cluster whose pools and grants are in
+/// the leader's file moves them to the replicated setting once; after that a
+/// server's file no longer decides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn file_pools_move_to_the_setting_once() {
+    use glidex_control_plane::config::{PciGrant, PciPool, PoolMatch};
+    let _one = serial().await;
+    let pool = |name: &str, device: &str| PciPool {
+        name: name.into(),
+        class: Some("gpu".into()),
+        matches: PoolMatch {
+            vendor_id: Some("0x1002".into()),
+            device_id: Some(device.into()),
+            ..Default::default()
+        },
+        nodes: vec![],
+        prepare: false,
+        per_device: None,
+        bar_mib: Some(16384),
+    };
+    let mut cfg = test_config();
+    cfg.pci.pools = vec![pool("r9700", "0x7551")];
+    cfg.pci.allow = vec![PciGrant {
+        bdf: None,
+        pool: Some("r9700".into()),
+        projects: vec![],
+        tenants: vec!["*".into()],
+        node: None,
+    }];
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    assert!(server.manager.pci_settings().is_none());
+    server.manager.migrate_pci_settings();
+    let s = server
+        .manager
+        .pci_settings()
+        .expect("the setting is written");
+    assert_eq!(s.pools, cfg.pci.pools);
+    assert_eq!(s.allow, cfg.pci.allow);
+    let me = server.manager.local_node_id();
+    assert_eq!(s.updated_by, format!("migrate:{me}"));
+
+    // A file that changes afterwards is ignored, and migration doesn't run again.
+    let mut later = cfg.clone();
+    later.pci.pools = vec![pool("other", "0x7550")];
+    later.pci.allow.clear();
+    server.manager.configure(&later);
+    server.manager.migrate_pci_settings();
+    let names: Vec<String> = server
+        .manager
+        .defined_pools()
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
+    assert_eq!(names, ["r9700"]);
+    assert_eq!(server.manager.pci_grants().len(), 1);
+    assert_eq!(
+        server.manager.pci_settings().unwrap().updated_at,
+        s.updated_at
+    );
 }
 
 /// spec/14-clustering.md §11.6, §13.2: a node's br-int datapath is a setting;
@@ -6442,4 +6983,238 @@ async fn an_agents_metadata_tokens_come_from_the_leader() {
         String::from_utf8_lossy(&r.body)
     );
     assert!(String::from_utf8_lossy(&r.body).contains("not_placed_here"));
+}
+
+/// A write set near the store's entry limit (`MAX_WRITE_SET_BYTES`)
+/// replicates to every server: the Raft endpoints take what the leader
+/// may send, so no entry is refused on every retry (which stalls the log).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_large_write_set_replicates_to_every_server() {
+    use glidex_control_plane::store::{Origin, StoreError, TableId};
+    let _g = serial().await;
+    let cps = form(3).await;
+    let l = leader_index(&cps, &[0, 1, 2]).await;
+    // Base64 in an entry: about 0.95 MB on the wire, near the store's
+    // 1 MiB limit; four of them in one append are over axum's default body
+    // limit (2 MB).
+    let big = vec![b'a'; 700_000];
+    let db = cluster(&cps[l]).db.clone();
+    let value = big.clone();
+    tokio::task::spawn_blocking(move || {
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::Meta.definition())?
+                .insert("test-large-write-set", &value)?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap()
+    .expect("the leader commits it");
+    for (i, cp) in cps.iter().enumerate() {
+        let db = cluster(cp).db.clone();
+        wait_for(&format!("cp{} to apply it", i + 1), || {
+            let db = db.clone();
+            let big = big.clone();
+            async move {
+                let txn = db.begin_read().unwrap();
+                let t = txn.open_table(TableId::Meta.definition()).unwrap();
+                t.get("test-large-write-set")
+                    .unwrap()
+                    .is_some_and(|v| v.value() == big.as_slice())
+            }
+        })
+        .await;
+    }
+}
+
+/// spec/14-clustering.md D33: an agent checks a peer's certificate as a
+/// server does: against the certificates the cluster issued, its deny list,
+/// and, for a server certificate, the nodes listed as current servers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_agent_refuses_certificates_the_cluster_did_not_issue_or_revoked() {
+    use glidex_control_plane::cluster::net::{ClusterTls, PeerClient, TlsMaterial};
+    use glidex_control_plane::cluster::pki::NodeKey;
+    use glidex_control_plane::store::{Origin, StoreError, TableId};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let sc = cluster(&server);
+
+    // A server certificate the CA signs for a node the cluster doesn't have.
+    let key = NodeKey::generate().unwrap();
+    let csr = key.csr(&["127.0.0.1".parse().unwrap()], &[]).unwrap();
+    let (cert_pem, info) = sc
+        .signing_ca()
+        .unwrap()
+        .sign_node(&csr, "ghost", true, 1, &["127.0.0.1".parse().unwrap()])
+        .unwrap();
+    let trust = sc.files.read(sc.files.trust()).unwrap();
+    let ghost = PeerClient::new(
+        ClusterTls::new(TlsMaterial::from_pem(&cert_pem, &key.key_pem(), &trust).unwrap()).unwrap(),
+    );
+    let ask = |client: Arc<PeerClient>| {
+        let addr = agent.addr.to_string();
+        async move {
+            let r = client
+                .request_timeout(
+                    &addr,
+                    hyper::Method::GET,
+                    "/cluster/v1/status",
+                    &[],
+                    bytes::Bytes::new(),
+                    Duration::from_secs(10),
+                )
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            (r.status, body)
+        }
+    };
+
+    // The server itself is answered.
+    let (s, b) = ask(sc.client.clone()).await;
+    assert_eq!(s, StatusCode::OK, "{b}");
+
+    // Never issued: refused.
+    let (s, b) = ask(ghost.clone()).await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::UNAUTHORIZED, Some("unauthenticated")),
+        "{b}"
+    );
+
+    // Issued, but not a node listed as a server: refused.
+    server
+        .manager
+        .database()
+        .write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::IssuedCerts.definition())?.insert(
+                info.serial.as_str(),
+                json!({ "node": "ghost", "kind": "node" })
+                    .to_string()
+                    .as_bytes(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    wait_for("the issued row on the agent", || async {
+        ask(ghost.clone()).await.1["message"]
+            .as_str()
+            .is_some_and(|m| m.contains("not a current server"))
+    })
+    .await;
+
+    // Revoked: refused as a removed node.
+    server
+        .manager
+        .database()
+        .write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::NodeDenylist.definition())?.insert(
+                info.serial.as_str(),
+                json!({ "node": "ghost", "at": 1, "why": "test" })
+                    .to_string()
+                    .as_bytes(),
+            )?;
+            Ok(())
+        })
+        .unwrap();
+    wait_for("the deny row on the agent", || async {
+        ask(ghost.clone()).await.1["error"] == "node_removed"
+    })
+    .await;
+    let (s, b) = ask(sc.client.clone()).await;
+    assert_eq!(s, StatusCode::OK, "the server is still answered: {b}");
+}
+
+/// spec/14-clustering.md D35: a request to a node known by id is refused
+/// when another node's certificate answers at its address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_request_to_a_known_node_checks_its_certificate() {
+    use glidex_control_plane::cluster::net::Target;
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let client = cluster(&server).client.clone();
+    let ask = |to: Target| {
+        let client = client.clone();
+        async move {
+            client
+                .request_timeout(
+                    to,
+                    hyper::Method::GET,
+                    "/cluster/v1/status",
+                    &[],
+                    bytes::Bytes::new(),
+                    Duration::from_secs(10),
+                )
+                .await
+        }
+    };
+    let agent_id = agent.manager.local_node_id();
+    let r = ask(Target::node(&agent_id, agent.addr)).await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+    // The agent's address, expecting the server: refused before any request.
+    let server_id = server.manager.local_node_id();
+    let Err(e) = ask(Target::node(&server_id, agent.addr)).await else {
+        panic!("answered")
+    };
+    let e = e.to_string();
+    assert!(e.contains(&format!("not node {server_id}'s")), "{e}");
+    // A connection checked for the agent isn't reused for another node.
+    let Err(e) = ask(Target::node("someone-else", agent.addr)).await else {
+        panic!("answered")
+    };
+    let e = e.to_string();
+    assert!(e.contains("not node someone-else's"), "{e}");
+    // An address alone still checks only the CA.
+    let r = ask(agent.addr.to_string().into()).await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+    // D36: a request for "a server" (the leader, a seed) takes any server's
+    // certificate, and no agent's.
+    let r = ask(Target::server(server.addr)).await.unwrap();
+    assert_eq!(r.status, StatusCode::OK);
+    let Err(e) = ask(Target::server(agent.addr)).await else {
+        panic!("answered")
+    };
+    let e = e.to_string();
+    assert!(e.contains("not a server's"), "{e}");
+}
+
+/// spec/14-clustering.md D35: a relayed host request names the node it was
+/// authorized for, and another node refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_relayed_host_request_runs_only_on_the_node_it_names() {
+    use glidex_control_plane::api::relay::{AUTHORIZED_HEADER, RELAYED_TO_HEADER};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let client = cluster(&server).client.clone();
+    let send = |to: &str| {
+        let client = client.clone();
+        let addr = agent.addr.to_string();
+        let headers = vec![
+            (AUTHORIZED_HEADER, "readHost".to_string()),
+            (RELAYED_TO_HEADER, to.to_string()),
+        ];
+        async move {
+            let r = client
+                .request_timeout(
+                    addr.as_str(),
+                    hyper::Method::GET,
+                    "/cluster/v1/host/host/topology",
+                    &headers,
+                    bytes::Bytes::new(),
+                    Duration::from_secs(30),
+                )
+                .await
+                .unwrap();
+            let body: Value = serde_json::from_slice(&r.body).unwrap_or(Value::Null);
+            (r.status, body)
+        }
+    };
+    let (s, b) = send("another-node").await;
+    assert_eq!(
+        (s, b["error"].as_str()),
+        (StatusCode::CONFLICT, Some("wrong_node")),
+        "{b}"
+    );
+    let (s, b) = send(&agent.manager.local_node_id()).await;
+    assert_ne!(b["error"].as_str(), Some("wrong_node"), "{s} {b}");
 }

@@ -40,13 +40,10 @@ fn sse(e: &svc::Event) -> Event {
 
 pub async fn watch(
     c: Caller,
-    via: Option<axum::Extension<super::RelayedBy>>,
     Query(q): Query<WatchQuery>,
 ) -> Result<axum::response::Response, ApiErr> {
-    // Through a node's UI, the cluster summary is about that node.
-    let viewer = via.map(|v| v.0.0);
     let kinds = svc::parse_kinds(q.kinds.as_deref())?;
-    let rx = svc::open(c, kinds, q.project.as_deref(), viewer).await?;
+    let rx = svc::open(c, kinds, q.project.as_deref()).await?;
     let stream = futures_util::stream::unfold(rx, |mut rx| async move {
         rx.recv().await.map(|e| (Ok::<_, Infallible>(sse(&e)), rx))
     });

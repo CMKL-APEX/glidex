@@ -71,8 +71,16 @@ when {
 // Project networks are never opened up by net-admin grants; sharing them
 // takes the two-sided offer/accept.
 @id("base.project-network-private")
-forbid (principal, action == Glidex::Action::"grantNetwork", resource)
+forbid (principal, action in [Glidex::Action::"grantNetwork",
+                              Glidex::Action::"setHostPortSecurity"], resource)
 when { resource has project };
+
+// A project role lifts port security on its own project's networks only;
+// on a host network it takes setHostPortSecurity (spec/09-networking.md
+// decision 19).
+@id("base.port-security-project-network")
+forbid (principal, action == Glidex::Action::"setPortSecurity", resource is Glidex::Network)
+unless { resource has project };
 
 @id("base.project-network-only")
 forbid (principal, action in [Glidex::Action::"deleteProjectNetwork",

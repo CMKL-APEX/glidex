@@ -105,7 +105,7 @@ fn with_cookie(mut r: Response, value: &str, max_age: u64, secure: bool) -> Resp
 
 fn secure(headers: &HeaderMap, listener: Option<Extension<Listener>>, app: &AppState) -> bool {
     match listener.map(|l| l.0).unwrap_or(Listener::Tcp) {
-        Listener::Ui | Listener::Relay => {
+        Listener::Ui => {
             headers
                 .get("x-forwarded-proto")
                 .and_then(|v| v.to_str().ok())
@@ -240,6 +240,7 @@ pub async fn register_finish(
             subject: p.id.clone(),
             user_id: user.id.clone(),
             email: None,
+            email_verified: false,
             created_at: p.created_at,
         })
         .map_err(|e| err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()))?;
@@ -524,6 +525,7 @@ pub async fn invite_finish(
             subject: p.id.clone(),
             user_id: user_id.clone(),
             email: None,
+            email_verified: false,
             created_at: p.created_at,
         })
         .map_err(|e| internal(e.to_string()))?;

@@ -4,6 +4,7 @@
 
 mod common;
 
+use aws_lc_rs::signature::{ECDSA_P256_SHA256_ASN1_SIGNING, EcdsaKeyPair, KeyPair as _};
 use axum::{
     Router,
     body::Body,
@@ -15,7 +16,6 @@ use glidex_control_plane::auth::webauthn::{Cbor, b64url, encode};
 use glidex_control_plane::authz::Ent;
 use glidex_control_plane::config::Config;
 use http_body_util::BodyExt;
-use p256::ecdsa::signature::Signer as _;
 use serde_json::{Value, json};
 use sha2::Digest as _;
 use std::sync::Arc;
@@ -144,7 +144,7 @@ impl H {
 
 /// A software passkey (P-256).
 struct Authenticator {
-    key: p256::ecdsa::SigningKey,
+    key: EcdsaKeyPair,
     id: Vec<u8>,
     counter: u32,
     uv: bool,
@@ -159,7 +159,7 @@ fn sha256(b: &[u8]) -> Vec<u8> {
 impl Authenticator {
     fn new() -> Self {
         Authenticator {
-            key: p256::ecdsa::SigningKey::random(&mut p256::elliptic_curve::rand_core::OsRng),
+            key: EcdsaKeyPair::generate(&ECDSA_P256_SHA256_ASN1_SIGNING).unwrap(),
             id: sha256(uuid::Uuid::new_v4().as_bytes())[..16].to_vec(),
             counter: 0,
             uv: true,
@@ -173,7 +173,7 @@ impl Authenticator {
         a.push(flags);
         a.extend(self.counter.to_be_bytes());
         if attested {
-            let p = self.key.verifying_key().to_encoded_point(false);
+            let p = self.key.public_key().as_ref();
             a.extend([0u8; 16]);
             a.extend((self.id.len() as u16).to_be_bytes());
             a.extend(&self.id);
@@ -181,8 +181,8 @@ impl Authenticator {
                 (Cbor::Int(1), Cbor::Int(2)),
                 (Cbor::Int(3), Cbor::Int(-7)),
                 (Cbor::Int(-1), Cbor::Int(1)),
-                (Cbor::Int(-2), Cbor::Bytes(p.x().unwrap().to_vec())),
-                (Cbor::Int(-3), Cbor::Bytes(p.y().unwrap().to_vec())),
+                (Cbor::Int(-2), Cbor::Bytes(p[1..33].to_vec())),
+                (Cbor::Int(-3), Cbor::Bytes(p[33..65].to_vec())),
             ])));
         }
         a
@@ -220,10 +220,11 @@ impl Authenticator {
         let ad = self.auth_data(pk["rpId"].as_str().unwrap(), false);
         let mut msg = ad.clone();
         msg.extend(sha256(&cd));
-        let sig: p256::ecdsa::Signature = self.key.sign(&msg);
+        let rng = aws_lc_rs::rand::SystemRandom::new();
+        let sig = self.key.sign(&rng, &msg).unwrap();
         json!({"id": b64url(&self.id), "rawId": b64url(&self.id), "type": "public-key",
                "response": {"clientDataJSON": b64url(&cd), "authenticatorData": b64url(&ad),
-                            "signature": b64url(sig.to_der().as_bytes()), "userHandle": self.handle}})
+                            "signature": b64url(sig.as_ref()), "userHandle": self.handle}})
     }
 }
 

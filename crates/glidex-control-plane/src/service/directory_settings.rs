@@ -21,6 +21,7 @@ fn settings_pb(s: &DirectorySettings) -> pb::DirectorySettings {
             approval_required: ss.approval_required,
             slug_prefix: ss.slug_prefix.clone(),
             admins_may_delete: Some(ss.admins_may_delete),
+            auto_create: ss.auto_create,
             ..Default::default()
         }
         .into(),
@@ -67,6 +68,7 @@ fn settings_from(call: &Call, p: &pb::DirectorySettings) -> ServiceResult<Direct
             approval_required: ss.approval_required,
             slug_prefix: ss.slug_prefix.clone(),
             admins_may_delete: ss.admins_may_delete.unwrap_or(dflt.admins_may_delete),
+            auto_create: ss.auto_create,
         };
     }
     if let Some(l) = p.tenant_label.as_option() {

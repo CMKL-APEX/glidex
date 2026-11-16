@@ -242,7 +242,11 @@ namespace Glidex {
   // Placing a VM on another node is the cluster operator's (spec/24-storage.md S10).
   action placeVm in ["node.drain", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
-  action startVm, stopVm, pauseVm, updateVm in ["vm.operate", "tenant-scoped"]
+  action startVm, stopVm, pauseVm in ["vm.operate", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
+  // Changing a VM (vCPUs, memory, kernel, policies) is an editor's
+  // (spec/11-security.md §7.2); an operator only runs it.
+  action updateVm in ["vm.write", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
@@ -291,6 +295,11 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Vm, Project], context: Ctx };
   action useNetwork in ["shared"]  // in no group: who may attach is `attachNetwork`
     appliesTo { principal: [User, Token], resource: [Network], context: ProjectCtx };
+  // Lifting or putting back a NIC's port-security checks
+  // (spec/09-networking.md decision 19): on the VM (the project, at create)
+  // and on a project network; a host network's side is setHostPortSecurity.
+  action setPortSecurity in ["network.manage", "tenant-scoped"]
+    appliesTo { principal: [User, Token], resource: [Vm, Project, Network], context: Ctx };
   action createProjectNetwork in ["network.manage", "tenant-scoped"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action deleteProjectNetwork in ["network.manage", "tenant-scoped"]
@@ -315,7 +324,7 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
   action createNetwork, createBridge, ensureUplink in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
-  action deleteNetwork, grantNetwork, setNetworkHostApi in ["host.network", "host-scoped"]
+  action deleteNetwork, grantNetwork, setNetworkHostApi, setHostPortSecurity in ["host.network", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
   action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink, deleteBridge in ["host.network.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
@@ -332,6 +341,9 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
   // OVN as a cluster setting (spec/16-clustering-ui.md §8a).
   action configureOvn in ["host.cluster.critical", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
+  // Device pools and grants as a cluster setting (spec/22-host-topology.md H20).
+  action configurePciPools in ["host.cluster.critical", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster], context: Ctx };
 
   // ---- nodes (spec/14-clustering.md §7) -------------------------------------

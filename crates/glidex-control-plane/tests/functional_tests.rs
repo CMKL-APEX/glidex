@@ -402,6 +402,7 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
         passwd_hash: Some("$6$salt$hash".into()),
         nic_macs: Vec::new(),
         growpart: false,
+        pylon_guest_agent: None,
     };
 
     cloud_init::write_seed_image(image.to_str().unwrap(), &seed).unwrap();
@@ -427,6 +428,26 @@ fn seed_image_is_a_cidata_volume_with_nocloud_files() {
         .map(|e| e.unwrap().file_name())
         .collect();
     assert_eq!(leftovers, vec![std::ffi::OsString::from("seed.img")]);
+}
+
+/// A Pylon VM's seed carries the guest agent (spec/30-pylon.md P19): the
+/// release's agent is 1.6 MB, about 2.1 MB in base64, in the 8 MiB volume.
+#[test]
+fn seed_image_holds_the_pylon_guest_agent() {
+    let tmp = TempDir::new().unwrap();
+    let image = tmp.path().join("seed.img");
+    let agent: Vec<u8> = (0..1_700_000u32).map(|i| (i % 251) as u8).collect();
+    let seed = SeedConfig {
+        instance_id: "vm-pylon".into(),
+        hostname: "pylon".into(),
+        pylon_guest_agent: Some(std::sync::Arc::new(agent)),
+        ..Default::default()
+    };
+    cloud_init::write_seed_image(image.to_str().unwrap(), &seed).unwrap();
+    let user_data = mtype(&image, "user-data");
+    assert_eq!(user_data, seed.user_data());
+    assert!(user_data.len() > 2_200_000, "{}", user_data.len());
+    assert!(user_data.contains("pylon-guest-agent.service"));
 }
 
 #[test]
@@ -708,6 +729,8 @@ async fn firmware_boot_e2e(hypervisor: &str) {
     .await;
     assert_eq!(status, StatusCode::CREATED, "{body}");
 
+    // The second login, after a rename, needs it again.
+    let password_again = password.clone();
     let hostname = "gx-functest";
     let (status, vm) = request(
         &app,
@@ -810,6 +833,44 @@ async fn firmware_boot_e2e(hypervisor: &str) {
         log.contains("reboot: Power down"),
         "guest did not power off cleanly:\n{log}"
     );
+
+    // A rename reaches the guest at its next start: the seed is written
+    // again with the new name (spec/12-reconciliation.md §7.7).
+    let renamed = "gx-renamed";
+    let (status, body) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{id}"),
+        Some(json!({"change": {"name": renamed}})),
+    )
+    .await;
+    assert!(status.is_success(), "{body}");
+    let (status, body) = request(&app, "POST", &format!("/vms/{id}/start?wait=120"), None).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let console_path = glidex_control_plane::paths::vm_paths(&id).console_socket;
+    tokio::task::spawn_blocking(move || {
+        let mut console = Console::connect(&console_path);
+        console.expect(&format!("{renamed} login: "), Duration::from_secs(300));
+        console.send(&format!("{username}\r"));
+        console.expect("Password: ", Duration::from_secs(30));
+        console.send(&format!("{password_again}\r"));
+        console.expect(
+            &format!("{username}@{renamed}:~$ "),
+            Duration::from_secs(60),
+        );
+        console.send("echo GX_$(hostname)_up\r");
+        console.expect(&format!("GX_{renamed}_up"), Duration::from_secs(30));
+    })
+    .await
+    .unwrap();
+    let (status, body) = request(
+        &app,
+        "POST",
+        &format!("/vms/{id}/stop?graceful_timeout_secs=120&wait=200"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
 
     // Delete cleans up the generated seed (and the variable store).
     let (status, _) = request(&app, "DELETE", &format!("/vms/{id}"), None).await;

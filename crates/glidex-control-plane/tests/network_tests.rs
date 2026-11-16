@@ -388,6 +388,136 @@ async fn vms_attach_and_detach_networks() {
     assert_eq!(status, StatusCode::NO_CONTENT);
 }
 
+/// A NIC's MAC is unique on its network: a second VM can't take one
+/// another VM's NIC has there, at create, edit or attach. The same MAC on
+/// another network is another NIC, and a VM saves its own NICs again.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_mac_is_unique_on_its_network() {
+    let h = harness(true);
+    for (name, mode) in [
+        ("lab", "NETWORK_MODE_NAT"),
+        ("iso", "NETWORK_MODE_ISOLATED"),
+    ] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/networks",
+            Some(json!({"name": name, "mode": mode, "bridge": format!("gxbr-{name}")})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let mac = "52:54:00:12:34:56";
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", json!([{"network": "lab", "mac": mac}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let v1 = vm_id(&body);
+
+    // Create: the same MAC on the same network, in any case.
+    for m in [mac, "52:54:00:12:34:56".to_ascii_uppercase().as_str()] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/vms",
+            Some(vm("v2", json!([{"network": "lab", "mac": m}]))),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CONFLICT, "{body}");
+        assert!(
+            body["message"].as_str().unwrap().contains("in use"),
+            "{body}"
+        );
+    }
+    // Another network: allowed.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v2", json!([{"network": "iso", "mac": mac}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let v2 = vm_id(&body);
+
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v3", json!([{"network": "lab"}]))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let v3 = vm_id(&body);
+    let v3_lab = vm_of(&body)["nics"][0]["mac"].as_str().unwrap().to_string();
+
+    // Attach: refused, and the VM keeps its NICs.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/vms/{v3}/networks"),
+        Some(json!({"network": "lab", "mac": mac})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (_, body) = request(&h.app, "GET", &format!("/vms/{v3}"), None).await;
+    assert_eq!(vm_of(&body)["nics"].as_array().unwrap().len(), 1, "{body}");
+
+    // Edit: v3 can't move its NIC to v1's MAC.
+    let (status, body) = request(
+        &h.app,
+        "PATCH",
+        &format!("/vms/{v3}"),
+        Some(json!({"change": {"networks": [{"network": "lab", "mac": mac}]}})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // v1 saves its own NIC again, and adds one.
+    let (status, body) = request(
+        &h.app,
+        "PATCH",
+        &format!("/vms/{v1}"),
+        Some(json!({"change": {"networks": [
+            {"network": "lab", "mac": mac},
+            {"network": "iso"}
+        ]}})),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+    assert_eq!(vm_of(&body)["nics"].as_array().unwrap().len(), 2, "{body}");
+    // But not a generated MAC v3 has.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/vms/{v1}/networks"),
+        Some(json!({"network": "lab", "mac": v3_lab})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+
+    // A deleted VM's MAC is free again.
+    let (status, _) = request(&h.app, "DELETE", &format!("/vms/{v1}"), None).await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/vms/{v3}/networks"),
+        Some(json!({"network": "lab", "mac": mac})),
+    )
+    .await;
+    assert!(status.is_success(), "{status} {body}");
+
+    for id in [&v2, &v3] {
+        let (status, _) = request(&h.app, "DELETE", &format!("/vms/{id}"), None).await;
+        assert_eq!(status, StatusCode::NO_CONTENT);
+    }
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn failed_start_detaches_ports() {
     failed_start_detaches_ports_for("cloudhypervisor", "cloud-hypervisor").await;
@@ -468,11 +598,40 @@ async fn failed_start_detaches_ports_for(hypervisor: &str, binary: &str) {
 #[tokio::test(flavor = "multi_thread")]
 async fn ovs_status_and_bridges() {
     let h = harness(true);
+    // Two ports in one subnet netd doesn't manage (spec/09-networking.md §8.6).
+    h.exec.on(
+        "ip -j addr show",
+        Output::ok(
+            r#"[{"ifname":"ib0","addr_info":[{"local":"10.40.1.5","prefixlen":24,"scope":"global"}]},
+                {"ifname":"ib1","addr_info":[{"local":"10.40.1.6","prefixlen":24,"scope":"global"}]}]"#,
+        ),
+    );
+    h.exec
+        .file("/proc/sys/net/ipv4/conf/ib0/arp_ignore", "1\n")
+        .file("/proc/sys/net/ipv4/conf/ib0/rp_filter", "1\n");
     let (status, body) = request(&h.app, "GET", "/ovs/status", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["netd"]["available"], true);
     assert_eq!(body["netd"]["access"], "NETD_ACCESS_FULL");
     assert_eq!(body["host"]["ovs_version"], "3.7.1");
+    let shared = &body["source_routes"]["subnets"][0];
+    assert_eq!(shared["subnet"], "10.40.1.0/24", "{body}");
+    assert!(
+        shared["managed"].is_null() || shared["managed"] == false,
+        "{body}"
+    );
+    let ib0 = &shared["ports"][0];
+    assert_eq!(ib0["ifname"], "ib0");
+    assert_eq!(ib0["addresses"][0]["address"], "10.40.1.5");
+    assert_eq!(
+        ib0["addresses"][0]["state"],
+        "SOURCE_ADDRESS_STATE_UNMANAGED"
+    );
+    assert_eq!(
+        (ib0["arp_ignore"].as_u64(), ib0["rp_filter"].as_u64()),
+        (Some(1), Some(1)),
+        "{body}"
+    );
 
     let (status, body) = request(
         &h.app,
@@ -1168,6 +1327,94 @@ async fn host_networks_are_granted_to_tenants_and_shares_stay_in_one() {
     );
 }
 
+/// H26, H27 (spec/22-host-topology.md): a host network's grant names its
+/// project by id, `<tenant>/<project>` or a bare name only one project
+/// has.
+#[tokio::test(flavor = "multi_thread")]
+async fn host_network_grants_name_one_project() {
+    let h = harness(true);
+    let mut ids = Vec::new();
+    for slug in ["acme", "lab"] {
+        let (status, t) = request(&h.app, "POST", "/tenants", Some(json!({"slug": slug}))).await;
+        assert_eq!(status, StatusCode::CREATED, "{t}");
+        ids.push(t["tenant"]["id"].as_str().unwrap().to_string());
+    }
+    let (acme, lab) = (ids[0].clone(), ids[1].clone());
+    let projects = h.manager.projects();
+    let acme_web = projects
+        .create_in(&acme, "web", String::new(), None)
+        .unwrap()
+        .id;
+    let lab_web = projects
+        .create_in(&lab, "web", String::new(), None)
+        .unwrap()
+        .id;
+    let only = projects
+        .create_in(&lab, "only", String::new(), None)
+        .unwrap()
+        .id;
+
+    // A bare name two projects have is refused, saying how to name one.
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "grants": ["web"]})),
+    )
+    .await;
+    assert_eq!(
+        (status, body["error"].as_str()),
+        (StatusCode::CONFLICT, Some("ambiguous")),
+        "{body}"
+    );
+    assert!(
+        body["message"]
+            .as_str()
+            .unwrap()
+            .contains("<tenant>/<project>"),
+        "{body}"
+    );
+
+    // `<tenant>/<project>`, and a bare name only one project has.
+    let (status, net) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "grants": ["acme/web", "only"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{net}");
+    let mut granted: Vec<String> = net["network"]["grants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|g| g.as_str().unwrap().to_string())
+        .collect();
+    granted.sort();
+    let mut want = vec![acme_web.clone(), only.clone()];
+    want.sort();
+    assert_eq!(granted, want);
+
+    // Regranting checks the same way.
+    let (status, body) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/grants",
+        Some(json!({"grants": ["web"]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    let (status, net) = request(
+        &h.app,
+        "PUT",
+        "/networks/lab/grants",
+        Some(json!({"grants": [format!("{lab}/web")]})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{net}");
+    assert_eq!(net["network"]["grants"], json!([lab_web]));
+}
+
 /// D24 (spec/19-tenancy.md): networks are keyed by id; a project network's
 /// name is unique in its tenant, a host network's on the cluster. A name
 /// several networks have is ambiguous where both are in view; a VM's NIC
@@ -1566,4 +1813,312 @@ async fn a_node_network_may_be_made_for_another_node() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+}
+
+/// spec/09-networking.md decision 19: `port_security: false` on a NIC
+/// needs `setPortSecurity` (a project owner's) and, on a host network,
+/// `setHostPortSecurity` (a net-admin's); an editor attaches NICs but
+/// can't lift their checks. The VM shows the value on its NICs.
+#[tokio::test(flavor = "multi_thread")]
+async fn port_security_off_needs_its_permission() {
+    use glidex_control_plane::api::App;
+    use glidex_control_plane::auth::{AuthService, store::TokenKind};
+    use glidex_control_plane::authz::Ent;
+    use glidex_control_plane::config::Config;
+
+    let h = harness(true);
+    let pa = h
+        .manager
+        .projects()
+        .create("pa", String::new(), None)
+        .unwrap()
+        .id;
+    // As the local administrator (the unauthenticated test router).
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        "/networks",
+        Some(json!({"name": "lab", "mode": "NETWORK_MODE_NAT", "bridge": "gxbr-lab", "all_projects": true})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+    let (status, body) = request(
+        &h.app,
+        "POST",
+        &format!("/projects/{pa}/networks"),
+        Some(json!({"name": "pnet", "mode": "NETWORK_MODE_ISOLATED"})),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{body}");
+
+    let dir = TempDir::new().unwrap();
+    let mut cfg = Config::default();
+    cfg.authz.policy_files_dir = dir.path().join("policies");
+    let auth = AuthService::new(h.manager.database(), cfg).unwrap();
+    let app = Arc::new(App {
+        manager: h.manager.clone(),
+        auth,
+    });
+    let router = glidex_control_plane::api::router(app.clone());
+    let user = |name: &str| {
+        let id = app
+            .auth
+            .store
+            .user_for_identity("pam", name, name, None, true)
+            .unwrap()
+            .unwrap()
+            .id;
+        let token = app
+            .auth
+            .create_token(
+                "t",
+                TokenKind::Personal { owner: id.clone() },
+                &id,
+                None,
+                None,
+                None,
+            )
+            .unwrap()
+            .0;
+        (id, token)
+    };
+    let link = |role: &str, who: &str, on: Ent| {
+        if on == Ent::Cluster {
+            app.auth
+                .tenants
+                .add_member(
+                    glidex_control_plane::tenants::ADMIN_TENANT,
+                    Ent::User(who.into()),
+                    "test",
+                )
+                .unwrap();
+        }
+        app.auth
+            .add_link(role, Ent::User(who.into()), on, "test")
+            .unwrap();
+    };
+    let (owner, ot) = user("owner");
+    let (editor, et) = user("editor");
+    link("role.owner", &owner, Ent::Project(pa.clone()));
+    link("role.editor", &editor, Ent::Project(pa.clone()));
+    for u in [&owner, &editor] {
+        link("grant.host-paths", u, Ent::Cluster);
+    }
+    let call = |method: &'static str, path: String, body: Value, token: String| {
+        let router = router.clone();
+        async move {
+            let req = Request::builder()
+                .method(method)
+                .uri(path)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "application/json")
+                .body(Body::from(body.to_string()))
+                .unwrap();
+            let resp = router.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            (
+                status,
+                serde_json::from_slice::<Value>(&bytes).unwrap_or(Value::Null),
+            )
+        }
+    };
+    let body = |name: &str, net: &str, ps: Option<bool>| {
+        let mut nic = json!({"network": net});
+        if let Some(ps) = ps {
+            nic["port_security"] = json!(ps);
+        }
+        let mut b = vm(name, json!([nic]));
+        b["project"] = json!(pa);
+        b
+    };
+
+    // An editor attaches NICs, checked as usual, but can't lift the checks.
+    let (s, v) = call("POST", "/vms".into(), body("e1", "pnet", None), et.clone()).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(vm_of(&v)["nics"][0]["port_security"], json!(true), "{v}");
+    let e1 = vm_id(&v);
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("e2", "pnet", Some(false)),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v.to_string().contains("setPortSecurity"), "{v}");
+
+    // The owner, on the project's own network.
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("o1", "pnet", Some(false)),
+        ot.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(vm_of(&v)["nics"][0]["port_security"], json!(false), "{v}");
+    let o1 = vm_id(&v);
+
+    // A host network takes host.network too.
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("o2", "lab", Some(false)),
+        ot.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    assert!(v.to_string().contains("setHostPortSecurity"), "{v}");
+    link("role.net-admin", &owner, Ent::Cluster);
+    let (s, v) = call(
+        "POST",
+        "/vms".into(),
+        body("o2", "lab", Some(false)),
+        ot.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+
+    // Edits: changing the value is asked for; keeping it isn't.
+    let mac = |v: &Value| vm_of(v)["nics"][0]["mac"].as_str().unwrap().to_string();
+    let (_, cur) = request(&h.app, "GET", &format!("/vms/{e1}"), None).await;
+    let e1_mac = cur["vm"]["nics"][0]["mac"].as_str().unwrap().to_string();
+    let patch = |ps: bool, m: &str| json!({"change": {"networks": [{"network": "pnet", "mac": m, "port_security": ps}]}});
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{e1}"),
+        patch(false, &e1_mac),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{e1}"),
+        patch(true, &e1_mac),
+        et.clone(),
+    )
+    .await;
+    assert!(s.is_success(), "unchanged: {v}");
+    let (_, cur) = request(&h.app, "GET", &format!("/vms/{o1}"), None).await;
+    let o1_mac = mac(&cur);
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{o1}"),
+        patch(true, &o1_mac),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(
+        s,
+        StatusCode::FORBIDDEN,
+        "putting the checks back is a change too: {v}"
+    );
+    let (s, v) = call(
+        "PATCH",
+        format!("/vms/{o1}"),
+        patch(false, &o1_mac),
+        et.clone(),
+    )
+    .await;
+    assert!(s.is_success(), "unchanged: {v}");
+
+    // Attaching one more NIC without checks: the same.
+    let (s, v) = call(
+        "POST",
+        format!("/vms/{e1}/networks"),
+        json!({"network": "pnet", "port_security": false}),
+        et.clone(),
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
+    let (s, v) = call(
+        "POST",
+        format!("/vms/{e1}/networks"),
+        json!({"network": "pnet", "port_security": false}),
+        ot.clone(),
+    )
+    .await;
+    assert!(s.is_success(), "{v}");
+    assert_eq!(vm_of(&v)["nics"][1]["port_security"], json!(false), "{v}");
+}
+
+/// spec/09-networking.md decision 20: a NIC's `allowed_addresses` fit its
+/// network (a NAT network's subnet, IPv4 only), no two VMs' lists overlap
+/// on one network, and the VM shows them; refused with `422`.
+#[tokio::test(flavor = "multi_thread")]
+async fn allowed_addresses_fit_the_network_and_dont_overlap() {
+    let h = harness(true);
+    for (name, mode) in [
+        ("lab", "NETWORK_MODE_NAT"),
+        ("iso", "NETWORK_MODE_ISOLATED"),
+    ] {
+        let (status, body) = request(
+            &h.app,
+            "POST",
+            "/networks",
+            Some(json!({"name": name, "mode": mode, "bridge": format!("gxbr-{name}")})),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+    }
+    let nic = |net: &str, list: &[&str]| json!([{"network": net, "allowed_addresses": list}]);
+    let (s, v) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v1", nic("lab", &["10.88.0.100"]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        vm_of(&v)["nics"][0]["allowed_addresses"],
+        json!(["10.88.0.100"]),
+        "{v}"
+    );
+    let v1 = vm_id(&v);
+
+    for (list, why) in [
+        (&["10.88.0.96/28"][..], "overlaps"),
+        (&["10.99.0.1"][..], "outside"),
+        (&["fd00::1"][..], "IPv4 only"),
+        (&["10.88.0.7/24"][..], "host bits"),
+    ] {
+        let (s, v) = request(&h.app, "POST", "/vms", Some(vm("v2", nic("lab", list)))).await;
+        assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{list:?}: {v}");
+        assert!(v.to_string().contains(why), "{why}: {v}");
+    }
+    // Another network is another space.
+    let (s, v) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v2", nic("iso", &["10.88.0.96/28", "fd00::/64"]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let (s, v) = request(
+        &h.app,
+        "POST",
+        "/vms",
+        Some(vm("v3", nic("iso", &["fd00::9"]))),
+    )
+    .await;
+    assert_eq!(s, StatusCode::UNPROCESSABLE_ENTITY, "{v}");
+
+    // Edited with the VM's networks: no other permission (decision 20).
+    let (s, v) = request(
+        &h.app,
+        "PATCH",
+        &format!("/vms/{v1}"),
+        Some(json!({"change": {"networks": [{"network": "lab", "allowed_addresses": ["10.88.0.96/28"]}]}})),
+    )
+    .await;
+    assert!(s.is_success(), "{s} {v}");
+    assert_eq!(
+        vm_of(&v)["nics"][0]["allowed_addresses"],
+        json!(["10.88.0.96/28"]),
+        "{v}"
+    );
 }

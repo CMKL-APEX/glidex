@@ -34,6 +34,66 @@ Nodes talk to each other on TCP 8842 (the node API), with mutual TLS
 under the cluster's own certificate authority. The installer doesn't
 open firewall ports; see [the port list](host-networking.md#ports-between-nodes).
 
+### How changes are replicated
+
+The leader writes every change as one Raft entry; the other servers
+forward their writes to it. Followers apply an entry once a majority of
+voters has it.
+
+- **A change is at most 1 MiB.** One write to the database, as JSON,
+  is refused above that, with
+  `write set of N bytes exceeds the store's entry limit`, and nothing
+  is written.
+- **Appends fit in a heartbeat.** The leader sends a follower at most 4
+  entries at a time, and each send must arrive within one heartbeat
+  (`cluster.raft.heartbeat_ms`, 1 second by default). The election
+  timeout is 3–6 seconds (`cluster.raft.election_ms`), so a failover
+  takes a few seconds. Over a slow link between servers, raise both
+  together (see [Configuration](configuration.md#cluster)).
+- **A write doesn't wait for ever.** If no leader commits it, a server
+  gives up on a write after 10 election timeouts (60 seconds with the
+  defaults): the request fails with `the write was not committed within
+  …s (no leader commits); it may still be applied later`. Check whether
+  it took effect before you retry. A server that can't confirm it is
+  still the leader gives up after 4 election timeouts and answers as a
+  server that isn't the leader. Other writes on that server are not held
+  up meanwhile.
+
+If a cluster stops taking changes, see [A cluster stops
+committing](troubleshooting.md#a-cluster-stops-committing).
+
+### What the log is made of
+
+To see which tables and fields fill the Raft log, run the report on a
+**copy** of a server's log (the running server holds the file). The
+log holds every value written, sealed secrets included, so keep the
+copy private and delete it afterwards. The report itself names tables
+and fields and gives counts and sizes; it shows no key or value.
+
+```bash
+d=$(sudo mktemp -d)
+sudo cp /var/lib/glidex-control-plane/.glidex/cluster/raft/log.redb "$d/"
+sudo /usr/local/bin/glidex-control-plane --store-writes "$d/log.redb"
+sudo rm -r "$d"
+```
+
+It gives entries and bytes per day, per origin and per table, sorted
+by size, with:
+
+- **unchanged**: writes of exactly the value the key already held;
+- **per key**: writes per distinct key (for `rate_5m`, per VM and hour);
+- **fields changed**: which top-level fields the other writes changed,
+  most frequent first;
+- the VM writes that changed only bookkeeping (`status.conditions`,
+  `status.last_reconciled_at`), and how many came less than 10 minutes
+  after the last.
+- **conditions changed**: for VM writes that changed
+  `status.conditions`, which condition (`Ready`, `HypervisorReachable`,
+  …) and which of its fields.
+
+`--since <index>` starts at a log index (the first line gives the range
+covered), to compare two times; `--json` gives the same as JSON.
+
 ## Before you start
 
 Install Glidex on every host as in [Installation](installation.md). OVN
@@ -447,6 +507,20 @@ Once trust is set up:
   (and their GiB) and networks. The tenant's administrators see it on
   the tenant's page under *Clusters of other organizations*, and in
   `gxctl tenant clusters acme`, with the time the directory received it.
+  A storage cluster (hyperstor) reports the tenant's storage instead:
+  volumes with their provisioned size and the space they actually use,
+  buckets with the space their objects take, and S3 keys. The page
+  shows them in a *Storage* column. It may also report them per
+  project: a project that still holds storage there can't be deleted
+  here until a later report no longer lists it.
+- **A tenant's storage on a hyperstor cluster.** *Open storage* in that
+  column shows, for the tenant's members, the tenant's volumes, buckets
+  and S3 keys there, and usage per project. Glidex's server reads them
+  from the cluster for the person, with a short-lived token it never
+  hands to the browser, so the browser only ever talks to Glidex. The
+  cluster shows each person what their own roles there let them see.
+  Read-only: the cluster's own management UI administers it
+  (the datastore's *Manage cluster* link).
 
 - **When the directory is out of reach.** VMs keep running, and the
   tenant's people keep working with the sessions and tokens they have.
@@ -466,6 +540,17 @@ Once trust is set up:
 Feed, sign-in and report requests are signed by the sending side's key
 and go to the other side's API with its certificate pinned, on port
 8841 both ways: open it between the two organizations' hosts.
+
+When a cluster renews its certificate, it announces the new one in its
+report first, and the directory then accepts it. A Glidex cluster does
+this by itself: the node serving the cluster's API address keeps serving
+the old certificate, the leader announces the new one in its next report
+(within a minute), and the node switches once every trusted directory
+has taken it. A directory out of reach doesn't hold it for ever: 7 days
+before the old certificate expires, the node switches anyway. The log
+says `holding a renewed API certificate` when it starts waiting. If a proxy in
+front of the API address presents its own certificate, no node matches
+it, nothing is announced, and renewals wait for the 7-day fallback.
 
 ## The web UI's address
 
@@ -493,8 +578,9 @@ plane after setting it.
 
 That address is then also an accepted origin, the default SSO callback
 (register it once with your IdP), and a name each server's web UI
-answers to. Agents of an older version still relay their web UI to the
-servers until they are upgraded. If users sign in with passkeys under
+answers to. Servers don't take web UI requests relayed by agents older
+than v0.0.4: upgrade such agents together with the servers, or their web
+UI stops working. If users sign in with passkeys under
 more than one of these names, set their domain as well (see
 [Passkeys](authentication.md#the-passkeys-domain)).
 

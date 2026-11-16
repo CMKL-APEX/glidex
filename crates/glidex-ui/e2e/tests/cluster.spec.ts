@@ -289,3 +289,21 @@ test("through an agent's UI, the agent is this node and the Raft card names the 
   await expect(page.getByRole("row", { name: /s1/ })).not.toContainText("(this node)");
   await expect(page.getByText("s1 is Leader, term 3")).toBeVisible();
 });
+
+test("the Raft card warns while the server's log applies nothing", async ({ page }) => {
+  await mockCluster(page);
+  await rpcRoute(page, `${CLUSTER_SVC}/GetClusterStatus`, () =>
+    ok({ ...STATUS, raft: { ...STATUS.raft, leader: undefined, stalled_since: "2026-11-03T06:29:00Z" } }),
+  );
+  await page.goto("/cluster");
+  const alert = page.getByRole("alert").filter({ hasText: "No change has been applied" });
+  await expect(alert).toContainText("No change has been applied on s1 since");
+  await expect(alert).toContainText("Changes fail until the cluster commits again.");
+});
+
+test("the Raft card has no warning while the log applies", async ({ page }) => {
+  await mockCluster(page);
+  await page.goto("/cluster");
+  await expect(page.getByText("Leader, term 3")).toBeVisible();
+  await expect(page.getByText("No change has been applied")).toHaveCount(0);
+});

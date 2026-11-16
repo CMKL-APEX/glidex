@@ -14,7 +14,9 @@ Read first, and don't repeat them here:
 | What each crate and module is | [developer-guide/organization.md](docs/public/src/developer-guide/organization.md) |
 | How the pieces fit at run time, and why they are shaped so | [developer-guide/architecture.md](docs/public/src/developer-guide/architecture.md), [design-decisions.md](docs/public/src/developer-guide/design-decisions.md) |
 | The design of an area: invariants, decisions, milestones, what is built | [spec/](spec/README.md), one numbered file per area (`27-gpu-vms.md`) |
-| What is built, in flight and next, across all areas | **[spec/progress.md](spec/progress.md)** |
+| What is built and next, across all areas | **[spec/progress.md](spec/progress.md)** |
+| What is in flight, checks waiting on a person, known flakes | GitHub: open PRs, and issues labelled `in-flight`, `check`, `flake` |
+| The test hosts: what each is and runs, full logs of checks on them | The internal [CMKL-APEX/glidex-apex](https://github.com/CMKL-APEX/glidex-apex): issues labelled `host`, and `clusters/apex/glidex-records/` |
 
 ## Ground rules
 
@@ -27,20 +29,25 @@ Read first, and don't repeat them here:
   and real-host results ([spec/20-idp-checks.md](spec/20-idp-checks.md)) name
   no accounts and quote no tokens. Don't print a credential while
   checking one: pass it through files and stdin.
+- **No deployment details here.** This repository is public. Specs,
+  docs, PRs and issues name no real host, address, cluster id or public
+  name of a deployment: say what a host is ("the HGX host", "the
+  R9700 host", "the three-server test cluster"); examples use
+  `node-a`, `example.com`. Those details go to glidex-apex.
 - **Ask before anything shared or hard to undo.** Merging a PR,
   installing on a host, changing a cluster's membership, deleting data,
   or anything visible to other people needs the go-ahead of whoever
   steers the session, each time; an approval covers what it named.
 - **Report what happened.** A failing test, a skipped step or a check
   that couldn't run is said plainly, with its output. A flake is a flake
-  only after a rerun passes; say which.
+  only after a rerun passes; say which, and comment on its `flake` issue
+  (or open one).
 
 ## How a change is made
 
 1. **Find the work.** [spec/progress.md](spec/progress.md) lists each
-   area's next milestone and what is in flight. Before starting, check
-   that nobody has it: `gh pr list`, `git branch -r`, and the board's
-   *In flight* table.
+   area's next milestone. Before starting, check that nobody has it:
+   `gh pr list`, `git branch -r`, and `gh issue list -l in-flight`.
 2. **Spec first** for anything that adds behaviour, an API or a
    decision. In the area's spec: the decisions, numbered on from the
    spec's last (`D71` follows `D70`; ids are per spec), the task list
@@ -51,7 +58,8 @@ Read first, and don't repeat them here:
    A bug fix or a refactor needs no spec change unless it changes a
    documented behaviour.
 3. **Claim it.** Open the spec PR (or, for a small change, the first
-   code PR) early; it adds the row to the board's *In flight* table.
+   code PR) early; the open PR is the claim. To claim work before a PR
+   exists, open an issue labelled `in-flight` and close it from the PR.
 4. **Tasks as stacked PRs.** One task, one PR, each building on the last
    (`spec/<area>-<topic>` → `feat/<area>-<task>` → …), each passing the
    checks below on its own. Name branches `spec/…`, `feat/…`, `fix/…`,
@@ -64,9 +72,12 @@ Read first, and don't repeat them here:
 6. **Real checks.** What only a real host or a real identity provider can
    show is written as a check in [spec/20-idp-checks.md](spec/20-idp-checks.md)
    (or the area's spec) and run on the hosts when the person steering
-   agrees; the result row gives the date, the build and pass/fail.
-7. **Finish.** When the PRs merge: the board's *In flight* row goes, the
-   milestone's row moves on, branches and worktrees are deleted.
+   agrees; the result row gives the date, the build, the hosts by role
+   and pass/fail. The full log, with host names, goes to glidex-apex
+   (`clusters/apex/glidex-records/`, one file per spec).
+7. **Finish.** When the PRs merge: the milestone's row on the board
+   moves on, an `in-flight` issue is closed, branches and worktrees are
+   deleted.
 
 Commits: an imperative summary line under ~72 characters, then a body
 that says what changed and why. PR descriptions: a summary, the tests
@@ -94,9 +105,10 @@ And when they apply:
 | A `.proto` | In `crates/glidex-api`: `buf lint`, `buf format --exit-code`, `buf generate` (commit the regenerated `crates/glidex-ui/ui/src/gen`), `buf breaking --against '../../.git#branch=main,subdir=crates/glidex-api'`. Changes are additive; a proto comment's `<id>` must be in backquotes (rustdoc rejects it bare). |
 | The web UI | `bun install` (after a package change) and `bun x tsc -b --noEmit` in `crates/glidex-ui/ui`; the UI e2e for the pages touched (below). The project uses **bun, never npm**. |
 | Docs | `mdbook build docs/public` (and `docs/internal` for spec/). |
+| Dependencies (`Cargo.lock`, `bun.lock`) | `cargo audit` and, in `crates/glidex-ui/ui`, `bun audit`. Accepted Rust advisories go in `.cargo/audit.toml` with their reason. |
 | VM, disk, network or host paths | The `#[ignore]`d functional tests that cover them, on a host (contributing.md). |
 
-CI runs fmt, the proto checks, build and tests, the docs and CodeQL; it
+CI runs fmt, the proto checks, build and tests, `cargo audit`, the docs and CodeQL; it
 doesn't run clippy, so you do. The cluster tests are timing-sensitive:
 a failed `build` job may be rerun once; a second failure is real.
 
@@ -125,9 +137,13 @@ sudo -n -g glidex -u $USER env HOME=$HOME PATH=$PATH GLIDEX_E2E_GROUP=glidex-adm
   or PID. Never `pkill`/`killall` by name (`pkill cargo` kills other
   sessions' builds), and remember `pgrep -f` over ssh matches its own
   shell.
-- **Hosts are shared state.** The board's *Hosts* section says what each
-  test host is and runs. Install or reconfigure one only when asked, and
-  update that section in your PR when you do.
+- **Hosts are shared state.** Each test host has an issue labelled
+  `host` in glidex-apex that says what it is and runs
+  (`gh issue list -R CMKL-APEX/glidex-apex -l host`).
+  Install or reconfigure one only when asked; when you do, edit the
+  issue's body to its new state and add a comment: what changed, when,
+  the build, and what you checked. Name no accounts and quote no
+  secrets there.
 - **When main moves.** Rebase the stack onto `origin/main` (`git rebase
   --onto origin/main <old base> <top>`), take each commit's checks again
   (regenerate protos; `bun install` if the UI's packages changed), and

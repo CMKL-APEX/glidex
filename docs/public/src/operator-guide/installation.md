@@ -48,9 +48,9 @@ The installer prints its plan, then:
    Glidex binaries and the web UI. With `--prebuilt` it skips this step.
 3. Creates the service users and groups (see [Users and
    groups](#users-and-groups)).
-4. Installs a pinned Cloud Hypervisor release, [Pylon](#pylon) when
-   asked for or found, the Glidex binaries and the web UI, and the
-   UEFI firmware.
+4. Installs a pinned Cloud Hypervisor release, a pinned
+   [Pylon](#pylon) release when asked for, the Glidex binaries and the
+   web UI, and the UEFI firmware.
 5. Sets up VM networking: Open vSwitch, `glidex-netd` and the boot
    devices, if any (see [Host networking](host-networking.md)).
 6. Writes the systemd units and configuration files, then starts or
@@ -109,14 +109,15 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--no-ovn` | Skip OVN. Cluster networks need it; by default it is installed with its services off until the host is in a cluster. |
 | `--tailscale-cert` | Serve the web UI with this node's Tailscale certificate, trusted by browsers at `https://<node>.<tailnet>.ts.net:5173`. Grants `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in and restarts `tailscaled` once; refused, changing nothing, when another user already holds it or there is no `tailscaled`. Off unless chosen: an interactive run on a node with HTTPS certificates asks once. See [Tailscale certificates](tls.md#tailscale-certificates). |
 | `--no-tailscale-cert` | Turn it off: removes the drop-ins the installer wrote (a grant you set by hand stays) and restarts `tailscaled` if it removed its grant. |
-| `--with-pylon` (or `--pylon`) | Install the [Pylon](../user-guide/vms.md#elastic-cpu) hypervisor and its `pylond` core arbiter. You build them first from the `CMKL-APEX/pylon` repository, checked out next to this one (`cargo build --release -p cloud-hypervisor -p pylond`): the installer takes `target/release/pylon` (or `cloud-hypervisor`) and `pylond` from there, or from this checkout's `target/release`. Without the option, they are installed when found there. Refused when asked for and not found. See [Pylon](#pylon). |
-| `--no-pylon` | Skip Pylon and `pylond`. |
+| `--with-pylon` (or `--pylon`) | Install the [Pylon](../user-guide/vms.md#elastic-cpu) hypervisor and its `pylond` core arbiter from the Pylon release this Glidex pins, checking each file's SHA-256, and keep them at that release on later runs. x86_64 only. See [Pylon](#pylon). |
+| `--no-pylon` | Stop installing and updating Pylon. What is installed stays; `glidex-install uninstall --remove-pylon` deletes it. |
+| `--pylon-from DIR` | For this run only, install a local Pylon build instead of the release: `DIR/pylon` (or `DIR/cloud-hypervisor`) and `DIR/pylond`, such as a `CMKL-APEX/pylon` checkout's `target/release`. The installer prints the build's version and warns when it has uncommitted changes. The next run without it installs the pinned release again. |
 | `--qemu`, `--networking`, `--services`, `--ovn` | Undo an earlier `--no-…`. |
 | `--datastore NAME=PATH` | Register `PATH` (a directory under `/srv/glidex`, mounted on every node) as shared datastore `NAME`. Repeatable. Not saved. See [Registering at install time](datastores.md#registering-at-install-time). |
 | `--local-datastore NAME=PATH` | Register `PATH` as a node-local datastore `NAME`. Repeatable. Not saved. |
 | `--datastore-default` | Make the first of these datastores the default for new disks. Not saved. |
 | `--stord-allow-vg VG` | Let `glidex-stord` make LVM-thin volumes in volume group `VG`: adds it to `allowed_vgs` in `/etc/glidex/stord.json` (never removes one) and restarts `glidex-stord`. Repeatable. Not saved; the file keeps the list. You make the volume group and its thin pool. See [LVM-thin](datastores.md#lvm-thin). |
-| `--vfio-devices LIST` | Bind these to `vfio-pci` at every boot, before glidex and other hypervisors start: pools of `control-plane.json` or PCI addresses, comma-separated, each with its IOMMU group. A device already on `vfio-pci` is left alone. Recorded and enabled only (`glidex-vfio-boot.service`, `/etc/glidex/vfio-devices.json`, `/etc/modules-load.d/glidex-vfio.conf`); applied at the next boot. Not with `--no-networking`. See [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots). |
+| `--vfio-devices LIST` | Bind these to `vfio-pci` at every boot, before glidex and other hypervisors start: pools or PCI addresses, comma-separated, each with its IOMMU group. A pool is looked up in the cluster's setting (from the running control plane), else in this host's `control-plane.json`, else read as a discovered pool's name (`amd-7551`). This host's `pci.overrides` set its window size, and devices `pci.exclude` keeps are never bound. A device already on `vfio-pci` is left alone. Recorded and enabled only (`glidex-vfio-boot.service`, `/etc/glidex/vfio-devices.json`, `/etc/modules-load.d/glidex-vfio.conf`); applied at the next boot. Not with `--no-networking`. See [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots). |
 | `--sriov PF=N` | Give physical function `PF` `N` SR-IOV VFs at every boot, before the binding. Repeatable or comma-separated; the last count for a PF wins. |
 | `--no-vfio-devices` | Stop both at boot, and remove the unit and its files (what is bound now stays so until the next boot). |
 | `--now` | Apply `--vfio-devices` and `--sriov` now as well, not only at the next boot. Never touches a device on `vfio-pci`, nor the VF count of a PF with a VF on `vfio-pci`. Not saved. |
@@ -182,6 +183,7 @@ An agent installs `ovn-host` only; servers and standalone hosts also get
 | `/usr/local/bin/glidex-metad` | The metadata endpoint for guests (unless `--no-networking` or `--no-services`). |
 | `/usr/local/bin/cloud-hypervisor` | The pinned Cloud Hypervisor. |
 | `/usr/local/bin/pylon`, `/usr/local/bin/pylond` | Pylon and its core arbiter, with `--with-pylon`. |
+| `/usr/local/share/glidex/pylon-guest-agent` | Pylon's guest agent, with `--with-pylon`, for Pylon VMs' seed disks. |
 | `/usr/local/share/glidex/ui/` | The built web UI. |
 | `/etc/systemd/system/glidex-*.service`, `glidex-authd.socket`, `glidex-vm@.service`, `glidex-vms.slice` | The systemd units (see [Operator guide](README.md#components)). |
 | `/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf`, `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf` | With `--tailscale-cert`: the drop-ins that turn the UI's Tailscale certificate on and let `glidex-ui` fetch it. |
@@ -204,7 +206,37 @@ own `~/.glidex/`, for a control plane you run by hand.
 
 ## Pylon
 
-With `--with-pylon`, the host runs `glidex-pylond.service`. It listens
+With `--with-pylon`, the installer downloads `pylon-x86_64`,
+`pylond-x86_64` and `pylon-guest-agent-static` from the
+[Pylon release](https://github.com/CMKL-APEX/pylon/releases) this
+Glidex pins (`v0.0.8-rc4`), checks each against its pinned SHA-256, and
+installs them as `/usr/local/bin/pylon`, `/usr/local/bin/pylond` and
+`/usr/local/share/glidex/pylon-guest-agent` (the agent Glidex puts in
+Pylon guests).
+A file is replaced only when its SHA-256 differs; a new `pylond`
+restarts `glidex-pylond`.
+
+- **Restart Pylon VMs after an update.** A running VM keeps its `pylon`,
+  and the VMM and `pylond` must come from the same release: a release
+  can change what they share (v0.0.8-rc2 and v0.0.8-rc4 did), and
+  `pylond` then refuses VMs started with the older `pylon`. Stop and
+  start Pylon VMs once the installer has updated Pylon.
+
+- **What it needs.** The release is built on Ubuntu 24.04: it needs
+  glibc 2.38 or later, and `pylond` needs `libelf`, `zlib` and `zstd`
+  (`libelf1t64`, `zlib1g` and `libzstd1`), which the installer adds. On
+  another architecture or an older distribution, build Pylon yourself
+  and install it with `--pylon-from`.
+- **Which Pylon a host runs.** `pylon --version` of the release prints
+  `cloud-hypervisor v55.0.0`, not the release, so compare
+  `sha256sum /usr/local/bin/pylon /usr/local/bin/pylond` with the
+  release's `SHA256SUMS`.
+- **Hosts that had Pylon before.** Earlier installers took Pylon from a
+  local build without `--with-pylon`. They no longer do: a host that
+  never chose it keeps its binaries as they are, and the installer says
+  so. Run once with `--with-pylon` to move it to the release.
+
+The host runs `glidex-pylond.service`. It listens
 on `/run/pylon/pylond.sock` (group `glidex`) and starts before the
 control plane. Pylon VMs register with it, and it parks and wakes their
 vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
@@ -220,20 +252,40 @@ vCPUs (see [Elastic CPU](../user-guide/vms.md#elastic-cpu)).
 - **The `sched_ext` scheduler.** On a kernel built with `sched_ext`
   (6.12 or later), `pylond` attaches Pylon's `scx_pylon` kernel
   scheduler when it starts, and falls back to its own core table if
-  that fails. This needs a `pylond` built from Pylon with
-  [CMKL-APEX/pylon#9](https://github.com/CMKL-APEX/pylon/pull/9); an
-  earlier one never attaches it from this service. `scx_pylon` then
+  that fails; the journal says which (`journalctl -u glidex-pylond`,
+  at `RUST_LOG=info`, which the unit sets). `scx_pylon` then
   schedules every task on the host, not only VMs, until `pylond` stops.
   Check it with `cat /sys/kernel/sched_ext/state /sys/kernel/sched_ext/root/ops`
   (`enabled`, `pylon`). To keep it off, start `pylond` with
-  `--no-scx` in a drop-in (`sudo systemctl edit glidex-pylond`), if
-  your `pylond` has that option:
+  `--no-scx` in a drop-in (`sudo systemctl edit glidex-pylond`):
 
   ```ini
   [Service]
   ExecStart=
   ExecStart=/usr/local/bin/pylond --socket /run/pylon/pylond.sock --cores ${PYLON_CORES} --no-scx
   ```
+- **The guest agent.** `pylond` sees a guest's demand only through
+  `pylon-guest-agent` in the guest. On a host where `scx_pylon` is
+  attached, Glidex puts the host's copy
+  (`/usr/local/share/glidex/pylon-guest-agent`) on a Pylon VM's
+  cloud-init seed, which installs and starts it at the first boot, and
+  starts the VM with `min_vcpus` running; the agent's first report lets
+  `pylond` park the rest. Elsewhere a Pylon VM gets no agent and keeps
+  every vCPU running: without `scx_pylon` a parked vCPU doesn't wake on
+  an interrupt, and the guest stalls on it.
+- **Where a VM parks its vCPUs.** Glidex starts a Pylon VM with
+  `park=kvm` when `scx_pylon` is attached on its host, and `park=vmm`
+  otherwise: `pylond` refuses a VM that parks in KVM without
+  `scx_pylon`. A VM keeps its mode until it restarts.
+- **Is a VM managed?** `gxctl get <vm>` shows `Pylon: not managed`, and
+  the VM's page *Not managed by pylond* under its vCPUs, when
+  `pylond` has no registration for a running Pylon VM: it refused the
+  VM (the VMM writes why in the VM's console log, `gxctl log <vm>`), or
+  `pylond` isn't running. The VM still runs, with all its vCPUs, but
+  nothing parks them. When `glidex-pylond` restarts, its VMs run
+  unmanaged until the new `pylond` listens and then register again by
+  themselves (from v0.0.8-rc4); a VM `pylond` refused registers again
+  only when it restarts.
 
 A host offers Pylon when `/usr/local/bin/pylon` is there; Pylon VMs also
 need `pylond` running to scale. Elastic VMs run on any host with Cloud
@@ -277,6 +329,9 @@ Cloud Hypervisor, the binaries and the UI, and restarts the services
 whose binary or unit changed. Running VMs keep running across a control
 plane restart: each runs in its own `glidex-vm@<id>` unit. A running VM
 keeps the Cloud Hypervisor binary it started with until it is restarted.
+On Ubuntu, `needrestart` only lists the services that use an upgraded
+library (such as Open vSwitch or a QEMU VM's unit); the installer
+doesn't let it restart them, so restart them yourself when it suits.
 Reload web UI tabs that were open before the update to get the new UI.
 
 With the kernel profile saved, the installer also turns off DPDK it

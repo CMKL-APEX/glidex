@@ -372,27 +372,43 @@ pub struct PciConfig {
     /// Named sets of devices a VM asks for by count
     /// (spec/22-host-topology.md §9.1).
     pub pools: Vec<PciPool>,
+    /// Devices this host keeps: in no pool, and never given to a VM here
+    /// (spec/22-host-topology.md H23). Per host, never replicated.
+    pub exclude: Vec<PoolMatch>,
+    /// A pool's `bar_mib` and `prepare` on this host, by pool name (H23).
+    pub overrides: std::collections::BTreeMap<String, PoolOverride>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// What this host changes about a pool's devices here (spec/22-host-topology.md H23).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PoolOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_mib: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prepare: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct PciGrant {
     /// The device's address; or `pool`, a pool's name.
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bdf: Option<String>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pool: Option<String>,
-    /// Project ids or names.
-    #[serde(default)]
+    /// Project ids, `<tenant>/<name>`, or names that one project has
+    /// (spec/22-host-topology.md H26).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub projects: Vec<String>,
     /// Tenant ids or slugs: every project of theirs may use the device
     /// (spec/19-tenancy.md D25). `["*"]` with `pool`: every tenant
     /// admitted on this cluster, an open pool (D80).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tenants: Vec<String>,
     /// The node (id or name) whose device this is; absent: the device at
     /// that address on every node (spec/22-host-topology.md §8.5).
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
 }
 
@@ -418,6 +434,12 @@ pub struct PciPool {
     /// sizes itself (spec/27-gpu-vms.md §6).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub per_device: Option<PerDevice>,
+    /// The largest GPU window (resizable BAR), in MiB, a power of two,
+    /// that a node gives the pool's devices when it prepares them; under
+    /// the cap that keeps the host's GPU windows below its memory
+    /// (spec/27-gpu-vms.md G17–G19).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bar_mib: Option<u64>,
 }
 
 /// A VM's share per device of a pool (spec/27-gpu-vms.md §6).
@@ -498,6 +520,26 @@ impl PoolMatch {
 }
 
 impl PciConfig {
+    /// Whether this host keeps the device (`exclude`).
+    pub fn excludes(&self, d: &crate::topology::SummaryDevice) -> bool {
+        self.exclude.iter().any(|m| m.matches_device(d))
+    }
+
+    /// `pools` as this host prepares them: its `overrides` applied.
+    pub fn pools_here(&self, pools: &[PciPool]) -> Vec<PciPool> {
+        pools
+            .iter()
+            .map(|p| {
+                let mut p = p.clone();
+                if let Some(o) = self.overrides.get(&p.name) {
+                    p.bar_mib = o.bar_mib.or(p.bar_mib);
+                    p.prepare = o.prepare.unwrap_or(p.prepare);
+                }
+                p
+            })
+            .collect()
+    }
+
     /// Refuse what can't work: unnamed, duplicate or matchless pools, two
     /// pools matching the same way, and grants naming neither one device
     /// nor one known pool.
@@ -513,6 +555,12 @@ impl PciConfig {
             if p.matches.is_empty() {
                 return Err(format!(
                     "pci.pools: pool {} matches every device; give it a match",
+                    p.name
+                ));
+            }
+            if p.bar_mib.is_some_and(|m| !m.is_power_of_two()) {
+                return Err(format!(
+                    "pci.pools: pool {}: bar_mib must be a power of two (MiB), as GPU windows are",
                     p.name
                 ));
             }
@@ -532,6 +580,16 @@ impl PciConfig {
                 return Err(format!(
                     "pci.pools: pools {} and {} match the same devices",
                     o.name, p.name
+                ));
+            }
+        }
+        if self.exclude.iter().any(PoolMatch::is_empty) {
+            return Err("pci.exclude: an entry matches every device; give it a match".into());
+        }
+        for (name, o) in &self.overrides {
+            if o.bar_mib.is_some_and(|m| !m.is_power_of_two()) {
+                return Err(format!(
+                    "pci.overrides: {name}: bar_mib must be a power of two (MiB), as GPU windows are"
                 ));
             }
         }
@@ -846,11 +904,39 @@ mod tests {
             nodes: vec![],
             prepare: false,
             per_device: None,
+            bar_mib: None,
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],
-            allow: vec![],
+            ..Default::default()
         };
+        // Host overrides (spec/22-host-topology.md H23): applied to the
+        // named pool only; an empty exclude or an odd bar_mib is refused.
+        c.overrides.insert(
+            "a100".into(),
+            PoolOverride {
+                bar_mib: Some(8192),
+                prepare: Some(true),
+            },
+        );
+        let here = c.pools_here(&c.pools);
+        assert_eq!((here[0].bar_mib, here[0].prepare), (Some(8192), true));
+        assert_eq!(c.pools_here(&[pool("t4", None)])[0].bar_mib, None);
+        c.overrides.get_mut("a100").unwrap().bar_mib = Some(3000);
+        assert!(c.check().unwrap_err().contains("power of two"));
+        c.overrides.clear();
+        c.exclude = vec![PoolMatch::default()];
+        assert!(c.check().unwrap_err().contains("pci.exclude"));
+        c.exclude = vec![PoolMatch {
+            addresses: vec!["0000:87:00.0".into()],
+            ..Default::default()
+        }];
+        let dev = |a: &str| crate::topology::SummaryDevice {
+            address: a.into(),
+            ..Default::default()
+        };
+        assert!(c.excludes(&dev("0000:87:00.0")) && !c.excludes(&dev("0000:90:00.0")));
+        c.exclude.clear();
         assert!(c.check().is_ok());
         let m = &c.pools[0].matches;
         assert!(m.matches("0000:87:00.0", "0x10de", "0x20b0", "0x030200"));
@@ -873,6 +959,12 @@ mod tests {
         c.pools.push(pool("same", Some("0x10de")));
         assert!(c.check().unwrap_err().contains("match the same devices"));
         c.pools.pop();
+        // A GPU window's size is a power of two (spec/27-gpu-vms.md G18).
+        c.pools[0].bar_mib = Some(8192);
+        assert!(c.check().is_ok());
+        c.pools[0].bar_mib = Some(3000);
+        assert!(c.check().unwrap_err().contains("power of two"));
+        c.pools[0].bar_mib = None;
         let grant = |bdf: Option<&str>, pool: Option<&str>| PciGrant {
             bdf: bdf.map(Into::into),
             pool: pool.map(Into::into),

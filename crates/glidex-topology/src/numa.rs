@@ -1,6 +1,7 @@
 //! NUMA nodes, their CPUs and the socket each belongs to.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use std::path::Path;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,25 @@ pub fn parse_list(list: &str) -> Vec<u32> {
         }
     }
     out
+}
+
+/// A set of CPUs as `0-3,8,10-11`: `parse_list` the other way.
+pub fn format_list(cpus: &[u32]) -> String {
+    let set: BTreeSet<u32> = cpus.iter().copied().collect();
+    let mut parts = Vec::new();
+    let mut it = set.into_iter().peekable();
+    while let Some(start) = it.next() {
+        let mut end = start;
+        while it.peek() == Some(&(end + 1)) {
+            end = it.next().unwrap_or(end);
+        }
+        parts.push(if start == end {
+            start.to_string()
+        } else {
+            format!("{start}-{end}")
+        });
+    }
+    parts.join(",")
 }
 
 /// The NUMA nodes under `sys`; one node 0 holding every online CPU on a

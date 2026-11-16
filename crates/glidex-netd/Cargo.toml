@@ -3,6 +3,8 @@ name = "glidex-netd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Installed by glidex-install, not from crates.io.
+publish = false
 description = "Privileged glidex network helper (Open vSwitch, NAT, VM ports)"
 
 [lib]
@@ -19,8 +21,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-redb = "3"
-nix = { version = "0.29", features = ["socket", "user", "signal", "fs", "process"] }
+redb = "4.5"
+nix = { version = "0.31", features = ["socket", "user", "signal", "fs", "process"] }
 
 [dev-dependencies]
 tempfile = "3"

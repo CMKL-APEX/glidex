@@ -7,7 +7,7 @@
 //! - Pylon driver launch argv generation and elasticity parameter permutations.
 
 use glidex_control_plane::hypervisor::HypervisorType;
-use glidex_control_plane::hypervisor::pylon::{DEFAULT_PYLOND_SOCKET, pylon_shm_path, pylon_vm_id};
+use glidex_control_plane::hypervisor::pylon::{DEFAULT_PYLOND_SOCKET, pylon_vm_id};
 use glidex_control_plane::models::VmConfig;
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
@@ -275,10 +275,6 @@ fn pylon_vm_registration_handshake_with_scm_rights() {
 #[test]
 fn pylon_paths_and_vm_id_properties() {
     let api = "/run/glidex-cp/vms/11111111-2222-3333-4444-555555555555/api.sock";
-    assert_eq!(
-        pylon_shm_path(api),
-        "/run/glidex-cp/vms/11111111-2222-3333-4444-555555555555/pylon.shm"
-    );
     assert_eq!(DEFAULT_PYLOND_SOCKET, "/run/pylon/pylond.sock");
 
     let id = pylon_vm_id(api);

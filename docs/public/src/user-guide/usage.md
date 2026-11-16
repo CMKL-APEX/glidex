@@ -151,6 +151,11 @@ vCPU, memory working set, network in and out, disk reads and writes)
 and charts of the last 24 hours in 5-minute averages, with the 95th
 percentile as a dashed line. It refreshes every 30 seconds.
 
+In a cluster, the charts get the current hour from the VM's host, along
+with the current rates. If the host doesn't answer within 2 seconds,
+the current rates are empty and the charts end at the last full hour
+until the next refresh. The 95th percentile covers full hours only.
+
 ## gxctl
 
 ```
@@ -184,7 +189,7 @@ For one VM, disk or network:
 
 ```
 gxctl> stats my-vm                               # current rates: CPU, memory, NICs, disks
-gxctl> bandwidth my-vm                           # 5-minute series, last 24 h, with p95
+gxctl> bandwidth my-vm                           # 5-minute series, last 24 h, with p95 (in a cluster, to the last full hour)
 gxctl> bandwidth --network lab
 gxctl> io my-vm
 gxctl> io --disk data-1

@@ -98,6 +98,8 @@ fn port_spec() -> VmPortSpec {
         mtu: None,
         queue_pairs: 1,
         ovn_lport: None,
+        port_security: true,
+        allowed_addresses: vec![],
     }
 }
 
@@ -1646,6 +1648,7 @@ fn devices_are_prepared_for_passthrough_and_released() {
         .handle(
             Op::PrepareDevice {
                 address: "0000:07:00.0".into(),
+                bar_mib: None,
             },
             &peer(),
         )
@@ -1697,8 +1700,14 @@ fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
     exec.file("/sys/bus/pci/drivers/vfio-pci", "");
     let dir = TempDir::new().unwrap();
     let (netd, _) = netd(exec.clone(), &dir);
-    netd.handle(Op::PrepareDevice { address: vf.into() }, &peer())
-        .unwrap();
+    netd.handle(
+        Op::PrepareDevice {
+            address: vf.into(),
+            bar_mib: None,
+        },
+        &peer(),
+    )
+    .unwrap();
     let s = netd
         .handle(
             Op::SetSriovVfs {
@@ -1763,6 +1772,7 @@ fn held_devices_are_not_released_and_their_vf_counts_stay() {
     netd.handle(
         Op::PrepareDevice {
             address: gpu.into(),
+            bar_mib: None,
         },
         &peer(),
     )
@@ -1853,6 +1863,7 @@ fn boot_devices_bind_what_is_free_and_leave_what_a_vm_may_hold() {
     let dir = TempDir::new().unwrap();
     let (netd, _) = netd(exec.clone(), &dir);
     let cfg = BootDevices {
+        exclude: vec![],
         sriov: vec![SriovSetting {
             pf: "0000:61:00.0".into(),
             vfs: 8,
@@ -1916,10 +1927,13 @@ fn nat_ports_get_a_metadata_index_and_rule() {
             .unwrap();
     assert_eq!(res.metadata_index, Some(1));
     let calls = exec.calls();
-    assert!(
-        calls.iter().any(|c| c == "ovs-ofctl add-flow gxbr-nat cookie=0x6d000001,priority=200,in_port=5,tcp,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000001->pkt_mark,NORMAL"),
-        "{calls:#?}"
+    // Behind the port's checks (spec/09-networking.md §9.1): only from
+    // its own MAC and reservation.
+    let mac = names::mac_address(VM, 0).unwrap();
+    let want = format!(
+        "ovs-ofctl add-flow gxbr-nat cookie=0x6d000001,priority=200,in_port=5,tcp,dl_src={mac},nw_src=10.88.0.2,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000001->pkt_mark,NORMAL"
     );
+    assert!(calls.contains(&want), "{calls:#?}");
     assert!(
         calls
             .iter()
@@ -1957,4 +1971,537 @@ fn nat_ports_get_a_metadata_index_and_rule() {
     );
     let nft = calls.iter().rfind(|c| c.starts_with("nft -f -")).unwrap();
     assert!(!nft.contains("metadata_peer"), "{nft}");
+}
+
+// --- Port security (spec/09-networking.md §9.1) ---
+
+/// The checks cookie of `VM`'s NIC 0.
+const PS_COOKIE: &str = "0x70731a2b3c4d0000";
+
+fn setup_isolated(netd: &Netd) {
+    netd.handle(
+        Op::EnsureBridge(BridgeSpec {
+            name: "gxbr-iso".into(),
+            datapath: Datapath::System,
+            mtu: None,
+            adopt: false,
+            isolated: true,
+        }),
+        &peer(),
+    )
+    .unwrap();
+}
+
+/// The `add-flows` call that put a port's checks on `bridge`.
+fn checks_call(calls: &[String], bridge: &str) -> String {
+    calls
+        .iter()
+        .find(|c| c.starts_with(&format!("ovs-ofctl add-flows {bridge} - <<< ")))
+        .cloned()
+        .unwrap_or_else(|| panic!("no checks on {bridge}: {calls:#?}"))
+}
+
+#[test]
+fn a_nat_port_gets_its_checks_before_its_metadata_rule() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    exec.clear_calls();
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    let calls = exec.calls();
+    let mac = names::mac_address(VM, 0).unwrap();
+    let base =
+        "ovs-ofctl add-flow gxbr-nat cookie=0x70731a2b3c4d0001,priority=100,in_port=5,actions=drop";
+    let clear = format!("ovs-ofctl del-flows gxbr-nat cookie={PS_COOKIE}/-1");
+    let checks = checks_call(&calls, "gxbr-nat");
+    let pos = |c: &str| calls.iter().position(|x| x == c).unwrap();
+    let meta = calls
+        .iter()
+        .position(|c| c.contains("cookie=0x6d000001"))
+        .unwrap();
+    assert!(pos(base) < pos(&clear) && pos(&clear) < pos(&checks) && pos(&checks) < meta);
+    for want in [
+        format!("priority=150,in_port=5,ip,dl_src={mac},nw_src=10.88.0.2,actions=NORMAL"),
+        format!(
+            "priority=150,in_port=5,arp,dl_src={mac},arp_spa=10.88.0.2,arp_sha={mac},actions=NORMAL"
+        ),
+        "priority=320,in_port=5,udp,tp_src=67,actions=drop".to_string(),
+        "priority=320,in_port=5,icmp6,icmp_type=134,actions=drop".to_string(),
+    ] {
+        // The MAC stays out of the message (CodeQL reads a MAC as sensitive).
+        assert!(checks.contains(&want), "a check is missing: {checks}");
+    }
+
+    // Detached: both cookies go.
+    exec.clear_calls();
+    netd.handle(
+        Op::DetachVmPort {
+            vm_id: VM.into(),
+            nic_index: 0,
+        },
+        &peer(),
+    )
+    .unwrap();
+    let want = format!("ovs-ofctl del-flows gxbr-nat cookie={PS_COOKIE}/0xffffffffffffff00");
+    assert!(exec.calls().contains(&want), "{:#?}", exec.calls());
+}
+
+#[test]
+fn an_isolated_port_is_checked_by_mac_and_a_bridged_one_too() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_isolated(&netd);
+    netd.handle(
+        Op::EnsureBridge(BridgeSpec {
+            name: "gxbr-lan".into(),
+            datapath: Datapath::System,
+            mtu: None,
+            adopt: false,
+            isolated: false,
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let mac = names::mac_address(VM, 0).unwrap();
+
+    exec.clear_calls();
+    let res: AttachResult = serde_json::from_value(
+        netd.handle(
+            Op::AttachVmPort(VmPortSpec {
+                bridge: "gxbr-iso".into(),
+                ..port_spec()
+            }),
+            &peer(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(res.metadata_index, None);
+    let checks = checks_call(&exec.calls(), "gxbr-iso");
+    assert!(checks.contains("udp,tp_src=67,actions=drop"), "{checks}");
+    assert!(
+        checks.contains("icmp6,icmp_type=134,actions=drop"),
+        "{checks}"
+    );
+    assert!(
+        checks.contains(&format!(
+            "priority=130,in_port=5,dl_src={mac},actions=NORMAL"
+        )),
+        "{checks}"
+    );
+    assert!(!checks.contains("nw_src"), "{checks}");
+
+    // Bridged: the MAC only.
+    let vm2 = "2b3c4d5e-5e6f-4a1b-9c2d-0123456789ab";
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            bridge: "gxbr-lan".into(),
+            vm_id: vm2.into(),
+            mac: names::mac_address(vm2, 0).unwrap(),
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let checks = checks_call(&exec.calls(), "gxbr-lan");
+    assert_eq!(
+        checks,
+        format!(
+            "ovs-ofctl add-flows gxbr-lan - <<< cookie=0x70732b3c4d5e0000,priority=130,in_port=5,dl_src={},actions=NORMAL\n",
+            names::mac_address(vm2, 0).unwrap()
+        )
+    );
+}
+
+/// Decision 19: `port_security: false` takes every check off the port,
+/// also when it had them; the metadata rule stays, without the source match.
+#[test]
+fn a_port_without_port_security_gets_no_checks() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    checks_call(&exec.calls(), "gxbr-nat");
+
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            port_security: false,
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let calls = exec.calls();
+    assert!(
+        !calls.iter().any(|c| c.starts_with("ovs-ofctl add-flows")),
+        "{calls:#?}"
+    );
+    let off = format!("ovs-ofctl del-flows gxbr-nat cookie={PS_COOKIE}/0xffffffffffffff00");
+    assert!(calls.contains(&off), "{calls:#?}");
+    assert!(
+        calls.iter().any(|c| c == "ovs-ofctl add-flow gxbr-nat cookie=0x6d000001,priority=200,in_port=5,tcp,nw_dst=169.254.169.254,tp_dst=80,actions=set_field:0x6d000001->pkt_mark,NORMAL"),
+        "{calls:#?}"
+    );
+    let ports: Vec<VmPortRecord> =
+        serde_json::from_value(netd.handle(Op::ListVmPorts, &peer()).unwrap()).unwrap();
+    assert!(!ports[0].spec.port_security);
+
+    // The repair pass looks for the metadata rule only.
+    exec.on(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::ok(" cookie=0x6d000001, priority=200\n"),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert!(pass.applied.is_empty(), "{pass:?}");
+}
+
+/// Decision 20: `allowed_addresses` on a NAT bridge fit its subnet, cover
+/// neither the gateway nor another port's reservation or list, and new
+/// reservations pass over them; the checks carry them.
+#[test]
+fn allowed_addresses_on_a_nat_bridge() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_nat(&netd);
+    let with = |list: &[&str]| VmPortSpec {
+        allowed_addresses: list.iter().map(|s| s.to_string()).collect(),
+        ..port_spec()
+    };
+    let code = |r: Result<serde_json::Value, glidex_ovs::OvsError>| r.unwrap_err().code();
+    // VM's NIC 0 holds 10.88.0.2 (its reservation); another VM attaches first.
+    let vm2 = "2b3c4d5e-5e6f-4a1b-9c2d-0123456789ab";
+    let other = |list: &[&str]| VmPortSpec {
+        vm_id: vm2.into(),
+        mac: names::mac_address(vm2, 0).unwrap(),
+        allowed_addresses: list.iter().map(|s| s.to_string()).collect(),
+        ..port_spec()
+    };
+    netd.handle(Op::AttachVmPort(other(&["10.88.0.2/31"])), &peer())
+        .unwrap();
+    // Its own list doesn't keep it from an address in it.
+    let ports: Vec<VmPortRecord> =
+        serde_json::from_value(netd.handle(Op::ListVmPorts, &peer()).unwrap()).unwrap();
+    assert_eq!(ports[0].ipv4, Some("10.88.0.2".parse().unwrap()));
+
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.99.0.5"])), &peer())),
+        "invalid_argument"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.88.0.1"])), &peer())),
+        "conflict"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.88.0.2"])), &peer())),
+        "conflict"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["10.88.0.3"])), &peer())),
+        "conflict"
+    );
+    assert_eq!(
+        code(netd.handle(Op::AttachVmPort(with(&["fd00::1"])), &peer())),
+        "invalid_argument"
+    );
+
+    exec.clear_calls();
+    let res: AttachResult = serde_json::from_value(
+        netd.handle(
+            Op::AttachVmPort(with(&["10.88.0.100", "10.88.0.128/28"])),
+            &peer(),
+        )
+        .unwrap(),
+    )
+    .unwrap();
+    // .2 is taken and .3 is in the other port's list.
+    assert_eq!(res.ipv4, Some("10.88.0.4".parse().unwrap()));
+    let checks = checks_call(&exec.calls(), "gxbr-nat");
+    let mac = names::mac_address(VM, 0).unwrap();
+    for a in ["10.88.0.4", "10.88.0.100", "10.88.0.128/28"] {
+        assert!(
+            checks.contains(&format!("ip,dl_src={mac},nw_src={a},actions=NORMAL")),
+            "{a}: {checks}"
+        );
+    }
+}
+
+/// Decision 20 on an isolated bridge: the list is the only IP sources.
+#[test]
+fn allowed_addresses_on_an_isolated_bridge() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    setup_isolated(&netd);
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            bridge: "gxbr-iso".into(),
+            allowed_addresses: vec!["192.168.7.10".into(), "fd00:7::10".into()],
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    let checks = checks_call(&exec.calls(), "gxbr-iso");
+    for want in [
+        "nw_src=192.168.7.10,actions=NORMAL",
+        "ipv6_src=fd00:7::10,actions=NORMAL",
+        "nd_target=fd00:7::10,actions=NORMAL",
+        "priority=140,in_port=5,ipv6,actions=drop",
+    ] {
+        assert!(checks.contains(want), "missing {want}: {checks}");
+    }
+    // A bad entry is refused before anything is done.
+    exec.clear_calls();
+    assert!(
+        netd.handle(
+            Op::AttachVmPort(VmPortSpec {
+                bridge: "gxbr-iso".into(),
+                allowed_addresses: vec!["192.168.7.9/24".into()],
+                ..port_spec()
+            }),
+            &peer(),
+        )
+        .is_err()
+    );
+    assert!(!exec.calls().iter().any(|c| c.starts_with("ovs-ofctl")));
+}
+
+#[test]
+fn an_ovn_port_gets_no_checks() {
+    let dir = TempDir::new().unwrap();
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    exec.on(
+        "ovs-vsctl --format=json --columns=name,datapath_type,external_ids,ports find Bridge name=br-int",
+        Output::ok(r#"{"data":[["br-int","system",["map",[["glidex-owner","glidex"]]],["set",[]]]],"headings":["name","datapath_type","external_ids","ports"]}"#),
+    );
+    exec.clear_calls();
+    netd.handle(
+        Op::AttachVmPort(VmPortSpec {
+            bridge: "br-int".into(),
+            ovn_lport: Some("gx-1a2b3c4d-0".into()),
+            ..port_spec()
+        }),
+        &peer(),
+    )
+    .unwrap();
+    assert!(
+        !exec.calls().iter().any(|c| c.starts_with("ovs-ofctl")),
+        "{:#?}",
+        exec.calls()
+    );
+}
+
+#[test]
+fn rules_come_back_at_start_and_after_an_ovs_restart() {
+    let dir = TempDir::new().unwrap();
+    {
+        let (netd, _) = netd(exec(), &dir);
+        setup_nat(&netd);
+        netd.handle(Op::AttachVmPort(port_spec()), &peer()).unwrap();
+    }
+    // netd starts again.
+    let exec = exec();
+    let (netd, _sup) = netd(exec.clone(), &dir);
+    let report = netd.reconcile_startup();
+    assert!(report.errors.is_empty(), "{report:?}");
+    assert!(
+        report
+            .repaired
+            .contains(&"rules of gx1a2b3c4d-0".to_string()),
+        "{report:?}"
+    );
+    checks_call(&exec.calls(), "gxbr-nat");
+    assert!(exec.calls().iter().any(|c| c.contains("cookie=0x6d000001")));
+
+    // All there: the repair pass changes nothing.
+    exec.on(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::ok(format!(
+            " cookie={PS_COOKIE}, priority=130\n cookie=0x70731a2b3c4d0001, priority=100\n cookie=0x6d000001, priority=200\n"
+        )),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert!(
+        pass.applied.is_empty() && pass.errors.is_empty(),
+        "{pass:?}"
+    );
+    assert_eq!(exec.calls(), ["ovs-ofctl dump-flows gxbr-nat"]);
+
+    // ovs-vswitchd restarted: no rules. Both come back.
+    exec.set(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::ok(" priority=0 actions=NORMAL\n"),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert_eq!(pass.applied, ["rules of gx1a2b3c4d-0"], "{pass:?}");
+    checks_call(&exec.calls(), "gxbr-nat");
+    assert!(exec.calls().iter().any(|c| c.contains("cookie=0x6d000001")));
+
+    // OVS stopped: nothing to list, nothing done.
+    exec.set(
+        "ovs-ofctl dump-flows gxbr-nat",
+        Output::failed(1, "connection refused"),
+    );
+    exec.clear_calls();
+    let pass = netd.repair_rules();
+    assert!(
+        pass.applied.is_empty() && pass.errors.is_empty(),
+        "{pass:?}"
+    );
+}
+
+// --- Source routes (spec/09-networking.md §8.6) ---
+
+/// A host with two IPoIB ports in 10.40.1.0/24, before any pass.
+fn shared_subnet_host() -> Arc<RecordingExec> {
+    let exec = exec();
+    exec.on(
+        "ip -j addr show",
+        Output::ok(
+            r#"[{"ifname":"ib0","addr_info":[{"local":"10.40.1.5","prefixlen":24,"scope":"global"}]},
+                {"ifname":"ib1","addr_info":[{"local":"10.40.1.6","prefixlen":24,"scope":"global"}]}]"#,
+        ),
+    );
+    exec.on(
+        "ip -4 -j rule show",
+        Output::ok(r#"[{"priority":0,"src":"all","table":"local"},{"priority":32766,"src":"all","table":"main"}]"#),
+    );
+    exec.on("ip -6 -j rule show", Output::ok("[]"));
+    exec.on("ip -4 -j route show table all", Output::ok("[]"));
+    exec.on("ip -6 -j route show table all", Output::ok("[]"));
+    for port in ["ib0", "ib1"] {
+        exec.file(&format!("/proc/sys/net/ipv4/conf/{port}/rp_filter"), "1\n");
+        exec.file(&format!("/proc/sys/net/ipv4/conf/{port}/arp_ignore"), "0\n");
+        exec.file(
+            &format!("/proc/sys/net/ipv4/conf/{port}/arp_announce"),
+            "0\n",
+        );
+    }
+    exec
+}
+
+fn netd_managing(exec: Arc<RecordingExec>, dir: &TempDir, subnets: &[&str]) -> Netd {
+    let config = Config {
+        run_dir: dir.path().join("run"),
+        state_path: dir.path().join("netd.db"),
+        policy: test_policy(&["*"]),
+        source_routes: glidex_ovs::srcroute::Config {
+            subnets: subnets.iter().map(|s| s.parse().unwrap()).collect(),
+            ..Default::default()
+        },
+        ..Config::default()
+    };
+    Netd::new(exec, Arc::new(FakeSupervisor::default()), config).unwrap()
+}
+
+#[test]
+fn a_pass_adds_source_routes_and_keeps_the_tables() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    let netd = netd_managing(exec.clone(), &dir, &["10.40.0.0/16"]);
+    let pass = netd.source_routes_pass();
+    assert_eq!(pass.errors, Vec::<String>::new());
+    assert_eq!(
+        pass.applied,
+        vec![
+            "ip -4 route replace 10.40.1.0/24 dev ib0 src 10.40.1.5 table 4200 proto 77",
+            "ip -4 route replace 10.40.1.0/24 dev ib1 src 10.40.1.6 table 4201 proto 77",
+            "ip -4 rule add from 10.40.1.5 lookup 4200 priority 1000 protocol 77",
+            "ip -4 rule add from 10.40.1.6 lookup 4201 priority 1000 protocol 77",
+            "sysctl -w net/ipv4/conf/ib0/arp_ignore=1",
+            "sysctl -w net/ipv4/conf/ib0/arp_announce=2",
+            "sysctl -w net/ipv4/conf/ib1/arp_ignore=1",
+            "sysctl -w net/ipv4/conf/ib1/arp_announce=2",
+        ]
+    );
+    for c in &pass.applied {
+        assert!(exec.calls().contains(c), "{c} didn't run");
+    }
+    drop(netd);
+
+    // The numbers survive a restart: a new netd on the same database
+    // reports the same tables.
+    let netd = netd_managing(exec.clone(), &dir, &["10.40.0.0/16"]);
+    let report: glidex_ovs::srcroute::Report =
+        serde_json::from_value(netd.handle(Op::ListSourceRoutes, &peer()).unwrap()).unwrap();
+    let ports = &report.subnets[0].ports;
+    assert_eq!(
+        ports
+            .iter()
+            .map(|p| (p.ifname.as_str(), p.table))
+            .collect::<Vec<_>>(),
+        vec![("ib0", Some(4200)), ("ib1", Some(4201))]
+    );
+    // Listing changes nothing: the host still has no rules, so `missing`.
+    assert!(
+        ports
+            .iter()
+            .all(|p| { p.addresses[0].state == glidex_ovs::srcroute::AddrState::Missing })
+    );
+}
+
+#[test]
+fn without_managed_subnets_netd_only_reports() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    let netd = netd_managing(exec.clone(), &dir, &[]);
+    let pass = netd.source_routes_pass();
+    assert!(
+        pass.applied.is_empty() && pass.errors.is_empty(),
+        "{pass:?}"
+    );
+    assert!(
+        !exec
+            .calls()
+            .iter()
+            .any(|c| c.contains("rule add") || c.starts_with("sysctl")),
+        "{:?}",
+        exec.calls()
+    );
+    let report = netd.list_source_routes().unwrap();
+    assert!(!report.subnets[0].managed);
+}
+
+#[test]
+fn startup_runs_a_pass_even_without_ovs() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    // `ovs-vsctl --version` failing: OVS isn't there.
+    exec.set("ovs-vsctl --version", Output::failed(127, "not found"));
+    let netd = netd_managing(exec, &dir, &["10.40.0.0/16"]);
+    let report = netd.reconcile_startup();
+    assert!(
+        report.repaired.contains(
+            &"source route: ip -4 rule add from 10.40.1.5 lookup 4200 priority 1000 protocol 77"
+                .to_string()
+        ),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn a_priority_the_host_uses_stops_netd() {
+    let dir = TempDir::new().unwrap();
+    let exec = shared_subnet_host();
+    exec.set(
+        "ip -4 -j rule show",
+        Output::ok(r#"[{"priority":1000,"src":"all","table":"52"}]"#),
+    );
+    let netd = netd_managing(exec.clone(), &dir, &["10.40.0.0/16"]);
+    let err = netd.check_source_routes().unwrap_err();
+    assert!(err.to_string().contains("rule_priority 1000"), "{err}");
+    // Without managed subnets the priority is never used.
+    let dir = TempDir::new().unwrap();
+    assert!(netd_managing(exec, &dir, &[]).check_source_routes().is_ok());
 }

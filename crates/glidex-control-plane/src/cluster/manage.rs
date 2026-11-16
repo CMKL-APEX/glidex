@@ -190,7 +190,13 @@ pub async fn init(
     let ca = Ca::generate(&cluster_id)?;
     let key = NodeKey::generate()?;
     let csr = key.csr(&[advertise.ip()], &[])?;
-    let (cert_pem, info) = ca.sign_node(&csr, &node_id, true, pki::NODE_VALIDITY_DAYS)?;
+    let (cert_pem, info) = ca.sign_node(
+        &csr,
+        &node_id,
+        true,
+        pki::NODE_VALIDITY_DAYS,
+        &[advertise.ip()],
+    )?;
     let identity = Identity {
         cluster_id: cluster_id.clone(),
         node_id: node_id.clone(),
@@ -326,16 +332,9 @@ pub async fn join(
     let server = opts.server.to_string();
 
     // Pin the CA by the hash in the token before sending anything.
-    let ca_pem = net::fetch_ca_untrusted(&server).await?;
-    let got = pki::public_key_fingerprint(&ca_pem)?;
-    if got != ca_hash {
-        return Err(other(format!(
-            "the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
-            &got[..12],
-            &ca_hash[..12]
-        )));
-    }
+    let ca_pem = pin_ca(&net::fetch_ca_untrusted(&server).await?, ca_hash, "join")?;
     let trusting = net::client_trusting(&ca_pem)?;
+    await_pinned(&trusting, &server).await?;
 
     let ccfg = cfg.cluster.clone();
     let advertise = resolve_advertise(opts.advertise, &ccfg)?;
@@ -362,7 +361,7 @@ pub async fn join(
     for _ in 0..2 {
         let r = trusting
             .request(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/join",
                 &[("content-type", "application/json".into())],
@@ -439,7 +438,7 @@ pub async fn join(
         let r = cluster
             .client
             .request_timeout(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/join/ready",
                 &[],
@@ -508,16 +507,9 @@ pub async fn rejoin(
     let node_id = opts.node_id.clone().or_else(|| old.as_ref().map(|i| i.node_id.clone())).ok_or_else(|| other("this host has no cluster identity: pass the node id from `gxctl node rejoin-token`"))?;
     let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
     let server = opts.server.to_string();
-    let ca_pem = net::fetch_ca_untrusted(&server).await?;
-    let got = pki::public_key_fingerprint(&ca_pem)?;
-    if got != ca_hash {
-        return Err(other(format!(
-            "the server's CA ({}…) is not the one the token names ({}…): refusing to rejoin. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
-            &got[..12],
-            &ca_hash[..12]
-        )));
-    }
+    let ca_pem = pin_ca(&net::fetch_ca_untrusted(&server).await?, ca_hash, "rejoin")?;
     let trusting = net::client_trusting(&ca_pem)?;
+    await_pinned(&trusting, &server).await?;
     let ccfg = cfg.cluster.clone();
     let advertise = match (opts.advertise, &old) {
         (Some(a), _) => a,
@@ -549,7 +541,7 @@ pub async fn rejoin(
     for _ in 0..2 {
         let r = trusting
             .request(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/rejoin",
                 &[("content-type", "application/json".into())],
@@ -620,7 +612,7 @@ pub async fn rejoin(
         let r = cluster
             .client
             .request_timeout(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/join/ready",
                 &[],
@@ -719,27 +711,6 @@ fn ca_not_after(c: &Cluster) -> Option<i64> {
     Some(cert.validity().not_after.timestamp())
 }
 
-/// The summary as the node `viewer` sees it: a request a node's UI socket
-/// relayed (spec/16-clustering-ui.md §3.6) is about that node, so "this node"
-/// (`node_id`, `name`, `role`, `advertise`) is the relaying one; `served_by`
-/// names the server that answered. Without a viewer, or for this server
-/// itself, it is [`status_of`].
-pub fn status_seen_from(c: &Cluster, viewer: Option<&str>) -> Value {
-    let mut v = status_of(c);
-    let Some(id) = viewer.filter(|id| *id != c.identity.node_id) else {
-        return v;
-    };
-    let Ok(Some(n)) = NodeStore::new(c.db.clone()).get(id) else {
-        return v;
-    };
-    v["served_by"] = json!({ "node_id": c.identity.node_id, "name": c.identity.name });
-    v["node_id"] = json!(n.meta.id);
-    v["name"] = json!(n.spec.name);
-    v["role"] = json!(n.spec.role);
-    v["advertise"] = json!(n.status.advertise.map(|a| a.to_string()));
-    v
-}
-
 pub fn status_of(c: &Cluster) -> Value {
     let nodes = NodeStore::new(c.db.clone()).list().unwrap_or_default();
     let certs = node_certs(c);
@@ -770,6 +741,7 @@ pub fn status_of(c: &Cluster) -> Value {
             "last_log_index": m.last_log_index,
             "last_applied": m.last_applied.map(|l| l.index),
             "purged": m.purged.map(|l| l.index),
+            "stalled_since": n.stalled_since().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_secs()),
             "replication": m.replication.as_ref().map(|r| r.iter().map(|(id, l)| json!({ "raft_id": id, "name": name_of(*id), "matched": l.as_ref().map(|l| l.index) })).collect::<Vec<_>>()),
         })
     });
@@ -1084,7 +1056,7 @@ pub async fn leave_removed_offline(
             for s in &servers {
                 let Ok(r) = client
                     .request_timeout(
-                        s,
+                        crate::cluster::net::Target::server(s),
                         hyper::Method::GET,
                         "/cluster/v1/list",
                         &[],
@@ -1152,16 +1124,9 @@ pub async fn join_import(
     }
     let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
     let server = opts.server.to_string();
-    let ca_pem = net::fetch_ca_untrusted(&server).await?;
-    let got = pki::public_key_fingerprint(&ca_pem)?;
-    if got != ca_hash {
-        return Err(other(format!(
-            "the server's CA ({}…) is not the one the token names ({}…): refusing to join. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
-            &got[..12],
-            &ca_hash[..12]
-        )));
-    }
+    let ca_pem = pin_ca(&net::fetch_ca_untrusted(&server).await?, ca_hash, "join")?;
     let trusting = net::client_trusting(&ca_pem)?;
+    await_pinned(&trusting, &server).await?;
     let ccfg = cfg.cluster.clone();
     let advertise = resolve_advertise(opts.advertise, &ccfg)?;
     let listen = opts.listen.unwrap_or(ccfg.listen);
@@ -1176,6 +1141,7 @@ pub async fn join_import(
         "import",
         crate::node::LOCAL_NODE,
         &Default::default(),
+        crate::tenancy::now(),
     );
     let req = super::import::ImportRequest {
         token: opts.token.clone(),
@@ -1193,7 +1159,7 @@ pub async fn join_import(
     for _ in 0..2 {
         let r = trusting
             .request_timeout(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::POST,
                 "/cluster/v1/import",
                 &[("content-type", "application/json".into())],
@@ -1233,7 +1199,7 @@ pub async fn join_import(
     let result = loop {
         let r = trusting
             .request(
-                &target,
+                crate::cluster::net::Target::server(&target),
                 hyper::Method::GET,
                 &format!("/cluster/v1/import/{plan}"),
                 &[("x-import-secret", secret.clone())],
@@ -1263,7 +1229,7 @@ pub async fn join_import(
             // committed in the meantime, go ahead and switch.
             let r = trusting
                 .request(
-                    &target,
+                    crate::cluster::net::Target::server(&target),
                     hyper::Method::POST,
                     &format!("/cluster/v1/import/{plan}/cancel"),
                     &[("x-import-secret", secret.clone())],
@@ -1347,6 +1313,57 @@ async fn report_after_joining(manager: &Arc<VmManager>) {
         Ok(Ok(())) => {}
         Ok(Err(e)) => tracing::warn!("reporting this node after joining: {}", e),
         Err(e) => tracing::warn!("reporting this node after joining: {}", e),
+    }
+}
+
+/// The CA a token pins, out of the bundle a server answered before any
+/// trust: only that certificate is trusted for the rest of the join.
+/// Trusting the whole bundle would let anyone in the network path add
+/// their own CA after the real one and receive the token.
+fn pin_ca(bundle: &str, ca_hash: &str, verb: &str) -> Result<String, ClusterError> {
+    match pki::pinned_ca(bundle, ca_hash)? {
+        Some(pem) => Ok(pem),
+        None => {
+            let got = pki::public_key_fingerprint(bundle)?;
+            Err(other(format!(
+                "the server's CA ({}…) is not the one the token names ({}…): refusing to {verb}. If this is your cluster, its CA was rotated after the token was issued (a server left): issue a new token",
+                &got[..12.min(got.len())],
+                &ca_hash[..12.min(ca_hash.len())]
+            )))
+        }
+    }
+}
+
+/// Wait until `server` presents a certificate from the pinned CA before
+/// anything secret is sent. Right after a CA rotation (a server left) a
+/// server still serves its certificate from the old CA for a few seconds,
+/// until it renews (every node checks every 3 s); the token is never sent
+/// to a certificate the pin doesn't vouch for.
+async fn await_pinned(trusting: &PeerClient, server: &str) -> Result<(), ClusterError> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        match trusting
+            .request(
+                crate::cluster::net::Target::server(server),
+                hyper::Method::GET,
+                "/cluster/v1/ca",
+                &[],
+                Bytes::new(),
+            )
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(net::NetError::Connect(_, e))
+                if e.contains("certificate") && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+            Err(e) => {
+                return Err(other(format!(
+                    "{server} did not present a certificate from the CA the token names: {e}"
+                )));
+            }
+        }
     }
 }
 

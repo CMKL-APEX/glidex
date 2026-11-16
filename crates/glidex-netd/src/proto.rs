@@ -68,6 +68,9 @@ pub enum Op {
     /// Cumulative external-traffic counters of router SNAT zones, from
     /// conntrack accounting (spec/14-clustering.md §13.3). Read-only; full socket only.
     CtExternalCounters,
+    /// Subnets two or more ports share, with their source routes and ARP
+    /// settings (spec §8.6.5). Read-only; full socket only.
+    ListSourceRoutes,
     InstallOvs(InstallRequest),
     InitDpdk(glidex_ovs::install::DpdkSettings),
     EnsureUplink(EnsureUplinkArgs),
@@ -127,6 +130,9 @@ pub enum Op {
     /// (spec/22-host-topology.md §5.3).
     PrepareDevice {
         address: String,
+        /// A pool's ceiling for GPU windows (spec/27-gpu-vms.md G18).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bar_mib: Option<u64>,
     },
     /// Put a prepared device's group back on its drivers.
     ReleaseDevice {
@@ -193,6 +199,7 @@ impl Op {
                 | Op::PortStats
                 | Op::NatCounters
                 | Op::CtExternalCounters
+                | Op::ListSourceRoutes
                 | Op::OvnStatus
                 | Op::ListPreparedDevices
                 | Op::DeviceHolders { .. }
@@ -210,6 +217,7 @@ impl Op {
             Op::PortStats => "port_stats",
             Op::NatCounters => "nat_counters",
             Op::CtExternalCounters => "ct_external_counters",
+            Op::ListSourceRoutes => "list_source_routes",
             Op::EnsureUplink(_) => "ensure_uplink",
             Op::CommitUplink { .. } => "commit_uplink",
             Op::ReapplyUplink { .. } => "ensure_uplink_reapply",

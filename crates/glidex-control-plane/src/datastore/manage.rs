@@ -44,6 +44,8 @@ pub struct NewHyperstor {
     pub api: Vec<String>,
     pub pool: u32,
     pub token: zeroize::Zeroizing<String>,
+    /// Its management UI, if the operator gives it (S33).
+    pub mgmt_url: Option<String>,
 }
 
 /// `PATCH /datastores/{id}`: what is `Some` changes.
@@ -53,6 +55,8 @@ pub struct DatastoreChanges {
     pub nodes: Option<Vec<String>>,
     pub default_for_disks: Option<bool>,
     pub overcommit: Option<bool>,
+    /// A hyperstor datastore's management UI; `Some(None)` clears it.
+    pub mgmt_url: Option<Option<String>>,
 }
 
 impl VmManager {
@@ -216,6 +220,7 @@ impl VmManager {
             map: enrolled.map,
             pool: h.pool,
             identity: Some(enrolled.identity),
+            mgmt_url: h.mgmt_url,
             node_paths: BTreeMap::new(),
         })
     }
@@ -365,6 +370,15 @@ impl VmManager {
         }
         if let Some(v) = ch.overcommit {
             ds.overcommit = v;
+        }
+        if let Some(v) = ch.mgmt_url {
+            let DriverSpec::Hyperstor { mgmt_url, .. } = &mut ds.driver else {
+                return Err(DatastoreError::Invalid(
+                    "only a hyperstor datastore has a management UI".into(),
+                )
+                .into());
+            };
+            *mgmt_url = v;
         }
         record::put(&db, &ds, &record::root())?;
         self.probe_soon();

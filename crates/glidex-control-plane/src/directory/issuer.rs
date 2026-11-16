@@ -9,9 +9,9 @@
 //! it signed lives, and is then deleted.
 
 use super::{ConnectorError, ConnectorStore, secrets};
+use aws_lc_rs::encoding::AsBigEndian as _;
+use aws_lc_rs::signature::{ECDSA_P256_SHA256_FIXED_SIGNING, EcdsaKeyPair, KeyPair as _};
 use base64::Engine as _;
-use p256::ecdsa::signature::Signer as _;
-use p256::elliptic_curve::sec1::ToEncodedPoint as _;
 use redb::TableDefinition;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -118,14 +118,21 @@ impl ConnectorStore {
     ) -> Result<SigningKey, ConnectorError> {
         let keys = self.signing_keys(directory)?;
         let n = keys.last().map_or(1, |k| k.n + 1);
-        let secret = p256::SecretKey::random(&mut p256::elliptic_curve::rand_core::OsRng);
-        let point = secret.public_key().to_encoded_point(false);
-        let (Some(x), Some(y)) = (point.x(), point.y()) else {
-            return Err(ConnectorError::Invalid(
-                "a P-256 key without coordinates".into(),
-            ));
+        let invalid = |what: &str| ConnectorError::Invalid(format!("a new P-256 key: {what}"));
+        let pair = EcdsaKeyPair::generate(&ECDSA_P256_SHA256_FIXED_SIGNING)
+            .map_err(|_| invalid("not made"))?;
+        // Uncompressed SEC1: 0x04, then x and y.
+        let point = pair.public_key().as_ref();
+        let (Some(x), Some(y)) = (point.get(1..33), point.get(33..65)) else {
+            return Err(invalid("without coordinates"));
         };
-        let scalar = zeroize::Zeroizing::new(b64u(&secret.to_bytes()));
+        let bin = pair
+            .private_key()
+            .as_be_bytes()
+            .map_err(|_| invalid("no scalar"))?;
+        // The 32-byte big-endian scalar: the form keys made with p256
+        // before #353 are stored in, so they still sign.
+        let scalar = zeroize::Zeroizing::new(b64u(bin.as_ref()));
         let dk = self.data_key(directory)?;
         let key = SigningKey {
             directory_id: directory.into(),
@@ -206,16 +213,31 @@ impl ConnectorStore {
                 .decode(scalar.as_bytes())
                 .map_err(|_| secrets::SecretError::Decrypt)?,
         );
-        let signer = p256::ecdsa::SigningKey::from_slice(&bytes)
-            .map_err(|_| secrets::SecretError::Decrypt)?;
+        let mut point = vec![4u8];
+        for c in [&key.x, &key.y] {
+            point.extend(
+                base64::engine::general_purpose::URL_SAFE_NO_PAD
+                    .decode(c)
+                    .map_err(|_| secrets::SecretError::Decrypt)?,
+            );
+        }
+        let signer = EcdsaKeyPair::from_private_key_and_public_key(
+            &ECDSA_P256_SHA256_FIXED_SIGNING,
+            &bytes,
+            &point,
+        )
+        .map_err(|_| secrets::SecretError::Decrypt)?;
         let header = json!({ "alg": ALG, "typ": typ, "kid": key.kid });
         let input = format!(
             "{}.{}",
             b64u(header.to_string().as_bytes()),
             b64u(claims.to_string().as_bytes())
         );
-        let sig: p256::ecdsa::Signature = signer.sign(input.as_bytes());
-        Ok(format!("{input}.{}", b64u(&sig.to_bytes())))
+        // FIXED_SIGNING: r ‖ s, as JWS's ES256 wants (RFC 7518 §3.4).
+        let sig = signer
+            .sign(&aws_lc_rs::rand::SystemRandom::new(), input.as_bytes())
+            .map_err(|_| ConnectorError::Invalid("signing failed".into()))?;
+        Ok(format!("{input}.{}", b64u(sig.as_ref())))
     }
 }
 
@@ -290,6 +312,43 @@ mod tests {
         // No private part is ever published.
         let text = s.jwks("local", 1_001).unwrap().to_string();
         assert!(!text.contains("\"d\""), "{text}");
+    }
+
+    /// A key stored before #353 (p256's 32-byte scalar) still signs: the
+    /// P-256 key of RFC 6979 A.2.5, sealed and kept as rotation keeps one.
+    #[test]
+    fn a_key_stored_as_p256_kept_it_still_signs() {
+        let (s, _d) = store();
+        let hex = |h: &str| {
+            (0..h.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap())
+                .collect::<Vec<u8>>()
+        };
+        let d = hex("C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721");
+        let x = hex("60FED4BA255A9D31C961EB74C6356D68C049B8923B61FA6CE669622E60F29FB6");
+        let y = hex("7903FE1008B8BC99A41AE9E95628BC64F2F1B20C2D7E9F5177A3C294D4462299");
+        let dk = s.data_key("local").unwrap();
+        let key = SigningKey {
+            directory_id: "local".into(),
+            n: 1,
+            kid: "local:1".into(),
+            alg: ALG.into(),
+            x: b64u(&x),
+            y: b64u(&y),
+            private: secrets::seal(&dk, "local", SEAL_AS, "1", &b64u(&d), 1_000),
+            created_at: 1_000,
+            retired_at: None,
+        };
+        s.put_raw(table_of("local"), &row("local", 1), &key)
+            .unwrap();
+        let jwt = s.sign_jwt("local", "JWT", &json!({ "sub": "u1" })).unwrap();
+        let mut v = jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::ES256);
+        v.required_spec_claims.clear();
+        v.validate_exp = false;
+        let dec = jsonwebtoken::DecodingKey::from_ec_components(&key.x, &key.y).unwrap();
+        let got = jsonwebtoken::decode::<Value>(&jwt, &dec, &v).unwrap();
+        assert_eq!(got.claims["sub"], "u1");
     }
 
     #[test]

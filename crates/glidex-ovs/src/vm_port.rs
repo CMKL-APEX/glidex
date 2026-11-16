@@ -35,10 +35,26 @@ pub struct VmPortSpec {
     /// (spec/14-clustering.md §11.3).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ovn_lport: Option<String>,
+    /// `false`: no port-security rules on this port (spec/09-networking.md
+    /// decision 19), for a VM that forwards others' traffic.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub port_security: bool,
+    /// Addresses (or prefixes) the port may send from besides, or instead
+    /// of, its own (spec/09-networking.md decision 20); empty: none given.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_addresses: Vec<String>,
 }
 
 fn default_queue_pairs() -> u8 {
     1
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn is_true(b: &bool) -> bool {
+    *b
 }
 
 impl VmPortSpec {
@@ -70,6 +86,7 @@ impl VmPortSpec {
         } else if self.bridge == crate::ovn::BR_INT {
             return Err(OvsError::invalid("br-int is OVN's: give ovn_lport"));
         }
+        crate::port_security::parse_allowed(&self.allowed_addresses)?;
         if !(1..=8).contains(&self.queue_pairs) {
             return Err(OvsError::invalid("queue_pairs must be 1-8"));
         }
@@ -297,6 +314,8 @@ mod tests {
             mtu: None,
             queue_pairs: 1,
             ovn_lport: None,
+            port_security: true,
+            allowed_addresses: vec![],
         }
     }
 

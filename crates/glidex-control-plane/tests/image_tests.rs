@@ -100,6 +100,7 @@ struct Fixtures {
     qcow2: Vec<u8>,
     raw: Vec<u8>,
     with_backing: Vec<u8>,
+    with_data_file: Vec<u8>,
 }
 
 fn fixtures(dir: &Path) -> Fixtures {
@@ -118,10 +119,21 @@ fn fixtures(dir: &Path) -> Fixtures {
             .arg(&q)
             .arg(&b),
     );
+    // Its guest data in a file on the host: here the fixture's raw disk,
+    // by absolute path.
+    let d = dir.join("data-file.qcow2");
+    run_ok(
+        Command::new("qemu-img")
+            .args(["create", "-q", "-f", "qcow2", "-o"])
+            .arg(format!("data_file={},data_file_raw=on", raw.display()))
+            .arg(&d)
+            .arg(std::fs::metadata(&raw).unwrap().len().to_string()),
+    );
     Fixtures {
         qcow2: std::fs::read(&q).unwrap(),
         raw: std::fs::read(&raw).unwrap(),
         with_backing: std::fs::read(&b).unwrap(),
+        with_data_file: std::fs::read(&d).unwrap(),
     }
 }
 
@@ -185,6 +197,7 @@ async fn start_server(fx: &Fixtures) -> (String, Arc<AtomicUsize>) {
     files.insert("good.qcow2".to_string(), fx.qcow2.clone());
     files.insert("disk.raw".to_string(), fx.raw.clone());
     files.insert("backing.qcow2".to_string(), fx.with_backing.clone());
+    files.insert("data-file.qcow2".to_string(), fx.with_data_file.clone());
     files.insert("fw.fd".to_string(), FIRMWARE.to_vec());
     files.insert("vars.fd".to_string(), VARS.to_vec());
     files.insert(
@@ -666,6 +679,24 @@ async fn checksum_mismatch_and_backing_file_fail() {
     );
     assert_eq!(img["verified"], false);
 
+    // An external data file points at a host path just the same.
+    let (_, img) = request(
+        &app,
+        "POST",
+        "/images",
+        Some(json!({"url": format!("{base}/data-file.qcow2"), "name": "evil-data"})),
+    )
+    .await;
+    let img = wait_image(&app, img["image"]["id"].as_str().unwrap()).await;
+    assert_eq!(img["status"]["state"], "IMAGE_STATE_FAILED");
+    assert!(
+        img["status"]["reason"]
+            .as_str()
+            .unwrap()
+            .contains("external data file"),
+        "{img}"
+    );
+
     // A failed image can be deleted.
     let (status, _) = request(&app, "DELETE", "/images/evil", None).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
@@ -983,6 +1014,104 @@ async fn grow_shrink_and_extend_root() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{err}");
     assert_eq!(num(&err["details"]["min_size_bytes"]), 32 * MIB, "{err}");
+}
+
+/// A VM's rename takes the root disk it made along, with create's naming
+/// rule; a root disk it was given keeps its name (spec/12-reconciliation.md
+/// §7.7).
+#[tokio::test]
+async fn renaming_a_vm_renames_the_root_disk_it_owns() {
+    if !tools_present() {
+        return;
+    }
+    let tmp = TempDir::new().unwrap();
+    let fx = fixtures(tmp.path());
+    let (base, _) = start_server(&fx).await;
+    let (app, _manager) = create_app(tmp.path());
+    pull_ready(&app, &base, "good.qcow2", "base", None).await;
+    pull_firmware(&app, &base, "edk2", "cloudhypervisor").await;
+    let disk = |name: &'static str| {
+        request(
+            &app,
+            "POST",
+            "/disks?wait=30",
+            Some(json!({"name": name, "image": "base"})),
+        )
+    };
+    let (status, d) = disk("app-root").await;
+    assert!(status.is_success(), "{d}");
+
+    let (status, vm) = request(&app, "POST", "/vms", Some(json!({
+        "name": "web", "vcpu_count": 1, "mem_size_mib": 512, "image": "base", "root_disk_size_gib": 1
+    }))).await;
+    assert_eq!(status, StatusCode::CREATED, "{vm}");
+    let vm_id = id_of(&vm);
+    let root_id = vm_of(&vm)["root_disk"].as_str().unwrap().to_string();
+    assert_eq!(ready_disk(&app, &root_id).await["name"], "web-root");
+    let vm_path = format!("/vms/{vm_id}");
+    let rename = |to: String| {
+        request(
+            &app,
+            "PATCH",
+            &vm_path,
+            Some(json!({"change": {"name": to}})),
+        )
+    };
+    let root_name = || async {
+        let (_, d) = request(&app, "GET", &format!("/disks/{root_id}"), None).await;
+        disk_of(&d)["name"].as_str().unwrap().to_string()
+    };
+
+    let (status, v) = rename("db 1".into()).await;
+    assert!(status.is_success(), "{v}");
+    assert_eq!(root_name().await, "db-1-root");
+
+    // `app-root` is taken: the VM id's first 8 characters instead.
+    let (status, v) = rename("app".into()).await;
+    assert!(status.is_success(), "{v}");
+    let fallback = format!("app-{}", &vm_id[..8]);
+    assert_eq!(root_name().await, fallback);
+
+    // Both taken: the whole rename is refused.
+    let (status, d) = disk("cache-root").await;
+    assert!(status.is_success(), "{d}");
+    let (status, d) = request(
+        &app,
+        "POST",
+        "/disks?wait=30",
+        Some(json!({"name": format!("cache-{}", &vm_id[..8]), "image": "base"})),
+    )
+    .await;
+    assert!(status.is_success(), "{d}");
+    let (status, v) = rename("cache".into()).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{v}");
+    let (_, v) = request(&app, "GET", &format!("/vms/{vm_id}"), None).await;
+    assert_eq!(vm_of(&v)["name"], "app");
+    assert_eq!(root_name().await, fallback);
+
+    // A root disk the VM was given keeps its name.
+    let (status, d) = disk("mine").await;
+    assert!(status.is_success(), "{d}");
+    let (status, vm2) = request(
+        &app,
+        "POST",
+        "/vms",
+        Some(json!({
+            "name": "vm2", "vcpu_count": 1, "mem_size_mib": 512, "root_disk": "mine"
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED, "{vm2}");
+    let (status, v) = request(
+        &app,
+        "PATCH",
+        &format!("/vms/{}", id_of(&vm2)),
+        Some(json!({"change": {"name": "vm3"}})),
+    )
+    .await;
+    assert!(status.is_success(), "{v}");
+    let (_, d) = request(&app, "GET", "/disks/mine", None).await;
+    assert_eq!(disk_of(&d)["name"], "mine");
 }
 
 #[tokio::test]
@@ -1546,7 +1675,7 @@ async fn firmware_download_with_a_vars_template() {
     let tmp = TempDir::new().unwrap();
     let fx = fixtures(tmp.path());
     let (base, _) = start_server(&fx).await;
-    let (app, _manager) = create_app(tmp.path());
+    let (app, manager) = create_app(tmp.path());
     let fw = |name: &str, extra: Value| {
         let mut body = json!({"url": format!("{base}/fw.fd"), "sha256": sha256_hex(FIRMWARE), "name": name, "kind": "IMAGE_KIND_FIRMWARE", "hypervisor": "HYPERVISOR_QEMU"});
         body.as_object_mut()
@@ -1596,6 +1725,12 @@ async fn firmware_download_with_a_vars_template() {
     );
     let vars = img["path"].as_str().unwrap().replace(".fd", ".vars.fd");
     assert_eq!(std::fs::read(&vars).unwrap(), VARS);
+    // The stored template's digest is recorded, for other nodes' copies.
+    let rec = manager
+        .images()
+        .get_image(img["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(rec.vars_sha256, Some(sha256_hex(VARS)));
     assert_eq!(
         std::fs::metadata(&vars).unwrap().permissions().mode() & 0o777,
         0o444
@@ -1618,6 +1753,12 @@ async fn firmware_download_with_a_vars_template() {
         (Some("IMAGE_STATE_READY"), Some(false)),
         "{img}"
     );
+    // Unpinned, the template it got is still what other nodes check against.
+    let rec = manager
+        .images()
+        .get_image(img["id"].as_str().unwrap())
+        .unwrap();
+    assert_eq!(rec.vars_sha256, Some(sha256_hex(VARS)));
     let (_, img) = request(
         &app,
         "POST",

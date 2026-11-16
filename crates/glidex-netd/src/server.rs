@@ -2,7 +2,9 @@
 
 use crate::auth::{self, Peer};
 use crate::proto::*;
-use crate::store::{self, BRIDGES, DEVICES, META, NAT, Store, UPLINKS, VM_PORTS};
+use crate::store::{
+    self, ARP_SAVED, BRIDGES, DEVICES, META, NAT, SOURCE_TABLES, Store, UPLINKS, VM_PORTS,
+};
 use crate::supervisor::Supervisor;
 use glidex_ovs::bridge::{self, BridgeSpec};
 use glidex_ovs::host::{self, ProbeOptions};
@@ -12,6 +14,7 @@ use glidex_ovs::names;
 use glidex_ovs::nat::{self, NatSpec, NatState};
 use glidex_ovs::net::Ipv4Net;
 use glidex_ovs::nic;
+use glidex_ovs::srcroute;
 use glidex_ovs::uplink::{self, UplinkKind};
 use glidex_ovs::vm_port::{self, VmPortSpec};
 use glidex_ovs::{Exec, OvsError};
@@ -41,6 +44,8 @@ pub struct Config {
     pub policy: auth::Policy,
     /// Router SNAT zones to meter; the same range as `ovn.snat_ct_zones`.
     pub ct_zones: (u16, u16),
+    /// Source routes for ports that share a subnet (spec §8.6).
+    pub source_routes: srcroute::Config,
 }
 
 impl Default for Config {
@@ -57,6 +62,7 @@ impl Default for Config {
             admin_group: "glidex-admin".into(),
             policy: auth::default_policy("glidex", "glidex-admin"),
             ct_zones: (60000, 64999),
+            source_routes: srcroute::Config::default(),
         }
     }
 }
@@ -166,6 +172,7 @@ impl Netd {
             Op::ListVmPorts => to_value(self.vm_ports()?),
             Op::ListUplinks => to_value(self.list_uplinks()?),
             Op::PortStats => to_value(glidex_ovs::stats::bridge_stats(self.ex())?),
+            Op::ListSourceRoutes => to_value(self.list_source_routes()?),
             Op::NatCounters => to_value(glidex_ovs::nat_meter::nat_counters(
                 self.ex(),
                 &self.nats()?,
@@ -246,7 +253,9 @@ impl Netd {
                 Ok(Value::Null)
             }
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
-            Op::PrepareDevice { address } => to_value(self.prepare_device(&address)?),
+            Op::PrepareDevice { address, bar_mib } => {
+                to_value(self.prepare_device(&address, bar_mib)?)
+            }
             Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
             Op::DeviceHolders { groups } => {
                 to_value(glidex_ovs::vfio::group_holders(self.ex(), &groups))
@@ -415,10 +424,15 @@ impl Netd {
     /// vfio-pci and give its group device to the VMs' group, remembering
     /// the drivers for `release_device`. A group prepared already is
     /// prepared again with what it had first.
-    fn prepare_device(&self, address: &str) -> Result<glidex_ovs::vfio::Prepared, OvsError> {
+    fn prepare_device(
+        &self,
+        address: &str,
+        bar_mib: Option<u64>,
+    ) -> Result<glidex_ovs::vfio::Prepared, OvsError> {
         let address = address.to_ascii_lowercase();
         let uplinks = self.dpdk_uplink_addresses()?;
-        let mut p = glidex_ovs::vfio::prepare(self.ex(), &address, &uplinks, &self.config.group)?;
+        let mut p =
+            glidex_ovs::vfio::prepare(self.ex(), &address, &uplinks, &self.config.group, bar_mib)?;
         if let Some(before) = self
             .store
             .get::<glidex_ovs::vfio::Prepared>(DEVICES, &p.iommu_group)?
@@ -490,15 +504,19 @@ impl Netd {
 
     /// spec/27-gpu-vms.md §10: apply the boot settings: VF counts first, then
     /// bind the selected devices that aren't on `vfio-pci` yet, recording
-    /// each like `prepare_device`. A device already on `vfio-pci` is left
-    /// alone; outside boot, a VF count whose PF has a VF on `vfio-pci` is
-    /// left too (a change would take it from its VM).
+    /// each like `prepare_device`. Outside boot, a device already on
+    /// `vfio-pci` is left alone, and so is a VF count whose PF has a VF on
+    /// `vfio-pci` (a change would take it from its VM). At boot, a device
+    /// `vfio-pci` probed after the claim (G20) is unbound first, so its
+    /// windows are sized like the others'.
     pub fn apply_boot_devices(
         &self,
         cfg: &glidex_ovs::boot_devices::BootDevices,
         at_boot: bool,
     ) -> BootReport {
-        use glidex_ovs::boot_devices::{Action, plan_devices, sriov_change_refusal};
+        use glidex_ovs::boot_devices::{
+            Action, let_go_at_boot, plan_devices, sriov_change_refusal,
+        };
         let mut report = BootReport::default();
         for s in &cfg.sriov {
             let pf = s.pf.to_ascii_lowercase();
@@ -516,10 +534,17 @@ impl Netd {
                 Err(e) => report.failed.push((pf, e.to_string())),
             }
         }
+        if at_boot {
+            for (address, r) in let_go_at_boot(self.ex(), cfg) {
+                if let Err(e) = r {
+                    report.failed.push((address, e));
+                }
+            }
+        }
         for (address, action) in plan_devices(self.ex(), cfg) {
             match action {
                 Action::AlreadyVfio => report.skipped.push((address, "already on vfio-pci".into())),
-                Action::Bind { .. } => match self.prepare_device(&address) {
+                Action::Bind { bar_mib, .. } => match self.prepare_device(&address, bar_mib) {
                     Ok(_) => report.bound.push(address),
                     Err(e) => report.failed.push((address, e.to_string())),
                 },
@@ -993,11 +1018,63 @@ impl Netd {
                 existing.port, existing.spec.bridge
             )));
         }
+        let allowed = glidex_ovs::port_security::parse_allowed(&spec.allowed_addresses)?;
+        let nat = self.store.get::<NatState>(NAT, &spec.bridge)?;
+        // On a NAT bridge, the addresses glidex hands out are the
+        // reservations: another port's `allowed_addresses` must not cover
+        // one of them, nor the gateway (spec decision 20).
+        let others: Vec<glidex_ovs::port_security::AllowedAddress> = self
+            .vm_ports()?
+            .into_iter()
+            .filter(|r| {
+                r.spec.bridge == spec.bridge
+                    && store::vm_port_key(&r.spec.vm_id, r.spec.nic_index) != key
+            })
+            .flat_map(|r| {
+                glidex_ovs::port_security::parse_allowed(&r.spec.allowed_addresses)
+                    .unwrap_or_default()
+            })
+            .collect();
+        if let Some(state) = &nat {
+            let mine = spec.mac.to_ascii_lowercase();
+            for a in &allowed {
+                if !a.within(&state.subnet) {
+                    return Err(OvsError::invalid(format!(
+                        "allowed address {a} is outside {}'s subnet {}",
+                        spec.bridge, state.subnet
+                    )));
+                }
+                if a.contains(state.gateway.into()) {
+                    return Err(OvsError::conflict(format!(
+                        "allowed address {a} covers the gateway {}",
+                        state.gateway
+                    )));
+                }
+                if let Some((m, ip)) = state
+                    .reservations
+                    .iter()
+                    .find(|(m, ip)| **m != mine && a.contains((**ip).into()))
+                {
+                    return Err(OvsError::conflict(format!(
+                        "allowed address {a} covers {ip}, the address of {m}"
+                    )));
+                }
+            }
+        }
+        if let Some(a) = allowed
+            .iter()
+            .find(|a| others.iter().any(|b| a.overlaps(b)))
+        {
+            return Err(OvsError::conflict(format!(
+                "allowed address {a} overlaps another port's on {}",
+                spec.bridge
+            )));
+        }
         let caps = host::probe(self.ex(), &self.config.probe);
         let binding = vm_port::attach(self.ex(), &caps, &spec, owner_uid)?;
         let port = spec.port_name()?;
 
-        let ipv4 = match self.store.get::<NatState>(NAT, &spec.bridge)? {
+        let ipv4 = match nat {
             Some(mut state) => {
                 // Unreadable/missing lease file: nothing leased yet.
                 let now = std::time::SystemTime::now()
@@ -1008,7 +1085,9 @@ impl Netd {
                     .read_file(&state.lease_path())
                     .map(|l| nat::active_leases(&l, now))
                     .unwrap_or_default();
-                let ip = state.allocate_avoiding(&spec.mac, &leases)?;
+                let ip = state.allocate_excluding(&spec.mac, &leases, |ip| {
+                    others.iter().any(|a| a.contains(ip.into()))
+                })?;
                 nat::write_dnsmasq_files(self.ex(), &state)?;
                 self.store.put(NAT, &state.bridge, &state)?;
                 self.supervisor.reload(&state.bridge);
@@ -1036,7 +1115,6 @@ impl Netd {
                         })?
                     }
                 };
-                glidex_ovs::metadata::add_flow(self.ex(), &spec.bridge, &port, index)?;
                 Some(index)
             }
             None => None,
@@ -1049,6 +1127,7 @@ impl Netd {
             owner_uid,
             metadata_index,
         };
+        self.install_rules(&record)?;
         self.store.put(VM_PORTS, &key, &record)?;
         if metadata_index.is_some() {
             glidex_ovs::metadata::ensure_address(self.ex())?;
@@ -1080,6 +1159,7 @@ impl Netd {
             if let Some(i) = old.metadata_index {
                 glidex_ovs::metadata::del_flow(self.ex(), &old.spec.bridge, i)?;
             }
+            self.remove_rules(&old)?;
             self.store.delete(VM_PORTS, &key)?;
         }
         self.attach(spec, owner_uid)
@@ -1116,12 +1196,13 @@ impl Netd {
         vm_port::detach(self.ex(), vm_id, nic_index)?;
         // The NAT reservation is kept: the VM gets the same address next start.
         self.store.delete(VM_PORTS, &key)?;
-        if let Some(r) = old
-            && let Some(i) = r.metadata_index
-        {
-            // Its bridge may be gone already: the rule went with it.
-            let _ = glidex_ovs::metadata::del_flow(self.ex(), &r.spec.bridge, i);
-            self.apply_firewall(&self.nats()?)?;
+        if let Some(r) = old {
+            // Its bridge may be gone already: the rules went with it.
+            let _ = self.remove_rules(&r);
+            if let Some(i) = r.metadata_index {
+                let _ = glidex_ovs::metadata::del_flow(self.ex(), &r.spec.bridge, i);
+                self.apply_firewall(&self.nats()?)?;
+            }
         }
         tracing::info!(vm = %vm_id, nic = nic_index, "VM port detached");
         Ok(())
@@ -1163,6 +1244,110 @@ impl Netd {
         Ok(())
     }
 
+    // ---- port rules (spec §9.1) ----------------------------------------
+
+    /// What `record`'s port is checked against: `None` for an OVN port
+    /// (OVN's own `port_security` covers it, spec/14-clustering.md §11.4).
+    fn port_checks(
+        &self,
+        record: &VmPortRecord,
+    ) -> Result<Option<glidex_ovs::port_security::Checks>, OvsError> {
+        use glidex_ovs::port_security::{Checks, Mode};
+        let spec = &record.spec;
+        if spec.ovn_lport.is_some() || !spec.port_security {
+            return Ok(None);
+        }
+        let mode = match record.ipv4 {
+            Some(address) => Mode::Nat { address },
+            None if self.require_bridge(&spec.bridge)?.isolated => Mode::Isolated,
+            None => Mode::Bridged,
+        };
+        Ok(Some(Checks {
+            mode,
+            mac: spec.mac.to_ascii_lowercase(),
+            allowed: glidex_ovs::port_security::parse_allowed(&spec.allowed_addresses)?,
+        }))
+    }
+
+    /// Put `record`'s OpenFlow rules on its bridge: its checks, then the
+    /// metadata rule behind them. Idempotent.
+    fn install_rules(&self, record: &VmPortRecord) -> Result<(), OvsError> {
+        let spec = &record.spec;
+        let checks = self.port_checks(record)?;
+        match &checks {
+            Some(c) => {
+                let cookie = glidex_ovs::port_security::cookie(&spec.vm_id, spec.nic_index)?;
+                glidex_ovs::port_security::apply(self.ex(), &spec.bridge, &record.port, cookie, c)?;
+            }
+            // `port_security: false` (decision 19): none, also when the
+            // port had them before.
+            None => self.remove_rules(record)?,
+        }
+        if let Some(i) = record.metadata_index {
+            let mac = spec.mac.to_ascii_lowercase();
+            let source = match (&checks, record.ipv4) {
+                (Some(_), Some(ip)) => Some((mac.as_str(), ip)),
+                _ => None,
+            };
+            glidex_ovs::metadata::add_flow(self.ex(), &spec.bridge, &record.port, i, source)?;
+        }
+        Ok(())
+    }
+
+    /// Take `record`'s checks off its bridge (none there: fine).
+    fn remove_rules(&self, record: &VmPortRecord) -> Result<(), OvsError> {
+        if record.spec.ovn_lport.is_some() {
+            return Ok(());
+        }
+        let cookie = glidex_ovs::port_security::cookie(&record.spec.vm_id, record.spec.nic_index)?;
+        glidex_ovs::port_security::remove(self.ex(), &record.spec.bridge, cookie)
+    }
+
+    /// Put back the rules of ports whose rules are gone from OVS (after a
+    /// restart of `ovs-vswitchd`, which keeps none): netd runs this every
+    /// few seconds. Returns what it repaired and what failed; a bridge OVS
+    /// can't list (OVS stopped) is skipped.
+    pub fn repair_rules(&self) -> RulesPass {
+        use glidex_ovs::port_security::{self as ps, BASE};
+        let _guard = self.mutate.lock().unwrap();
+        let mut pass = RulesPass::default();
+        let ports = self.vm_ports().unwrap_or_default();
+        let mut cookies: std::collections::BTreeMap<
+            String,
+            Option<std::collections::BTreeSet<u64>>,
+        > = Default::default();
+        for r in ports {
+            let checks = match self.port_checks(&r) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let mut want = Vec::new();
+            if checks.is_some()
+                && let Ok(c) = ps::cookie(&r.spec.vm_id, r.spec.nic_index)
+            {
+                want.extend([c, c | BASE]);
+            }
+            if let Some(i) = r.metadata_index {
+                want.push(u64::from(glidex_ovs::metadata::mark(i)));
+            }
+            if want.is_empty() {
+                continue;
+            }
+            let have = cookies
+                .entry(r.spec.bridge.clone())
+                .or_insert_with(|| ps::installed_cookies(self.ex(), &r.spec.bridge).ok());
+            let Some(have) = have else { continue };
+            if want.iter().all(|c| have.contains(c)) {
+                continue;
+            }
+            match self.install_rules(&r) {
+                Ok(()) => pass.applied.push(format!("rules of {}", r.port)),
+                Err(e) => pass.errors.push(format!("rules of {}: {e}", r.port)),
+            }
+        }
+        pass
+    }
+
     // ---- reconciliation ------------------------------------------------
 
     /// Detach ports of VMs that aren't running; report untracked glidex ports.
@@ -1197,6 +1382,14 @@ impl Netd {
         if let Err(e) = ex.create_dir(&self.config.run_dir.join("vhost"), 0o2770) {
             report.errors.push(format!("vhost dir: {}", e));
         }
+        // Not OVS's: before the check below that stops at a stopped OVS.
+        let pass = self.source_routes_locked();
+        report
+            .repaired
+            .extend(pass.applied.iter().map(|c| format!("source route: {c}")));
+        report
+            .errors
+            .extend(pass.errors.iter().map(|e| format!("source routes: {e}")));
         let caps = host::probe(ex, &self.config.probe);
         if !caps.ovs_running {
             if !self
@@ -1249,8 +1442,9 @@ impl Netd {
                 Err(e) => report.errors.push(format!("nat {}: {}", state.bridge, e)),
             }
         }
-        // OVS keeps no OpenFlow rules across a restart: the metadata
-        // endpoint's, again (spec/29-workload-identity.md §7.1).
+        // OVS keeps no OpenFlow rules across a restart: each port's checks
+        // (spec §9.1) and the metadata endpoint's rule
+        // (spec/29-workload-identity.md §7.1), again.
         let ports = self.vm_ports().unwrap_or_default();
         if ports.iter().any(|r| r.metadata_index.is_some())
             && let Err(e) = glidex_ovs::metadata::ensure_address(ex)
@@ -1258,13 +1452,12 @@ impl Netd {
             report.errors.push(format!("metadata address: {e}"));
         }
         for r in ports {
-            if let Some(i) = r.metadata_index {
-                match glidex_ovs::metadata::add_flow(ex, &r.spec.bridge, &r.port, i) {
-                    Ok(()) => report.repaired.push(format!("metadata rule of {}", r.port)),
-                    Err(e) => report
-                        .errors
-                        .push(format!("metadata rule of {}: {e}", r.port)),
-                }
+            if r.spec.ovn_lport.is_some() {
+                continue;
+            }
+            match self.install_rules(&r) {
+                Ok(()) => report.repaired.push(format!("rules of {}", r.port)),
+                Err(e) => report.errors.push(format!("rules of {}: {e}", r.port)),
             }
         }
         // Without NAT networks nothing above rebuilt the table: fence the
@@ -1290,6 +1483,110 @@ impl Netd {
             }
         }
         report
+    }
+}
+
+/// What one pass of [`Netd::repair_rules`] did (spec §9.1).
+#[derive(Debug, Default)]
+pub struct RulesPass {
+    /// The ports whose rules were put back.
+    pub applied: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+/// What one source-route pass did (spec §8.6.4).
+#[derive(Debug, Default)]
+pub struct SourcePass {
+    /// The commands that ran.
+    pub applied: Vec<String>,
+    /// Failed commands, and what netd couldn't do (a full table range).
+    pub errors: Vec<String>,
+}
+
+impl Netd {
+    fn source_state(&self) -> Result<srcroute::State, OvsError> {
+        Ok(srcroute::State {
+            tables: self.store.list(SOURCE_TABLES)?.into_iter().collect(),
+            arp_saved: self.store.list(ARP_SAVED)?.into_iter().collect(),
+        })
+    }
+
+    fn save_source_state(
+        &self,
+        old: &srcroute::State,
+        new: &srcroute::State,
+    ) -> Result<(), OvsError> {
+        for (ifname, t) in &new.tables {
+            if old.tables.get(ifname) != Some(t) {
+                self.store.put(SOURCE_TABLES, ifname, t)?;
+            }
+        }
+        for ifname in old.tables.keys().filter(|i| !new.tables.contains_key(*i)) {
+            self.store.delete(SOURCE_TABLES, ifname)?;
+        }
+        for (ifname, a) in &new.arp_saved {
+            if old.arp_saved.get(ifname) != Some(a) {
+                self.store.put(ARP_SAVED, ifname, a)?;
+            }
+        }
+        for ifname in old
+            .arp_saved
+            .keys()
+            .filter(|i| !new.arp_saved.contains_key(*i))
+        {
+            self.store.delete(ARP_SAVED, ifname)?;
+        }
+        Ok(())
+    }
+
+    /// The source routes as they are, changing nothing (spec §8.6.5).
+    pub fn list_source_routes(&self) -> Result<srcroute::Report, OvsError> {
+        let obs = srcroute::observe(self.ex())?;
+        Ok(srcroute::plan(&self.config.source_routes, &obs, &self.source_state()?).report)
+    }
+
+    /// At start: a bad `source_routes`, or a rule priority one of the host's
+    /// own rules has, stops netd (spec §8.6.2). Without managed subnets the
+    /// priority is never used, so it isn't checked.
+    pub fn check_source_routes(&self) -> Result<(), OvsError> {
+        let cfg = &self.config.source_routes;
+        cfg.validate()?;
+        if cfg.subnets.is_empty() {
+            return Ok(());
+        }
+        srcroute::check_priority(cfg, &srcroute::observe(self.ex())?)
+    }
+
+    /// One pass: add what is missing, remove netd's own that are stale, and
+    /// keep the tables and saved ARP settings (spec §8.6.4).
+    pub fn source_routes_pass(&self) -> SourcePass {
+        let _guard = self.mutate.lock().unwrap();
+        self.source_routes_locked()
+    }
+
+    fn source_routes_locked(&self) -> SourcePass {
+        let mut pass = SourcePass::default();
+        let (obs, old) =
+            match srcroute::observe(self.ex()).and_then(|o| Ok((o, self.source_state()?))) {
+                Ok(v) => v,
+                Err(e) => {
+                    pass.errors.push(e.to_string());
+                    return pass;
+                }
+            };
+        let plan = srcroute::plan(&self.config.source_routes, &obs, &old);
+        pass.errors = srcroute::apply(self.ex(), &plan.actions);
+        pass.applied = plan
+            .actions
+            .iter()
+            .map(|a| a.cmd().display())
+            .filter(|c| !pass.errors.iter().any(|e| e.starts_with(c.as_str())))
+            .collect();
+        pass.errors.extend(plan.report.notes);
+        if let Err(e) = self.save_source_state(&old, &plan.state) {
+            pass.errors.push(e.to_string());
+        }
+        pass
     }
 }
 

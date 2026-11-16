@@ -1,7 +1,8 @@
 # Reconciliation: desired state, control loops and detached VMs
 
-> Status: **implemented through M3** (2026-10-03); §18 notes where the
-> build differs from this design. Host facts the design depends on were
+> Status: **implemented through M5** (renaming a VM, 2026-11-07); M4's
+> checks passed on a KVM host on 2026-11-07. §18 notes where the build
+> differs from this design. Host facts the design depends on were
 > verified on the pinned versions (§4). It changes the
 > contracts in [00-architecture.md](00-architecture.md),
 > [03-data-model.md](03-data-model.md), [04-hypervisors.md](04-hypervisors.md),
@@ -94,6 +95,8 @@ Non-goals:
 | D18 | Spec edits are accepted in any VM state; what varies is when they take effect (§7.3). Hypervisor and boot source stay immutable. | Declarative edits with explicit `RestartRequired`, no surprise reboots. |
 | D19 | One-shot actions (extend-root, image retry) are spec counters (`seq`) the controller compares with the last applied value in status. | Actions stay level-triggered and idempotent. |
 | D20 | `?wait` returns the same error envelopes as today's synchronous calls when the reconcile fails. | gxctl and the UI keep their error behaviour. |
+| D21 | A VM can be **renamed** in any state (§7.7). A rename changes `meta.name`, not `spec`: it bumps `resource_version` but not `generation`, queues no reconcile and never sets `RestartRequired`. A root disk the VM owns is renamed with it. Names keep today's rules: not empty, unique in the project. | Everything on the host and in the network is keyed by the VM id, so a name is a label. The guest's hostname is regenerated at each launch and follows at the next start. The owned root disk carries the VM's name only because the VM made it. |
+| D22 | The launch deadline (`ready_timeout_secs`) is per launch: 30 s; with passthrough devices, plus 1 s per GiB of guest memory and 1 s per 2 GiB of the devices' memory BARs (BARs 0–5 in each device's sysfs `resource`), up to 15 minutes. A launch that runs out says why on the console and in the `InstanceExited` event, not only `signal 9`. | Before its API answers, Cloud Hypervisor maps the VM's memory into the IOMMU once, then each device's BARs, 4 KiB at a time on a 6.8 host. Traced on the single-A100 host (2026-11-09): 4 GiB of memory took 3.6 s and the 64 GiB BAR 1 of a 40 GiB A100 (BARs are powers of two) 27.2 s, so the VM answered after 31 s whatever its memory; a ConnectX-6's 32 MiB BAR costs nothing. With a fixed 30 s such a VM was killed at every launch and relaunched in a loop. The first version of this deadline (#422) counted 2 s per GiB of memory per device, which missed the BARs. The deadline only bounds a launch that hangs, so a generous one costs nothing when the hypervisor answers. |
 
 ## 4. Verified host facts
 
@@ -493,6 +496,48 @@ with `DisksReady=False/DiskNotReady` until every referenced disk is
 image that is still downloading. `NetworkReady` requires every
 referenced Network to be `Ready`.
 
+### 7.7 Renaming (D21)
+
+`PATCH /vms/{id}` (and `UpdateVm`) accepts `name` in `change`, with the
+mask path `name`. It is authorized as `updateVm`, the action for the
+"other mutable fields" of §12.1, and allowed in any VM state.
+
+- **Rules.** The same as `POST /vms`: not empty, and no other VM in the
+  project has it (`409 conflict`, as at create). VMs being deleted still
+  hold their names. The check runs under the VM table's write lock, as
+  at create. Renaming a VM to its current name changes nothing.
+- **What changes.** `meta.name` and `resource_version`. `generation`
+  stays, no reconcile is queued and `RestartRequired` is not set: a
+  rename is not a spec change (§7.3). `patch_vm` returns early when the
+  spec is unchanged, so a rename needs its own branch there.
+- **The root disk.** When the VM owns its root disk
+  (`config.owns_root_disk`, a disk made from `image` at create), the
+  disk is renamed in the same transaction, with create's rule: the
+  sanitized name plus `-root`, or the sanitized name plus `-` and the
+  first 8 characters of the VM id when that name is taken in the tenant.
+  When that one is taken too, the whole rename is refused with `409
+  conflict` naming the disk. A root disk the VM was given
+  (`root_disk`, not owned) and data disks keep their names. Disk files
+  are named by id (10-images.md §2), so nothing on disk moves. No
+  separate disk action is checked: the disk exists only for this VM.
+- **The guest.** The cloud-init seed is regenerated at every launch
+  (§9.1), so `local-hostname` takes the new name at the next start,
+  when the VM has a generated seed; whether the guest applies it is up
+  to its cloud-init. `instance-id` is the VM id, so the guest is not
+  treated as a new instance. A running guest keeps its hostname.
+- **Unaffected,** being keyed by the VM id: taps, OVS and OVN ports,
+  MACs, the systemd unit, the runtime directory and console log, Cedar
+  entities, audit targets and the workload identity's `sub`. Identity
+  tokens issued before the rename carry the old `glidex.vm.name` until
+  they expire. Metering keeps the name each usage record was taken
+  under (13-metering.md D13); queries group by id. An extracted kernel
+  image keeps its `<vm>-kernel-<id8>` name.
+- **Record.** A `Renamed` VM event with the old and new names, and the
+  audit entry of the `updateVm` write carries both in its details (and
+  the root disk's old and new names when it was renamed).
+- **Clients.** gxctl resolves VMs by name on the client (01-cli.md), so
+  a script that uses the old name stops finding the VM; ids never change.
+
 ## 8. Instances
 
 ### 8.1 `launch.json`
@@ -613,11 +658,14 @@ Lifecycle:
    SIGKILL` for binaries without file capabilities (F7). Record
    `hypervisor_pid` and its starttime. The environment is cleared to
    `LC_ALL=C` and a fixed `PATH`.
-3. Wait up to `ready_timeout_secs` for `api_socket` to accept and answer
+3. Wait up to `ready_timeout_secs` (D22: 30 s, more with passthrough
+   devices) for `api_socket` to accept and answer
    (CH: `GET /vmm.ping`; QEMU: QMP greeting), watching for early exit
    (and running `fallback` once, §8.1). Then `phase: running` — or, if
-   the hypervisor exited, write the exit with cause `LaunchFailed` and
-   the captured output as `message`, `phase: exited`.
+   the hypervisor exited or the deadline passed (the shim kills it), write
+   the exit with cause `LaunchFailed` and the captured output, or "API
+   socket not ready after N s", as `message`, its first line also on the
+   console's exit line, `phase: exited`.
 4. Bind `shim.sock`; send `READY=1` (systemd runner). READY is sent in
    both outcomes of step 3, so the unit start job completes and the
    console and log stay inspectable either way.
@@ -989,7 +1037,7 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `POST /vms/{id}/pause` | `spec.power = Paused` | `pauseVm` |
 | `POST`/`DELETE /vms/{id}/devices` | edit `vfio_devices` (+ claim) | unchanged |
 | `POST /vms/{id}/disks`, `DELETE /vms/{id}/disks/{disk}` | edit `data_disks` (+ claim); no longer refused on a running VM: takes effect next launch | unchanged |
-| `PATCH /vms/{id}` (new) | JSON merge patch of `spec` | per changed field, all must allow: `power` → `startVm`/`stopVm`/`pauseVm`; `vfio_devices` → `attachDevice`/`detachDevice` + `usePciDevice`; `data_disks` → `attachDisk`/`detachDisk` + `useDisk`; `networks` → `attachNetwork` + `useNetwork` for added ones, `detachNetwork` when any is removed; `credential` → `updateVm` + `useCredential`; other mutable fields → **`updateVm` (new action)** |
+| `PATCH /vms/{id}` (new) | JSON merge patch of `spec` | per changed field, all must allow: `power` → `startVm`/`stopVm`/`pauseVm`; `vfio_devices` → `attachDevice`/`detachDevice` + `usePciDevice`; `data_disks` → `attachDisk`/`detachDisk` + `useDisk`; `networks` → `attachNetwork` + `useNetwork` for added ones, `detachNetwork` when any is removed; `credential` → `updateVm` + `useCredential`; other mutable fields, and `name` (§7.7) → **`updateVm` (new action)** |
 | `DELETE /vms/{id}[?keep_disk=true]` | deletion request | `deleteVm` |
 | `POST /disks/{id}/resize`, `/extend-root` | Disk spec writes | unchanged |
 | `POST /images/{id}/retry` (new) | bump `retry_seq` | `pullImage` |
@@ -998,8 +1046,10 @@ D13 (`Ready` when the phase is `Ready` and spec and status agree).
 | `GET /{vms,disks,images,networks}/{id}/events` (new) | event ring | `readVm` / `readDisk` / `readImage` / `readNetwork` |
 | `GET /system/reconcile` (new) | §12.5 | **`readSystemStatus` (new) on `Host::"local"`**, in the `host.read` group (with `readOvsStatus`, `listBridges`, …) |
 
-`updateVm` joins the permission group of `startVm`/`stopVm`
-(11-security.md §7.2) and the schema in `policies/glidex.cedarschema`.
+`updateVm` joined the permission group of `startVm`/`stopVm`
+(11-security.md §7.2) and the schema in `policies/glidex.cedarschema`;
+since 2026-11-04 it is in `vm.write` (editors), so operators run VMs
+without changing them.
 `PATCH` refuses immutable fields with `400 invalid_config` before
 authorization of the remaining fields.
 
@@ -1189,7 +1239,8 @@ Reads (properties, signals, `Subscribe`) need no authorization (F6).
   `RuntimeDirectoryPreserve=yes` stays and is now required (the shims'
   directories live in `/run/glidex-cp/vms/`).
 - No hypervisor children: drop all `DeviceAllow=` (keep
-  `DevicePolicy=closed`) and `ReadWritePaths=-/run/glidex/vhost`; add
+  `DevicePolicy=closed`) but `block-device-mapper rw`, which LVM
+  datastores need (spec/24-storage.md S18) and `ReadWritePaths=-/run/glidex/vhost`; add
   `NoNewPrivileges=yes`, `RestrictAddressFamilies=AF_UNIX AF_INET
   AF_INET6 AF_NETLINK`, `LockPersonality=yes`, `RestrictSUIDSGID=yes`,
   `SystemCallFilter=@system-service`, `ProtectKernelTunables=yes`,
@@ -1362,8 +1413,16 @@ finalizers, port drift. *Accept:* disk, image and network tests.
 
 As built: M4. The control-plane unit sandbox of §13.3. The disk tools
 and the API test suites pass under its syscall filter, no_new_privs and
-address-family restrictions (run in a transient unit); the installed
-unit with the systemd runner on a KVM host is the remaining check.
+address-family restrictions (run in a transient unit). On an installed
+KVM host (2026-11-07, the single-A100 host, main at `e5ab686`, the systemd runner, the
+`hs` hyperstor datastore): the unit has §13.3's settings
+(`NoNewPrivs: 1` in the process), and VM create (stopped and running),
+start, graceful and hard stop, delete (running and stopped), a stopped
+root disk grown 10 → 12 GiB with its partition extended, grown again
+with `--no-extend` then `disk extend-root`, a data disk created,
+attached and resized, and credential create and delete all succeeded,
+with no seccomp, `EPERM` or `EACCES` in the unit's or the kernel's
+journal and no restart (**pass**).
 `GET /vms/{id}?view=full` requires `readSystemStatus` (`host.read`),
 because the stored record carries host paths, PIDs and the boot id that
 the flat view leaves out.
@@ -1373,6 +1432,51 @@ through their controllers (§6.3, the `image.*` and `network.netd`
 finalizers): until then `delete_image` and `delete_network` ran
 synchronously in the API, and a network delete failed outright while
 netd was unreachable.
+
+**M5 — Renaming a VM (D21, §7.7).** Tasks, one PR each:
+
+1. API and server: `name` in `VmChange` (an additive proto field) and in
+   `UPDATABLE`; `patch_vm`'s rename branch with the uniqueness check, the
+   owned root disk's rename in the same transaction, the `Renamed`
+   event and the audit details. Docs: 03-data-model.md, 06-rest-api.md
+   (`PATCH /vms/{id}`), 11-security.md §7.4's `PATCH` row.
+   *Accept:* tests for a rename while stopped and while running
+   (`generation` and `RestartRequired` unchanged), a clash in the
+   project (`409`), the same name in another project, a VM being
+   deleted holding its name, the owned root disk renamed and its
+   fallback, a given root disk left alone, `updateVm` refused to an
+   operator, and the next launch's seed carrying the new hostname.
+2. gxctl: `rename <name|id> <new-name>`, with a row in 01-cli.md and
+   the gxctl reference.
+3. UI: rename on the VM page's header, shown only to callers who may
+   `updateVm`, with 07-web-ui.md and the user guide. *Accept:* a UI e2e
+   that renames a VM and sees the new name in the list.
+
+As built: M5 task 1. `VmChange.name` (field 23) and the mask path
+`name`; `patch_vm` renames under the VM table's write lock and commits
+the VM, the renamed root disk and the `Renamed` event together; the
+audit entry's details carry `name` and `root_disk` as `{from, to}`.
+Tests: `test_patch_renames_a_vm_without_a_spec_change` (api_tests),
+`renaming_a_vm_needs_update_vm_and_a_name_free_in_its_project`
+(security_tests), `renaming_a_vm_renames_the_root_disk_it_owns`
+(image_tests), `a_vm_being_deleted_keeps_its_name` (state.rs: neither a
+rename nor a create takes it, and it can't be renamed itself),
+`a_rename_is_audited_with_the_old_and_new_names` (security_tests: `name`
+and `root_disk` as `{from, to}`, and no `name` on a spec change), and
+the `#[ignore]`d `firmware_boot_with_generated_cloud_init`
+(functional_tests: a stopped guest renamed, started again, logs in under
+the new hostname). It and its QEMU twin passed on a dev host on
+2026-11-07 with an Ubuntu 24.04 cloud image.
+
+As built: M5 task 2. `gxctl rename <name|id> <new-name>` sends
+`UpdateVm` with the mask `name`. gxctl has no tests that run against a
+server: its help test covers the command's line.
+
+As built: M5 task 3. **Rename** under the VM page's name (`VmRename`,
+to callers who may `updateVm`). UI e2e: `vm-rename.spec.ts` (a taken
+name refused, a free one shown on the page and in the list) and
+`vm-controls-by-role.spec.ts` (hidden from an operator, shown to an
+editor).
 
 ## 19. Testing
 

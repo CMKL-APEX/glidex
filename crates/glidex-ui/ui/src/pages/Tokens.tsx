@@ -41,6 +41,13 @@ function CreateTokenForm({ onCreated, onCancel }: { onCreated: (t: CreatedToken)
     let live = true;
     api
       .listTenants()
+      // Only the tenants whose clusters the caller may read: asked anyway,
+      // each is a denial in the audit. A check call takes 200 at most.
+      .then(async (all) => {
+        const ts = all.slice(0, 200);
+        const may = await api.checkAccess(ts.map((t) => ({ action: "readTenantClusters", resource: { type: "Tenant" as const, id: t.id } })));
+        return ts.filter((_, i) => may[i]);
+      })
       .then((ts) => Promise.all(ts.map((t) => api.listTenantClusters(t.id).catch(() => [] as api.TenantCluster[]))))
       .then((lists) => {
         const seen = new Map<string, string>();
@@ -281,9 +288,9 @@ export default function Tokens() {
       {tokens === null ? (
         <LoadingCard />
       ) : tokens.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">No tokens.</div>
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">No tokens.</div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">

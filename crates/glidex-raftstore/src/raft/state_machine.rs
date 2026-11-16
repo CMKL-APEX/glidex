@@ -1,6 +1,7 @@
 //! The state machine is the store's ReDB database ([`Db`]): applying an entry
 //! is a pure byte operation, done in the same transaction that advances
-//! `last_applied` (§6.2). A crash therefore never applies an entry twice or
+//! `last_applied` (§6.2); the entries openraft hands over together share one
+//! transaction (D32). A crash therefore never applies an entry twice or
 //! skips one.
 
 use super::types::*;
@@ -16,6 +17,8 @@ pub struct StateMachine<S: Schema> {
     db: Arc<Db<S>>,
     /// Where received snapshots land before they are installed.
     dir: PathBuf,
+    /// Apply without a flush, flushing at checkpoints (D31).
+    checkpointed: bool,
 }
 
 impl<S: Schema> Clone for StateMachine<S> {
@@ -23,6 +26,7 @@ impl<S: Schema> Clone for StateMachine<S> {
         StateMachine {
             db: self.db.clone(),
             dir: self.dir.clone(),
+            checkpointed: self.checkpointed,
         }
     }
 }
@@ -42,8 +46,12 @@ fn put_meta<S: Schema>(
 }
 
 impl<S: Schema> StateMachine<S> {
-    pub fn new(db: Arc<Db<S>>, dir: PathBuf) -> StateMachine<S> {
-        StateMachine { db, dir }
+    pub fn new(db: Arc<Db<S>>, dir: PathBuf, checkpointed: bool) -> StateMachine<S> {
+        StateMachine {
+            db,
+            dir,
+            checkpointed,
+        }
     }
 
     fn position(
@@ -63,6 +71,11 @@ impl<S: Schema> StateMachine<S> {
 
     fn snapshot_now(&self) -> Result<Option<Snapshot<TypeConfig<S>>>, StorageError> {
         let view = s(self.db.snapshot_view())?;
+        // openraft may purge the log up to the position reported here: the
+        // state must be durable that far first, or a crash would leave it
+        // behind the log's start (§6.2b, I4). After the view, so the
+        // checkpoint covers what it reads.
+        s(self.db.checkpoint())?;
         let Some(applied) = &view.last_applied else {
             return Ok(None);
         };
@@ -117,43 +130,53 @@ impl<S: Schema> RaftStateMachine<TypeConfig<S>> for StateMachine<S> {
         I::IntoIter: openraft::OptionalSend,
     {
         let entries: Vec<_> = entries.into_iter().collect();
-        let db = self.db.clone();
+        let Some(last) = entries.last().map(|e| e.log_id) else {
+            return Ok(Vec::new());
+        };
+        let (db, checkpointed) = (self.db.clone(), self.checkpointed);
         tokio::task::spawn_blocking(move || {
-            let mut out = Vec::with_capacity(entries.len());
+            // The whole batch is one transaction (D32), with `last_applied`
+            // at its last entry and the latest membership in it.
+            let n = entries.len();
+            let mut batch = Vec::with_capacity(n);
+            let mut membership = None;
             for e in entries {
-                let log_id_json = s(serde_json::to_vec(&e.log_id))?;
-                let (ws, membership) = match e.payload {
-                    EntryPayload::Blank => (
-                        WriteSet {
-                            format: WRITE_SET_FORMAT,
-                            origin: S::SYSTEM,
-                            ops: Vec::new(),
-                        },
-                        None,
-                    ),
-                    EntryPayload::Normal(ws) => (ws, None),
+                let system = || WriteSet {
+                    format: WRITE_SET_FORMAT,
+                    origin: S::SYSTEM,
+                    ops: Vec::new(),
+                };
+                let ws = match e.payload {
+                    EntryPayload::Blank => system(),
+                    EntryPayload::Normal(ws) => ws,
                     EntryPayload::Membership(m) => {
-                        let stored = StoredMembership::new(Some(e.log_id), m);
-                        (
-                            WriteSet {
-                                format: WRITE_SET_FORMAT,
-                                origin: S::SYSTEM,
-                                ops: Vec::new(),
-                            },
-                            Some(s(serde_json::to_vec(&stored))?),
-                        )
+                        membership = Some(StoredMembership::new(Some(e.log_id), m));
+                        system()
                     }
                 };
-                s(db.apply(&ws, e.log_id.index, |txn| {
-                    put_meta::<S>(txn, LAST_APPLIED, &log_id_json)?;
-                    if let Some(m) = &membership {
-                        put_meta::<S>(txn, LAST_MEMBERSHIP, m)?;
-                    }
-                    Ok(())
-                }))?;
-                out.push(());
+                batch.push((ws, e.log_id.index));
             }
-            Ok(out)
+            let last = s(serde_json::to_vec(&last))?;
+            let membership = match &membership {
+                Some(m) => Some(s(serde_json::to_vec(m))?),
+                None => None,
+            };
+            let also = |txn: &redb::WriteTransaction| {
+                put_meta::<S>(txn, LAST_APPLIED, &last)?;
+                if let Some(m) = &membership {
+                    put_meta::<S>(txn, LAST_MEMBERSHIP, m)?;
+                }
+                Ok(())
+            };
+            // A failed checkpoint fails the apply, and openraft stops the
+            // state machine: never skipped, or the state would stay behind
+            // while the log goes on purging (§6.2b).
+            if checkpointed {
+                s(db.apply_checkpointed(batch, also))?;
+            } else {
+                s(db.apply_batch(batch, also))?;
+            }
+            Ok(vec![(); n])
         })
         .await
         .map_err(io_err)?

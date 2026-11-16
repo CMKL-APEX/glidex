@@ -452,7 +452,17 @@ impl VmManager {
         // Whether or not its file is there.
         self.release_if_unclaimed(&mut disk).await?;
         let driver = self.images.driver(&disk)?;
-        if !driver.exists(&disk) {
+        let exists = match driver.exists(&disk) {
+            Ok(e) => e,
+            // Can't tell: its storage is down or not reachable yet (a
+            // hyperstor datastore before the control plane has its key, at
+            // start). Asked again, the disk left as it is.
+            Err(e) => {
+                tracing::debug!(disk = %disk.name, error = %e, "can't tell whether the disk's volume is there");
+                return Ok(Some(Duration::from_secs(10)));
+            }
+        };
+        if !exists {
             let path = driver.binding(&disk).path().to_path_buf();
             if disk.phase != DiskPhase::Missing {
                 disk.phase = DiskPhase::Missing;
@@ -471,7 +481,8 @@ impl VmManager {
                 );
                 self.put_disk_with_event(&disk, Some(ev))?;
             }
-            return Ok(None);
+            // Looked for again: a volume that comes back makes it ready.
+            return Ok(Some(Duration::from_secs(30)));
         }
         if disk.phase == DiskPhase::Missing {
             disk.phase = DiskPhase::Ready;

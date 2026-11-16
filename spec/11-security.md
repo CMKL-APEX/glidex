@@ -51,6 +51,8 @@ bullets of [09-networking.md §14](09-networking.md#14-security).
 | 19 | Browser-trusted certificates on a tailnet | On a host on Tailscale, `glidex-ui` may serve the node's Tailscale (Let's Encrypt) certificate for its `ts.net` names, fetched from the host's `tailscaled` (granted by `TS_PERMIT_CERT_UID=glidex-ui`), chosen by SNI next to the usual certificate. Opt-in, because the name lands in Certificate Transparency logs. UI only, port 5173; the control plane keeps its certificate ([21-tailscale-tls.md](21-tailscale-tls.md) §2). |
 | 20 | Client address behind a tunnel | `glidex-ui` takes the browser's address from one named header (`GLIDEX_UI_CLIENT_IP_HEADER`, such as Cloudflare's `CF-Connecting-IP`) **only from a loopback peer**: a tunnel daemon on the same host (`cloudflared`). From any other peer, or when unset, the address is the TCP peer's, as before. Off by default; one header, one address, no list of proxies. Anything that can connect to the UI over loopback can then choose its address in rate limits and audit, which is acceptable on a host whose local users are its administrators. |
 | 21 | Console tickets in a cluster | A server's console ticket is the **leader's**: a server that isn't the leader forwards `POST /vms/{id}/console/ticket` (and `CreateConsoleTicket`) to the leader, which keeps the ticket in memory, and the server that takes the WebSocket redeems it there (`/cluster/v1/console-ticket`, servers only). So the two requests may reach different servers, as they do behind a load balancer or tunnel replicas with no affinity, and a ticket still works once. No Raft write: a leader change in a ticket's 30 seconds drops it, and the user opens the console again. A standalone host keeps its tickets as before. |
+| 22 | Audit pages, newest first | `ReadAudit` (`GET /audit`) returns the **newest** matching entries first unless `order_by` says otherwise, at most `limit` (default 500, at most 5000) per page, with `next_page_token` for the next page; an empty token means no more. A time-ordered page reads the log's keys from one end and stops at `limit`, so it costs only the page. The token is opaque: it carries the order, the filters and where the last page stopped, and is refused with other filters. Before this, the oldest 500 came back, so a log past 500 entries hid its recent ones. |
+| 23 | Audit sorted by a column | `order_by` is one of `time` (default), `user`, `action`, `project`, `target`, `source`, `result`, with `ascending` (default false: newest or Z–A first); ties go newest first. Any order but time gathers the filter's matches, **at most 20,000**, sorts them on the server and pages through them; the response says `truncated` when the cap stopped it, and the UI says to narrow the filters (a `since` or a project). The cap bounds one request's work; the log is kept 90 days. |
 
 ## 3. Threat model
 
@@ -310,6 +312,10 @@ selects TCP.
   for one made through the API ([19-tenancy.md](19-tenancy.md) §6).
   `state` binds the browser session; it is single-use and valid 10
   minutes.
+  `glidex-auth` keeps it in the process by default; an application that
+  runs several instances behind one name (hyperstor's mgmt) takes it
+  with `OidcState::begin`, keeps it where every instance reaches it, and
+  hands it back to `OidcState::finish`, which checks it the same way.
 - Identity key: `(issuer, sub)`. `email` / `name` are display only and
   never used for authorization.
 - Provisioning: `oidc.jit` (default `true`) creates the user on first
@@ -597,9 +603,12 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action listVms in ["vm.read"]
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
+  action startVm, stopVm, pauseVm in ["vm.operate"]
+    appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   // updateVm: PATCH of spec fields other than power, devices, disks and
-  // networks (12-reconciliation.md §12.1).
-  action startVm, stopVm, pauseVm, updateVm in ["vm.operate"]
+  // networks (12-reconciliation.md §12.1). An editor's since 2026-11-04:
+  // an operator runs VMs, an editor changes them.
+  action updateVm in ["vm.write"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
   action openConsole in ["vm.console"]
     appliesTo { principal: [User, Token], resource: [Vm], context: Ctx };
@@ -623,6 +632,10 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Project], context: Ctx };
   action deleteProjectNetwork in ["network.manage"]
     appliesTo { principal: [User, Token], resource: [Network], context: Ctx };
+  // A NIC's port security off or changed (09-networking.md decision 19):
+  // on the VM (the project, at create) and on a project network.
+  action setPortSecurity in ["network.manage"]
+    appliesTo { principal: [User, Token], resource: [Vm, Project, Network], context: Ctx };
   // Source side, on the network; context.project is the target project.
   action offerNetworkShare, unshareNetwork in ["network.share"]
     appliesTo { principal: [User, Token], resource: [Network], context: ProjectCtx };
@@ -638,8 +651,8 @@ namespace Glidex {
   // readSystemStatus: GET /system/reconcile (12-reconciliation.md §12.5).
   action readOvsStatus, listBridges, listUplinks, listPciDevices, readSystemStatus in ["host.read"]
     appliesTo { principal: [User, Token], resource: [Host], context: Ctx };
-  action createNetwork, deleteNetwork, grantNetwork, createBridge, ensureUplink
-    in ["host.network"]
+  action createNetwork, deleteNetwork, grantNetwork, createBridge, ensureUplink,
+         setHostPortSecurity in ["host.network"]
     appliesTo { principal: [User, Token], resource: [Host, Network], context: Ctx };
   action installOvs, initDpdk, confirmUplink, commitUplink, deleteUplink,
          deleteBridge in ["host.network.critical"]
@@ -687,18 +700,18 @@ Rules for the schema:
 | Group | Scope (link resource) | Covers |
 |---|---|---|
 | `vm.read` | project | List and get VMs, their events, console info |
-| `vm.operate` | project | Start, stop, pause; other spec edits (`updateVm`: restart policy, host-boot policy, stop grace, vCPUs, memory, kernel args, hugepages, credential) |
+| `vm.operate` | project | Start, stop, pause (also through `PATCH` of `power`) |
 | `vm.console` | project | Console tickets / WebSocket |
-| `vm.write` | project | Create and delete VMs; attach and detach disks, devices and networks; use project disks and credentials |
+| `vm.write` | project | Create and delete VMs; change them (`updateVm`: restart policy, host-boot policy, stop grace, vCPUs, memory, kernel and its args, hugepages, credential; extracting a kernel); attach and detach disks, devices and networks; use project disks and credentials |
 | `disk.read` · `disk.write` | project | Disks: list/get · create, delete, resize, extend root, move to another datastore (`moveDisk`, 24-storage.md §8.3) |
 | `credential.read` · `credential.write` | project | Guest credentials (SSH keys are only returned with `credential.read`) |
 | `network.use` | project | Attach VMs to networks granted to the project |
 | `project.members` | project | Role links and service-account tokens in the project |
-| `network.manage` | project | Create and delete the project's own NAT and isolated networks |
+| `network.manage` | project | Create and delete the project's own NAT and isolated networks; turn a NIC's port security off (`setPortSecurity`, 09-networking.md decision 19) |
 | `network.share` | project | Offer and end shares of the project's networks; accept and leave shares offered to the project (§6.2.1) |
 | `host.read` | host | OVS status, bridges, uplinks, `GET /pci-devices`, `GET /host/topology` and `GET /nodes/{id}/topology` (`readHostTopology`), `GET /system/reconcile` (`readSystemStatus`) |
 | `host.devices` | host | `usePciDevice`, `usePciPool` (a `PciPool` in the cluster, granted by `pci.allow` entries with `pool`, policy `base.pci-pool-grant`); `prepareDevice`, `releaseDevice`, `cordonDevice` (`POST /nodes/{id}/devices/{address}/prepare|release|cordon|uncordon`, 22-host-topology.md §5.3–5.4); `setSriovVfs` (`POST /nodes/{id}/devices/{pf}/sriov`, §10.1) |
-| `host.network` | host | Host networks (create, delete, grant), bridges, uplinks |
+| `host.network` | host | Host networks (create, delete, grant), bridges, uplinks; a NIC's port security off on a host network (`setHostPortSecurity`) |
 | `host.network.critical` | host | OVS install, DPDK init, confirmed uplinks (IP migration), uplink commit and delete, bridge delete. Subject to step-up. |
 | `host.devices` | host | PCI grants, any PCI device regardless of grants |
 | `host.paths` | host | Boot and disk paths outside managed directories (§7.4) |
@@ -817,8 +830,13 @@ when { resource.grants.contains(context.project) };
 // Project networks are never opened up by net-admin grants; sharing
 // them takes the two-sided offer/accept of §6.2.1.
 @id("base.project-network-private")
-forbid (principal, action == Glidex::Action::"grantNetwork", resource)
+forbid (principal, action in [Glidex::Action::"grantNetwork",
+                              Glidex::Action::"setHostPortSecurity"], resource)
 when { resource has project };
+// A project role lifts port security on its own networks only.
+@id("base.port-security-project-network")
+forbid (principal, action == Glidex::Action::"setPortSecurity", resource is Glidex::Network)
+unless { resource has project };
 @id("base.project-network-only")
 forbid (principal, action in [Glidex::Action::"deleteProjectNetwork",
                               Glidex::Action::"offerNetworkShare",
@@ -864,12 +882,12 @@ allow.**
 
 | API call | Cedar requests |
 |---|---|
-| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `useServiceAccount` on the service account's project if one is given; `attachNetwork` on the Project and `useNetwork` on each network if any; `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
+| `POST /vms` | `createVm` on the Project; `useDisk` on each data disk; `useCredential` on each credential; `useServiceAccount` on the service account's project if one is given; `attachNetwork` on the Project and `useNetwork` on each network if any; for a NIC with `port_security: false`, `setPortSecurity` on the Project and on its network (a host network: `setHostPortSecurity`); `usePciDevice` on each VFIO device; `useHostPath` on the node's `Host` if any path is outside managed directories; `readImage` on the boot image, the firmware image and the kernel image |
 | `POST /vms/{id}/disks` | `attachDisk` on the Vm; `useDisk` on the Disk |
 | `POST /vms/{id}/extract-kernel` | `readVm`, then `updateVm` on the Vm (23-kernel-boot.md §10.5) |
 | `POST /vms/{id}/devices` | `attachDevice` on the Vm; `usePciDevice` on the device |
-| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`; `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
-| `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network |
+| `PATCH /vms/{id}` | `readVm` first (else `404`), then one request per *changed* field: `power` → `startVm` / `pauseVm` / `stopVm`; added `vfio_devices` → `attachDevice` + `usePciDevice` on each, removed → `detachDevice`; added `data_disks` → `attachDisk` + `useDisk` on each, removed → `detachDisk`; added `networks` → `attachNetwork` + `useNetwork` on each, removed → `detachNetwork`, a NIC whose `port_security` differs from the VM's (a new NIC: from `true`) → `setPortSecurity` on the Vm and on its network (a host network: `setHostPortSecurity`); `credential` → `updateVm` (+ `useCredential` unless removed); `service_account` → `updateVm` (+ `useServiceAccount` unless removed); `kernel` → `updateVm` + `readImage` on the new kernel image; `kernel_from_disk` → `updateVm`; `name` → `updateVm` (an owned root disk renamed with it needs nothing more, 12-reconciliation.md §7.7); `restart_policy`, `on_host_boot`, `stop_grace_secs`, `vcpu_count`, `mem_size_mib`, `kernel_args`, `hugepages` → `updateVm`. Immutable fields are refused (`400`) before any of these. |
+| `POST /vms/{id}/networks` | `attachNetwork` on the Vm; `useNetwork` on the network; with `port_security: false`, `setPortSecurity` on the Vm and on the network (a host network: `setHostPortSecurity`) |
 | `DELETE /vms/{id}/networks/{network}` | `detachNetwork` on the Vm |
 | `POST /ovs/bridges/{b}/uplinks` with `confirm: true` | `confirmUplink` on `Host::"local"` |
 
@@ -1136,7 +1154,7 @@ may ask it for what.
 | `glidex-control-plane` | `RuntimeDirectory=glidex-cp` (`0755`, preserved across restarts — required, running VMs' directories live there) holds `api.sock`, `ui.sock` and `vms/` (`0700`); per-VM files in `/run/glidex-cp/vms/<id>/` (`0700`): `launch.json`, `instance.json`, `shim.sock`, API socket, console socket, console log, cloud-init seed. `UMask=0077`. `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane -/srv/glidex` (datastores, 24-storage.md S11), `DevicePolicy=closed` with only `DeviceAllow=block-device-mapper rw` (lvm datastores' volumes, which glidex-stord hands to `glidex`; the host's other device-mapper devices stay root's, 24-storage.md S18), `NoNewPrivileges=yes` and the syscall, address-family and kernel restrictions below, `LoadCredential=` for `tls-key`, `oidc-client-secret`. |
 | `glidex-vm@<id>` (new) | The hypervisor sandbox: `User=glidex`, `SupplementaryGroups=kvm`, `Slice=glidex-vms.slice`, `UMask=0077`, `PrivateTmp=yes`, `ProtectSystem=strict`, `ProtectHome=yes`, `ReadWritePaths=/var/lib/glidex-control-plane /run/glidex-cp/vms/%i -/run/glidex/vhost -/srv/glidex`, `DevicePolicy=closed`, `DeviceAllow=` `/dev/kvm`, `/dev/vfio/vfio`, `char-vfio`, `/dev/net/tun`, `/dev/vhost-net`. No `NoNewPrivileges=` (below). `Restart=no`, never enabled. |
 | `glidex-ui` | `User=glidex-ui`, `StateDirectory=glidex-ui` (`0700`, its self-signed certificate, §5.1.1), `InaccessiblePaths=/run/glidex /var/lib/glidex-control-plane /run/glidex-authd`, `CapabilityBoundingSet=`, `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK`, existing `ProtectSystem`/`PrivateDevices` kept. |
-| `glidex-netd` | `ProtectHome=yes`, `CapabilityBoundingSet` limited to what the op set needs (to verify on a host: `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, plus package-manager needs for `install_ovs`). |
+| `glidex-netd` | `ProtectHome=yes`. No `CapabilityBoundingSet`, on purpose: besides `CAP_NET_ADMIN CAP_NET_RAW CAP_SYS_ADMIN CAP_DAC_OVERRIDE CAP_CHOWN CAP_FOWNER`, `install_ovs` runs the package manager, whose maintainer scripts may need any capability; `netd.json`'s policy decides who may ask for it (seen on the three-server test cluster, 2026-11-10). |
 | `glidex-stord` (S6, 24-storage.md §11.1) | Root, `Type=notify`, `RuntimeDirectory=glidex-stord` (`stord.sock` `root:glidex 0660`, `stord-admin.sock` for `glidex-admin`). `ProtectSystem=strict` with `ReadWritePaths=/etc/lvm /run/lvm /run/lock /run/systemd/system` (LVM's backups and locks, the VM units' drop-ins), `ProtectHome=yes`, `PrivateTmp=yes`, `NoNewPrivileges=yes`, `CapabilityBoundingSet=CAP_SYS_ADMIN CAP_CHOWN CAP_FOWNER CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_IPC_LOCK CAP_SYS_RAWIO CAP_MKNOD`, `RestrictAddressFamilies=AF_UNIX AF_NETLINK`. It acts only on the volume groups in `/etc/glidex/stord.json` (`allowed_vgs`, none by default) and on volumes named `gx-d-*`/`gx-i-*` (24-storage.md S17). |
 | `glidex-authd` | Socket-activated, `PrivateNetwork=yes`, `ProtectSystem=strict`, `ProtectHome=read-only`, `NoNewPrivileges=yes` (PAM modules that need setuid helpers are not supported). |
 
@@ -1203,6 +1221,12 @@ connect` uses the API's console WebSocket instead of the raw socket.
   logged only for an allowlist of non-secret fields.
 - `GET /audit?project=&user=&since=` needs `system.audit`, or
   `project.members` for that project's entries.
+- Pages (decisions 22, 23): newest first by default; `order_by` and
+  `ascending` sort by another column; `page_token` continues a page.
+  The web UI's Audit page pages with *Older* and *Newer*, sorts by a
+  column header, and names what *All* covers: *All (cluster)* for a
+  cluster audit reader, *All (my directory)* for a hosted directory's
+  reader (that directory's own audit, D74 of 19-tenancy).
 - Usage exports (`GET /usage?format=csv`) are audited although they are
   reads (`details.export = "csv"`): a bulk export of tenant data.
 
@@ -1440,6 +1464,7 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Client address behind a tunnel (decision 20) | `crates/glidex-ui/src/main.rs` (`client_addr`, test `the_client_ip_header_counts_from_loopback_only`) |
 | Tailscale certificates for the UI (decision 19) | UI: `crates/glidex-tls/src/tailscale.rs` (local API client, polling; shared with hyperstor's management service), `crates/glidex-ui/src/main.rs` (`Host`, HSTS); same-origin rule `api/mod.rs` `ui_same_origin`. Installer: `crates/glidex-install/src/tailscale.rs` ([21-tailscale-tls.md](21-tailscale-tls.md) §4.6) |
 | Console tickets in a cluster (decision 21) | `api/gate.rs` (`is_console_ticket`: issued on the leader), `cluster/server.rs` (`/cluster/v1/console-ticket`), `Cluster::redeem_console_ticket`, `service::vm::console_target`; test `console_tickets_are_the_leaders_and_redeemed_once_from_any_server` |
+| Audit pages and sorts (decisions 22, 23) | `auth/store.rs` (`audit_page`), `service/access.rs` (`audit_pages`, `AuditCursor`), gxctl `audit --page`, UI `pages/Audit.tsx`; tests `the_audit_pages_newest_first_and_sorts_by_a_column`, `an_audit_page_stays_in_its_directory_and_goes_both_ways`, UI e2e `audit-pages.spec.ts` |
 | Private VM runtime directories (§9) | `src/paths.rs` |
 | VM units, polkit rule, shim allowlist (§3, §9) | `packaging/glidex-vm@.service.in`, `packaging/50-glidex-vm.rules.in`, `crates/glidex-vm-shim/src/launch.rs`, `crates/glidex-install` (`install_vm_units`) |
 | PAM helper (§5.3) | `crates/glidex-authd` |
@@ -1447,6 +1472,9 @@ None. Earlier questions were answered and recorded as decisions 10–17 (§2).
 | Login profiles, trust ladder and client trust ([17-gxctl-auth.md](17-gxctl-auth.md), decision 18) | **implemented** — G1–G5 landed: profile file `bin/gxctl/config.rs`, ladder `glidex_tls::Trust`/`ClientTls::with_trust`, failover + binding preflight `bin/gxctl/client.rs`, `auth` family `bin/gxctl/admin.rs`, server halves `api/access.rs` (`server_info`, `pam_token`) + `auth::create_token` device/client stamp |
 | Tests (§14) | `tests/security_tests.rs`, `tests/network_tests.rs`, unit tests in each module, `crates/glidex-authd/tests`, `crates/glidex-netd/tests` |
 
-Still to verify on a real host: the generated nftables rules (§8.4),
-systemd sandboxing with VFIO, hugepages and taps (§9), a real PAM stack
-including expired accounts, and OIDC against the production IdP.
+Checked on the three-server test cluster (2026-11-10, [20-idp-checks.md](20-idp-checks.md)):
+the units' sandboxing (§9) with taps, nftables (§8.4) between NAT
+networks and the isolated-network fence, a real PAM stack with expired,
+locked and must-change accounts (§5.3), and OIDC against the production
+IdPs (Google, Google Workspace, JumpCloud). Still to verify on a real
+host: VFIO and hugepages under the VM unit (§9).

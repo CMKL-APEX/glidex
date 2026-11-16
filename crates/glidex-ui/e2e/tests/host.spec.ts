@@ -77,6 +77,23 @@ test.describe("another node", () => {
         message: {
           netd: { available: true, access: "NETD_ACCESS_FULL" },
           host: { ovs_installed: true, ovs_running: true, ovs_version: "3.9.9-a1" },
+          // Two IPoIB ports in one subnet, one address held by another rule
+          // (spec/09-networking.md §8.6).
+          source_routes: {
+            subnets: [
+              {
+                subnet: "10.40.1.0/24",
+                managed: true,
+                ports: [
+                  { ifname: "ib0", table: 4200, addresses: [{ address: "10.40.1.5", state: "SOURCE_ADDRESS_STATE_OK" }], rp_filter: 1, arp_ignore: 1, arp_announce: 2 },
+                  {
+                    ifname: "ib1",
+                    addresses: [{ address: "10.40.1.6", state: "SOURCE_ADDRESS_STATE_CONFLICT", conflict: "priority 100 from 10.40.1.6 lookup 101" }],
+                  },
+                ],
+              },
+            ],
+          },
         },
       };
     });
@@ -93,6 +110,12 @@ test.describe("another node", () => {
     const section = page.getByRole("region", { name: "Host networking" });
     await expect(section.getByText("3.9.9-a1")).toBeVisible();
     await expect(section.getByText("gxbr-a1")).toBeVisible();
+    const shared = section.getByTestId("shared-subnets");
+    await expect(shared.getByRole("row", { name: /ib0/ })).toContainText("10.40.1.0/24");
+    await expect(shared.getByRole("row", { name: /ib0/ })).toContainText("4200");
+    await expect(shared.getByRole("row", { name: /ib1/ })).toContainText("conflict");
+    await expect(shared.getByRole("row", { name: /ib1/ })).toContainText("priority 100 from 10.40.1.6 lookup 101");
+    await expect(shared.getByText(/leaves by another port/)).toBeVisible();
     await expect.poll(() => targets).toEqual({ GetOvsStatus: A1, ListBridges: A1, ListUplinks: A1 });
   });
 });

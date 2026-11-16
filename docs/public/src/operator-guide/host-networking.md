@@ -263,13 +263,23 @@ gxctl network-add lab-fast --vhost-user        # vhost-user NICs (needs the dpdk
 - The gateway is the subnet's first address; DHCP hands out the rest.
   The subnet must be a /29 or larger.
 - A VM keeps its address across restarts (a reservation per MAC).
+  dnsmasq answers only MACs with a reservation (a `static` DHCP range):
+  anything else on the bridge gets no address.
 - Node NAT networks come from `10.88.0.0/16` by default. To use another
   range, set `nat_supernet` in `/etc/glidex/netd.json` (see
   [Configuration](configuration.md)).
 - An isolated network (`--isolated`) has no way out: its VMs reach only
   each other.
 - In a cluster with OVN on, `network-add` makes a cluster network unless
-  you pass `--node` (a bridge on this host only).
+  you pass `--node` (a bridge on the node that serves the request) or
+  `--node <node>` (a bridge on that node, which makes it within a
+  resync; you can't choose its subnet or make it bridged). In the web
+  UI's network form it is **Node**.
+- Guests reach only DHCP, DNS, ping on the gateway and the metadata
+  endpoint on their own host. To open the host's API to one network's
+  guests, `gxctl network host-api <net> on`; for every NAT network of a
+  host, `"nat_host_api": true` in its `control-plane.json`. See
+  [The host from a NAT network](../user-guide/networks.md#the-host-from-a-nat-network).
 
 If `ufw` or `firewalld` is active, the host's page warns that it may
 drop forwarded NAT traffic. `glidex-netd` adds its own nftables table
@@ -277,6 +287,34 @@ drop forwarded NAT traffic. `glidex-netd` adds its own nftables table
 guest traffic, its own chains (`GLIDEX-FORWARD`, `GLIDEX-INPUT`). If
 guests still get no address or can't get out, allow the NAT subnets in
 your firewall.
+
+## Port rules
+
+Each VM port on a glidex bridge gets OpenFlow rules that check what it
+sends (OVN ports have OVN's port security instead):
+
+| Mode | A port sends only |
+|---|---|
+| NAT | from its own MAC; IPv4 and ARP from its reservation (DHCP from `0.0.0.0` passes); no DHCP server replies (UDP source port 67), no IPv6 router advertisements |
+| Isolated | from its own MAC; no DHCP server replies, no IPv6 router advertisements |
+| Bridged | from its own MAC |
+
+A NIC's `allowed_addresses` add addresses on NAT networks and, on
+isolated and bridged ones, make IP, ARP and IPv6 neighbour
+advertisements checked against the list. A NIC with `port_security:
+false` gets no rules. See [Port security](../user-guide/networks.md#port-security).
+
+`glidex-netd` adds the rules with the port and removes them with it.
+OVS keeps no OpenFlow rules across a restart of `ovs-vswitchd`: netd
+puts them back at its start and, within seconds, when they are gone.
+To see a port's rules:
+
+```bash
+ovs-ofctl dump-flows gxbr-nat | grep 'in_port=<ofport>'   # ofport: ovs-vsctl get Interface <port> ofport
+```
+
+Every port's rules carry a cookie starting `0x7073`; the metadata
+endpoint's start `0x6d`.
 
 ## Bridged networks
 
@@ -290,6 +328,48 @@ gxctl network-add lan --bridged gxbr-up            # optionally --vlan 20
 The bridge must be a glidex bridge. Glidex doesn't hand out addresses on
 a bridged network: the LAN's DHCP server, or a static address in the
 guest, does.
+
+## Ports that share a subnet
+
+When several ports of a host have addresses in one subnet (an HGX
+host's IPoIB ports, say), Linux sends everything for that subnet out of
+one port, so the others carry nothing outbound. Name the subnet in
+`/etc/glidex/netd.json` and restart netd:
+
+```json
+{ "source_routes": { "subnets": ["10.40.0.0/16"] } }
+```
+
+For each address on a port in that subnet, netd then keeps:
+
+- a routing table for the port (from 4200 on) with the subnet's route
+  through it, and a rule `from <address> lookup <table>` at priority
+  1000. Both show `proto glidex` in `ip rule` and `ip route show table
+  all`. netd changes or deletes only routes and rules with that mark;
+- `arp_ignore=1` and `arp_announce=2` on the port, so each port answers
+  ARP only for its own addresses. netd saves the values the port had and
+  puts them back when the port leaves the subnet or the subnet leaves
+  the file.
+
+netd applies this at start, within a second of an address change, and
+every minute. If an address already has a `from` rule from someone else
+(netplan's `routing-policy`, NetworkManager, a rule made by hand), netd
+leaves that address alone and reports a conflict. IPv6 subnets work the
+same way, without the ARP settings.
+
+The host's page in the web UI lists the shared subnets, managed or not,
+under **Ports that share a subnet**: each port's table, the state of
+each address (`ok`, `missing`, `unmanaged`, `conflict`, with the other
+rule), and its ARP and `rp_filter` settings. It warns while any address
+isn't `ok`. `GET /ovs/status` has the same as `source_routes`. On the
+host itself, ask netd:
+
+```bash
+echo '{"id":1,"op":"hello","args":{"protocol":1}}
+{"id":2,"op":"list_source_routes"}' | sudo nc -U -q 2 /run/glidex/netd.sock
+```
+
+The other settings are in [Configuration](configuration.md#glidex-netd).
 
 ## Clusters: OVN on the host
 

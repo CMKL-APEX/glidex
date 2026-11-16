@@ -37,7 +37,7 @@ the VMs that were running (see `reconcile.on_host_boot` in
 Check the services:
 
 ```bash
-systemctl status glidex-control-plane glidex-ui glidex-authd.socket glidex-netd glidex-stord
+systemctl status glidex-control-plane glidex-ui glidex-authd.socket glidex-netd glidex-stord glidex-metad
 journalctl -u glidex-control-plane -b
 ```
 

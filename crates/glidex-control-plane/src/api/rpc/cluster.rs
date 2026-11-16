@@ -77,7 +77,7 @@ impl ClusterService for Svc {
     ) -> ServiceResult<GetClusterStatusResponse> {
         let req = req.to_owned_message();
         unary(&self.app, &ctx, |c| async move {
-            svc::status(&c.expect("authenticated operation"), req, None).await
+            svc::status(&c.expect("authenticated operation"), req).await
         })
         .await
     }
@@ -144,6 +144,22 @@ impl ClusterService for Svc {
         req: ServiceRequest<'_, PutOvnSettingsRequest>,
     ) -> ServiceResult<PutOvnSettingsResponse> {
         op_async!(self, ctx, req, svc::put_ovn_settings)
+    }
+
+    async fn get_pci_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, GetPciSettingsRequest>,
+    ) -> ServiceResult<GetPciSettingsResponse> {
+        op!(self, ctx, req, svc::get_pci_settings)
+    }
+
+    async fn put_pci_settings(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, PutPciSettingsRequest>,
+    ) -> ServiceResult<PutPciSettingsResponse> {
+        op_async!(self, ctx, req, svc::put_pci_settings)
     }
 
     async fn get_edge_defaults(

@@ -71,15 +71,13 @@ pub struct StatusQuery {
 
 pub async fn status(
     c: Caller,
-    via: Option<axum::Extension<super::RelayedBy>>,
     axum::extract::Query(q): axum::extract::Query<StatusQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::GetClusterStatusRequest {
         ports: q.ports,
         ..Default::default()
     };
-    let via = via.as_ref().map(|v| v.0.0.as_str());
-    Ok(Proto(StatusCode::OK, svc::status(&c, req, via).await?))
+    Ok(Proto(StatusCode::OK, svc::status(&c, req).await?))
 }
 
 pub async fn create_token(c: Caller, b: Option<Json<Value>>) -> Result<impl IntoResponse, ApiErr> {
@@ -185,6 +183,23 @@ pub async fn put_ovn_settings(
 ) -> Result<impl IntoResponse, ApiErr> {
     let req = body(b, &[])?;
     Ok(Proto(StatusCode::OK, svc::put_ovn_settings(&c, req).await?))
+}
+
+// ---- device pools and grants as a cluster setting (spec/22-host-topology.md H20)
+
+pub async fn get_pci_settings(c: Caller) -> Result<impl IntoResponse, ApiErr> {
+    Ok(Proto(
+        StatusCode::OK,
+        svc::get_pci_settings(&c, Default::default())?,
+    ))
+}
+
+pub async fn put_pci_settings(
+    c: Caller,
+    b: Option<Json<Value>>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req = body(b, &[])?;
+    Ok(Proto(StatusCode::OK, svc::put_pci_settings(&c, req).await?))
 }
 
 pub async fn edge_defaults(c: Caller) -> Result<impl IntoResponse, ApiErr> {

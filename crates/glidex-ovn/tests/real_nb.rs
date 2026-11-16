@@ -69,20 +69,37 @@ fn count(db: &str, table: &str, cond: &str) -> usize {
 #[test]
 #[ignore = "needs ovn-nbctl and a throwaway northbound database (GLIDEX_TEST_NB)"]
 fn sync_makes_the_objects_northd_accepts_them_and_cleans_up() {
+    sync_scenario(false);
+}
+
+/// The same through the leader's `ovn-nbctl` daemon (§11.1).
+#[test]
+#[ignore = "needs ovn-nbctl and a throwaway northbound database (GLIDEX_TEST_NB)"]
+fn sync_through_the_daemon_does_the_same() {
+    sync_scenario(true);
+}
+
+fn sync_scenario(through_daemon: bool) {
     let Ok(db) = std::env::var("GLIDEX_TEST_NB") else {
         panic!("set GLIDEX_TEST_NB")
     };
     let exec = Traced(SystemExec::new());
-    let nb = Nb::new(
-        &exec,
-        NbConn {
-            db: vec![db.clone()],
-            key: "".into(),
-            cert: "".into(),
-            ca: "".into(),
-            daemon: None,
-        },
-    );
+    let rundir = tempfile::tempdir().unwrap();
+    let mut daemon = daemon::NbDaemon::new(rundir.path());
+    let mut conn = NbConn {
+        db: vec![db.clone()],
+        key: "".into(),
+        cert: "".into(),
+        ca: "".into(),
+        daemon: None,
+    };
+    if through_daemon {
+        // As after a pass that succeeded directly.
+        daemon.passed(&exec, true);
+        conn = daemon.conn(&exec, conn);
+        assert!(conn.daemon.is_some(), "{:?}", daemon.take_warning());
+    }
+    let nb = Nb::new(&exec, conn);
     let ext = ExternalSpec {
         physnet: "uplink".into(),
         external_ip: "192.0.2.64".parse().unwrap(),
@@ -363,6 +380,11 @@ fn sync_makes_the_objects_northd_accepts_them_and_cleans_up() {
     sync(&nb, &less).unwrap_or_else(|e| panic!("removing a router: {e:?}"));
     assert!(!nbctl(&db, &["ha-chassis-group-list"]).contains("gxr-r1"));
     sync(&nb, &Desired::default()).unwrap_or_else(|e| panic!("cleanup: {e:?}"));
+    daemon.stop(&exec);
+    assert!(
+        std::fs::read_dir(rundir.path()).unwrap().next().is_none(),
+        "the daemon left its socket or pidfile"
+    );
     for (t, c) in [
         ("Logical_Switch", "external_ids:glidex-owner=glidex"),
         ("Logical_Router", "external_ids:glidex-owner=glidex"),

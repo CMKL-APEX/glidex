@@ -28,8 +28,17 @@ export default function Directories() {
     }
   }, []);
   useEffect(() => {
-    load();
-  }, [load]);
+    if (host.listDirectories) load();
+  }, [host.listDirectories, load]);
+
+  if (!host.listDirectories) {
+    return (
+      <div>
+        <PageHeader title="Hosted directories" />
+        <p className="text-gray-500">You can't see the directories this host serves.</p>
+      </div>
+    );
+  }
 
   return (
     <div>

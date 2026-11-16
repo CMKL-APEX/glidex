@@ -181,10 +181,12 @@ dialog runs when the action is used. Tokens never get `reauth`.
 
 ### 3.6 The UI on an agent
 
-> **Replaced for browsers** by [28-host-page.md](28-host-page.md): an agent's
-> web UI redirects to a server (W5), and a server's UI acts on any node's
-> host (W2). The relay below stays on servers for agents on older builds
-> (W6).
+> **Replaced** by [28-host-page.md](28-host-page.md): an agent's web UI
+> redirects to a server (W5), and a server's UI acts on any node's host
+> (W2). The relay below is removed (W8): servers no longer serve
+> `/cluster/v1/ui/…`, and agents older than v0.0.4 must be upgraded with
+> the servers for their web UI to work. The section is kept as the
+> record of the earlier design.
 
 An agent has no users, sessions or tokens: the auth tables replicate to
 servers only (C§8.2, `sync::filter_for`), and an agent may not write them
@@ -356,7 +358,12 @@ Sections, top to bottom:
 4. **Detaches in progress**: nodes in phase `Departing`, with the step
    (freeze, bundle, ack, commit, switch) from the node's status, and
    *Abort* (`POST /nodes/{id}/detach {abort: true}`).
-5. **Raft** (existing) + per voter: reachable, match index lag.
+5. **Raft** (existing) + per voter: reachable, match index lag. When
+   the serving server's log is stalled (`raft.stalled_since`,
+   14-clustering.md D30), a warning at the top of the card: *No change
+   has been applied on <server> since <time>*. The live stream leaves
+   out the log indexes, so the card doesn't count the entries that wait;
+   `gxctl cluster status` does.
 6. **CA** (§7.6).
 7. **Danger zone** (§7.7), collapsed by default.
 
@@ -651,7 +658,7 @@ with the router's address, not the shared edge's.
 | CA expiry (`not_after`) and the trust bundle in `/cluster/status` `ca` (which has `signing`, `retiring`, `retire_at`, `started_at` today), and each node's certificate issuer and expiry | U4 §7.6 | |
 | Detach progress in node status (`departure: {plan, step}`) | U3 §6.4 | |
 | `GET /cluster/ovn`, `GET /networks/{id}/ovn` | U5 | Read-only; the same permission as `GET /cluster/status` / `GET /networks/{id}`. |
-| UI relay on agents: `/cluster/v1/ui/{*path}` on servers, the agent's UI socket relaying to it, host-local paths sent back through the node relay, `cluster.ui_relay` | U1 | §3.6 |
+| UI relay on agents: `/cluster/v1/ui/{*path}` on servers, the agent's UI socket relaying to it, host-local paths sent back through the node relay, `cluster.ui_relay` | U1 | §3.6; removed (28-host-page.md W8) |
 | `POST /authz/allowed` | U0 | §3.5 |
 | Watch kinds `node`, `import`, `cluster`, `policy` | U0 | §3.7 |
 
@@ -684,7 +691,9 @@ about a day each; U2–U5 a few days each.
 - **Capabilities**: `ui_capabilities.rs` (schema ↔ UI table);
   `/authz/allowed` against `/authz/check` for random actions and
   resources.
-- **Relay** (control-plane tests, in-process cluster): a relayed request
+- **Relay** (removed with the route, 28-host-page.md W8; a server now
+  refuses an agent's `/cluster/v1/ui/…` request) (control-plane tests,
+  in-process cluster): a relayed request
   carrying `X-Glidex-Principal` is refused; a relayed login creates the
   session on the server; a host-local path from the agent's UI runs on
   the agent and is authorized on `Host::"<agent>"`; `ui_relay = false`

@@ -41,6 +41,7 @@ impl<S: Schema> LogStore<S> {
         if let Some(dir) = path.parent() {
             s(std::fs::create_dir_all(dir))?;
         }
+        s(crate::store::create_whole(path))?;
         let db = s(redb::Database::create(path))?;
         let t = s(db.begin_write())?;
         s(t.open_table(LOG))?;
@@ -89,6 +90,26 @@ impl<S: Schema> LogStore<S> {
         Ok(s(log.is_empty())?
             && self.kv::<Vote>(VOTE)?.is_none()
             && self.kv::<LogId>(PURGED)?.is_none())
+    }
+
+    /// Call `f` with each entry of the log file at `path` from index `from`
+    /// on, in order, and the size it is stored at: for offline reports on a
+    /// copy (a running server holds the file's lock). Opening may repair a
+    /// copy taken in the middle of a commit, so it can write to the copy.
+    pub fn scan_file(
+        path: &Path,
+        from: u64,
+        mut f: impl FnMut(u64, usize, openraft::Entry<TypeConfig<S>>),
+    ) -> Result<(), StorageError> {
+        let db = s(redb::Database::open(path))?;
+        let txn = s(db.begin_read())?;
+        let t = s(txn.open_table(LOG))?;
+        for r in s(t.range(from..))? {
+            let (k, v) = s(r)?;
+            let bytes = v.value();
+            f(k.value(), bytes.len(), s(serde_json::from_slice(bytes))?);
+        }
+        Ok(())
     }
 }
 
@@ -204,13 +225,9 @@ impl<S: Schema> RaftLogStorage<TypeConfig<S>> for LogStore<S> {
         tokio::task::spawn_blocking(move || {
             let txn = s(db.begin_write())?;
             {
-                let mut t = s(txn.open_table(LOG))?;
-                let keys: Vec<u64> = s(t.range(log_id.index..))?
-                    .filter_map(|r| r.ok().map(|(k, _)| k.value()))
-                    .collect();
-                for k in keys {
-                    s(t.remove(k))?;
-                }
+                // An entry that can't be read fails the truncate: skipping
+                // it would leave a conflicting entry in the log.
+                s(s(txn.open_table(LOG))?.retain_in(log_id.index.., |_, _| false))?;
             }
             s(txn.commit())
         })
@@ -224,13 +241,7 @@ impl<S: Schema> RaftLogStorage<TypeConfig<S>> for LogStore<S> {
         tokio::task::spawn_blocking(move || {
             let txn = s(db.begin_write())?;
             {
-                let mut t = s(txn.open_table(LOG))?;
-                let keys: Vec<u64> = s(t.range(..=log_id.index))?
-                    .filter_map(|r| r.ok().map(|(k, _)| k.value()))
-                    .collect();
-                for k in keys {
-                    s(t.remove(k))?;
-                }
+                s(s(txn.open_table(LOG))?.retain_in(..=log_id.index, |_, _| false))?;
                 let mut kv = s(txn.open_table(KV))?;
                 s(kv.insert(PURGED, s(serde_json::to_vec(&log_id))?.as_slice()))?;
             }
@@ -239,5 +250,96 @@ impl<S: Schema> RaftLogStorage<TypeConfig<S>> for LogStore<S> {
         })
         .await
         .map_err(io_err)?
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::store::{Op, WRITE_SET_FORMAT, WriteSet};
+    use crate::testing::{Test, TestOrigin, TestTable};
+
+    #[test]
+    fn a_half_made_log_file_is_replaced() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("raft/log.redb");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        // What a kill leaves while redb creates the file (#317).
+        let new = path.with_extension("redb.new");
+        std::fs::write(&new, vec![0u8; 1 << 20]).unwrap();
+        let store = LogStore::<Test>::open(&path).unwrap();
+        assert!(store.is_fresh().unwrap());
+        assert!(!new.exists(), "the half-made file stays");
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn scan_file_reads_entries_from_an_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log.redb");
+        let entry = |i: u64| openraft::Entry::<TypeConfig<Test>> {
+            log_id: openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), i),
+            payload: openraft::EntryPayload::Normal(WriteSet {
+                format: WRITE_SET_FORMAT,
+                origin: TestOrigin::Api,
+                ops: vec![Op::Put {
+                    table: TestTable::Data,
+                    key: format!("k{i}").into_bytes(),
+                    value: b"v".to_vec(),
+                }],
+            }),
+        };
+        {
+            let store = LogStore::<Test>::open(&path).unwrap();
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut t = txn.open_table(LOG).unwrap();
+                for i in 1..=4 {
+                    t.insert(i, serde_json::to_vec(&entry(i)).unwrap().as_slice())
+                        .unwrap();
+                }
+            }
+            txn.commit().unwrap();
+        }
+        let mut seen = Vec::new();
+        LogStore::<Test>::scan_file(&path, 3, |i, size, e| {
+            assert_eq!(size, serde_json::to_vec(&e).unwrap().len());
+            seen.push((i, e));
+        })
+        .unwrap();
+        assert_eq!(seen, vec![(3, entry(3)), (4, entry(4))]);
+    }
+
+    #[tokio::test]
+    async fn purge_and_truncate_remove_exactly_their_ranges() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut store = LogStore::<Test>::open(&dir.path().join("log.redb")).unwrap();
+        let id = |i: u64| openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), i);
+        {
+            let txn = store.db.begin_write().unwrap();
+            {
+                let mut t = txn.open_table(LOG).unwrap();
+                for i in 1..=10u64 {
+                    t.insert(i, b"e".as_slice()).unwrap();
+                }
+            }
+            txn.commit().unwrap();
+        }
+        let keys = |store: &LogStore<Test>| -> Vec<u64> {
+            let txn = store.db.begin_read().unwrap();
+            let t = txn.open_table(LOG).unwrap();
+            t.iter().unwrap().map(|r| r.unwrap().0.value()).collect()
+        };
+        store.purge(id(3)).await.unwrap();
+        assert_eq!(keys(&store), (4..=10).collect::<Vec<_>>());
+        assert_eq!(store.kv::<LogId>(PURGED).unwrap(), Some(id(3)));
+        store.truncate(id(8)).await.unwrap();
+        assert_eq!(keys(&store), (4..=7).collect::<Vec<_>>());
+        // Past either end: nothing more to remove.
+        store.truncate(id(20)).await.unwrap();
+        store.purge(id(3)).await.unwrap();
+        assert_eq!(keys(&store), (4..=7).collect::<Vec<_>>());
     }
 }

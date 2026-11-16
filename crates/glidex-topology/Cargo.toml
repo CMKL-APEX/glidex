@@ -4,12 +4,14 @@ description = "A host's topology from sysfs: NUMA nodes and sockets, the PCIe tr
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 # Read by glidex's nodes and by hyperstor (its D204), so it depends on
 # nothing of glidex's.
 [dependencies]
 serde = { version = "1", features = ["derive"] }
-nix = { version = "0.29", features = ["net"] }
+nix = { version = "0.31", features = ["net"] }
 
 [dev-dependencies]
 tempfile = "3"

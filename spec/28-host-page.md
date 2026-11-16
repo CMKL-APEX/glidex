@@ -1,6 +1,6 @@
 # Host page and the UI on agents
 
-Status: **implemented** (W1–W6: #127, #128, #129). Every host gets a **Host page** in the web UI. It
+Status: **implemented** (W1–W6: #127, #128, #129; W8, the relay route removed: #492). W8's API test: an agent's request to `/cluster/v1/ui/…` on a server is refused (`an_agents_ui_points_at_a_server_whose_ui_acts_on_the_agent`); not run on a host yet. Every host gets a **Host page** in the web UI. It
 gathers what belongs to that one host: its Open vSwitch, bridges and
 uplinks, PCI devices, topology, and maintenance. The page works on a
 standalone host and, in a cluster, from any server's UI for any node. An
@@ -29,22 +29,23 @@ for browsers.
 
 | # | Topic | Decision | Why |
 |---|---|---|---|
-| W1 | Host page | `/hosts/:id`, one page per node (on a standalone host, the one node): the Node page of 16-clustering-ui.md §5.2 (state, capacity, the node's settings, **Topology** with its devices and cordoning, VMs and disks, the membership actions) plus a **Networking** section: Open vSwitch status and install, bridges and uplinks, run on that node (W2). `/cluster/nodes/:id` redirects to it; the cluster-only parts (OVN, system roles, the way back to the Cluster page) show only in a cluster. The menu has **Hosts** (with `listNodes`): on a standalone host it opens the one page, in a cluster the Cluster page's node list. The Networking page keeps the network records, which belong to the whole cluster, and links to the Host page for bridges and uplinks. | One place per host, the same standalone or clustered; nothing about a host is reachable only from that host. |
+| W1 | Host page | `/hosts/:id`, one page per node (on a standalone host, the one node): the Node page of 16-clustering-ui.md §5.2 (state, capacity, the node's settings, **Topology** with its devices and cordoning, VMs and disks, the membership actions) plus a **Networking** section: Open vSwitch status and install, bridges and uplinks, and the ports that share a subnet with their source routes (09-networking.md §8.6), run on that node (W2). `/cluster/nodes/:id` redirects to it; the cluster-only parts (OVN, system roles, the way back to the Cluster page) show only in a cluster. The menu has **Hosts** (with `listNodes`): on a standalone host it opens the one page, in a cluster the Cluster page's node list. The Networking page keeps the network records, which belong to the whole cluster, and links to the Host page for bridges and uplinks. | One place per host, the same standalone or clustered; nothing about a host is reachable only from that host. |
 | W2 | Choosing the host | Host-only calls carry `X-Glidex-Target-Node: <node id>`. On a server, a request naming another node has its route's action authorized on that node's `Host` (`Ent::host_of`), then runs there over the node link (`relay::run_on_host`, server certificate), as relayed requests do now. A request naming the server itself, or naming no node, runs locally. Anywhere else, the header is refused with `400 bad_target_node`: on a path that isn't host-only, or naming an unknown or departed node, or on a standalone host naming any node but itself. Per-host roles (19-tenancy.md, #60) already decide who may act on which host. | It reuses the relay's checked path. The browser never talks to an agent. |
 | W3 | Where each server's UI is | Each server publishes its web UI's address as `status.ui_url` in its node record, which replicates to every node. It is the first of these that is set:<br>1. **`cluster.ui_url`** in the server's `control-plane.json`: a custom address, e.g. a **load balancer** in front of the servers (`https://glidex.example.com`). Servers behind one load balancer all set the same value.<br>2. The address its glidex-ui **reports** (§3): the Tailscale name when the Tailscale certificate is on, else the first name in `GLIDEX_UI_HOSTS`, else the host's FQDN, with the port it listens on.<br>3. The first `auth.allowed_origins` entry.<br>Agents publish none. | No setting is needed in the common case, and a site with a load balancer names it once per server. |
 | W4 | A custom address is trusted | A server with `cluster.ui_url` also accepts it as an origin, alongside `auth.allowed_origins` (computed or set). Its OIDC callback defaults to it (`redirect_uri` unset), and its glidex-ui accepts its host as a `Host` value (§3) besides `GLIDEX_UI_HOSTS`. | Behind a load balancer, logins and API calls arrive with the load balancer's origin and Host. Every server must take them, and the IdP needs one callback for all of them. |
 | W5 | The agent redirects | An agent's glidex-ui answers a browser's `GET`/`HEAD` with `307` to a server's `ui_url`, keeping the path and query. The path `/` goes to `/hosts/<agent id>`, so opening an agent's address lands on its Host page. The server is the one the agent's node link reached last, then the others in order; with `cluster.ui_url` they are usually one address. An `/api` request on the agent gets `421 use_a_server`, with `location` set to that URL, and is never relayed. When the agent knows no server's address, it serves a small page with `503`, listing the servers' advertise addresses. It never asks for a login. | One origin for everything: SSO, passkeys and cookies work, and no password is typed into an agent. |
-| W6 | Older agents | Servers keep the `/cluster/v1/ui/…` relay route, so agents on an older build keep working during a rolling upgrade. `cluster.ui_relay` stays accepted, but it is ignored and documented as replaced. The route is removed in a later release. | Upgrades go server-first, then agents (15-cluster-runbook.md). |
+| W6 | Older agents | Servers keep the `/cluster/v1/ui/…` relay route, so agents on an older build keep working during a rolling upgrade. `cluster.ui_relay` stays accepted, but it is ignored and documented as replaced. The route is removed in a later release. **Superseded by W8.** | Upgrades go server-first, then agents (15-cluster-runbook.md). |
 | W7 | Out of scope | `gxctl --node` for host-only commands; an agent's API socket stays as it is (C D14, gxctl logs in to a server). | It follows from W2 later, without new server work. |
+| W8 | The relay route is removed (2026-11-13) | Servers no longer serve `/cluster/v1/ui/…`: a relayed UI request is refused like any other unknown path (`403` from an agent's certificate). Agents since v0.0.4 (commit `941e9dde`, 2026-10-21) redirect browsers to a server (W5) and never use the route. An agent older than v0.0.4 must be upgraded together with the servers for its web UI to work. `cluster.ui_relay` stays accepted and ignored. Host-only requests a server sends to an agent (`/cluster/v1/host/…`, W2) are unchanged. | Every supported agent redirects, so the route kept a second request path into the servers' API that no current agent uses. Fewer paths are fewer to keep right. |
 
 ## 3. glidex-ui and its control plane
 
 glidex-ui reports itself on `ui.sock`, at start and every 30 seconds:
 
 ```
-PUT /ui/self {"url": "https://gpu-dev2.example.ts.net:5173"}
+PUT /ui/self {"url": "https://node-a.example.ts.net:5173"}
 → 200 {"redirect": "https://glidex.example.com",   // only on an agent
-       "home": "/hosts/prism1",                     // with redirect
+       "home": "/hosts/node-b",                     // with redirect
        "extra_hosts": ["glidex.example.com"],       // W4, on a server
        "servers": ["10.0.0.11:8842", …]}            // for the 503 page
 ```
@@ -53,7 +54,10 @@ PUT /ui/self {"url": "https://gpu-dev2.example.ts.net:5173"}
   (`ui_peer_ok`), as for every `ui.sock` request. It is not an API route
   (no user, no audit). It keeps the reported URL in memory. A server
   writes `status.ui_url` (W3) through its node self-report
-  (`VmManager::report_self`), and only when the URL changes.
+  (`VmManager::report_self`), and only when the URL changes. Until
+  glidex-ui reports after a start, the server keeps the address it
+  published before (W3's third choice only when it published none), so
+  a restart writes nothing for it.
 - glidex-ui keeps the last answer. If the control plane is unreachable,
   it keeps using that answer, and a host that never got one serves
   normally (a standalone host, or a node before it joins). A host that
@@ -95,10 +99,10 @@ NIC carries the node's advertise address.
     old address leading to it;
   - **Mocked two-node directory:** the Hosts list, and requests carrying
     the target node.
-- **On the host pair** (gpu-dev2 server, prism1 agent):
-  - opening prism1's UI lands on gpu-dev2's `/hosts/prism1`;
+- **On a host pair** (the R9700 host a server, the HGX host an agent):
+  - opening the agent's UI lands on the server's `/hosts/<agent id>`;
   - SSO works there;
-  - prism1's bridges are listed from gpu-dev2.
+  - the agent's bridges are listed from the server.
 
 ## 7. Tasks
 
@@ -120,3 +124,6 @@ NIC carries the node's advertise address.
    - e2e.
 5. **Docs:** the operator guide's clustering and web UI pages
    (`cluster.ui_url`, load balancers, opening an agent's address).
+6. **W8:** remove the `/cluster/v1/ui/…` route and its handler on
+   servers, `Listener::Relay` and what only it used, and their tests;
+   the operator guide's clustering page.

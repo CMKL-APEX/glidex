@@ -59,8 +59,6 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/ovn-status", get(ovn_status))
         .route("/cluster/v1/topology", get(topology))
         .route("/cluster/v1/devices/{address}/{op}", post(device_op))
-        .route("/cluster/v1/ui", axum::routing::any(ui_relayed))
-        .route("/cluster/v1/ui/{*rest}", axum::routing::any(ui_relayed))
         .route(
             "/cluster/v1/host/{*rest}",
             axum::routing::any(host_authorized),
@@ -207,7 +205,13 @@ async fn departure_get(
         "frozen" => {
             let db = c.db.clone();
             let b = tokio::task::spawn_blocking(move || {
-                super::departure::build_bundle(&db, &plan.plan, &plan.node, &plan.options)
+                super::departure::build_bundle(
+                    &db,
+                    &plan.plan,
+                    &plan.node,
+                    &plan.options,
+                    plan.started_at,
+                )
             })
             .await;
             match b {
@@ -361,21 +365,27 @@ async fn renew(
             "this server holds no CA key",
         );
     };
-    match crate::node::NodeStore::new(c.db.clone()).get(&peer.node_id) {
-        Ok(Some(n)) if !n.status.phase.is_tombstone() => {}
-        _ => {
-            return fail(
-                StatusCode::FORBIDDEN,
-                "forbidden",
-                "this node is not a member",
-            );
-        }
-    }
+    // The address the cluster has for it: a change of address goes
+    // through rejoin, which records the new one (D34, D36).
+    let addresses: Vec<std::net::IpAddr> =
+        match crate::node::NodeStore::new(c.db.clone()).get(&peer.node_id) {
+            Ok(Some(n)) if !n.status.phase.is_tombstone() => {
+                n.status.advertise.map(|a| a.ip()).into_iter().collect()
+            }
+            _ => {
+                return fail(
+                    StatusCode::FORBIDDEN,
+                    "forbidden",
+                    "this node is not a member",
+                );
+            }
+        };
     let (cert_pem, info) = match ca.sign_node(
         &req.csr,
         &peer.node_id,
         peer.server,
         super::pki::NODE_VALIDITY_DAYS,
+        &addresses,
     ) {
         Ok(v) => v,
         Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
@@ -601,6 +611,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         &req.node_id,
         server,
         super::pki::NODE_VALIDITY_DAYS,
+        &[req.advertise.ip()],
     ) {
         Ok(v) => v,
         Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
@@ -722,11 +733,16 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         );
     }
     let server = rec.spec.role == NodeRole::Server;
-    let (cert_pem, info) =
-        match ca.sign_node(&req.csr, &target, server, super::pki::NODE_VALIDITY_DAYS) {
-            Ok(v) => v,
-            Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
-        };
+    let (cert_pem, info) = match ca.sign_node(
+        &req.csr,
+        &target,
+        server,
+        super::pki::NODE_VALIDITY_DAYS,
+        &[req.advertise.ip()],
+    ) {
+        Ok(v) => v,
+        Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
+    };
     // D18: a voter that lost its log must not vote again as itself. It leaves
     // the group here, and comes back through the learner path.
     let raft_fresh = server && !raft_intact;
@@ -853,7 +869,7 @@ async fn join_ready(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
         let r = c
             .client
             .request(
-                &addr.to_string(),
+                crate::cluster::net::Target::node(&rec.meta.id, addr),
                 hyper::Method::PUT,
                 "/cluster/v1/ca",
                 &[("content-type", "application/json".into())],
@@ -892,27 +908,65 @@ async fn status(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
     Json(super::manage::status_of(&c)).into_response()
 }
 
-async fn raft_append(
-    State(c): Ctx,
-    p: Option<Extension<PeerCert>>,
-    body: bytes::Bytes,
-) -> Response {
-    raft_rpc(c, p, Rpc::Append, body).await
+/// A request's body, at most `limit` bytes (`413` past it). Read only once
+/// the caller is known, so a stranger's body is never taken in.
+async fn body_within(req: Request, limit: usize) -> Result<bytes::Bytes, Response> {
+    axum::body::to_bytes(req.into_body(), limit)
+        .await
+        .map_err(|e| {
+            fail(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "too_large",
+                format!("body over {limit} bytes, or unreadable: {e}"),
+            )
+        })
 }
 
-async fn raft_vote(State(c): Ctx, p: Option<Extension<PeerCert>>, body: bytes::Bytes) -> Response {
-    raft_rpc(c, p, Rpc::Vote, body).await
+/// A write set as a member forwards it, and room around it.
+const WRITE_SET_BODY: usize = crate::store::MAX_WRITE_SET_BYTES + 64 * 1024;
+
+/// A JSON body of at most `limit` bytes.
+async fn json_within<T: serde::de::DeserializeOwned>(
+    req: Request,
+    limit: usize,
+) -> Result<T, Response> {
+    let body = body_within(req, limit).await?;
+    serde_json::from_slice(&body)
+        .map_err(|e| fail(StatusCode::BAD_REQUEST, "bad_request", e.to_string()))
+}
+
+/// Appends up to the leader's largest (`MAX_APPEND_BYTES`): axum's default
+/// of 2 MB refused a write set over it on every retry, and the log stopped
+/// there (prism, 2026-11-03).
+async fn raft_append(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
+    raft_rpc(
+        c,
+        p,
+        Rpc::Append,
+        req,
+        glidex_raftstore::store::MAX_APPEND_BYTES,
+    )
+    .await
+}
+
+async fn raft_vote(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
+    raft_rpc(c, p, Rpc::Vote, req, 64 * 1024).await
 }
 
 async fn raft_rpc(
     c: Arc<Cluster>,
     p: Option<Extension<PeerCert>>,
     rpc: Rpc,
-    body: bytes::Bytes,
+    req: Request,
+    limit: usize,
 ) -> Response {
     if let Err(r) = peer(&c, p, true) {
         return r;
     }
+    let body = match body_within(req, limit).await {
+        Ok(b) => b,
+        Err(r) => return r,
+    };
     let Some(node) = &c.node else {
         return fail(StatusCode::CONFLICT, "not_a_server", "not a server");
     };
@@ -1094,29 +1148,6 @@ async fn device_op(
     }
 }
 
-/// `/cluster/v1/ui/<path>`: a browser request a node's UI socket relayed
-/// (spec/16-clustering-ui.md §3.6). Any node may relay; this server
-/// authenticates the request itself, as if the browser had come here.
-async fn ui_relayed(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
-    let peer = match peer(&c, p, false) {
-        Ok(p) => p,
-        Err(r) => return r,
-    };
-    if c.node.is_none() {
-        return fail(
-            StatusCode::MISDIRECTED_REQUEST,
-            "not_a_server",
-            "only a server serves relayed UI requests",
-        );
-    }
-    let mut req = fresh(req);
-    if let Err(r) = crate::api::relay::accept_relayed(&mut req, &peer.node_id, &c.identity.node_id)
-    {
-        return r;
-    }
-    serve_marked(&c, req).await
-}
-
 /// The same request without what this router added (the matched route's
 /// path parameters): the API router matches it again from scratch, and its
 /// handlers' `Path` extractors would otherwise see this route's `{*rest}`
@@ -1157,13 +1188,13 @@ async fn serve_marked(c: &Cluster, req: Request) -> Response {
 }
 
 /// `/cluster/v1/host/<path>`: a host-local request a server authorized for
-/// this node's host (spec/16-clustering-ui.md §3.6). Servers only.
+/// this node's host (spec/28-host-page.md W2). Servers only.
 async fn host_authorized(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     if let Err(r) = peer(&c, p, true) {
         return r;
     }
     let mut req = fresh(req);
-    if let Err(r) = crate::api::relay::accept_authorized(&mut req) {
+    if let Err(r) = crate::api::relay::accept_authorized(&mut req, &c.identity.node_id) {
         return r;
     }
     serve_marked(&c, req).await
@@ -1194,13 +1225,13 @@ const RAW_TABLES: [TableId; 6] = [
     TableId::Teams,
 ];
 
-async fn raw_write(
-    State(c): Ctx,
-    p: Option<Extension<PeerCert>>,
-    Json(ops): Json<Vec<crate::store::Op>>,
-) -> Response {
+async fn raw_write(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     let me = match peer(&c, p, true) {
         Ok(p) => p,
+        Err(r) => return r,
+    };
+    let ops: Vec<crate::store::Op> = match json_within(req, WRITE_SET_BODY).await {
+        Ok(v) => v,
         Err(r) => return r,
     };
     if !c.node.as_ref().is_some_and(|n| n.is_leader()) {
@@ -1449,13 +1480,13 @@ async fn metadata(
     }
 }
 
-async fn status_write(
-    State(c): Ctx,
-    p: Option<Extension<PeerCert>>,
-    Json(ws): Json<crate::store::WriteSet>,
-) -> Response {
+async fn status_write(State(c): Ctx, p: Option<Extension<PeerCert>>, req: Request) -> Response {
     let me = match caller(&c, p) {
         Ok(p) => p,
+        Err(r) => return r,
+    };
+    let ws: crate::store::WriteSet = match json_within(req, WRITE_SET_BODY).await {
+        Ok(v) => v,
         Err(r) => return r,
     };
     if !c.node.as_ref().is_some_and(|n| n.is_leader()) {

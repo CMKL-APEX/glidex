@@ -81,14 +81,27 @@ fn no_new_privs() -> Option<()> {
 
 #[tokio::main]
 async fn main() {
+    // `--store-writes <copy of raft/log.redb>` (spec/14-clustering.md §6.7): a
+    // report on the Raft log's writes, then exit; before the banner, so its
+    // output is only the report.
+    {
+        let args: Vec<String> = std::env::args().collect();
+        if let Some(i) = args.iter().position(|a| a == "--store-writes") {
+            std::process::exit(glidex_control_plane::cluster::store_writes::run(
+                &args[i + 1..],
+            ));
+        }
+    }
+
     // Print startup banner
     print_banner();
 
     // Initialize tracing
     tracing_subscriber::registry()
         .with(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "glidex_control_plane=info,tower_http=info".into()),
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {
+                "glidex_control_plane=info,glidex_raftstore=info,tower_http=info".into()
+            }),
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
@@ -216,6 +229,10 @@ async fn main() {
     };
     println!("OK");
     vm_manager.configure(&cfg);
+    if let Err(e) = vm_manager.check_pci_grant_names() {
+        eprintln!("\nInvalid configuration: {}", e);
+        std::process::exit(1);
+    }
 
     // KVM (spec/12-reconciliation.md §13.3). Under the systemd runner the
     // hypervisors open /dev/kvm in their glidex-vm units, and this unit's
@@ -326,8 +343,8 @@ async fn main() {
     }
 
     // An agent has no API of its own: the servers' is the cluster's
-    // (spec/14-clustering.md §4). Its UI socket relays the web UI's requests to
-    // a server, which authenticates them (spec/16-clustering-ui.md §3.6).
+    // (spec/14-clustering.md §4). Its glidex-ui sends browsers to a server
+    // (spec/28-host-page.md W5).
     if vm_manager.node_link().is_some() {
         println!(
             "  Agent node: serving VMs for the cluster; node API on {}",
@@ -373,7 +390,7 @@ async fn main() {
                 match serve::bind_unix(&ui_sock) {
                     Ok(l) => {
                         println!(
-                            "  Listening on {} (Ui, relayed to the servers)",
+                            "  Listening on {} (Ui, browsers sent to a server)",
                             ui_sock.display()
                         );
                         servers.push(tokio::spawn(serve::serve_unix(
@@ -436,6 +453,7 @@ async fn main() {
     });
     // Feeds from the directories this cluster trusts (spec/19-tenancy.md D67).
     api::trust::spawn_feeds(app_state.clone());
+    let cert_app = app_state.clone();
     // glidex-metad's own socket and router (spec/29-workload-identity.md W11);
     // as the leader, the app answers its nodes' metadata questions (§15).
     let metad_router = api::metad::router(app_state.clone()).layer(TraceLayer::new_for_http());
@@ -507,16 +525,26 @@ async fn main() {
         tracing::info!(cert = %t.cert.display(), fingerprint = %t.fingerprint, self_signed = t.self_signed, "TLS certificate");
     }
     // Replaced certificate files are served without a restart, and
-    // published again for local clients (spec/21-tailscale-tls.md §4.1).
+    // published again for local clients (spec/21-tailscale-tls.md §4.1);
+    // a renewal once the directories that trust this cluster know it
+    // (spec/19-tenancy.md D90).
     if let Some(files) = tls.as_mut().and_then(|t| t.files.take()) {
         let run_dir = run_dir.clone();
-        files.watch(glidex_tls::RELOAD_EVERY, move |f| {
-            let fingerprint = glidex_tls::fingerprint_certified(&f.slot.get());
-            tracing::info!(cert = %f.cert.display(), %fingerprint, "TLS certificate reloaded");
-            if let Err(e) = glidex_tls::publish(&f.cert, &run_dir) {
-                tracing::warn!("cannot publish the reloaded TLS certificate: {}", e);
-            }
-        });
+        glidex_control_plane::api_cert::serving(&cert_app, &files.slot.get());
+        let gate_app = cert_app.clone();
+        files.watch_gated(
+            glidex_tls::RELOAD_EVERY,
+            move |new, old| glidex_control_plane::api_cert::gate(&gate_app, new, old),
+            move |f| {
+                let key = f.slot.get();
+                let fingerprint = glidex_tls::fingerprint_certified(&key);
+                tracing::info!(cert = %f.cert.display(), %fingerprint, "TLS certificate reloaded");
+                glidex_control_plane::api_cert::serving(&cert_app, &key);
+                if let Err(e) = glidex_tls::publish(&f.cert, &run_dir) {
+                    tracing::warn!("cannot publish the reloaded TLS certificate: {}", e);
+                }
+            },
+        );
     }
     for (_, kind, path) in &unix {
         println!("  Listening on {} ({:?})", path.display(), kind);
@@ -563,6 +591,11 @@ async fn main() {
     let _ = stop_tx.send(true);
     for s in servers {
         let _ = s.await;
+    }
+    // A clean shutdown leaves the state flushed (spec/14-clustering.md
+    // D31): the next start re-applies nothing from the log.
+    if let Err(e) = vm_manager.database().checkpoint() {
+        tracing::warn!("the state's checkpoint at shutdown failed: {e}");
     }
     // Asked to come back in another mode (now a cluster agent).
     if glidex_control_plane::restart::is_requested() {

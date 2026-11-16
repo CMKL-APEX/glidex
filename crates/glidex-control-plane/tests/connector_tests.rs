@@ -452,8 +452,6 @@ mod idp {
     use axum::{Json, Router, extract::State, routing::get, routing::post};
     use base64::Engine as _;
     use jsonwebtoken::{EncodingKey, Header};
-    use rsa::pkcs1::EncodeRsaPrivateKey;
-    use rsa::traits::PublicKeyParts;
     use std::sync::{Arc, Mutex, OnceLock};
 
     pub struct Key {
@@ -465,15 +463,26 @@ mod idp {
     pub fn key() -> &'static Key {
         static K: OnceLock<Key> = OnceLock::new();
         K.get_or_init(|| {
-            let k = rsa::RsaPrivateKey::new(&mut rand::thread_rng(), 2048).unwrap();
-            let b = |v: Vec<u8>| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+            use aws_lc_rs::encoding::{AsDer as _, Pkcs8V1Der};
+            use aws_lc_rs::signature::KeyPair as _;
+            let k = aws_lc_rs::rsa::KeyPair::generate(aws_lc_rs::rsa::KeySize::Rsa2048).unwrap();
+            let der: Pkcs8V1Der = k.as_der().unwrap();
+            // PKCS#8 PEM, as in a Google service account's key file.
+            let body = base64::engine::general_purpose::STANDARD.encode(der.as_ref());
+            let lines: Vec<&str> = body
+                .as_bytes()
+                .chunks(64)
+                .map(|c| std::str::from_utf8(c).unwrap())
+                .collect();
+            let b = |v: &[u8]| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v);
+            let p = k.public_key();
             Key {
-                pem: k
-                    .to_pkcs1_pem(rsa::pkcs8::LineEnding::LF)
-                    .unwrap()
-                    .to_string(),
-                n: b(k.n().to_bytes_be()),
-                e: b(k.e().to_bytes_be()),
+                pem: format!(
+                    "-----BEGIN PRIVATE KEY-----\n{}\n-----END PRIVATE KEY-----\n",
+                    lines.join("\n")
+                ),
+                n: b(p.modulus().big_endian_without_leading_zero()),
+                e: b(p.exponent().big_endian_without_leading_zero()),
             }
         })
     }

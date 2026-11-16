@@ -24,27 +24,11 @@ const PERSIST_EVERY: Duration = Duration::from_secs(5);
 /// Attempts per download, resuming with `Range` when the server allows.
 const ATTEMPTS: u32 = 4;
 
-/// Loopback, link-local, RFC 1918, CGNAT, ULA and unspecified addresses.
+/// Any address that isn't on the public internet: loopback, private,
+/// link-local, CGNAT, unique-local, reserved and the rest
+/// ([`crate::public_net::is_public`]).
 pub fn is_private(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(v4) => {
-            v4.is_loopback()
-                || v4.is_private()
-                || v4.is_link_local()
-                || v4.is_unspecified()
-                || v4.is_broadcast()
-                || (v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]))
-        }
-        IpAddr::V6(v6) => {
-            if let Some(v4) = v6.to_ipv4_mapped() {
-                return is_private(IpAddr::V4(v4));
-            }
-            v6.is_loopback()
-                || v6.is_unspecified()
-                || (v6.segments()[0] & 0xfe00) == 0xfc00
-                || (v6.segments()[0] & 0xffc0) == 0xfe80
-        }
-    }
+    !crate::public_net::is_public(ip)
 }
 
 /// Whether `host` is, or resolves to, any private address. Unresolvable
@@ -99,13 +83,18 @@ pub fn http_client(allow_private: bool) -> Result<reqwest::Client, ImageError> {
             Err(e) => attempt.error(format!("redirect refused: {}", e)),
         }
     });
-    reqwest::Client::builder()
+    let mut b = reqwest::Client::builder()
         .redirect(policy)
         .connect_timeout(Duration::from_secs(30))
         .read_timeout(Duration::from_secs(120))
-        .user_agent(concat!("glidex/", env!("CARGO_PKG_VERSION")))
-        .build()
-        .map_err(|e| ImageError::Download(e.to_string()))
+        .user_agent(concat!("glidex/", env!("CARGO_PKG_VERSION")));
+    // check_url looked the name up once, to refuse early with a clear
+    // message; the connection looks it up again, so it may only reach
+    // public addresses too.
+    if !allow_private {
+        b = b.dns_resolver(std::sync::Arc::new(crate::public_net::PublicOnly));
+    }
+    b.build().map_err(|e| ImageError::Download(e.to_string()))
 }
 
 /// sha256 of `data`, lower-case hex.
@@ -584,6 +573,7 @@ impl ImageManager {
             virtual_size_bytes: 0,
             file_size_bytes: 0,
             sha256: String::new(),
+            vars_sha256: None,
             arch,
             created_at: now(),
             retry_seq: 0,
@@ -617,14 +607,16 @@ impl ImageManager {
             // A local copy: made before the record exists, so a failure
             // leaves nothing behind.
             let (mgr, id) = (self.clone(), img.id.clone());
-            let (size, sha256) = tokio::task::spawn_blocking(move || {
+            let ((size, sha256), vars_sha256) = tokio::task::spawn_blocking(move || {
                 mgr.import_firmware(&id, &code, vars.as_deref())
+                    .map(|r| (r, mgr.stored_vars_sha256(&id)))
             })
             .await
             .map_err(|e| ImageError::Io(e.to_string()))??;
             img.virtual_size_bytes = size;
             img.file_size_bytes = size;
             img.sha256 = sha256;
+            img.vars_sha256 = vars_sha256;
             img.status = ImageStatus::Ready;
             self.insert_image(&img)?;
             tracing::info!(image = %img.name, source = ?img.source, "firmware imported");
@@ -882,21 +874,24 @@ impl ImageManager {
                 FirmwareSource::Deb { code, vars, .. } => Some((code, vars)),
                 _ => None,
             });
-        let (virtual_size, actual_size, sha256) = tokio::task::spawn_blocking(move || {
-            if firmware {
-                mgr.install_firmware(&id_owned, sha256, deb, vars)
-            } else {
-                mgr.verify_and_install(&id_owned, sha256, max)
-                    .map(|(info, sha)| (info.virtual_size, info.actual_size, sha))
-            }
-        })
-        .await
-        .map_err(|e| ImageError::Io(e.to_string()))??;
+        let ((virtual_size, actual_size, sha256), vars_sha256) =
+            tokio::task::spawn_blocking(move || {
+                if firmware {
+                    mgr.install_firmware(&id_owned, sha256, deb, vars)
+                        .map(|r| (r, mgr.stored_vars_sha256(&id_owned)))
+                } else {
+                    mgr.verify_and_install(&id_owned, sha256, max)
+                        .map(|(info, sha)| ((info.virtual_size, info.actual_size, sha), None))
+                }
+            })
+            .await
+            .map_err(|e| ImageError::Io(e.to_string()))??;
 
         let mut img = self.get_image(id)?;
         img.virtual_size_bytes = virtual_size;
         img.file_size_bytes = actual_size;
         img.sha256 = sha256;
+        img.vars_sha256 = vars_sha256;
         img.format = if firmware {
             DiskFormat::Raw
         } else {
@@ -1178,6 +1173,14 @@ impl ImageManager {
         f.sync_all().map_err(io)?;
         std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o444)).map_err(io)?;
         std::fs::rename(&tmp, dest).map_err(io)
+    }
+
+    /// The sha256 of a firmware image's stored variable-store template, if
+    /// it has one: recorded so that other nodes' copies can be checked.
+    fn stored_vars_sha256(&self, id: &str) -> Option<String> {
+        std::fs::read(self.firmware_vars_template(id))
+            .ok()
+            .map(|d| sha256_hex(&d))
     }
 
     /// Install a downloaded firmware file (spec §5, firmware): no image
@@ -1488,6 +1491,12 @@ impl ImageManager {
                     .into(),
             ));
         }
+        if info.data_file().is_some() {
+            return Err(ImageError::InvalidImage(
+                "image has an external data file; refusing a downloaded image that points at host paths"
+                    .into(),
+            ));
+        }
         if info.virtual_size > max_size {
             return Err(ImageError::InvalidImage(format!(
                 "virtual size {} is over GLIDEX_MAX_IMAGE_SIZE ({})",
@@ -1632,6 +1641,28 @@ mod tests {
         for ip in ["8.8.8.8", "91.189.91.1", "2606:4700::1111"] {
             assert!(!is_private(ip.parse().unwrap()), "{}", ip);
         }
+    }
+
+    #[tokio::test]
+    async fn the_client_connects_only_to_public_addresses_unless_allowed() {
+        // A name that resolves to loopback, asked for after check_url: the
+        // connection resolves it again and must refuse it too.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            while let Ok((mut s, _)) = listener.accept().await {
+                let _ = s.read(&mut [0u8; 1024]).await;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+        let url = format!("http://localhost:{port}/x.img");
+        let strict = http_client(false).unwrap();
+        assert!(strict.get(&url).send().await.is_err());
+        let lan = http_client(true).unwrap();
+        assert_eq!(lan.get(&url).send().await.unwrap().status(), 200);
     }
 
     #[test]

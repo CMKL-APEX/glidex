@@ -321,10 +321,8 @@ pub fn ensure_chassis(
     // (it keeps forwarding on the flows it installed while it restarts).
     // `ovn-controller.service` is static (Debian/Ubuntu): `ovn-host` is what is
     // enabled, and it wants the controller.
-    exec.check(&Cmd::new(
-        Program::Systemctl,
-        ["enable", "--now", "ovn-host"],
-    ))?;
+    enable_unit(exec, "ovn-host")?;
+    exec.check(&Cmd::new(Program::Systemctl, ["start", "ovn-host"]))?;
     exec.check(&Cmd::new(Program::Systemctl, ["start", "ovn-controller"]))?;
     if changed {
         exec.check(&Cmd::new(
@@ -333,6 +331,23 @@ pub fn ensure_chassis(
         ))?;
     }
     status(exec)
+}
+
+/// Enables `unit` unless it already is. `systemctl enable` reloads systemd
+/// every time, even for an enabled unit, and the controller ensures the
+/// chassis and the central every reconcile.
+fn enable_unit(exec: &dyn Exec, unit: &str) -> Result<(), OvsError> {
+    let enabled = exec
+        .run(&Cmd::new(
+            Program::Systemctl,
+            ["is-enabled", "--quiet", unit],
+        ))?
+        .status
+        == 0;
+    if !enabled {
+        exec.check(&Cmd::new(Program::Systemctl, ["enable", unit]))?;
+    }
+    Ok(())
 }
 
 fn list_br_int_ports(exec: &dyn Exec) -> Result<Vec<String>, OvsError> {
@@ -537,6 +552,10 @@ mod tests {
             Output::ok(r#"{"data":[],"headings":["name","external_ids"]}"#),
         );
         exec.on(TUNNELS, Output::ok(r#"{"data":[],"headings":["name","type","options","error","bfd_status","statistics"]}"#));
+        exec.on(
+            "systemctl is-enabled --quiet ovn-host",
+            Output::failed(1, ""),
+        );
         let dir = Path::new("/etc/glidex/ovn");
         ensure_chassis(&exec, &spec(), &certs(), dir).unwrap();
         let calls = exec.calls();
@@ -556,7 +575,8 @@ mod tests {
             assert!(set.contains(want), "{set}");
         }
         assert!(
-            calls.contains(&"systemctl enable --now ovn-host".to_string())
+            calls.contains(&"systemctl enable ovn-host".to_string())
+                && calls.contains(&"systemctl start ovn-host".to_string())
                 && calls.contains(&"systemctl start ovn-controller".to_string())
         );
         assert!(
@@ -586,8 +606,11 @@ mod tests {
         }
         ensure_chassis(&exec2, &spec(), &certs(), dir).unwrap();
         assert!(
-            !exec2.calls().iter().any(|c| c.contains("restart")),
-            "{:?}",
+            !exec2
+                .calls()
+                .iter()
+                .any(|c| c.contains("restart") || c.starts_with("systemctl enable")),
+            "an enabled ovn-host isn't enabled again (that reloads systemd): {:?}",
             exec2.calls()
         );
     }
@@ -789,7 +812,7 @@ pub fn ensure_central(
         exec.write_file(Path::new(CENTRAL_DEFAULTS), opts.as_bytes())?;
         changed = true;
     }
-    exec.check(&Cmd::new(Program::Systemctl, ["enable", "ovn-central"]))?;
+    enable_unit(exec, "ovn-central")?;
     let active = exec
         .run(&Cmd::new(
             Program::Systemctl,
@@ -876,7 +899,17 @@ mod central_tests {
             "systemctl is-active --quiet ovn-central",
             Output::failed(3, ""),
         );
+        exec.on(
+            "systemctl is-enabled --quiet ovn-central",
+            Output::failed(1, ""),
+        );
         assert!(ensure_central(&exec, &spec(None), &certs(), dir).unwrap());
+        assert!(
+            exec.calls()
+                .contains(&"systemctl enable ovn-central".to_string()),
+            "{:?}",
+            exec.calls()
+        );
         assert!(
             exec.calls()
                 .contains(&"systemctl start ovn-central".to_string()),
@@ -892,10 +925,9 @@ mod central_tests {
         exec2.file(CENTRAL_DEFAULTS, &central_opts(&spec(None), dir));
         assert!(!ensure_central(&exec2, &spec(None), &certs(), dir).unwrap());
         assert!(
-            !exec2
-                .calls()
-                .iter()
-                .any(|c| c.contains("restart") || c.contains("start ovn")),
+            !exec2.calls().iter().any(|c| c.contains("restart")
+                || c.contains("start ovn")
+                || c.starts_with("systemctl enable")),
             "{:?}",
             exec2.calls()
         );

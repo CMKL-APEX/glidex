@@ -106,22 +106,27 @@ async fn a_partitioned_leaders_writes_are_rejected() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lagging_learner_catches_up_from_a_snapshot() {
     let mut c = TestCluster::new(3).await;
-    let leader = c.leader(&c.ids()).await;
     // Enough writes that the log has been purged (the test keeps ~100).
+    // Leadership may move on a loaded machine; the writes follow it.
+    let mut leader = 0;
     for i in 0..400 {
-        c.put(leader, &format!("k{i:04}"), "v").unwrap();
+        leader = c.put_on_leader(&c.ids(), &format!("k{i:04}"), "v").await;
     }
     c.converge(&c.ids(), leader).await;
-    // Wait for Raft to purge, so a new member can't be fed from the log.
-    let node = c.by_id(leader).node.clone();
-    node.raft.trigger().snapshot().await.unwrap();
-    node.raft
-        .wait(Some(Duration::from_secs(20)))
-        .metrics(|m| m.snapshot.is_some(), "snapshot")
-        .await
-        .unwrap();
-    node.raft.trigger().purge_log(300).await.unwrap();
+    // Every member snapshots and purges, so whichever leads next can't
+    // feed a new member from its log.
+    for id in c.ids() {
+        let raft = &c.by_id(id).node.raft;
+        raft.trigger().snapshot().await.unwrap();
+        raft.wait(Some(Duration::from_secs(20)))
+            .metrics(|m| m.snapshot.is_some(), "snapshot")
+            .await
+            .unwrap();
+        raft.trigger().purge_log(300).await.unwrap();
+    }
     tokio::time::sleep(Duration::from_millis(500)).await;
+    let leader = c.leader(&c.ids()).await;
+    let node = c.by_id(leader).node.clone();
     let idx = c.add_started(4).await;
     let id = c.nodes[idx].id;
     node.add_learner(id, "n4").await.unwrap();
@@ -248,4 +253,296 @@ async fn a_stopped_member_lets_go_of_its_store() {
         }
     }
     drop(root);
+}
+
+/// A write made from a plain thread (a control plane's startup, on its main
+/// thread) the moment a restarted member is back: it finishes, or is
+/// refused, within `secs`; it never waits for ever.
+fn write_returns_within(c: &TestCluster, id: u64, key: &str, secs: u64) -> Result<(), StoreError> {
+    let db = c.by_id(id).db.clone();
+    let key = key.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let r = db.write(TestOrigin::Api, |t| -> Result<(), StoreError> {
+            t.open_table(definition::<Test>(TestTable::Data))?
+                .insert(&key, b"v")?;
+            Ok(())
+        });
+        let _ = tx.send(r);
+    });
+    rx.recv_timeout(Duration::from_secs(secs))
+        .unwrap_or_else(|_| panic!("a write on {id} still waits after {secs}s"))
+}
+
+/// A rolling restart, as an upgrade does it: the leader first, then another
+/// member shortly after, each writing at once when it is back. Writes keep
+/// finishing, and the cluster keeps a leader that commits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn writes_at_startup_survive_a_rolling_restart() {
+    let mut c = TestCluster::new(3).await;
+    // Every member writes all the time (liveness, status), as servers do;
+    // a write on a follower is refused at once.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let busy = |c: &TestCluster| {
+        for id in c.ids() {
+            // Weak: a restart reopens the database file.
+            let db = std::sync::Arc::downgrade(&c.by_id(id).db);
+            let stop = stop.clone();
+            std::thread::spawn(move || {
+                let mut n = 0u64;
+                while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    let Some(db) = db.upgrade() else { return };
+                    let _ = db.write(TestOrigin::Api, |t| -> Result<(), StoreError> {
+                        t.open_table(definition::<Test>(TestTable::Other))?
+                            .insert(&format!("live{id}"), &n.to_le_bytes())?;
+                        Ok(())
+                    });
+                    drop(db);
+                    n += 1;
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+            });
+        }
+    };
+    busy(&c);
+    for round in 0..5 {
+        let leader = c.leader(&c.ids()).await;
+        c.put(leader, &format!("before{round}"), "v").unwrap();
+        c.restart(leader).await;
+        busy(&c);
+        let _ = tokio::task::block_in_place(|| {
+            write_returns_within(&c, leader, &format!("first{round}"), 30)
+        });
+        let other = c.ids().into_iter().find(|i| *i != leader).unwrap();
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        c.restart(other).await;
+        busy(&c);
+        let _ = tokio::task::block_in_place(|| {
+            write_returns_within(&c, other, &format!("second{round}"), 30)
+        });
+        let now = c.leader(&c.ids()).await;
+        tokio::task::block_in_place(|| write_returns_within(&c, now, &format!("after{round}"), 30))
+            .unwrap_or_else(|e| panic!("round {round}: the leader {now} refused a write: {e}"));
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// A leader cut off from every other member, with nothing healing it: its
+/// write gives up within the bound instead of waiting for a commit that no
+/// leader makes, so the writes queued behind it on the write lane don't
+/// wait for ever either (prism1 and prism2, 2026-11-03).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_write_that_no_leader_commits_gives_up() {
+    let c = TestCluster::new(3).await;
+    let old = c.leader(&c.ids()).await;
+    c.put(old, "committed", "1").unwrap();
+    c.converge(&c.ids(), old).await;
+    c.mesh.isolate(old, &c.ids());
+    let write = |key: &'static str| {
+        let db = c.by_id(old).db.clone();
+        tokio::task::spawn_blocking(move || {
+            db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+                tx.open_table(definition::<Test>(TestTable::Data))?
+                    .insert(key, b"x".as_slice())?;
+                Ok(())
+            })
+        })
+    };
+    let (first, queued) = (write("first"), write("queued"));
+    // 10 election timeouts of the test's 1.6 s, and a margin.
+    for (name, w) in [("first", first), ("queued", queued)] {
+        let res = tokio::time::timeout(Duration::from_secs(40), w)
+            .await
+            .unwrap_or_else(|_| panic!("the {name} write still waits"))
+            .unwrap();
+        assert!(res.is_err(), "the {name} write can't commit, got {res:?}");
+    }
+    // The majority carries on, through whichever of it leads: under load
+    // its leadership can move between finding the leader and writing.
+    let rest: Vec<_> = c.ids().into_iter().filter(|i| *i != old).collect();
+    c.put_on_leader(&rest, "fresh", "2").await;
+}
+
+/// A leader cut off with a write it can't commit says its log stalled,
+/// once 10 election timeouts pass, and stops saying so when it is healed;
+/// the majority, which elects a leader and commits, never stalls
+/// (spec/14-clustering.md D30).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_member_whose_log_stops_says_so() {
+    let c = TestCluster::new(3).await;
+    let old = c.leader(&c.ids()).await;
+    c.put(old, "committed", "1").unwrap();
+    c.converge(&c.ids(), old).await;
+    c.mesh.isolate(old, &c.ids());
+    let db = c.by_id(old).db.clone();
+    let write = tokio::task::spawn_blocking(move || {
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(definition::<Test>(TestTable::Data))?
+                .insert("stuck", b"x".as_slice())?;
+            Ok(())
+        })
+    });
+    let rest: Vec<_> = c.ids().into_iter().filter(|i| *i != old).collect();
+    let new = c.leader(&rest).await;
+    c.put(new, "fresh", "2").unwrap();
+    // 10 election timeouts of the test's 1.6 s, and a margin.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    while c.by_id(old).node.stalled_since().is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "n{old} doesn't say its log stalled"
+        );
+        for id in &rest {
+            assert_eq!(c.by_id(*id).node.stalled_since(), None, "n{id} stalled");
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+    assert!(write.await.unwrap().is_err());
+    c.mesh.heal();
+    c.converge(&c.ids(), new).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    while c.by_id(old).node.stalled_since().is_some() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "n{old} still says its log stalled once healed"
+        );
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+}
+
+/// A member restarted more often than its snapshot policy fires still
+/// trims its log to `log_keep_entries` (a restart makes the live database
+/// the snapshot and starts the policy's count again; the log grew without
+/// end on servers restarted every few hours).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_log_is_trimmed_across_restarts() {
+    let mut c = TestCluster::new(3).await;
+    let keep = c.settings.log_keep_entries;
+    for round in 0..6 {
+        let leader = c.leader(&c.ids()).await;
+        for i in 0..60 {
+            c.put(leader, &format!("r{round}-{i}"), "v").unwrap();
+        }
+        c.converge(&c.ids(), leader).await;
+        for id in c.ids() {
+            c.restart(id).await;
+        }
+    }
+    let leader = c.leader(&c.ids()).await;
+    c.put(leader, "last", "v").unwrap();
+    c.converge(&c.ids(), leader).await;
+    for id in c.ids() {
+        let raft = c.by_id(id).node.raft.clone();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+        loop {
+            let m = raft.metrics().borrow().clone();
+            let last = m.last_log_index.unwrap_or(0);
+            let purged = m.purged.map(|l| l.index).unwrap_or(0);
+            if last - purged <= keep * 2 {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "n{id} keeps {} entries (purged up to {purged} of {last}), not about {keep}",
+                last - purged
+            );
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+}
+
+/// Members crashed between checkpoints (D31), under writes: a follower,
+/// then the leader. Each comes back at its last checkpoint, applies the
+/// rest again from its log, and ends with the same data as the others.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn members_crashed_between_checkpoints_catch_up() {
+    let mut c = TestCluster::new(3).await;
+    // Writes all along, through whichever member leads. Weak: a crashed
+    // member's database goes, and the writer carries on with the others.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let dbs: Vec<_> = c
+        .ids()
+        .iter()
+        .map(|id| std::sync::Arc::downgrade(&c.by_id(*id).db))
+        .collect();
+    let writer = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut n = 0u64;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                for db in &dbs {
+                    let Some(db) = db.upgrade() else { continue };
+                    let _ = db.write(TestOrigin::Api, |t| -> Result<(), StoreError> {
+                        t.open_table(definition::<Test>(TestTable::Data))?
+                            .insert(&format!("w{n}"), b"v")?;
+                        Ok(())
+                    });
+                }
+                n += 1;
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        })
+    };
+    let leader = c.leader(&c.ids()).await;
+    let follower = c.ids().into_iter().find(|i| *i != leader).unwrap();
+    for (role, id) in [("follower", follower), ("leader", leader)] {
+        // A crash rolls back only what came since the last checkpoint: up
+        // to a second's writes. Crash again until one did.
+        let mut rolled_back = false;
+        for _ in 0..10 {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let (applied, durable) = c.crash(id).await;
+            if durable < Some(applied) {
+                rolled_back = true;
+                break;
+            }
+        }
+        assert!(rolled_back, "no crash of the {role} lost an apply");
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    tokio::task::spawn_blocking(move || writer.join().unwrap())
+        .await
+        .unwrap();
+    let now = c.leader(&c.ids()).await;
+    // One more write commits in the current term, so every member learns
+    // everything before it is committed.
+    tokio::task::block_in_place(|| write_returns_within(&c, now, "last", 30)).unwrap();
+    c.converge(&c.ids(), now).await;
+    assert!(c.same_data(&c.ids()), "the members' data differ");
+}
+
+/// `snapshot_now` makes the state durable as far as the position it
+/// reports, which openraft may purge the log to (§6.2b, I4).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_reported_snapshot_position_is_durable() {
+    let c = TestCluster::new(1).await;
+    let n = c.by_id(1);
+    let mut i = 0;
+    while n.db.unflushed() == 0 {
+        assert!(i < 50, "every write was flushed");
+        c.put(1, &format!("k{i}"), "v").unwrap();
+        i += 1;
+    }
+    let applied = n.db.revision();
+    n.node.raft.trigger().snapshot().await.unwrap();
+    let m = n
+        .node
+        .raft
+        .wait(Some(Duration::from_secs(10)))
+        .metrics(
+            |m| m.snapshot.is_some_and(|s| s.index >= applied),
+            "the snapshot",
+        )
+        .await
+        .unwrap();
+    let reported = m.snapshot.unwrap().index;
+    let dir = tempfile::tempdir().unwrap();
+    let image = dir.path().join("crash.db");
+    n.db.crash_image(&n.dir.join("store.db"), &image).unwrap();
+    let durable = glidex_raftstore::testing::durable_applied(&image).unwrap();
+    assert!(
+        durable >= reported,
+        "reported {reported}, durable only to {durable}"
+    );
 }

@@ -151,7 +151,7 @@ function CreateTenantForm({ onDone, onCancel }: { onDone: () => void; onCancel: 
         <p className="text-sm text-gray-700">
           The tenant is made. Send this link to its first administrator; it is shown once and can't be shown again.
         </p>
-        <code className="block break-all font-mono text-xs bg-gray-50 px-2 py-2 rounded border border-gray-200">{link}</code>
+        <code className="block break-all font-mono text-xs bg-gray-50 px-2 py-2 rounded-sm border border-gray-200">{link}</code>
         <div className="flex justify-end gap-3">
           <button type="button" className={secondaryButton} onClick={() => void navigator.clipboard?.writeText(link)}>
             Copy
@@ -262,11 +262,11 @@ export default function Tenants() {
       {tenants === null ? (
         <LoadingCard />
       ) : tenants.length === 0 ? (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-8 text-center text-gray-500">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 p-8 text-center text-gray-500">
           You can't see any {label.one.toLowerCase()}.
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <div className="bg-white rounded-xl shadow-xs border border-gray-200 overflow-x-auto">
           <table className="w-full text-sm">
             <thead>
               <tr className="text-left text-gray-500 border-b border-gray-100">

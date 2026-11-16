@@ -14,6 +14,7 @@ import { Badge, Card, ErrorBanner, PageHeader, errorMessage, primaryButton } fro
 import { PHASE_KIND } from "./HostDetail";
 import { ClusterCa, DangerZone, InitCluster } from "../components/ClusterLifecycle";
 import { OvnCard, TunnelMatrix, useOvnOverview, useTunnels } from "../components/OvnViews";
+import DevicePools from "../components/DevicePools";
 import { OvnOff, OvnOutdated, OvnSettingsDialog } from "../components/OvnSettings";
 import type { OvnSettingsView } from "../types";
 
@@ -155,6 +156,7 @@ export default function Cluster() {
         <PageHeader title="Cluster" subtitle="This host is standalone." />
         <ErrorBanner error={error} onDismiss={() => setError(null)} />
         <ThisHost />
+        <DevicePools />
         <InitCluster onDone={refreshAll} />
       </div>
     );
@@ -342,6 +344,12 @@ export default function Cluster() {
 
       {raft && (
         <Card title="Raft">
+          {raft.stalled_since && (
+            <div role="alert" className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-800">
+              No change has been applied on {summary.served_by?.name ?? summary.name ?? "this server"} since{" "}
+              {formatTimestamp(raft.stalled_since)}. Changes fail until the cluster commits again.
+            </div>
+          )}
           <p className="text-sm text-gray-700">
             {summary.served_by ? `${summary.served_by.name} is ` : ""}
             {raftStateLabel(raft.state)}, term {num(raft.term)}, leader {raft.leader?.name ?? raft.leader?.address ?? "none"}
@@ -372,6 +380,7 @@ export default function Cluster() {
         </OvnCard>
       )}
       {ovnSettingsOpen && ovnView && <OvnSettingsDialog view={ovnView} onClose={() => setOvnSettingsOpen(false)} onDone={() => setOvnTick((x) => x + 1)} />}
+      <DevicePools />
       <ClusterCa status={summary} nodes={current} onDone={refreshAll} />
       <DangerZone status={summary} onDone={refreshAll} />
 

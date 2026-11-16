@@ -1,4 +1,5 @@
 pub mod api;
+pub mod api_cert;
 pub mod auth;
 pub mod authz;
 pub mod cloud_init;
@@ -20,6 +21,9 @@ pub mod node;
 pub mod ovn_settings;
 pub mod paths;
 pub mod pci;
+pub mod pci_discovery;
+pub mod pci_settings;
+pub mod public_net;
 pub mod restart;
 pub mod router;
 pub mod scheduler;
@@ -29,5 +33,7 @@ pub mod state;
 pub mod store;
 pub mod tenancy;
 pub mod tenants;
+#[cfg(test)]
+pub(crate) mod test_script;
 pub mod topology;
 pub mod trust;

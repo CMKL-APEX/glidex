@@ -93,6 +93,19 @@ Non-goals for this revision (each in §18):
 | D21 | **VPC routers are opt-in, per project** (§11.2a). Networks attached to the same VPC router route to each other; different routers, and the shared edge, are isolated from each other. Subnets still come from one cluster IPAM (no overlapping CIDRs in this revision). | Tenants get their own egress address and multi-subnet routing without giving up the isolation of §11.2. One address space keeps port security, metering by address and future peering simple. |
 | D22 | **External traffic on OVN is metered from conntrack accounting in each router's SNAT zone** on the gateway node (§13.2), not from OVN flow statistics. | A connection is external exactly when it is SNATed, which is 13-metering.md D6's definition. OVN exposes no counters on logical objects; OpenFlow statistics by cookie are ambiguous (32-bit cookie prefixes, cookie 0 for conjunctive flows), reset when flows are reinstalled, and depend on how the pipeline is laid out in each OVN version. |
 | D23 | **A node network is made for a named node, by that node.** `node` on create names it (default: the node serving the request, the leader once forwarded). For another node the leader only records the network, `pending`; that node's network controller makes its bridge and NAT (09-networking.md §11.2a), with a subnet netd picks there. A `subnet` and bridged networks are refused for another node. | A node network's bridge and NAT are its node's netd's, which only that node reaches; writes go to the leader, so without `node` every node network landed on the leader. The controller already re-creates a lost bridge and NAT, so making them is the same step. |
+| D24 | **An append fits in a heartbeat.** A write set is at most 1 MiB of JSON, an append carries at most 4 entries (5 MiB in all), the Raft endpoints take that much once the peer is known, and the default heartbeat is 1 s (election 3–6 s). | openraft 0.9 cancels an append that takes longer than the heartbeat interval and sends it again, for ever: one large entry stopped the log on every follower, and axum's 2 MB body limit refused larger ones outright (the three-server test cluster, 2026-11-03). A failover of 3–6 s is fine for a control plane; a write over 1 MiB is refused up front rather than stalling the cluster. |
+| D25 | **The log keeps about a week, and is trimmed whatever the restarts.** `log_keep_entries` defaults to 70,000; a member trims its log to that many behind its snapshot when it starts, and records a snapshot every tenth of that, so the log stays near the setting. | A restart makes the live database the snapshot and restarted openraft's count towards the next one: servers restarted every few hours never trimmed (27,000 entries in three days on the three-server test cluster, 2026-11-03). During development the history helps trace a change; 70,000 entries are about a week at today's ~9,000 a day, about 300 MB. |
+| D26 | **Three tiers of data; Raft carries only the cluster's.** The replicated store holds desired state, decisions and *closed* results. What one host observes or is still accumulating stays in that host's own database. Append-only history read by time range (usage, audit) moves to a history tier outside the Raft snapshot before the cluster grows past about 100 VMs (§6.7). All three stay embedded ReDB: no database server. | Measured on the test cluster (§6.7), about 90% of Raft writes were one host's metering slots and VM bookkeeping, which no other server needs at that detail, while the history tables are what make the snapshot large at scale (§4.1). An external database (PostgreSQL, a time-series store) would add a service to install, secure and make highly available without changing what is replicated; it fits as an optional export target. |
+| D27 | **VM bookkeeping at most every 10 minutes.** A VM record is written when its phase, power, instance, placement, an error or a condition's status changes; a change only to conditions' messages or reasons, or to `last_reconciled_at`, waits until 10 minutes after the record's last write. A condition keeps its transition time while its status holds. | About a third of VM writes were bookkeeping alone (§6.7). Kept in the record rather than moved to the host, so the record still shows when it was last checked; 144 writes per idle VM a day is small. |
+| D28 | **A slot row reaches the store only when it changed**, checked on both sides: a node ships a closed hour's slot row once and again only after a late sample changes it, and the leader's merge skips a row equal to the one it holds. | Nodes re-sent three hours of slot rows every minute and the leader rewrote them all (§6.7). The node side saves the traffic; the leader side keeps a resend after a lost acknowledgement from becoming a write. |
+| D29 | **A write that changes nothing makes no Raft entry.** The store records no `put` whose value equals the stored one, as it already records no `delete` of an absent key; a write left with no operations commits nothing. A node with no new ledger rows, whose closed hour and start time are unchanged, doesn't ship; and the leader's `ledger_inbox` cursor for a node holds only what it reads (its closed hour and start time), so it changes only when they do. | The ledger merge rewrote each node's cursor (with the time of the merge, which nothing reads) and the completeness rows every minute: about 4,300 entries a day for three nodes, nearly half of §6.7's 9,000, outside D28. Checking at the store catches every write of an unchanged value, the merge's slot rows (D28's leader side) included, in one place; a follower already holds the same bytes, and a watch has nothing to report. |
+| D30 | **A server says when its log stops.** Each server watches its own Raft view. The log is *stalled* when nothing has been applied for 10 election timeouts (60 s with the defaults, as long as a write waits for its commit) and, in that time, entries waited to be applied, no leader was known, or the term changed. The server then logs a warning, again every 5 minutes while it lasts and once when it ends; `cluster status` carries `raft.stalled_since`, which `gxctl cluster status` and the UI's Raft card show (§6.2a). | On 2026-11-03 nothing committed on the three-server test cluster from 06:29 to 08:39, and nobody knew until the web UI stopped answering, though `cluster status` had the numbers all along (troubleshooting has them compared by hand). A stall that lasts longer than a write's wait means every write is failing. Each server judges alone, so a server cut off from the others says so too. Applied entries are the measure, not commits: a follower knows what it applied, and an idle cluster with a leader is not stalled. Sending the alert elsewhere (mail, a webhook) needs a notification channel glidex doesn't have; the journal line is what host monitoring picks up. |
+| D31 | **A member may apply entries without flushing them, and flushes the state at checkpoints instead** (always on in the control plane, with no configuration key: `GLIDEX_RAFT_DURABLE_APPLIES=1` in its environment turns it off. In `glidex-raftstore` it is the field `RaftSettings::checkpointed_applies`, which each application sets in its own code; hyperstor's map service keeps durable applies until it sets it). Applies commit with redb's `Durability::None`. A checkpoint, a durable commit that persists everything before it, comes every 100 entries or 1 s, whichever is first, when a snapshot position is reported, at a clean shutdown and before the store leaves cluster mode. Standalone writes, the agents' mirror, local rows, snapshot installs and the Raft log stay durable (§6.2b). | Every entry is durable in a majority's logs before it is applied, so the state's own flush repeats one the log made: each member flushed twice per entry. A crash loses only applies after the last checkpoint, and openraft re-applies them from the log at startup. Measured with redb 4.5 at the test servers' sizes: an apply takes 35 µs instead of 354 µs (p50), and a member applies about 9,700 a second instead of 2,900. No configuration key, so a rollback to an older build is never stopped by a key it doesn't know (`RaftConfig` refuses unknown keys); an older build ignores the variable. Owner's decisions, 2026-11-09. |
+| D32 | **The entries openraft hands over together are applied in one transaction**, durable or not as D31 says; `last_applied` is the batch's last entry, and subscribers hear each entry's revision in order after the commit. | Under a burst it is one commit per batch instead of one per entry. It changes no durability rule, and helps whether D31 is on or off. Only the Raft apply path batches: standalone writes commit one at a time. Owner's decision, 2026-11-09. |
+| D33 | **Every node checks a peer's certificate against the cluster's revocations, servers and agents alike.** An agent's cache holds `node_denylist` and `issued_certs` (serial, node, issuer and expiry: nothing secret), and `check_peer` reads them there as a server does. A certificate with the server role is accepted only from a node that the `nodes` table lists as a server and not as a tombstone. The rule "no registry yet, accept any CA-signed certificate" holds only until a node's first full list (§8.2). | Agents take requests from servers: relayed host actions, consoles and stats. A certificate stays valid for the CA until it expires, and the deny list is what ends it, so a node that lacks the list can't honour a removal. The `nodes` check covers the time before a new deny-list row reaches an agent, because removing or forgetting a node changes its row in the same write. An agent cut off from every server keeps its last copy, as it does for the rest of its cache. |
+| D34 | **A node's cluster address (`status.advertise`) is written only by the servers**, when the node joins, rejoins or is imported. A node's own status write may not change it, just as it may not change `phase`, `departed_ids` or `raft_id`. To change an address, the node rejoins. | Servers and other nodes dial a node at this address on behalf of users, so it is part of the node's identity, not a report from the node. No agent path changes it today. |
+| D35 | **A connection to a known node checks that node's identity**, not just the CA. When a server or agent dials a node it knows by id (relayed host actions, consoles and stats, image copies), the client requires the peer certificate's node id (its CN) to be that id, and refuses another node's certificate even when the address and the CA match. Dialling a seed address or a server whose id isn't known yet (join, the agent's server list) checks only the role. A relayed host request also names its target node in a header, and the receiver refuses one that names another node. | An address can move or be reused (DHCP, a rebuilt host, a mistaken `advertise`), and an IP SAN proves only that the CA signed that address for some node. The host action's authorization is for one node, so the node that runs it has to be that node. The header is a second check on the receiver's side, so it doesn't depend on every client path using the pinned dial. |
+| D36 | **A node certificate names only the node's own address, and a dial to "a server" takes only a server's certificate.** The CA signs a CSR only if every address it names is the node's: its `advertise` address at first server, join, rejoin and import, and the address the cluster records for it at renewal. A CSR naming another address or a DNS name is refused. A dial to an address that should be a server's, whichever one (the leader, a seed, the agent's server list, Raft), requires a server certificate (`OU=server`); a dial to a known node checks its id (D35). | An IP SAN is what a client checks when it doesn't know which node to expect, so it has to mean this node's address. A node's address changes only through rejoin (D34), which records the new one before the certificate is signed. D35 left the unpinned dials with the CA check alone; the role check closes that gap for the dials that only servers should answer. |
 
 ## 4. Topology
 
@@ -621,7 +634,11 @@ pub enum Consistency { Linearizable, Local }
   2. run `f` on a ReDB write transaction, then **abort** it, keeping
      the write set;
   3. propose the write set; wait until it is committed **and applied
-     locally**;
+     locally**, for at most 10 election timeouts: then the write fails
+     (`TimedOut`; it may still be applied later), so a member that lost
+     its leadership while no leader commits doesn't hold the lane for
+     ever. A new leader's first write first waits for its read barrier,
+     for at most 4 election timeouts, else `NotLeader`;
   4. release the lane and return `f`'s result.
 
   On a follower, `write` returns `NotLeader { leader }` (§6.4).
@@ -640,15 +657,107 @@ exactly that.
 |---|---|
 | Library | `openraft`, version pinned in `Cargo.toml`, upgrades reviewed like the CH/OVS pins |
 | Log store | `raft/log.redb` (separate file, so purging the log never touches the state machine) |
-| State machine | `glidex.db`. Each entry is applied in **one** ReDB transaction together with the `raft_meta` table (`last_applied`, `last_membership`) |
+| State machine | `glidex.db`. Each batch of entries is applied in **one** ReDB transaction together with the `raft_meta` table (`last_applied`, `last_membership`) (D32) |
 | Entry size | ≤ 4 MiB; larger write sets are refused with `StoreError::TooLarge` (none exist today: images and disks are files, not values) |
 | Transport | HTTPS on :8842, mTLS, server certificates only; `POST /raft/{append,vote,snapshot}` |
-| Timeouts | heartbeat 250 ms, election 1–2 s (LAN); `cluster.raft.*` settings |
-| Snapshots | **built on demand, never periodically**: the state machine is already durable in ReDB, so a snapshot is a stream of one ReDB read transaction (with `last_applied` read in the same transaction) when a follower is too far behind or a learner joins. The log keeps the last 10 000 entries (`raft.log_keep_entries`) after every voter has applied them. A periodic full copy of a database of tens of GB (§4.1) would cost more than it saves. How this maps onto openraft's snapshot builder is checked in C2 **(verify)** |
-| fsync | log entries are fsynced before an ack; state-machine applies are durable through ReDB's commit |
+| Timeouts | heartbeat 1 s, election 3–6 s (D24); `cluster.raft.*` settings |
+| Snapshots | **built on demand, never periodically**: the state machine is already in ReDB, durable up to its last checkpoint (§6.2b), so a snapshot is a stream of one ReDB read transaction (with `last_applied` read in the same transaction) when a follower is too far behind or a learner joins. The log keeps the last 10 000 entries (`raft.log_keep_entries`) after every voter has applied them. A periodic full copy of a database of tens of GB (§4.1) would cost more than it saves. How this maps onto openraft's snapshot builder is checked in C2 **(verify)** |
+| fsync | log entries are fsynced before an ack; state-machine applies are durable through ReDB's commit, or at checkpoints (D31, §6.2b) |
 
 Because applying an entry and advancing `last_applied` are one
-transaction, a crash never applies an entry twice or skips one.
+transaction, a crash never applies an entry twice or skips one. With
+checkpointed applies, a crash rolls the state and `last_applied` back
+together to the last checkpoint, and the entries after it are applied
+again from the log (§6.2b): still once each in the state that remains.
+
+### 6.2b Checkpointed applies (D31, D32)
+
+**What is flushed when.** With `RaftSettings::checkpointed_applies`
+set (the control plane sets it unless `GLIDEX_RAFT_DURABLE_APPLIES=1`
+is in its environment), `StateMachine::apply` commits each batch (D32) with redb's
+`Durability::None`: the rows are written and every reader sees them
+at once, but nothing is flushed. A **checkpoint** is a commit with
+`Durability::Immediate`, which makes it and every commit before it
+durable. It comes:
+
+- with the batch that reaches 100 entries, or 1 s, since the last
+  checkpoint (a batch that crosses the mark is itself the checkpoint);
+- in `snapshot_now`, before it reports a position (invariant I4 below);
+- at a clean shutdown of the store;
+- before the store leaves cluster mode (`leave`, `forget`, `dissolve`).
+
+A timer makes the 1 s checkpoint when no batch comes to carry it.
+
+**What stays durable, whatever the setting:** standalone writes
+(`Tx::commit` in `Local` mode: there is no log behind them); the agents'
+mirror (`Submitted::Queued` writes exist nowhere else until the leader
+takes them); `put_local` and `delete_local`; `install_dump`; and the
+Raft log, whose appends, vote and committed index stay flushed before
+openraft is told.
+
+**Why nothing committed is lost.** Four invariants:
+
+| | Invariant | Holds by |
+|---|---|---|
+| I1 | An entry is durable in a majority's logs before any member applies it | Raft; `append` flushes before `log_io_completed` |
+| I2 | The state file rolls back as a whole: rows and `last_applied` are one transaction | `apply` writes both in the batch's transaction |
+| I3 | At startup, (`last_applied`, committed] is applied again from the log before the member serves | openraft's `get_initial_state` (`reapply_committed`, openraft 0.9.25), with `read_committed` from the log store |
+| I4 | The durable `last_applied` is never behind the log's purged index | openraft purges only what a snapshot covers, and `snapshot_now` checkpoints before it reports one; `log_keep_entries` is at least 100 |
+
+I1–I3 held before D31. I4 is new, and the code must keep it: a member
+whose durable state fell behind its purged index could not re-apply at
+startup, and would wait for a snapshot from the leader.
+
+**Failures:**
+
+- **A checkpoint fails** (disk full, I/O error): `apply` returns the
+  error, and openraft stops the state machine, as for any apply error
+  today. A failed checkpoint is never logged and skipped: the state would
+  then stay behind while the log goes on purging (I4).
+- **A crash between checkpoints** (process, kernel or power, one member
+  or all): each member rolls back to its own last checkpoint and
+  re-applies from its own log at startup (I3). A client answered before
+  the crash was answered after its entry reached a majority's logs (I1).
+- **Effects already taken on an entry that was rolled back**: the entry
+  comes back at the same index with the same operations (in cluster mode
+  the revision is the log index), so a controller sees the same desired
+  state again. Controllers act on state, not on single events
+  ([12-reconciliation.md](12-reconciliation.md)), so this is harmless.
+- **A copy of `glidex.db` taken while the member runs** holds the state
+  of the last checkpoint: up to 100 entries or 1 s older than the
+  member. A copy restored on its own (without the log) loses that. A
+  backup takes a checkpoint first, or comes from the API.
+- **Rolling back to a build without D31:** the file format doesn't
+  change, and the older build commits durably. Nothing in the
+  configuration names D31, so the older build starts as it is; it
+  ignores `GLIDEX_RAFT_DURABLE_APPLIES`.
+- **Other applications of `glidex-raftstore`** (hyperstor's map
+  service): `RaftSettings` gains the field, so an application whose code
+  builds `RaftSettings` field by field doesn't compile until it chooses
+  a value. Nothing changes for it until then.
+
+**Needs** redb 4.4 or later: redb 4.4 fixed non-durable commits being
+lost on a clean close after a panic it caught.
+
+### 6.2a Stall watch (D30)
+
+Every server checks its Raft metrics each second. It notes *trouble*
+when entries wait to be applied (`last_log_index > last_applied`), no
+leader is known, or the term moved since the last check. An applied
+entry clears the trouble. Trouble not cleared for 10 election timeouts
+is a stall, dated from the first trouble:
+
+- The journal gets a warning, `the Raft log has applied nothing for
+  <n>s`, with the term, the leader (or none) and how many entries
+  wait; again every 5 minutes while the stall lasts; and an info line
+  with its length when an entry is applied again.
+- `cluster status` gives `raft.stalled_since` (absent otherwise).
+  `gxctl cluster status` adds a `STALLED since …` line under `Raft:`,
+  and the UI's Raft card a warning (16-clustering-ui.md §6).
+
+A cluster idle with a leader has no trouble: a new leader's first entry
+is applied, and nothing waits. A follower that is merely behind applies
+entries as it catches up, so it isn't stalled either.
 
 ### 6.3 New tables
 
@@ -714,6 +823,71 @@ becomes one of its subscribers.
   them, and run **as a single write** on the leader.
 - Version skew: servers at N; agents at N or N−1. The node API on :8842
   is versioned (`/cluster/v1`), like netd's `hello`.
+
+### 6.7 What the replicated store holds (D26)
+
+| Tier | Holds | Where | Examples |
+|---|---|---|---|
+| **Cluster** | Desired state, decisions, closed results: what any server must answer or act on | `glidex.db`, through Raft | VM, disk and network specs; tenants, users, roles, policies, admissions; nodes; closed `usage_hourly` rows, `usage_monthly_rates`; VM status as scheduling and the UI need it, written on change |
+| **Host** | What one host observes or is still accumulating | the host's own ReDB (`node.db`; `meter.db` on hosts installed today) | metering cursors, open hours and open 5-minute slots (§13.1); detailed live VM state; device and datastore probes between changes |
+| **History** (later) | Append-only records read by time range and dropped by retention | ReDB files outside the Raft snapshot, one per month, copied between servers as files once closed | `usage_hourly` past the current months, `usage_daily`, `audit` |
+
+A table belongs to the cluster tier only if another server must read it
+or decide on it. A record that changes faster than people or the
+scheduler act on it is written to the cluster tier only when it changes
+in a way they act on.
+
+**Measured on the test cluster** (three servers, three VMs, 2026-10-31 to
+2026-11-03, about 9,000 Raft entries a day, 38 MB of log a day; the store
+itself 2.6 MB):
+
+| Table | Writes in 3 days | Share of bytes written | Rows held |
+|---|---|---|---|
+| `rate_5m` | 107,000 | 55% | 450 |
+| `vms` | 11,300 | 36% | 3 |
+| all other tables | | 9% | |
+
+Two departures from this spec explain most of it, and C9 fixes them:
+
+- **Slot rows are shipped again every minute.** A node ships every 60 s,
+  and its export carries every slot row of the closed hours it still
+  keeps for late samples (3 hours); the leader's merge rewrites each of
+  them, changed or not (`Ledger::import`). 27% of `rate_5m` writes
+  rewrote a row with exactly the same contents. Shipping ran at about
+  540 KB an hour for three VMs, against the 4.5 MB an hour per 1,000 VMs
+  of §4.1.
+- **VM records are written for bookkeeping.** About 3,450 of the 11,300
+  writes changed only `status.conditions` and `status.last_reconciled_at`
+  (and the resource version); fewer than 100 changed the phase, power or
+  instance. §4.1 requires `last_reconciled_at` to be written only with
+  another change or at most every 10 minutes; a condition field that
+  changes on every round defeats that. What the remaining writes changed
+  was not established by the measurement; the C9 command found it
+  (§20, C9): `HypervisorReachable`'s transition time, reset every round.
+
+**Settled for C9** (2026-11-03):
+
+1. *VM bookkeeping* (D27): `status.conditions` and `last_reconciled_at`
+   are written with a change people or the scheduler act on, or else at
+   most every 10 minutes per VM, as §4.1 asks of `last_reconciled_at`.
+   They stay in the record, about 144 writes per idle VM a day.
+2. *Unchanged slot rows* (D28): skipped on both sides. The node ships a
+   closed hour's slot row once, and again only if a late sample changed
+   it; the leader skips a row equal to the one it holds.
+3. *The history tier's spec* is written after C9, once §6.7's
+   measurement has been repeated, and before the cluster grows past
+   about 100 VMs.
+4. *A condition's status is written at once* (D27, refined 2026-11-04):
+   only its message and reason wait for the 10 minutes, so the UI
+   never shows a stale `Ready` or `ConsoleReady`. Once the
+   `HypervisorReachable` reset is fixed, conditions change in about 120
+   of the 17,822 VM writes measured (§20, C9).
+5. *Writes that change nothing* (D29, 2026-11-04): found reading the
+   code after the measurement. Every ship, every minute, rewrote the
+   node's `ledger_inbox` cursor (with the time of the merge) and the
+   completeness rows in `meter_meta`, whether or not anything was new:
+   one Raft entry per node a minute. The store now drops a `put` of an
+   unchanged value, and a node with nothing new doesn't ship.
 
 ## 7. Nodes
 
@@ -1220,9 +1394,22 @@ New netd ops, all on the full socket under the existing policy (§7.2 of
   overlap; init refuses overlapping settings). Gateway `.1`, pool
   `.2–.254`. Same rules as 09-networking.md decision 8.
 - Reservations: allocated for each VM NIC at **placement** (§9.1 step
-  3), never at launch, so a VM keeps its address across stops,
-  restarts and, later, live migration. Freed by a new cluster finalizer
+  3), and for a NIC added to a placed VM when it is added, never at
+  launch, so a VM keeps its address across stops, restarts and, later,
+  live migration. The leader also makes any a placed VM's NIC lacks: a
+  NIC without one gets no logical port. Freed by a new cluster finalizer
   `vm.ipam` when the VM is deleted.
+- A NIC changed on a running VM changes at its next start. Until then
+  its logical port keeps the network and MAC the node attached
+  (`status.nics`), and its address; the new MAC has its own reservation
+  ready. Otherwise port security would drop the guest's traffic until
+  it restarted. The old reservation is freed once the port changes.
+- A reservation is one VM's NIC: a MAC is unique on its network
+  (09-networking.md §11), and the store refuses to reserve `network/mac`
+  for a VM while another VM's NIC (in its spec or on its port) has it. A
+  reservation left by a VM or NIC that is gone, not yet freed, is taken
+  over. A VM stored with a taken MAC before this check still saves; that
+  NIC gets no address of its own until one of the two changes.
 - Each reservation becomes the logical port's `addresses = "<mac>
   <ip>"` and `port_security = "<mac> <ip>"`. This is the port security
   13-metering.md §16 lists as future work, for cluster networks.
@@ -1345,6 +1532,14 @@ it is enforced in code, as for netd ownership:
 Only server certificates may use the Raft endpoints, forward requests
 with `X-Glidex-Principal`, or relay consoles.
 
+Every node, agents included, refuses a revoked certificate and a server
+certificate of a node that isn't a current server (D33). A node's address
+is set by the servers, not by the node (D34), and a connection to a node
+known by id checks that the certificate is that node's (D35). A node
+certificate names only its node's own address, and a connection that
+should reach a server, whichever one, takes only a server's certificate
+(D36).
+
 ### 12.4 Audit
 
 Every forwarded request is audited on the leader with the original
@@ -1434,12 +1629,37 @@ every 30 s with nothing but cursors in it. Instead:
 - When an hour closes (13-metering.md §6.5), the node ships its closed
   rows to `POST /cluster/v1/ledger`, keyed `node/subject/meter/hour`.
   The leader writes them to `ledger_inbox`, then merges them into
-  `usage_hourly`, `rate_5m`, the daily and monthly rows in the same
-  write. A key already merged is acknowledged and not merged again.
+  `usage_hourly`, `rate_5m`, the daily and monthly rows; each hourly row
+  is merged in the same write as its `ledger_inbox` key. A key already
+  merged is acknowledged and not merged again.
 - The node marks the hour as shipped only after the acknowledgement.
   Shipping is at-least-once, and applying is idempotent by key, so the
   ledger stays **exactly once** (13-metering.md D8).
 - Live rates (`GET /vms/{id}/stats`) come from the node (§8.4).
+- **A slot row reaches the store only when it changed** (C9, D28): the node
+  ships a slot row of a closed hour once, and again only if a late
+  sample changed it, and the leader's merge skips a row equal to the one
+  it holds. Hourly rows are already shipped once and deleted when
+  acknowledged.
+- **A backlog ships in parts.** A node that couldn't ship for a while
+  (no leader, a leader that refused it) has more rows than one request or
+  one write set (1 MiB) holds. It ships them in parts of about 256 KiB, at
+  most eight a minute, oldest rows first. The leader merges a part's rows
+  as they come; every part but the last says more follow, and the node's
+  cursor moves only with the last, so the ledger is never complete past
+  rows that haven't arrived. The node forgets a part's hourly rows when it
+  is acknowledged, so a backlog shrinks even if a later part fails.
+- **Every merge write is bounded** (#495). The leader merges a shipment in
+  writes of at most half a write set (512 KiB by an upper estimate of
+  their encoding), however many rows it carries; the node's cursor and
+  completeness follow in a last write, once every row is in. A merge cut
+  short is sent again whole and skips what is in. The `ledger_inbox` keys
+  that guard against duplicates are forgotten after 7 days by the daily
+  upkeep (13-metering.md §7.3), also in bounded writes, not by the merge.
+- **Nothing new, nothing shipped** (C9, D29): a node ships only when it
+  has rows to send or its closed hour or start time moved; the leader's
+  cursor for a node holds just those two, and the store makes no entry
+  for a merge that changes nothing.
 
 ### 13.2 Meters on OVN networks
 
@@ -1523,7 +1743,7 @@ Findings from the OVN 26.03 documentation (`ovn-nb(5)`, `ovn-sb(5)`,
 
 | Failure | Effect | Recovery |
 |---|---|---|
-| Leader host dies | Election within ~2 s; cluster controllers restart on the new leader; in-flight writes fail with `503 leader_changed` (gxctl and the UI retry idempotent requests) | automatic |
+| Leader host dies | Election once the followers' election timeout runs out: 3–6 s after the last heartbeat with the defaults (`cluster.raft.election_ms`). A leader's control plane restarted within that time leads again in the same term, with no election (openraft restores it from its saved vote); cluster controllers restart on the new leader; in-flight writes fail with `503 leader_changed` (gxctl and the UI retry idempotent requests) | automatic |
 | Minority of servers lost | No effect on API or VMs | Replace or re-join the servers |
 | Majority of servers lost | API: `503 cluster_unavailable` (local stale reads allowed, §6.4). VMs keep running; nodes act on their cache (§8.2) | Bring servers back, or `--force-new-cluster` (§5.12) |
 | Agent host partitioned | Its VMs keep running; cluster shows `NodeUnreachable` (D8) | Reconnects and sends its outbox (§8.2) |
@@ -1537,6 +1757,7 @@ Findings from the OVN 26.03 documentation (`ovn-nb(5)`, `ovn-sb(5)`,
 | External pool exhausted | VPC router creation fails with `409 external_pool_exhausted`; existing routers unaffected | site enlarges `ovn.edge.external_pool` |
 | Active gateway node dies | OVN fails SNAT over to the next chassis in the HA group; connections through it are cut, the gateway address stays the same | automatic |
 | OVN NB/SB quorum lost | Existing flows keep forwarding (`ovn-controller` keeps its last state); network changes and new ports wait (`NetworkReady=False/OvnUnavailable`) | as for the glidex store |
+| The log stops: elections without end, or a leader whose entries no majority takes | Writes fail after 10 election timeouts; each server logs that its log stalled and `cluster status` shows `raft.stalled_since` (D30) | Find the cause with the troubleshooting guide's *A cluster stops committing* |
 | netd restart on a node | as today (09-networking.md §7.7); `br-int` ports and `iface-id`s are preserved | automatic |
 
 ## 15. Testing
@@ -1652,7 +1873,12 @@ passing in CI. C0 and C1 change nothing for standalone users.
 | **C5** OVN foundation | `ovn-central`/`ovn-host` 26.03 install, OVN PKI, `ensure_ovn_chassis`, `glidex-ovn` crate with `ovn-nbctl` in daemon mode, cluster IPAM, isolated and NAT networks on `gx-edge` with an HA gateway, port security, DHCP and MTU, cluster `default` network | §15 OVN e2e tests 1–4. |
 | **C6** Provider networks, VPC routers and metering on OVN | localnet with VLAN tags, physnet mapping onto netd bridges, scheduler physnet filter; VPC routers, external pool, `routers`/`external_ips` quotas (§11.2a); `snat-ct-zone`, `ct_external_counters`, network totals (§13.2–13.3), with the host checks of §13.3 done first | e2e test 5; §15 VPC router and external metering tests. |
 | **C7** Operations and membership | node phases (§5.3), drain, remove, forget, purge, rejoin with D18; CA on every server and rotation (§12.5); rolling upgrades with feature-level gating, certificate renewal, `cluster status` port checks, Cluster page in the UI, runbook (recovery of both Raft groups) | §15 upgrade, membership and CA rotation tests; §15 scale run with figures recorded in §4.1; certificate renewal under load; documented recovery exercised on the test cluster. |
+| **C9** Store diet (D26–D29) | slot rows shipped and merged only when they changed (§13.1, D28); no Raft entry for a write that changes nothing, and no ship with nothing new (D29); VM bookkeeping (`conditions`, `last_reconciled_at`) written with a change that is acted on or at most every 10 minutes (D27), and what changes in the other VM writes found; the measurement of §6.7 as a repeatable check | §6.7's measurement repeated on the test cluster: `rate_5m` writes per hour within 2× of one per subject and closed hour, no write in any table equal to the row before it, and no ledger write from a node with nothing new; an idle VM's record written at most every 10 minutes (the C0 test extended to conditions); Raft write volume at least 80% lower than §6.7's. |
 | **C8** Detach and import | departure bundle, two-phase detach with receipt, offline detach and `forget --departed`, import plans with checks and mappings, approval, staged commit, `move_vm_port`, `leave_ovn`, `cluster dissolve` | §15 detach, import and round-trip tests, all with running VMs. |
+| **C10** Apply durability (D31, D32) | One transaction per apply batch; `RaftSettings::checkpointed_applies` in `glidex-raftstore`, set by the control plane unless `GLIDEX_RAFT_DURABLE_APPLIES=1`; checkpoints every 100 entries or 1 s, in `snapshot_now`, at shutdown and before leaving cluster mode; a checkpoint failure stops the state machine (§6.2b) | A member's state after a crash between checkpoints is its last checkpoint, and after startup equals the other members' (dump compare); `snapshot_now` leaves the durable `last_applied` at or past what it reports; standalone and mirror writes survive a crash right after them; subscribers see each revision of a batch in order; a cluster test kills a follower and the leader under writes and compares dumps; on a test cluster, end-to-end write latency before and after |
+| **C11** Peer identity (D33–D35) | 1. Agents receive `node_denylist` and `issued_certs` in their list and watch; `check_peer` on an agent uses them and the `nodes` server check, and drops the empty-registry rule after the first full list. 2. Status writes may not change `status.advertise`. 3. `PeerClient` dials a known node with its expected node id and refuses another node's certificate; every caller that knows the id passes it. 4. Relayed host requests carry the target node id, and `/cluster/v1/host/*` refuses a mismatch. | Cluster tests: a forgotten server's certificate is refused by an agent (`node_removed`), and so is a server certificate of a node not listed as a server; a status write changing `advertise` is refused; a dial to node A that reaches node B's address fails on identity; a relayed host request naming another node is refused (409). |
+
+C9 needs C3 and comes before the history tier (§18). C10 needs C2 and redb 4.4 or later. C11 needs C3 and C7.
 
 Dependencies: C0 → C1 → C2 → C3 → C4. C5 needs C3 (node role) and
 C1 (scope). C6 needs C5. C7 needs C2–C5. C8 needs C7; its parts without
@@ -1722,7 +1948,10 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
   at another address, with DHCP classless static routes, option 121,
   for the other router's networks). Guests only learn those routes at
   their next lease, and egress through two routers breaks SNAT symmetry.
-- **Metering history outside the replicated store**, follower-served
+- **The history tier** (D26, §6.7): usage history and audit in monthly
+  ReDB files outside the Raft snapshot, closed months copied between
+  servers as files, queries reading the months they cover. Its own
+  spec, before the cluster grows past about 100 VMs. Then follower-served
   watches and the other steps past the §4.1 ceiling.
 
 ## 19. Resolved questions
@@ -1903,8 +2132,9 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
 - **IPAM** (`ipam`, tables `ipam_subnets`, `ipam_reservations`): a /24 from
   `ovn.nat_supernet` (default 10.89.0.0/16, never overlapping the node NAT
   range), or the requested subnet; reservations are made in the same write as
-  the VM's placement (create, or the scheduler's) and live as long as the NIC
-  (garbage-collected by the leader: the plan's `vm.ipam` finalizer).
+  the VM's placement (create, or the scheduler's) or as a change that adds a
+  NIC to a placed VM, and live as long as the NIC (garbage-collected by the
+  leader: the plan's `vm.ipam` finalizer, which also makes missing ones).
 - **Networks** have `scope: cluster` (default when `cluster.ovn.enabled`):
   `bridge: br-int`, MTU = underlay − 58, no per-node controller. NAT needs
   `cluster.ovn.edge`. No cluster network is created automatically (§11.7).
@@ -1927,8 +2157,25 @@ real database. Everything marked "(verify)" below is syntax or behaviour of OVN
   has separate chassis and database certificates; OVN checks only the CA.)
 - **Installer** (superseded: OVN is now installed by default, see the validation notes below): `--ovn`, or `--join`, installs `ovn-host`, and `ovn-central`
   on servers.
-- Not yet: the NB daemon supervised by the control plane (commands connect
-  per call), OVN-aware `move_vm_port` (C8), provider networks and VPC routers
+- **NB daemon** (2026-11-10; until then each command connected on its own,
+  about 350 `ovn-nbctl` a minute on the three-server test cluster's leader):
+  `glidex_ovn::daemon::NbDaemon`, held by the control plane, starts
+  `ovn-nbctl --detach` on the leader once a reconcile pass succeeded with
+  direct commands, with its socket and pidfile in `$RUNTIME_DIRECTORY/ovn`
+  (`OVN_RUNDIR`), and sends later passes' commands through it. A daemon
+  whose database is gone waits instead of failing, so a failed pass stops
+  it and commands run directly until a pass succeeds again. It starts a new
+  one when its socket is gone or the servers or the certificate files
+  changed; stops it when the server stops leading or OVN is off; and when
+  one can't start, runs commands directly, saying why once. The service's control group stops it with the
+  control plane. OVN clients log only warnings to syslog (`-vsyslog:warn`).
+  Tests: `daemon::tests` (direct until a pass succeeds and after one fails,
+  start once, restart on a dead socket, a new server or a renewed
+  certificate, the fallback, stopping);
+  `sync_through_the_daemon_does_the_same` (real NB, ignored) runs the real
+  scenario through the daemon and checks it leaves nothing in its run
+  directory. The views (`glidex_ovn::view`) still connect per call.
+- Not yet: OVN-aware `move_vm_port` (C8), provider networks and VPC routers
   (C6).
 
 ### C6: provider networks, VPC routers and metering on OVN
@@ -1969,6 +2216,7 @@ Deviations and not done:
 - A server cannot remove itself: run the removal on another server (openraft 0.9 has no leadership transfer, and the request would die with the leader).
 - OVN CA files and netd certificates are not rotated by this step: a node's own certificate still doubles as its OVN certificate (C5), and netd is not told when the bundle changes. OVN's window therefore stays open until a node re-runs `ensure_ovn_chassis`.
 - `cluster/leave` by the departing server itself is not used; the leader kicks it.
+- **Stall watch (D30, §6.2a):** `StallWatch` in `glidex-raftstore` (`raft/node.rs`), checked each second by a task each member starts; `ClusterNode::stalled_since` feeds `raft.stalled_since` in `cluster status`, gxctl's `STALLED` line and the Raft card. Tests: the watch's rules (`raft::node::tests`), a leader cut off with a write it can't commit says so while the majority doesn't (`tests/raft.rs` `a_member_whose_log_stops_says_so`), gxctl's line, and the card (`cluster.spec.ts`). The control plane's default log filter now takes `glidex_raftstore=info`. Not run on the test cluster yet.
 - Not done: the scale run and figures for §4.1, `glidex-install --reset`, `--seal-ca-key`, certificate renewal under load, a rolling-upgrade test with two builds, and the recovery exercise on a test cluster (the runbook describes it; `--force-new-cluster` is tested, the OVN half is not).
 
 ### C8: detach and import
@@ -1990,6 +2238,122 @@ Deviations and not done:
 - Image records come in as their own records (as the spec says); disks keep backing files in place.
 - Staged import rows are chunked at 1 MiB, but the commit is one Raft entry holding every live row: a very large import can exceed `max_payload`. Metering history and audit records are not imported (D19).
 - The import host's NIC IP reservations for mapped networks are not made (no node-network to cluster-network mapping on import).
+
+### C9: store diet
+
+Built (tests in `cluster/store_writes.rs`, `glidex-raftstore` `log_store.rs`):
+
+- **The measurement as a command** (§6.7): `glidex-control-plane --store-writes <copy of raft/log.redb> [--since <index>] [--json]` reads the log entry by entry (`LogStore::scan_file`) and gives entries and bytes per origin and per table, puts of an unchanged value, writes per distinct key, the field sets the other puts changed (two levels deep; a name that isn't an identifier shows as `*`), VM writes of bookkeeping only (D27) with those less than 10 minutes after the last, and which condition (by kind) and which of its fields each VM write changed. It reports no key or value; the time covered comes from VMs' `last_reconciled_at` and the ledger cursors. Documented in the operator guide (Clusters, *What the log is made of*).
+
+- **Writes that change nothing** (D29): `RecTable::insert` in `glidex-raftstore` records no put of the value the key already holds, so a write left with no operations commits nothing. That also drops the leader's rewrites of unchanged slot rows (D28's leader side; slot rows serialize deterministically, `series` is a `BTreeMap`) and of the unchanged completeness rows in `meter_meta`. The leader writes a node's `ledger_inbox` cursor only when its closed hour or start time moved, and a node's shipping loop sends nothing when it has no rows and neither has moved since the last acknowledgement (kept in memory: a restarted node ships once). Tests: a write of only held values commits nothing and a mixed one records only the change (`store.rs`); a repeated merge writes nothing (`shipped_hours_merge_exactly_once`).
+
+- **Slot rows shipped once** (D28, node side): the shipping loop keeps, in memory, a hash of each slot row the leader acknowledged (`ledger::Shipped`), and sends a row again only when a late sample changed it; with no rows and the closed hour and start time unchanged it sends nothing. A restarted node sends its slot rows once more, which the leader's merge doesn't write (D29). Test: `slot_rows_ship_once_until_they_change`.
+
+- **VM bookkeeping** (D27, `VmManager::write_status`): a condition set again with the status it had keeps its stored `last_transition_at`, which ends the `HypervisorReachable` reset; and a status that differs from the stored one only in conditions' messages and reasons (in kind order) is written with the 10-minute stamp, not before. Test: `an_unchanged_status_writes_nothing`, extended: a condition cleared and set again, and a message change, write nothing; a condition's status change writes once. Documented in the user guide (VMs: a condition's message can be 10 minutes behind).
+
+**Before C9**, measured with the command on 2026-11-04 on the single-A100 host (main at `2cf6e80`; log entries 2 to 38,095, about 92 hours by the values, three servers, 21 VMs written in that time): 9,937 entries and 48 MB a day.
+
+| Table | Puts | Share of bytes | Keys | Unchanged | Note |
+|---|---|---|---|---|---|
+| `rate_5m` | 160,741 | 58.2% | 565 | 71,396 | 284 puts per subject and hour (D28) |
+| `vms` | 17,822 | 35.2% | 21 | 0 | 17,568 bookkeeping only, 17,507 of them within 10 minutes of the last |
+| `ledger_inbox` | 19,071 | 1.3% | 4,087 | 0 | 15,000 rewrites of the nodes' cursors (D29) |
+| `meter_meta` | 29,978 | 0.6% | 4 | 29,900 | completeness rows rewritten unchanged (D29) |
+| `nodes` | 112 | 1.1% | 3 | 0 | 86 changed only `status.ui_url` |
+
+What the VM writes changed: 17,394 changed only `HypervisorReachable`'s `last_transition_at`. The reconcile round clears that condition (`controller/vm.rs`, after observing the instance) and later sets it again, so it is a new condition with a new transition time every round, and the status never equals the stored one. That is §6.7's unexplained VM writes, and the fix for D27.
+
+**Found by the first measurement after C9** (2026-11-04, from log index 46,134): the R9700 host's usage had not reached the cluster since 2026-11-03 09:12 +07, just after that morning's outage. Its backlog was more than one request holds, and the leader refused it every minute (`413 Payload Too Large`; a request that fit would still have been a write set over 1 MiB). Not acknowledged, the rows stayed, so the backlog only grew (`meter.db` 71 MB against under 0.5 MB on the other servers). Shipping now goes in parts (§13.1, `Export::split`; test `a_backlog_ships_in_parts`: the parts' sizes and order, no completeness before the last part, totals exact, an acknowledged part not sent again).
+
+**Found on 2026-11-12** (#495): from 04:02 +07, every merge on the leader failed with `write set of 14183495 bytes exceeds the store's entry limit`, so no node's usage reached the cluster; the size then grew by about 12.7 KB each hour, to 16.3 MB on 2026-11-13. The merge also forgot `ledger_inbox` keys older than 7 days, all of them in its own write. The backlog of the server above had drained on 2026-11-05 from 03:47 +07, within minutes, so seven days later one merge had to delete its tens of thousands of keys at once (about 220 bytes of write set each), and failed; failed, it deleted none, and each hour's newly expired keys (merges come once an hour, when hours close, D29) were added to the next attempt. The keys are now forgotten by the daily upkeep in writes of at most 512 KiB, and a merge's rows go in writes of the same bound (§13.1). Test: `a_large_inbox_and_backlog_merge_in_bounded_writes` (80,000 expired keys and a 9,600-row backlog, as shipped parts and as one unsplit export: every write set under 1 MiB, each row once, the cursor moved; then the upkeep's pruning, bounded, keeps the cursors and the recent keys).
+
+The same measurement found why one network's 5-minute rows (`rate_5m`) for about 70 past hours were written again every minute. Metering forgets the cursors of subjects that are gone, and it looked networks up by name, while a network's subject is keyed by its id (spec/19-tenancy.md D24). So every other round dropped all of a network's cursors, and the next round counted its VM ports again from each VM's launch, which rewrote every hour since. The cluster's merge takes each hourly row once, so the re-counts added nothing to hours already closed; but the hour still open got its share of every re-count, so the network's `bridge.bytes` is overcounted in the hours since its VMs launched, and its slot rows were replaced every minute. Live subjects now use the network's id (test `a_networks_cursors_survive_rounds`). With it: on a gateway that also runs one of a network's VMs, pruning the ports that are gone also dropped the network's conntrack parts, so external inbound never reached `bridge.bytes` there. Pruning now leaves them (test `a_gateway_with_vm_ports_keeps_the_networks_inbound`).
+
+**After C9**, measured with the command on 2026-11-05 on the single-A100 host (main at `6e61817`, installed on the three servers at once at 09:44 +07; log entries 48,899 to 49,213, from just after that install to 13:05 +07, 3.3 hours by the values; no restart in between): 2,273 entries and 6.5 MB a day, against 9,937 entries and 48 MB before. **Raft write volume is 86.5% lower**; without the first 20 minutes, when each restarted node sends its slot rows once more (entries from 48,929), 5.6 MB a day, 88.5% lower. Against C9's acceptance:
+
+| Criterion | Before | After | |
+|---|---|---|---|
+| `rate_5m` writes per subject and closed hour within 2× of one | 284 | 1.1 (223 puts over 208 keys, each a subject and an hour; 1.15 without the restart's) | met |
+| No write equal to the row before, in any table | 71,396 in `rate_5m` and 29,900 in `meter_meta`, among others | 0 | met |
+| No ledger write from a node with nothing new | 15,000 cursor rewrites; a metering entry from each node every minute | 15 metering entries in 3.3 hours; `ledger_inbox` 228 puts over 219 keys, the 9 rewrites cursors whose closed hour moved | met |
+| An idle VM's record at most every 10 minutes | 17,507 bookkeeping writes within 10 minutes of the last | 113 bookkeeping writes (6 VMs), none within 10 minutes of the last | met |
+| Raft write volume at least 80% lower | 48 MB a day | 6.5 MB a day | met |
+
+What is left is mostly VM bookkeeping (48% of the bytes: about one write per VM every 10 minutes, as D27 allows), the closed hours (`usage_hourly` 14%, `ledger_inbox` 5%), `rate_5m` (16%, a third of it the restart's resend) and an image download in progress (`images` 9%, its `status.received_bytes`).
+
+Why 86 node writes changed only `status.ui_url` (before C9): a restarted server published W3's fallback (`cluster.ui_url`, else the first allowed origin, spec/28-host-page.md) until its glidex-ui reported its address, within 30 seconds, and that report was a second node write. The three servers' control planes started 54 times in the before window, and the 13:06 restart on 2026-11-05 showed one such write per server and none after. A server now keeps the address it last published until glidex-ui reports, in its startup self-report too (test `a_restart_keeps_the_published_ui_address`). The first fix covered only the router: after the 09:31 install of d9f18c6 on 2026-11-06, two of the three servers still wrote their node record twice on restart. The self-report made while loading VMs, before the router sets the address, published none, and the router then published the fallback. The other writes are likely glidex-ui's own 14 starts, if it reports the host's name before its Tailscale certificate is loaded; not checked.
+
+Not yet:
+
+- A cluster network's slot rows have no node in their key, so the leader's merge keeps the last node's row and drops the others' share of the network's 5-minute rates (the hourly rows are kept per node). Not fixed yet.
+
+### C10: apply durability
+
+Built (#410, #411, #413). Decisions D31 and D32 (owner, 2026-11-09); tracked in #409.
+
+| | |
+|---|---|
+| Spec \| Code | D32: `StateMachine::apply` applies each batch openraft hands over with one `Db::apply_batch`: one transaction with `last_applied` at the batch's last entry and the latest membership; after the commit the revision steps through each entry's and subscribers hear each in order. `Db::apply` is a batch of one |
+| Tests | `a_batch_lands_whole_and_is_announced_entry_by_entry` (raftstore): rows, `last_applied`, revisions heard in order, blank entries unannounced, a batch with one bad entry or a failing `also` writes nothing; the raftstore cluster tests and the control plane's cluster tests run on the batched path |
+| Spec \| Code | D31: `RaftSettings::checkpointed_applies`; the control plane sets it unless `GLIDEX_RAFT_DURABLE_APPLIES=1` (`cluster::config::DURABLE_APPLIES_ENV`). `Db::apply_checkpointed` commits with `Durability::None` unless the batch brings the unflushed applies to 100 (`CHECKPOINT_ENTRIES`) or comes 1 s (`CHECKPOINT_INTERVAL`) after the last checkpoint; `Db::checkpoint` is an empty durable commit, made by `snapshot_now` after it takes its view, by `ClusterNode::shutdown` (which leaving cluster mode goes through), by the control plane's clean shutdown, and by a 1 s timer (`checkpoint_if_due`) while Raft runs. A failed checkpoint fails the apply; the timer's and shutdown's are logged, and the next apply makes it or fails |
+| Tests | `checkpointed_applies_flush_every_hundred_entries_or_when_asked`: the 100-entry and 1 s rules, the timer's, durable applies; `a_crash_between_checkpoints_leaves_the_last_checkpoint`: a child applies 10, checkpoints, applies 5 and aborts; reopened, the database holds the 10. The raftstore cluster tests (`fast_settings`) and the control plane's run with checkpointed applies on |
+| Tests | Crashes: `TestCluster::crash` starts a member again from what a crash of its process leaves (`Db::crash_image`: the state file copied with the write transaction held, which redb opens at the last checkpoint). `members_crashed_between_checkpoints_catch_up`: a follower, then the leader, crashed under writes until a crash lost applies; each re-applies from its log and the three dumps are equal. `a_reported_snapshot_position_is_durable`: after a snapshot, a crash keeps `last_applied` at or past the reported index (fails with `snapshot_now`'s checkpoint taken out). `writes_with_no_log_behind_them_survive_a_crash`: a child process aborted right after a standalone write, a local row or a mirror's queued write keeps it |
+| Real check | End-to-end write latency on the three-server test cluster, with and without checkpointed applies (2026-11-10, below): passed, writes a little faster and none slower |
+
+Measured, before
+the design (redb 4.5, the single-A100 host's disk, the test servers'
+sizes: a 160 MB
+state database and a 70,000-entry log): applying a write set takes
+354 µs durable and 35 µs with `Durability::None` and a durable commit
+every 100 (p50); about 2,900 and 9,700 a second. End to end, on a
+3-member in-process cluster on the single-A100 host's disk with 80 MB of
+state
+(sequential writes through the leader, timed until applied; #409):
+`main` made 580–680 writes a second at a p50 of 1.4–1.7 ms, and C10
+730–870 at 1.1–1.3 ms, p90 about 30 % lower, p99 unchanged. D32 alone
+changed nothing there: sequential writes come one entry per batch.
+
+On the three-server test cluster (2026-11-10, main at 58dc6a8; the
+single-A100 host leading; 0.07 and 0.15 ms round trips to the HGX host
+and the R9700 host): a project's description updated through the
+leader's local API socket, timed
+until the API answered. Three rounds of 1,000 sequential updates and
+1,000 from 8 concurrent writers, with checkpointed applies, then with
+`GLIDEX_RAFT_DURABLE_APPLIES=1` on all three servers (a drop-in and a
+restart of each, one at a time), then checkpointed again. The drop-ins
+were removed afterwards and the project deleted.
+
+| | Sequential | 8 writers |
+|---|---|---|
+| Checkpointed, before | 142–150/s, p50 6.6–7.0 ms | 266–276/s, p50 28.8–30.0 ms |
+| Durable applies | 139–145/s, p50 6.9–7.1 ms | 238–246/s, p50 32.3–32.9 ms |
+| Checkpointed, after | 149–159/s, p50 6.2–6.6 ms | 265–278/s, p50 28.6–30.2 ms |
+
+Checkpointed applies save about 0.3–0.4 ms of a write's 6.5–7 ms, and
+10–12 % of throughput with 8 writers; p99 is the same within its noise
+(7.8–8.8 ms sequential). The rest of a write is not the apply: reading
+the same project takes 1.9 ms (p50) through the same socket, and the
+network round trips are under 0.2 ms, which leaves about 4 ms for
+proposing, the log's durable writes on the leader and a follower, and
+the commit. A further gain would come from there, not the apply.
+
+### C11: peer identity
+
+Built: tasks 1–5. Decisions D33–D36.
+
+| | |
+|---|---|
+| Spec \| Code | Task 1 (D33): `node_denylist` and `issued_certs` are in `cluster::sync::SHARED`, so agents receive them in their list and watch. `Cluster::check_peer` refuses a server certificate whose node the `nodes` table doesn't list as a server, or lists as a tombstone ("certificate is not a current server's"). A deny-listed serial is still refused as `node_removed`. The empty-registry rule needs no code: after an agent's first list its registry holds at least its own certificate |
+| Tests | `an_agent_refuses_certificates_the_cluster_did_not_issue_or_revoked`: a server certificate the CA signed for a node the cluster doesn't have is refused by the agent (never issued), then once issued (not a current server), then once deny-listed (`node_removed`), while the server itself is answered throughout. The other 50 cluster tests pass with the check on servers too |
+| Spec \| Code | Task 2 (D34): `check_status_write` refuses a node's own `nodes` write that changes `status.advertise`, next to `phase`, `departed_ids` and `raft_id`. Servers still set it at join, rejoin and import, and a server's raw write of its own record is unchanged |
+| Tests | `cluster::sync::tests::a_node_may_not_change_its_own_address`: a status report passes; changing or dropping `advertise` is refused |
+| Spec \| Code | Task 3 (D35): `cluster::net::Target` is an address and, optionally, the node expected there; every `PeerClient` method takes `impl Into<Target>` (an address string is a `Target` with no node). `PeerClient::dial` makes every connection and, when the target names a node, refuses a certificate whose node id (CN) is another's; pooled connections are keyed by node and address. Pinned: relayed host actions and UI (`api::relay`), console, console log and stats relays (`remote_node_addr`), device operations and topology, image copies (`holder_of`, store copies), and OVN status. Not pinned, by D35's rule: seed and server-list addresses (join, the agent's server list) and Raft's leader lookup (by Raft id, in `glidex-raftstore`) |
+| Tests | `a_request_to_a_known_node_checks_its_certificate`: the agent is answered when the agent is expected; at the agent's address, expecting the server or another id fails on identity; an address alone is answered |
+| Spec \| Code | Task 4 (D35): a relayed host request carries `x-glidex-relayed-to` with the node it was authorized for (`api::relay::RELAYED_TO_HEADER`). `accept_authorized` refuses one naming another node with `409 wrong_node`; a request without the header, from a server too old to send it, runs as before |
+| Tests | `a_relayed_host_request_runs_only_on_the_node_it_names`: the agent refuses a host request naming another node, and doesn't refuse one naming itself. Relayed host actions in the other cluster tests carry the header |
+| Spec \| Code | Task 5 (D36): `Ca::sign_node` takes the addresses the node may name and refuses a CSR naming any other, or a DNS name: `advertise` at first server, join, rejoin and import; the recorded `status.advertise` at renewal. `Target::server(addr)` requires `OU=server` in the peer certificate: the leader (writes, forwarding, read-index, console tickets, the UI gate, departure and import calls), seeds and the agent's server list, join and rejoin, and Raft's RPCs. CA rotation and the hand-over of the CA key to a new server dial the node by id (D35) |
+| Tests | `cluster::pki::tests::a_node_cert_names_only_the_nodes_own_address`: its own address is signed and named; another node's address, alone or beside its own, and a DNS name are refused. `a_request_to_a_known_node_checks_its_certificate`: a dial for a server is answered by the server and refused at the agent's address |
+| Not yet | Refusing a relayed host request without the header, once every server sends it (the next feature level) |
 
 ### Validation against real OVN and conntrack (after C8)
 

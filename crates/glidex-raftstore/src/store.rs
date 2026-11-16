@@ -221,6 +221,8 @@ pub enum StoreError {
     Storage(#[from] redb::StorageError),
     #[error("Commit error: {0}")]
     Commit(#[from] redb::CommitError),
+    #[error("Durability error: {0}")]
+    Durability(#[from] redb::SetDurabilityError),
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),
     #[error("not the leader (leader: {leader:?})")]
@@ -283,7 +285,17 @@ impl<S: Schema> SnapshotView<S> {
 
 /// Largest write set a replicated store accepts, unless its schema says
 /// otherwise ([`Schema::MAX_WRITE_SET_BYTES`]).
-pub const MAX_WRITE_SET_BYTES: usize = 4 * 1024 * 1024;
+/// Small enough that an append of [`MAX_APPEND_ENTRIES`] of them reaches a
+/// member within a heartbeat: openraft 0.9 gives each append that long,
+/// and one that never fits is retried for ever (spec/14-clustering.md D24).
+pub const MAX_WRITE_SET_BYTES: usize = 1024 * 1024;
+/// Most entries the leader sends a member in one append.
+pub const MAX_APPEND_ENTRIES: u64 = 4;
+/// The largest append a member may receive: [`MAX_APPEND_ENTRIES`] write
+/// sets at their limit, and room for the entries around them. A smaller
+/// limit on the receiving side refuses such an append on every retry, and
+/// the log stops there (spec/14-clustering.md §6.2).
+pub const MAX_APPEND_BYTES: usize = MAX_WRITE_SET_BYTES * (MAX_APPEND_ENTRIES as usize + 1);
 
 /// A write transaction that records what it writes. Dropping it without
 /// [`Tx::commit`] aborts it. It holds the write lane until then: one write
@@ -394,8 +406,17 @@ impl<'tx, S: Schema> Deref for RecTable<'tx, S> {
 }
 
 impl<S: Schema> RecTable<'_, S> {
+    /// Put `value` at `key`. Writing the value the key already holds
+    /// records nothing, so a write that changes nothing makes no Raft entry
+    /// (glidex spec/14-clustering.md D29).
     pub fn insert(&mut self, key: &str, value: &[u8]) -> Result<(), redb::StorageError> {
-        self.table.insert(key, value)?;
+        if self
+            .table
+            .insert(key, value)?
+            .is_some_and(|old| old.value() == value)
+        {
+            return Ok(());
+        }
         self.ops.borrow_mut().push(Op::Put {
             table: self.id,
             key: key.as_bytes().to_vec(),
@@ -491,10 +512,53 @@ pub struct Db<S: Schema> {
     /// Every committed write set, in order, when journaling is on (tests).
     journal: Mutex<Option<Vec<WriteSet<S>>>>,
     forwarder: Mutex<Option<Arc<dyn Forwarder<S>>>>,
+    checkpoints: Mutex<Checkpoints>,
+}
+
+/// A checkpoint comes once this many entries were applied without one
+/// (spec/14-clustering.md D31)...
+pub const CHECKPOINT_ENTRIES: u64 = 100;
+/// ...or this long after the last one.
+pub const CHECKPOINT_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Applies committed without a flush since the last checkpoint (D31).
+struct Checkpoints {
+    pending: u64,
+    since: std::time::Instant,
+}
+
+/// Makes sure a redb file exists at `path`, made whole: a new one is built
+/// beside it (`<path>.new`) and renamed into place, then the directory is
+/// synced. redb writes a new file's header before its magic number, and
+/// refuses a file without one ever after ("invalid data"), so a kill while
+/// it creates the file in place leaves a store nothing opens. A kill here
+/// leaves no file or a complete one; a leftover `.new` is half made and
+/// holds nothing, so it is deleted.
+pub fn create_whole(path: &Path) -> Result<(), StoreError> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".new");
+    let new = std::path::PathBuf::from(name);
+    match std::fs::remove_file(&new) {
+        Ok(()) => tracing::warn!("removed the half-made store file {}", new.display()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(e.into()),
+    }
+    if path.exists() {
+        return Ok(());
+    }
+    drop(redb::Database::create(&new)?);
+    std::fs::rename(&new, path)?;
+    let dir = match path.parent() {
+        Some(d) if !d.as_os_str().is_empty() => d,
+        _ => Path::new("."),
+    };
+    std::fs::File::open(dir)?.sync_all()?;
+    Ok(())
 }
 
 impl<S: Schema> Db<S> {
     pub fn create(path: impl AsRef<Path>) -> Result<Db<S>, StoreError> {
+        create_whole(path.as_ref())?;
         let inner = redb::Database::create(path.as_ref())?;
         // Reads open tables that nothing may have written yet.
         let txn = inner.begin_write()?;
@@ -511,6 +575,10 @@ impl<S: Schema> Db<S> {
             lane: Mutex::new(()),
             journal: Mutex::new(None),
             forwarder: Mutex::new(None),
+            checkpoints: Mutex::new(Checkpoints {
+                pending: 0,
+                since: std::time::Instant::now(),
+            }),
         };
         // The replay check: journal every write of this database. A
         // database that already holds data can't be rebuilt from its
@@ -682,30 +750,133 @@ impl<S: Schema> Db<S> {
         revision: u64,
         also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
     ) -> Result<(), StoreError> {
-        if ws.format > WRITE_SET_FORMAT {
+        self.apply_batch(vec![(ws.clone(), revision)], also)
+    }
+
+    /// Apply write sets in order, all in one transaction (spec
+    /// 14-clustering.md D32): one commit for a batch of Raft entries, not
+    /// one each. All or none of them land. Once committed, the revision
+    /// advances through each entry's in turn, and subscribers hear each
+    /// one in order.
+    pub fn apply_batch(
+        &self,
+        batch: Vec<(WriteSet<S>, u64)>,
+        also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        self.apply_batch_with(batch, false, also)
+    }
+
+    /// [`apply_batch`](Self::apply_batch) without a flush, unless the batch
+    /// is due to be a checkpoint: it brings the applies since the last one
+    /// to [`CHECKPOINT_ENTRIES`], or comes [`CHECKPOINT_INTERVAL`] after it
+    /// (spec/14-clustering.md D31). Only for entries a log keeps: a crash
+    /// loses what was applied since the last checkpoint, and the log
+    /// applies it again.
+    pub fn apply_checkpointed(
+        &self,
+        batch: Vec<(WriteSet<S>, u64)>,
+        also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        self.apply_batch_with(batch, true, also)
+    }
+
+    fn apply_batch_with(
+        &self,
+        batch: Vec<(WriteSet<S>, u64)>,
+        checkpointed: bool,
+        also: impl FnOnce(&redb::WriteTransaction) -> Result<(), StoreError>,
+    ) -> Result<(), StoreError> {
+        if let Some((ws, _)) = batch.iter().find(|(ws, _)| ws.format > WRITE_SET_FORMAT) {
             return Err(StoreError::Format(ws.format));
         }
-        let txn = self.inner.begin_write()?;
-        for op in &ws.ops {
-            let key = std::str::from_utf8(op.key())
-                .map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
-            let mut t = txn.open_table(definition::<S>(op.table()))?;
-            match op {
-                Op::Put { value, .. } => {
-                    t.insert(key, value.as_slice())?;
-                }
-                Op::Delete { .. } => {
-                    t.remove(key)?;
+        let mut cp = self.checkpoints.lock().unwrap();
+        let n = batch.len() as u64;
+        let durable = !checkpointed
+            || cp.pending + n >= CHECKPOINT_ENTRIES
+            || cp.since.elapsed() >= CHECKPOINT_INTERVAL;
+        let mut txn = self.inner.begin_write()?;
+        if !durable {
+            txn.set_durability(redb::Durability::None)?;
+        }
+        for (ws, _) in &batch {
+            for op in &ws.ops {
+                let key = std::str::from_utf8(op.key())
+                    .map_err(|_| StoreError::UnknownTable("non-utf8 key".into()))?;
+                let mut t = txn.open_table(definition::<S>(op.table()))?;
+                match op {
+                    Op::Put { value, .. } => {
+                        t.insert(key, value.as_slice())?;
+                    }
+                    Op::Delete { .. } => {
+                        t.remove(key)?;
+                    }
                 }
             }
         }
         also(&txn)?;
         txn.commit()?;
-        self.revision.store(revision, Ordering::Release);
-        if !ws.ops.is_empty() {
-            self.published(revision, ws.clone());
+        // A durable commit makes every commit before it durable too.
+        if durable {
+            *cp = Checkpoints {
+                pending: 0,
+                since: std::time::Instant::now(),
+            };
+        } else {
+            cp.pending += n;
+        }
+        drop(cp);
+        // Each revision before its announcement: a subscriber that hears
+        // revision r finds `revision()` at r or past it.
+        for (ws, revision) in batch {
+            self.revision.store(revision, Ordering::Release);
+            if !ws.ops.is_empty() {
+                self.published(revision, ws);
+            }
         }
         Ok(())
+    }
+
+    /// Make every apply so far durable: an empty durable commit, when
+    /// [`apply_checkpointed`](Self::apply_checkpointed) left any unflushed.
+    pub fn checkpoint(&self) -> Result<(), StoreError> {
+        self.checkpoint_when(|_| true)
+    }
+
+    /// [`checkpoint`](Self::checkpoint), once [`CHECKPOINT_INTERVAL`] has
+    /// passed since the last one: for a timer, when no batch comes to carry
+    /// it.
+    pub fn checkpoint_if_due(&self) -> Result<(), StoreError> {
+        self.checkpoint_when(|cp| cp.since.elapsed() >= CHECKPOINT_INTERVAL)
+    }
+
+    fn checkpoint_when(&self, due: impl FnOnce(&Checkpoints) -> bool) -> Result<(), StoreError> {
+        let mut cp = self.checkpoints.lock().unwrap();
+        if cp.pending == 0 || !due(&cp) {
+            return Ok(());
+        }
+        self.inner.begin_write()?.commit()?;
+        *cp = Checkpoints {
+            pending: 0,
+            since: std::time::Instant::now(),
+        };
+        Ok(())
+    }
+
+    /// For tests: copy the database file to `to` as a crash of the process
+    /// now would leave it. No commit lands during the copy (it holds the
+    /// write transaction), and what wasn't flushed is in the copy only as
+    /// the process's page cache had it, which redb rolls back on opening.
+    #[doc(hidden)]
+    pub fn crash_image(&self, path: &Path, to: &Path) -> Result<(), StoreError> {
+        let txn = self.inner.begin_write()?;
+        std::fs::copy(path, to)?;
+        txn.abort()?;
+        Ok(())
+    }
+
+    /// Applies committed without a flush since the last checkpoint.
+    pub fn unflushed(&self) -> u64 {
+        self.checkpoints.lock().unwrap().pending
     }
 
     fn published(&self, revision: u64, ws: WriteSet<S>) {
@@ -947,6 +1118,72 @@ mod tests {
     use super::*;
     use crate::testing::{Test, TestOrigin, TestTable};
 
+    /// What a kill leaves while redb creates a file (#317): sized, with the
+    /// header written but not its magic number. Opening it in place fails.
+    fn half_made(path: &Path) {
+        let mut bytes = vec![0u8; 1_056_768];
+        bytes[8..16].copy_from_slice(&[0, 4, 0, 0, 0, 0x10, 0, 0]);
+        std::fs::write(path, bytes).unwrap();
+    }
+
+    #[test]
+    fn a_half_made_file_is_refused_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        half_made(&path);
+        assert!(
+            redb::Database::create(&path).is_err(),
+            "redb opens it after all"
+        );
+    }
+
+    #[test]
+    fn a_kill_while_creating_leaves_a_store_that_opens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let mut new = path.as_os_str().to_owned();
+        new.push(".new");
+        half_made(Path::new(&new));
+        let db = Db::<Test>::create(&path).unwrap();
+        assert!(!Path::new(&new).exists(), "the half-made file stays");
+        drop(db);
+        Db::<Test>::create(&path).unwrap();
+    }
+
+    /// The child of the test below: creates the store named in the variable.
+    #[test]
+    fn create_in_a_child() {
+        if let Some(path) = std::env::var_os("GLIDEX_RAFTSTORE_CREATE_CHILD") {
+            Db::<Test>::create(Path::new(&path)).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_store_killed_at_any_point_of_its_creation_opens() {
+        let exe = std::env::current_exe().unwrap();
+        for i in 0..40u64 {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let mut child = std::process::Command::new(&exe)
+                .args([
+                    "--exact",
+                    "store::tests::create_in_a_child",
+                    "--test-threads=1",
+                ])
+                .env("GLIDEX_RAFTSTORE_CREATE_CHILD", &path)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap();
+            // Kill points spread over the child's start and its creation.
+            std::thread::sleep(std::time::Duration::from_micros(i * i * 10));
+            let _ = child.kill();
+            child.wait().unwrap();
+            Db::<Test>::create(&path)
+                .unwrap_or_else(|e| panic!("kill after {} us: {e}", i * i * 10));
+        }
+    }
+
     fn put(tx: &Tx<'_, Test>, t: TestTable, k: &str, v: &[u8]) {
         tx.open_table(definition::<Test>(t))
             .unwrap()
@@ -981,17 +1218,41 @@ mod tests {
         db.write(TestOrigin::Api, |_| -> Result<(), StoreError> { Ok(()) })
             .unwrap();
         assert_eq!(db.revision(), rev);
+        // So does one that puts only the values already held (D29); a put
+        // that changes something is recorded alone.
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Data, "b", b"2");
+            put(tx, TestTable::Other, "u", b"3");
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(db.revision(), rev);
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Data, "b", b"2");
+            put(tx, TestTable::Data, "c", b"5");
+            Ok(())
+        })
+        .unwrap();
+        let last = db.journal().last().unwrap().clone();
+        assert_eq!(
+            last.ops,
+            vec![Op::Put {
+                table: TestTable::Data,
+                key: b"c".to_vec(),
+                value: b"5".to_vec()
+            }]
+        );
         // A failed closure leaves nothing behind, in the database or the journal.
         let failed: Result<(), StoreError> = db.write(TestOrigin::Api, |tx| {
             put(tx, TestTable::Data, "x", b"9");
             Err(StoreError::NotLeader { leader: None })
         });
         assert!(failed.is_err());
-        assert_eq!(db.journal().len(), 2);
+        assert_eq!(db.journal().len(), 3);
 
         let replayed = Db::<Test>::replay(dir.path().join("b.db"), &db.journal()).unwrap();
         assert_eq!(db.dump().unwrap(), replayed.dump().unwrap());
-        assert_eq!(replayed.revision(), 2);
+        assert_eq!(replayed.revision(), 3);
     }
 
     /// Commits once the runtime's timer fires, as Raft's commit waits on
@@ -1082,6 +1343,257 @@ mod tests {
         );
         assert_eq!(a.keys.len(), 2);
         assert!(bell.has_changed().unwrap());
+    }
+
+    fn ws(ops: Vec<Op<Test>>) -> WriteSet<Test> {
+        WriteSet {
+            format: WRITE_SET_FORMAT,
+            origin: TestOrigin::Api,
+            ops,
+        }
+    }
+
+    fn put_op(k: &str, v: &[u8]) -> Op<Test> {
+        Op::Put {
+            table: TestTable::Data,
+            key: k.as_bytes().to_vec(),
+            value: v.to_vec(),
+        }
+    }
+
+    #[test]
+    fn a_batch_lands_whole_and_is_announced_entry_by_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::<Test>::create(dir.path().join("a.db")).unwrap();
+        let mut rx = db.subscribe();
+        let calls = std::cell::Cell::new(0);
+        db.apply_batch(
+            vec![
+                (ws(vec![put_op("a", b"1")]), 5),
+                // A blank or membership entry: no rows, no announcement.
+                (ws(Vec::new()), 6),
+                (
+                    ws(vec![
+                        put_op("a", b"2"),
+                        Op::Delete {
+                            table: TestTable::Data,
+                            key: b"a".to_vec(),
+                        },
+                        put_op("b", b"3"),
+                    ]),
+                    7,
+                ),
+            ],
+            |txn| {
+                calls.set(calls.get() + 1);
+                txn.open_table(definition::<Test>(Test::LOCAL))?
+                    .insert(LAST_APPLIED, b"7".as_slice())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(db.revision(), 7);
+        assert_eq!(
+            db.dump().unwrap(),
+            vec![(TestTable::Data, vec![("b".to_string(), b"3".to_vec())])]
+        );
+        let heard: Vec<u64> = std::iter::from_fn(|| rx.try_recv().ok())
+            .map(|a| a.revision)
+            .collect();
+        assert_eq!(heard, vec![5, 7]);
+        assert_eq!(
+            db.snapshot_view().unwrap().last_applied.as_deref(),
+            Some(b"7".as_slice())
+        );
+
+        // One entry it can't apply, and none of the batch lands.
+        let mut bad = ws(vec![put_op("c", b"4")]);
+        bad.format = WRITE_SET_FORMAT + 1;
+        let r = db.apply_batch(vec![(ws(vec![put_op("d", b"5")]), 8), (bad, 9)], |_| Ok(()));
+        assert!(matches!(r, Err(StoreError::Format(_))), "{r:?}");
+        assert_eq!(db.revision(), 7);
+        assert!(rx.try_recv().is_err());
+        assert_eq!(db.dump().unwrap().len(), 1);
+        let r = db.apply_batch(vec![(ws(vec![put_op("d", b"5")]), 8)], |_| {
+            Err(StoreError::Io(std::io::Error::other("no")))
+        });
+        assert!(r.is_err());
+        assert_eq!(
+            db.dump().unwrap(),
+            vec![(TestTable::Data, vec![("b".to_string(), b"3".to_vec())])]
+        );
+    }
+
+    fn entry(i: u64) -> (WriteSet<Test>, u64) {
+        (ws(vec![put_op(&format!("k{i:03}"), b"v")]), i)
+    }
+
+    #[test]
+    fn checkpointed_applies_flush_every_hundred_entries_or_when_asked() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::<Test>::create(dir.path().join("a.db")).unwrap();
+        for i in 1..=99 {
+            db.apply_checkpointed(vec![entry(i)], |_| Ok(())).unwrap();
+        }
+        assert_eq!(db.unflushed(), 99);
+        // Not a second since the last checkpoint: not due.
+        db.checkpoint_if_due().unwrap();
+        assert_eq!(db.unflushed(), 99);
+        // The batch that reaches 100 is itself the checkpoint.
+        db.apply_checkpointed(vec![entry(100), entry(101)], |_| Ok(()))
+            .unwrap();
+        assert_eq!(db.unflushed(), 0);
+        db.apply_checkpointed(vec![entry(102)], |_| Ok(())).unwrap();
+        assert_eq!(db.unflushed(), 1);
+        db.checkpoint().unwrap();
+        assert_eq!(db.unflushed(), 0);
+        // Durable applies leave nothing to flush.
+        db.apply_batch(vec![entry(103)], |_| Ok(())).unwrap();
+        assert_eq!(db.unflushed(), 0);
+        // A second after the last checkpoint, the timer's is due, and so
+        // is the next batch.
+        db.apply_checkpointed(vec![entry(104)], |_| Ok(())).unwrap();
+        std::thread::sleep(CHECKPOINT_INTERVAL);
+        db.checkpoint_if_due().unwrap();
+        assert_eq!(db.unflushed(), 0);
+        std::thread::sleep(CHECKPOINT_INTERVAL);
+        db.apply_checkpointed(vec![entry(105)], |_| Ok(())).unwrap();
+        assert_eq!(db.unflushed(), 0);
+        assert_eq!(db.revision(), 105);
+        assert_eq!(db.dump().unwrap()[0].1.len(), 105);
+    }
+
+    /// The child of the test below: applies 10 entries and checkpoints,
+    /// applies 5 more, and dies without closing the database.
+    #[test]
+    fn apply_in_a_child_and_die() {
+        let Some(path) = std::env::var_os("GLIDEX_RAFTSTORE_CRASH_CHILD") else {
+            return;
+        };
+        let db = Db::<Test>::create(Path::new(&path)).unwrap();
+        for i in 1..=10 {
+            db.apply_checkpointed(vec![entry(i)], |_| Ok(())).unwrap();
+        }
+        db.checkpoint().unwrap();
+        for i in 11..=15 {
+            db.apply_checkpointed(vec![entry(i)], |_| Ok(())).unwrap();
+        }
+        assert_eq!(db.unflushed(), 5);
+        std::process::abort();
+    }
+
+    /// A mirror whose leader is out of reach: every write is queued, and
+    /// applied to the cache at once.
+    struct Unreachable;
+
+    impl Mirror<Test> for Unreachable {
+        fn submit(&self, _ws: &WriteSet<Test>) -> Result<Submitted, StoreError> {
+            Ok(Submitted::Queued)
+        }
+    }
+
+    /// The child of the test below: a standalone write, a local row and a
+    /// mirror's queued write, each right before the process dies.
+    #[test]
+    fn write_durably_in_a_child_and_die() {
+        let Some(path) = std::env::var_os("GLIDEX_RAFTSTORE_DURABLE_CHILD") else {
+            return;
+        };
+        let db = Db::<Test>::create(Path::new(&path)).unwrap();
+        // Unflushed applies first: the writes below must not depend on them.
+        db.apply_checkpointed(vec![entry(1)], |_| Ok(())).unwrap();
+        let die = |what: &str| {
+            if std::env::var("GLIDEX_RAFTSTORE_DIE_AFTER").as_deref() == Ok(what) {
+                std::process::abort();
+            }
+        };
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Data, "standalone", b"1");
+            Ok(())
+        })
+        .unwrap();
+        die("standalone");
+        db.put_local("local", b"1").unwrap();
+        die("local");
+        db.set_mirror(Arc::new(Unreachable));
+        db.write(TestOrigin::Api, |tx| -> Result<(), StoreError> {
+            put(tx, TestTable::Other, "mirrored", b"1");
+            Ok(())
+        })
+        .unwrap();
+        die("mirror");
+    }
+
+    /// Standalone writes, local rows and a mirror's queued writes stay
+    /// durable whatever the apply setting: a crash right after one keeps it
+    /// (spec/14-clustering.md §6.2b). Nothing else holds them.
+    #[test]
+    fn writes_with_no_log_behind_them_survive_a_crash() {
+        for (what, want) in [
+            ("standalone", vec!["standalone"]),
+            ("local", vec!["standalone", "local"]),
+            ("mirror", vec!["standalone", "local", "mirrored"]),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = dir.path().join("state.db");
+            let status = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "store::tests::write_durably_in_a_child_and_die",
+                    "--test-threads=1",
+                ])
+                .env("GLIDEX_RAFTSTORE_DURABLE_CHILD", &path)
+                .env("GLIDEX_RAFTSTORE_DIE_AFTER", what)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap();
+            assert!(!status.success(), "the child didn't die after {what}");
+            let db = Db::<Test>::create(&path).unwrap();
+            let txn = db.begin_read().unwrap();
+            let has = |t: TestTable, k: &str| {
+                txn.open_table(definition::<Test>(t))
+                    .unwrap()
+                    .get(k)
+                    .unwrap()
+                    .is_some()
+            };
+            let found: Vec<&str> = [
+                (TestTable::Data, "standalone"),
+                (Test::LOCAL, "local"),
+                (TestTable::Other, "mirrored"),
+            ]
+            .into_iter()
+            .filter(|(t, k)| has(*t, k))
+            .map(|(_, k)| k)
+            .collect();
+            assert_eq!(found, want, "after a crash right after the {what} write");
+        }
+    }
+
+    /// What a crash between checkpoints leaves: the state of the last one.
+    #[test]
+    fn a_crash_between_checkpoints_leaves_the_last_checkpoint() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.db");
+        let status = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "store::tests::apply_in_a_child_and_die",
+                "--test-threads=1",
+            ])
+            .env("GLIDEX_RAFTSTORE_CRASH_CHILD", &path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .unwrap();
+        assert!(!status.success(), "the child didn't die");
+        let db = Db::<Test>::create(&path).unwrap();
+        let rows = db.dump().unwrap();
+        let keys: Vec<_> = rows[0].1.iter().map(|(k, _)| k.as_str()).collect();
+        let want: Vec<String> = (1..=10).map(|i| format!("k{i:03}")).collect();
+        assert_eq!(keys, want);
     }
 
     #[test]
