@@ -87,7 +87,7 @@ percent-encoding = "2"
 url = "2"
 # Replicated control plane (spec/14-clustering.md D1); pinned, upgrades reviewed like the CH/OVS pins.
 async-trait = "0.1"
-openraft = { version = "=0.9.25", features = ["serde", "storage-v2", "generic-snapshot-data"] }
+openraft = { version = "=0.9.26", features = ["serde", "storage-v2", "generic-snapshot-data"] }
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }
 x509-parser = { version = "0.18", features = ["verify"] }
 time = "0.3"
