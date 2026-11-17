@@ -43,20 +43,21 @@ impl WriteLog {
     }
 
     /// Follow `db` from now on.
-    pub fn follow(self: &Arc<Self>, db: &Db) {
+    pub fn follow(self: &Arc<Self>, db: &Arc<Db>) {
         let me = self.clone();
         let mut rx = db.subscribe();
-        let start = db.revision();
-        {
-            let mut g = me.inner.lock().unwrap();
-            g.first = start;
-            g.last = start;
-        }
+        me.reset(db.revision());
+        let db = db.clone();
         tokio::spawn(async move {
             loop {
                 match rx.recv().await {
+                    // An installed snapshot (or a re-list): its changes are in
+                    // no write set, so watches from before it list again.
+                    Ok(a) if a.keys.is_empty() => me.reset(a.revision),
                     Ok(a) => me.push(a.revision, a.ws),
-                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => me.reset(),
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => {
+                        me.reset(db.revision())
+                    }
                     Err(tokio::sync::broadcast::error::RecvError::Closed) => return,
                 }
             }
@@ -65,6 +66,10 @@ impl WriteLog {
 
     fn push(&self, rev: u64, ws: Arc<WriteSet>) {
         let mut g = self.inner.lock().unwrap();
+        // Already covered: a lagged receiver catching up past a reset.
+        if rev <= g.last {
+            return;
+        }
         g.entries.push_back((rev, ws));
         g.last = rev;
         while g.entries.len() > self.cap {
@@ -76,10 +81,16 @@ impl WriteLog {
         let _ = self.notify.send(rev);
     }
 
-    fn reset(&self) {
+    /// Forget the log: it is complete again from `rev`, so a watch from
+    /// before it gets `410` and lists, and the list (at `rev` or later) can
+    /// watch on.
+    fn reset(&self, rev: u64) {
         let mut g = self.inner.lock().unwrap();
         g.entries.clear();
-        g.first = g.last + 1_000_000_000;
+        g.first = rev;
+        g.last = rev;
+        drop(g);
+        let _ = self.notify.send(rev);
     }
 
     /// Entries after `from`, or `None` if `from` is older than the log.
@@ -1043,6 +1054,42 @@ mod tests {
                 key: b"old".to_vec()
             }])
             .is_err()
+        );
+    }
+
+    /// A snapshot (or a lagged receiver) resets the log to a revision: older
+    /// watches list again, and a list at that revision watches on.
+    #[test]
+    fn a_reset_log_serves_watches_from_its_revision() {
+        let ws = || {
+            Arc::new(WriteSet {
+                format: WRITE_SET_FORMAT,
+                origin: Origin::Api,
+                ops: vec![put(TableId::Vms, "v", &serde_json::json!({}))],
+            })
+        };
+        let log = WriteLog::new(10);
+        log.reset(5);
+        log.push(6, ws());
+        let (upto, got) = log.after(5, 10).unwrap();
+        assert_eq!((upto, got.len()), (6, 1));
+        // A snapshot at 100: a watch from 6 lists again; one from 100 waits.
+        log.reset(100);
+        assert!(log.after(6, 10).is_none());
+        assert_eq!(
+            log.after(100, 10).map(|(u, e)| (u, e.len())),
+            Some((100, 0))
+        );
+        // Entries a lagged receiver still holds from before are dropped.
+        log.push(50, ws());
+        assert_eq!(
+            log.after(100, 10).map(|(u, e)| (u, e.len())),
+            Some((100, 0))
+        );
+        log.push(101, ws());
+        assert_eq!(
+            log.after(100, 10).map(|(u, e)| (u, e.len())),
+            Some((101, 1))
         );
     }
 }

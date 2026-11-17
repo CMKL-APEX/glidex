@@ -190,6 +190,10 @@ pub struct WriteSet<S: Schema> {
 }
 
 /// What a store subscriber is told after each applied write set.
+///
+/// No `keys` means the tables in `tables` were replaced wholesale (a
+/// mirror's re-list, an installed snapshot): re-read them, and don't take
+/// `ws` as the whole change (a snapshot's is empty).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Applied<S: Schema> {
     pub revision: u64,
@@ -1003,6 +1007,18 @@ impl<S: Schema> Db<S> {
         txn.commit()?;
         self.revision.store(revision, Ordering::Release);
         ring(&self.bell);
+        // Every table may have changed, and no write set says how:
+        // subscribers re-read as after a re-list (no keys).
+        let _ = self.applied.send(Applied {
+            revision,
+            ws: Arc::new(WriteSet {
+                format: WRITE_SET_FORMAT,
+                origin: S::SYSTEM,
+                ops: Vec::new(),
+            }),
+            tables: replicated::<S>().collect(),
+            keys: Vec::new(),
+        });
         Ok(())
     }
 
@@ -1609,9 +1625,18 @@ mod tests {
         let mut buf = Vec::new();
         assert_eq!(a.snapshot_view().unwrap().write_to(&mut buf).unwrap(), 1);
         let b = Db::<Test>::create(dir.path().join("b.db")).unwrap();
+        let mut rx = b.subscribe();
         b.install_dump(&mut buf.as_slice(), 7, |_| Ok(())).unwrap();
         assert_eq!(a.dump().unwrap(), b.dump().unwrap());
         assert_eq!(b.revision(), 7);
+        // Subscribers hear of it as a re-list: every replicated table, no keys.
+        let heard = rx.try_recv().unwrap();
+        assert_eq!(heard.revision, 7);
+        assert!(heard.keys.is_empty() && heard.ws.ops.is_empty());
+        assert_eq!(
+            heard.tables.as_slice(),
+            replicated::<Test>().collect::<Vec<_>>().as_slice()
+        );
         assert_eq!(b.snapshot_view().unwrap().last_applied, None);
         // Another store's snapshot is refused.
         let mut wrong = buf.clone();
