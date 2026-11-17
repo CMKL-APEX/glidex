@@ -119,17 +119,6 @@ fn is_host_local(path: &str) -> bool {
         )
 }
 
-/// What root may ask of an agent's own API socket, which serves nothing else
-/// (spec/14-clustering.md D37): the rejoin that moves the node to a new
-/// address or certificate. Its rejoin token is the credential the cluster
-/// checks; root on the host is who may hand it over.
-pub(crate) fn agent_root_route(path: &str) -> bool {
-    matches!(
-        path,
-        "/cluster/rejoin" | "/glidex.cluster.v1.ClusterService/RejoinCluster"
-    )
-}
-
 pub fn principal_header(p: &Principal) -> Option<String> {
     let mut p = p.clone();
     // The CSRF value is checked where the browser spoke to us.
