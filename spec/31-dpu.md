@@ -91,8 +91,8 @@ IDs are deliberately left out of this document.
 | 14 | DPU reinitialization | An explicit, confirmed, **destructive** operation, `dpu_reinit`: netd writes an operator-supplied, checksum-verified **BFB** to the DPU through `rshim` (`bfb-install`), then re-bootstraps the agent, re-enrols the chassis certificate and re-runs `dpu_prepare`. It runs as an asynchronous **job**, is admin-only, refuses while any DPU-backed VM is running, and is never triggered automatically (§9.4). |
 | 15 | The DPU chassis | Each DPU is a chassis named **`<node id>-dpu`**, next to the host's `<node id>`, enrolled through `ensure_dpu_chassis` with a certificate the leader signs (§8.3, decision 17). It is **never a gateway**: gateways stay on host `br-int`s with the `system` datapath, which external-traffic metering needs (14-clustering.md D22). |
 | 16 | Which chassis a port binds to | A NIC's **backend picks its `requested-chassis`**: `<node>-dpu` for the DPU, `<node>` for the host. The scheduler chooses the backend at placement; a node that falls back at launch reports it, and the leader moves `requested-chassis` to match (§8.4). |
-| 17 | Who enrols the DPU chassis | **The node, with the leader's signature** (2026-11-17, D2). As for the node's own chassis, its controller drives it every half minute: netd asks the DPU for a CSR (`dpu_chassis_csr`), the leader signs it (`POST /cluster/v1/dpu-chassis-cert`, which signs only for the asking node's own `node:<id>-dpu`), and netd hands the certificate and the cluster CA to the DPU (`ensure_dpu_chassis`). Why: the leader can't reach another node's netd; netd is a local socket. The certificate's OU is `glidex-dpu-chassis` and it is for client auth only; the cluster's own mTLS refuses it as a node identity. |
-| 18 | DPU chassis ops | **Ops of their own** (`ensure_dpu_chassis`, `dpu_ovn_status`, `leave_dpu_ovn`, `dpu_chassis_csr`) rather than a `target` on the host's chassis ops (2026-11-17, D2). Why: an older netd ignores an unknown field and would act on the host's chassis; it refuses an unknown op with `protocol_error`. `ovn_status` also takes no arguments, and adding one would break its wire form. |
+| 17 | Who enrols the DPU chassis | **The node, with the leader's signature** (2026-11-17, D2; agreed). As for the node's own chassis, its controller drives it every half minute: netd asks the DPU for a CSR (`dpu_chassis_csr`), the leader signs it (`POST /cluster/v1/dpu-chassis-cert`, which signs only for the asking node's own `node:<id>-dpu`), and netd hands the certificate and the cluster CA to the DPU (`ensure_dpu_chassis`). Why: the leader can't reach another node's netd; netd is a local socket. The certificate's OU is `glidex-dpu-chassis` and it is for client auth only; the cluster's own mTLS refuses it as a node identity. |
+| 18 | DPU chassis ops | **Ops of their own** (`ensure_dpu_chassis`, `dpu_ovn_status`, `leave_dpu_ovn`, `dpu_chassis_csr`) rather than a `target` on the host's chassis ops (2026-11-17, D2; agreed). Why: an older netd ignores an unknown field and would act on the host's chassis; it refuses an unknown op with `protocol_error`. `ovn_status` also takes no arguments, and adding one would break its wire form. |
 
 ## 2. Scope
 
@@ -428,7 +428,7 @@ chassis step (§9.3 step 4).
 - **Version:** the DPU's `ovn-controller` must not be older than the
   cluster's `ovn-northd` series, the rule the cluster applies to every
   chassis (`node::ovn_outdated`: an older controller lacks northd's
-  pipeline; corrected 2026-11-17, this said "newer"); `dpu_probe` reports
+  pipeline; corrected and agreed 2026-11-17, this said "newer"); `dpu_probe` reports
   `ovn_version`, and a DPU that breaks the rule is not enrolled
   (`unsupported { missing: ["ovn>=<series>"] }`). On the test
   pair both are 24.03.8 (finding 11). The DOCA bundle ships the DPU's
