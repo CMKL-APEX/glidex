@@ -1307,6 +1307,7 @@ pub fn offer_admission(
         cluster_name,
         api,
         tls_sha256: fp,
+        scope: crate::trust::OfferScope::Tenant,
         tenant,
         directory,
         offer: o.id.clone(),
@@ -1515,6 +1516,11 @@ pub async fn opt_in_cluster(
             "the offer is for directory {}, not this one ({iss})",
             token.directory
         )));
+    }
+    if token.scope == crate::trust::OfferScope::Directory {
+        return Err(bad(
+            "this is an offer for the whole directory: its owner redeems it, not a tenant (not built yet: 19-tenancy.md T11)".into(),
+        ));
     }
     if token.tenant != t.slug {
         return Err(bad(format!(

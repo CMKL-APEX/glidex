@@ -1,6 +1,7 @@
 //! A cluster built from this crate's pieces, trusting the fake directory:
 //! the whole handshake, the feed, reports, logins and tokens, logouts,
-//! ended chains, a partition and ending trust, both ways.
+//! ended chains, a partition and ending trust, both ways; a directory
+//! trusted as a whole and its tenants' opt-ins (D91–D97).
 
 use glidex_trust::client::{self, Feed};
 use glidex_trust::cluster::{self, Offer};
@@ -8,7 +9,8 @@ use glidex_trust::fake::{FakeDirectory, Handler, Reply, serve_https};
 use glidex_trust::feed::{self, Entity};
 use glidex_trust::key::{self, ClusterKey};
 use glidex_trust::{
-    ClusterReport, EndAtCluster, FeedState, OfferToken, RedeemAnswer, RedeemRequest, Replays,
+    AdmissionStatus, AdmitAnswer, AdmitRequest, AdmitSetting, ClusterReport, EndAtCluster,
+    FeedState, OfferScope, OfferToken, RedeemAnswer, RedeemRequest, RemoteTenant, Replays,
     StorageProjectReport, StorageReport, StorageTenantReport, TrustedDirectory, peer, tokens,
 };
 use serde_json::json;
@@ -22,6 +24,9 @@ struct Cluster {
     key: ClusterKey,
     secret_hash: String,
     offer_open: Mutex<bool>,
+    /// The offer's scope, and a directory offer's setting (D91, D92).
+    scope: OfferScope,
+    admit: AdmitSetting,
     replays: Replays,
     trusted: Mutex<Option<TrustedDirectory>>,
 }
@@ -43,7 +48,9 @@ impl Cluster {
                     open,
                     secret_hash: &self.secret_hash,
                     directory: issuer,
-                    tenant: "acme",
+                    scope: self.scope,
+                    tenant: if self.scope.is_tenant() { "acme" } else { "" },
+                    admit: self.admit,
                 };
                 let Ok(r) = cluster::check_redeem(&a, &b, Some(offer), CLUSTER, &self.replays, now)
                 else {
@@ -59,6 +66,7 @@ impl Cluster {
                         cluster_id: CLUSTER.into(),
                         cluster_key: key::jwks(&[&self.key]),
                         ui_callback: Some(CALLBACK.into()),
+                        admit: r.whole,
                     })
                     .unwrap(),
                 )
@@ -77,13 +85,31 @@ impl Cluster {
                     now,
                 );
                 match found {
-                    Ok(mut d) => {
-                        d.tenants.retain(|t| t.id != b.tenant);
-                        *self.trusted.lock().unwrap() = (!d.tenants.is_empty()).then_some(d);
+                    Ok(d) => {
+                        *self.trusted.lock().unwrap() = cluster::ended(d, &b);
                         Reply::status(200)
                     }
                     Err(_) => refused(),
                 }
+            }
+            "/trust/v1/admit" => {
+                let Ok(b) = serde_json::from_slice::<AdmitRequest>(&req.body) else {
+                    return refused();
+                };
+                let cur = self.trusted.lock().unwrap().clone();
+                let Ok(mut d) = cluster::check_admit(
+                    &a,
+                    &b,
+                    |iss| cur.filter(|d| d.issuer == iss),
+                    CLUSTER,
+                    &self.replays,
+                    now,
+                ) else {
+                    return refused();
+                };
+                let status = cluster::admit(&mut d, &b.tenant);
+                *self.trusted.lock().unwrap() = Some(d);
+                Reply::json(200, serde_json::to_value(AdmitAnswer { status }).unwrap())
             }
             _ => Reply::status(404),
         }
@@ -112,6 +138,8 @@ async fn a_cluster_trusts_the_fake_directory() {
         key: ClusterKey::generate("c1:1").unwrap(),
         secret_hash: glidex_trust::sha256_hex(b"s3cret"),
         offer_open: Mutex::new(true),
+        scope: OfferScope::Tenant,
+        admit: AdmitSetting::Open,
         replays: Replays::default(),
         trusted: Mutex::new(None),
     });
@@ -126,6 +154,7 @@ async fn a_cluster_trusts_the_fake_directory() {
         cluster_name: "north".into(),
         api: https.base.clone(),
         tls_sha256: https.pin.clone(),
+        scope: OfferScope::Tenant,
         tenant: "acme".into(),
         directory: dir.issuer().into(),
         offer: "o1".into(),
@@ -196,6 +225,7 @@ async fn a_cluster_trusts_the_fake_directory() {
         tenants: vec![StorageTenantReport {
             tenant: "t1".into(),
             suspended: false,
+            admission: AdmissionStatus::Admitted,
             storage: storage.clone(),
             // And per project (D89).
             project_storage: vec![StorageProjectReport {
@@ -334,6 +364,8 @@ async fn the_cluster_ends_trust_at_the_directory() {
         key: ClusterKey::generate("c1:1").unwrap(),
         secret_hash: glidex_trust::sha256_hex(b"s"),
         offer_open: Mutex::new(true),
+        scope: OfferScope::Tenant,
+        admit: AdmitSetting::Open,
         replays: Replays::default(),
         trusted: Mutex::new(None),
     });
@@ -348,6 +380,7 @@ async fn the_cluster_ends_trust_at_the_directory() {
         cluster_name: "north".into(),
         api: https.base.clone(),
         tls_sha256: https.pin.clone(),
+        scope: OfferScope::Tenant,
         tenant: "acme".into(),
         directory: dir.issuer().into(),
         offer: "o1".into(),
@@ -433,6 +466,7 @@ async fn the_fake_runs_a_device_login() {
         tenants: vec![],
         created_at: 0,
         max_staleness_minutes: None,
+        whole: None,
     };
     let at = tokens::verify_access_token(v["access_token"].as_str().unwrap(), &d, CLUSTER)
         .expect("an access token for the cluster");
@@ -499,6 +533,8 @@ async fn a_renewed_certificate_is_pinned_once_announced() {
         key: ClusterKey::generate("c1:1").unwrap(),
         secret_hash: glidex_trust::sha256_hex(b"s"),
         offer_open: Mutex::new(true),
+        scope: OfferScope::Tenant,
+        admit: AdmitSetting::Open,
         replays: Replays::default(),
         trusted: Mutex::new(None),
     });
@@ -515,6 +551,7 @@ async fn a_renewed_certificate_is_pinned_once_announced() {
             cluster_name: "north".into(),
             api: api.clone(),
             tls_sha256: pin.into(),
+            scope: OfferScope::Tenant,
             tenant: "acme".into(),
             directory: dir.issuer().into(),
             offer: "o1".into(),
@@ -557,5 +594,201 @@ async fn a_renewed_certificate_is_pinned_once_announced() {
         (old, Some(https.pin.clone()))
     );
     assert_eq!(dir.end_trust(CLUSTER, "t1").await.unwrap(), 200);
+    assert!(c.trusted.lock().unwrap().is_none());
+}
+
+/// D91–D97: the directory's owner redeems a directory offer, its tenants
+/// opt in with no offer of their own, under `open` and then `approval`,
+/// a refused tenant asks again, and the trust ends as a whole.
+#[tokio::test]
+async fn a_directory_trusted_as_a_whole_admits_its_tenants_opt_ins() {
+    let dir = FakeDirectory::start("uni").await.unwrap();
+    let physics = dir.add_tenant("t1", "physics");
+    let chem = dir.add_tenant("t2", "chem");
+    let bio = dir.add_tenant("t3", "bio");
+    let c = Arc::new(Cluster {
+        key: ClusterKey::generate("c1:1").unwrap(),
+        secret_hash: glidex_trust::sha256_hex(b"s"),
+        offer_open: Mutex::new(true),
+        scope: OfferScope::Directory,
+        admit: AdmitSetting::Open,
+        replays: Replays::default(),
+        trusted: Mutex::new(None),
+    });
+    let (c2, iss) = (c.clone(), dir.issuer().to_string());
+    let handler: Handler = Arc::new(move |req| {
+        let (c, iss) = (c2.clone(), iss.clone());
+        Box::pin(async move { c.handle(req, &iss) })
+    });
+    let https = serve_https(handler).await.unwrap();
+    let offer = OfferToken {
+        cluster_id: CLUSTER.into(),
+        cluster_name: "storage".into(),
+        api: https.base.clone(),
+        tls_sha256: https.pin.clone(),
+        scope: OfferScope::Directory,
+        tenant: String::new(),
+        directory: dir.issuer().into(),
+        offer: "o1".into(),
+        secret: "s".into(),
+        expires_at: u64::MAX,
+    }
+    .encode();
+
+    // Before trust, an opt-in has no cluster to go to.
+    assert!(dir.opt_in(CLUSTER, &physics).await.is_err());
+    // A directory offer isn't a tenant's to redeem: the fake refuses to
+    // send it, and the cluster refuses it sent anyway.
+    assert!(dir.redeem(&offer, &physics).await.is_err());
+    assert!(dir.redeem_as(&offer, Some(&physics)).await.is_err());
+    assert!(*c.offer_open.lock().unwrap());
+
+    // The owner redeems it: trusted as a whole, no tenant admitted.
+    let a = dir.trust_cluster(&offer).await.unwrap();
+    assert_eq!(a.admit, Some(AdmitSetting::Open));
+    let d = trusted(&c);
+    assert!(d.tenants.is_empty());
+    assert_eq!(d.whole.as_ref().map(|w| w.admit), Some(AdmitSetting::Open));
+    assert_eq!(
+        dir.cluster(CLUSTER).unwrap().whole,
+        Some(AdmitSetting::Open)
+    );
+
+    // Open: admitted at once, and again idempotently.
+    assert_eq!(
+        dir.opt_in(CLUSTER, &physics).await,
+        Ok(AdmissionStatus::Admitted)
+    );
+    assert_eq!(
+        dir.opt_in(CLUSTER, &physics).await,
+        Ok(AdmissionStatus::Admitted)
+    );
+    assert_eq!(trusted(&c).tenants, vec![physics.clone()]);
+
+    // Approval: pending until the operator decides.
+    c.trusted
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .whole
+        .as_mut()
+        .unwrap()
+        .admit = AdmitSetting::Approval;
+    assert_eq!(
+        dir.opt_in(CLUSTER, &chem).await,
+        Ok(AdmissionStatus::Pending)
+    );
+    assert_eq!(
+        dir.opt_in(CLUSTER, &bio).await,
+        Ok(AdmissionStatus::Pending)
+    );
+    // Asking again keeps one entry (D97).
+    assert_eq!(
+        dir.opt_in(CLUSTER, &bio).await,
+        Ok(AdmissionStatus::Pending)
+    );
+    let mut d = trusted(&c);
+    assert_eq!(d.whole.as_ref().unwrap().pending.len(), 2);
+    // An admitted tenant stays admitted under approval.
+    assert_eq!(d.admission("t1"), Some(AdmissionStatus::Admitted));
+    assert!(cluster::decide(&mut d, "t2", true));
+    assert!(cluster::decide(&mut d, "t3", false));
+    assert!(!cluster::decide(&mut d, "t3", true), "no longer pending");
+    assert_eq!(d.admission("t2"), Some(AdmissionStatus::Admitted));
+    assert_eq!(d.admission("t3"), Some(AdmissionStatus::Refused));
+    *c.trusted.lock().unwrap() = Some(d.clone());
+
+    // The reports carry each status to the directory.
+    let report = ClusterReport {
+        at: glidex_trust::now(),
+        tenants: d
+            .admissions()
+            .into_iter()
+            .map(|(t, a)| StorageTenantReport {
+                tenant: t.id.clone(),
+                suspended: false,
+                admission: a,
+                storage: StorageReport::default(),
+                project_storage: vec![],
+            })
+            .collect::<Vec<_>>(),
+    };
+    client::push_report(&c.key, CLUSTER, &d, &report, None, glidex_trust::now())
+        .await
+        .unwrap();
+    let fc = dir.cluster(CLUSTER).unwrap();
+    assert_eq!(fc.admissions["t2"], AdmissionStatus::Admitted);
+    assert_eq!(fc.admissions["t3"], AdmissionStatus::Refused);
+
+    // A refused tenant may ask again: pending once more (D97).
+    assert_eq!(
+        dir.opt_in(CLUSTER, &bio).await,
+        Ok(AdmissionStatus::Pending)
+    );
+    assert_eq!(trusted(&c).admission("t3"), Some(AdmissionStatus::Pending));
+
+    // A tenant leaving keeps the directory's trust, even the last one.
+    for t in ["t1", "t2", "t3"] {
+        assert_eq!(dir.end_trust(CLUSTER, t).await, Ok(200));
+    }
+    let d = trusted(&c);
+    assert!(d.tenants.is_empty() && d.whole.as_ref().unwrap().pending.is_empty());
+    assert!(dir.cluster(CLUSTER).is_some());
+
+    // The owner ends it as a whole: gone on both sides.
+    assert_eq!(dir.end_trust(CLUSTER, "").await, Ok(200));
+    assert!(c.trusted.lock().unwrap().is_none());
+    assert!(dir.cluster(CLUSTER).is_none());
+}
+
+/// A cluster that trusts a directory only through tenant offers refuses
+/// its opt-ins, and a tenant offer redeemed with no tenant.
+#[tokio::test]
+async fn a_directory_trusted_by_tenant_offers_cannot_opt_tenants_in() {
+    let dir = FakeDirectory::start("acme").await.unwrap();
+    let tenant = dir.add_tenant("t1", "acme");
+    let other = RemoteTenant {
+        id: "t2".into(),
+        slug: "beta".into(),
+        display_name: String::new(),
+    };
+    let c = Arc::new(Cluster {
+        key: ClusterKey::generate("c1:1").unwrap(),
+        secret_hash: glidex_trust::sha256_hex(b"s"),
+        offer_open: Mutex::new(true),
+        scope: OfferScope::Tenant,
+        admit: AdmitSetting::Open,
+        replays: Replays::default(),
+        trusted: Mutex::new(None),
+    });
+    let (c2, iss) = (c.clone(), dir.issuer().to_string());
+    let handler: Handler = Arc::new(move |req| {
+        let (c, iss) = (c2.clone(), iss.clone());
+        Box::pin(async move { c.handle(req, &iss) })
+    });
+    let https = serve_https(handler).await.unwrap();
+    let offer = OfferToken {
+        cluster_id: CLUSTER.into(),
+        cluster_name: "north".into(),
+        api: https.base.clone(),
+        tls_sha256: https.pin.clone(),
+        scope: OfferScope::Tenant,
+        tenant: "acme".into(),
+        directory: dir.issuer().into(),
+        offer: "o1".into(),
+        secret: "s".into(),
+        expires_at: u64::MAX,
+    }
+    .encode();
+    assert!(dir.trust_cluster(&offer).await.is_err());
+    assert!(dir.redeem_as(&offer, None).await.is_err());
+    let a = dir.redeem(&offer, &tenant).await.unwrap();
+    assert_eq!(a.admit, None);
+    assert!(trusted(&c).whole.is_none());
+    assert!(dir.opt_in(CLUSTER, &other).await.is_err());
+    assert_eq!(trusted(&c).admission("t2"), None);
+    // Its last tenant leaving ends the trust, as before (D66).
+    assert_eq!(dir.end_trust(CLUSTER, "t1").await, Ok(200));
     assert!(c.trusted.lock().unwrap().is_none());
 }
