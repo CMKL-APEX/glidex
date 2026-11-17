@@ -24,6 +24,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 x509-parser = "0.18"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 
 [dev-dependencies]
-rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+tempfile = "3"

@@ -68,8 +68,15 @@ fn default_port_timeout() -> u64 {
     30
 }
 
-/// One DPU of `dpu.json` (§10.1). Keys this milestone doesn't use (`ovn`,
-/// `underlay`, `rshim`, `reinit`, …) are accepted and left for later.
+/// `dpu.json`'s `ovn` (§10.1): the DPU chassis's own settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DpuOvnConfig {
+    /// The DPU's underlay address, its `ovn-encap-ip`.
+    pub encap_ip: std::net::IpAddr,
+}
+
+/// One DPU of `dpu.json` (§10.1). Keys this milestone doesn't use
+/// (`underlay`, `rshim`, `reinit`, …) are accepted and left for later.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DpuConfig {
     pub id: String,
@@ -88,6 +95,9 @@ pub struct DpuConfig {
     /// when left out.
     #[serde(default)]
     pub host_pf: Option<String>,
+    /// The chassis's settings; without them the agent's own `encap_ip`.
+    #[serde(default)]
+    pub ovn: Option<DpuOvnConfig>,
 }
 
 #[derive(Debug, Deserialize)]

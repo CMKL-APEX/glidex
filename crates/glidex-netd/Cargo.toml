@@ -28,3 +28,4 @@ nix = { version = "0.31", features = ["socket", "user", "signal", "fs", "process
 
 [dev-dependencies]
 tempfile = "3"
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring", "x509-parser"] }

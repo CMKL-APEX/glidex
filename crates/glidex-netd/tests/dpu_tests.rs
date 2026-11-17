@@ -475,3 +475,125 @@ fn the_packaged_example_dpu_json_parses() {
     assert_eq!(d.id, "dpu0");
     assert_eq!(d.link.unwrap().iface, "tmfifo_net0");
 }
+
+/// The chassis ops through netd to the real agent code (spec/31-dpu.md
+/// §8.3): netd relays a CSR out and a signed certificate in, and no
+/// private key crosses either way.
+#[test]
+fn the_dpu_chassis_is_enrolled_through_the_agent_without_its_key() {
+    use glidex_netd::dpu_chassis::DpuChassisCerts;
+    use rcgen::{
+        BasicConstraints, CertificateParams, CertificateSigningRequestParams, DnType, IsCa, Issuer,
+        KeyPair,
+    };
+
+    let dir = TempDir::new().unwrap();
+    let exec = dpu_exec();
+    exec.on(
+        "ovs-vsctl --format=json --columns=external_ids list Open_vSwitch",
+        glidex_dpu::Output::ok(r#"{"data":[[["map",[]]]],"headings":["external_ids"]}"#),
+    );
+    exec.on(
+        "ovs-vsctl --format=json --columns=name,datapath_type find Bridge",
+        glidex_dpu::Output::ok(
+            r#"{"data":[["br-int","doca"]],"headings":["name","datapath_type"]}"#,
+        ),
+    );
+    let mut agent = Agent::new(exec.clone());
+    agent.chassis.dir = dir.path().join("dpu-ovn");
+    let backend = Arc::new(DpuBackend::new(
+        dpu::parse(
+            br#"{"dpus":[{"id":"dpu0","agent":"tcp://192.0.2.2:7443",
+            "tls":{"ca":"/nonexistent/ca.pem","cert":"/nonexistent/c.pem","key":"/nonexistent/c.key"},
+            "ovn":{"encap_ip":"192.0.2.31"}}]}"#,
+        )
+        .unwrap(),
+        Arc::new(agent),
+    ));
+    let config = Config {
+        run_dir: dir.path().join("run"),
+        state_path: dir.path().join("netd.db"),
+        ..Config::default()
+    };
+    let netd = Netd::new(host_exec(1), Arc::new(FakeSupervisor::default()), config)
+        .unwrap()
+        .with_dpu(backend.clone())
+        .with_dpu_chassis(backend);
+
+    let wrong = netd
+        .handle(
+            Op::DpuChassisCsr {
+                id: "dpu9".into(),
+                chassis: "node:node-a-dpu".into(),
+            },
+            &root(),
+        )
+        .unwrap_err();
+    assert_eq!(wrong.code(), "not_found");
+
+    let answer = netd
+        .handle(
+            Op::DpuChassisCsr {
+                id: "dpu0".into(),
+                chassis: "node:node-a-dpu".into(),
+            },
+            &root(),
+        )
+        .unwrap();
+    let text = answer.to_string();
+    assert!(!text.contains("PRIVATE KEY"), "{text}");
+    let csr_pem = answer["csr"].as_str().unwrap();
+
+    // The leader's part: sign the request's public key with the cluster CA.
+    let ca_key = KeyPair::generate().unwrap();
+    let mut ca = CertificateParams::new(Vec::<String>::new()).unwrap();
+    ca.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+    ca.distinguished_name.push(DnType::CommonName, "cluster CA");
+    let ca_pem = ca.self_signed(&ca_key).unwrap().pem();
+    let mut req = CertificateSigningRequestParams::from_pem(csr_pem).unwrap();
+    req.params.distinguished_name = rcgen::DistinguishedName::new();
+    req.params
+        .distinguished_name
+        .push(DnType::CommonName, "node:node-a-dpu");
+    let cert_pem = req
+        .params
+        .signed_by(&req.public_key, &Issuer::from_params(&ca, &ca_key))
+        .unwrap()
+        .pem();
+
+    let op = Op::EnsureDpuChassis(EnsureDpuChassisArgs {
+        id: "dpu0".into(),
+        chassis: "node:node-a-dpu".into(),
+        sb_remotes: vec!["ssl:192.0.2.11:6642".into()],
+        certs: DpuChassisCerts { cert_pem, ca_pem },
+    });
+    assert!(!serde_json::to_string(&op).unwrap().contains("PRIVATE KEY"));
+    netd.handle(op, &root()).unwrap();
+    let calls = exec.calls();
+    assert!(
+        calls.iter().any(|c| c.starts_with("ovs-vsctl set-ssl")),
+        "{calls:?}"
+    );
+    let set = calls
+        .iter()
+        .find(|c| c.contains("external_ids:system-id=node:node-a-dpu"))
+        .unwrap();
+    assert!(
+        set.contains("external_ids:ovn-encap-ip=192.0.2.31"),
+        "{set}"
+    );
+    assert!(set.contains("external_ids:ovn-remote=ssl:192.0.2.11:6642"));
+    // The key never left the DPU's directory.
+    assert!(dir.path().join("dpu-ovn/chassis.key").exists());
+
+    netd.handle(
+        Op::LeaveDpuOvn {
+            id: "dpu0".into(),
+            confirm: true,
+        },
+        &root(),
+    )
+    .unwrap();
+    assert!(exec.calls().contains(&"ovs-vsctl del-ssl".to_string()));
+    assert!(!dir.path().join("dpu-ovn/chassis.key").exists());
+}
