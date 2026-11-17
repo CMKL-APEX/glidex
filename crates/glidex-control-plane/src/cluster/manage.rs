@@ -494,6 +494,25 @@ pub struct RejoinOptions {
     pub listen: Option<SocketAddr>,
 }
 
+/// The tunnel address a rejoin asks for (D37): the one given; else one the
+/// node had set apart from its cluster address, kept; else the new cluster
+/// address, so a node that moves takes its OVN tunnel with it. `None` for a
+/// host that lost its identity: the cluster keeps the address it has.
+fn rejoin_tunnel_ip(
+    requested: Option<IpAddr>,
+    old: Option<&Identity>,
+    advertise: SocketAddr,
+) -> Option<IpAddr> {
+    if requested.is_some() {
+        return requested;
+    }
+    let old = old?;
+    match old.tunnel_ip {
+        Some(t) if t != old.advertise.ip() => Some(t),
+        _ => Some(advertise.ip()),
+    }
+}
+
 /// §5.7: come back as the same node, with a new certificate. A server whose
 /// Raft state can't be trusted (D18) starts it from nothing and returns as a
 /// learner; one whose state is intact simply resumes.
@@ -519,9 +538,7 @@ pub async fn rejoin(
     let listen = opts.listen.unwrap_or(ccfg.listen);
     let key = NodeKey::generate()?;
     let csr = key.csr(&[advertise.ip()], &[])?;
-    let tunnel_ip = opts
-        .tunnel_ip
-        .or_else(|| old.as_ref().and_then(|i| i.tunnel_ip));
+    let tunnel_ip = rejoin_tunnel_ip(opts.tunnel_ip, old.as_ref(), advertise);
     let req = JoinRequest {
         token: opts.token.clone(),
         csr,
@@ -1369,6 +1386,44 @@ async fn await_pinned(trusting: &PeerClient, server: &str) -> Result<(), Cluster
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_rejoin_moves_the_tunnel_with_the_cluster_address() {
+        use super::{Identity, NodeRole, rejoin_tunnel_ip};
+        let old = |tunnel: Option<&str>| Identity {
+            cluster_id: "c".into(),
+            node_id: "n".into(),
+            raft_id: 7,
+            name: "node-a".into(),
+            role: NodeRole::Agent,
+            advertise: "192.0.2.11:8842".parse().unwrap(),
+            tunnel_ip: tunnel.map(|t| t.parse().unwrap()),
+            ca_fingerprint: "ab".into(),
+            seeds: vec![],
+        };
+        let new = "198.51.100.7:8842".parse().unwrap();
+        let ip = |s: &str| Some(s.parse().unwrap());
+        // It followed the cluster address, or had none of its own: it moves.
+        assert_eq!(
+            rejoin_tunnel_ip(None, Some(&old(Some("192.0.2.11"))), new),
+            ip("198.51.100.7")
+        );
+        assert_eq!(
+            rejoin_tunnel_ip(None, Some(&old(None)), new),
+            ip("198.51.100.7")
+        );
+        // One set apart stays; one asked for wins.
+        assert_eq!(
+            rejoin_tunnel_ip(None, Some(&old(Some("203.0.113.5"))), new),
+            ip("203.0.113.5")
+        );
+        assert_eq!(
+            rejoin_tunnel_ip(ip("203.0.113.9"), Some(&old(None)), new),
+            ip("203.0.113.9")
+        );
+        // No identity left: the cluster keeps what it has.
+        assert_eq!(rejoin_tunnel_ip(None, None, new), None);
+    }
+
     use super::*;
     use crate::datastore::record::{self, NodeRow};
 

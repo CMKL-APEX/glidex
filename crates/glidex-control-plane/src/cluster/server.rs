@@ -560,6 +560,34 @@ pub struct JoinResponse {
 }
 
 /// §5.2 step 3: check the token, sign the certificate, record the node.
+/// D37: a node may not take an address another live node holds, its cluster
+/// address or its tunnel address. A join or rejoin names its own addresses,
+/// and a host with a token could otherwise claim another node's: dials to a
+/// known node check its id (D35), but OVN's tunnels would send that node's
+/// traffic here. Loopback tunnels are left alone: they never cross hosts, and
+/// a cluster run on one machine (the tests) shares one.
+fn address_taken(
+    nodes: &[Node],
+    me: &str,
+    advertise: SocketAddr,
+    tunnel: Option<IpAddr>,
+) -> Option<String> {
+    let tunnel = tunnel.unwrap_or(advertise.ip());
+    nodes
+        .iter()
+        .filter(|n| n.meta.id != me && !n.status.phase.is_tombstone())
+        .find_map(|n| {
+            let theirs = n.status.tunnel_ip.or(n.status.advertise.map(|a| a.ip()));
+            if n.status.advertise == Some(advertise) {
+                Some(format!("{advertise} is node {}'s address", n.spec.name))
+            } else if theirs == Some(tunnel) && !tunnel.is_loopback() {
+                Some(format!("{tunnel} is node {}'s tunnel address", n.spec.name))
+            } else {
+                None
+            }
+        })
+}
+
 async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     let Some(node) = &c.node else {
         return fail(
@@ -628,6 +656,9 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         }
         if existing.iter().any(|n| n.status.raft_id == Some(rec.raft_id)) {
             return Err("that Raft id is taken".to_string());
+        }
+        if let Some(e) = address_taken(&existing, &rec.node_id, rec.advertise, rec.tunnel_ip) {
+            return Err(e);
         }
         let mut n = Node::new(&rec.node_id, NodeSpec { name: rec.name.clone(), role: rec.role, unschedulable: false, labels: Default::default(), br_int_datapath: Default::default(), bridge_mappings: Default::default(), drop_spare_files_before: None, cordoned_devices: Default::default() });
         n.status.advertise = Some(rec.advertise);
@@ -731,6 +762,15 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
             "conflict",
             format!("the node is {:?}: its id is retired", rec.status.phase),
         );
+    }
+    let tunnel = req.tunnel_ip.or(rec.status.tunnel_ip);
+    match store.list() {
+        Ok(all) => {
+            if let Some(e) = address_taken(&all, &target, req.advertise, tunnel) {
+                return fail(StatusCode::CONFLICT, "address_taken", e);
+            }
+        }
+        Err(e) => return fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
     }
     let server = rec.spec.role == NodeRole::Server;
     let (cert_pem, info) = match ca.sign_node(
@@ -1693,4 +1733,52 @@ async fn image_file(
         .header("content-type", "application/octet-stream")
         .body(Body::from_stream(stream))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_node_may_not_take_another_nodes_address() {
+        use super::{Node, NodeRole, NodeSpec, address_taken};
+        let node = |id: &str, adv: &str, tunnel: Option<&str>| {
+            let mut n = Node::new(
+                id,
+                NodeSpec {
+                    name: id.into(),
+                    role: NodeRole::Agent,
+                    unschedulable: false,
+                    labels: Default::default(),
+                    br_int_datapath: Default::default(),
+                    bridge_mappings: Default::default(),
+                    drop_spare_files_before: None,
+                    cordoned_devices: Default::default(),
+                },
+            );
+            n.status.advertise = Some(adv.parse().unwrap());
+            n.status.tunnel_ip = tunnel.map(|t| t.parse().unwrap());
+            n
+        };
+        let nodes = [
+            node("a", "192.0.2.11:8842", None),
+            node("b", "192.0.2.12:8842", Some("198.51.100.12")),
+            node("l1", "127.0.0.1:9001", Some("127.0.0.1")),
+        ];
+        let at = |s: &str| s.parse().unwrap();
+        let ip = |s: &str| Some(s.parse().unwrap());
+        // Its own addresses, or new ones, are fine.
+        assert_eq!(
+            address_taken(&nodes, "a", at("192.0.2.11:8842"), None),
+            None
+        );
+        assert_eq!(
+            address_taken(&nodes, "a", at("203.0.113.5:8842"), None),
+            None
+        );
+        // Another node's cluster address, or its tunnel address, is not.
+        assert!(address_taken(&nodes, "a", at("192.0.2.12:8842"), None).is_some());
+        assert!(address_taken(&nodes, "a", at("203.0.113.5:8842"), ip("198.51.100.12")).is_some());
+        assert!(address_taken(&nodes, "b", at("203.0.113.5:8842"), ip("192.0.2.11")).is_some());
+        // Loopback tunnels never cross hosts: one machine's nodes share one.
+        assert_eq!(address_taken(&nodes, "a", at("127.0.0.1:9002"), None), None);
+    }
 }

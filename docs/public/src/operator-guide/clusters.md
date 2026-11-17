@@ -396,6 +396,36 @@ cargo run -p glidex-install -- --rejoin 192.0.2.11:8842 --token-file rejoin.toke
 Add `--node-id <id>` if the host lost its cluster files. A removed or
 departed node's id is retired; it joins as a new node instead.
 
+### A host moves to a new address
+
+A node keeps the address it joined with until it rejoins: other nodes
+dial it there, its certificate names it, and OVN's tunnels to its VMs
+end there. When the host gets a new address, rejoin it with that address.
+It stays the same node, with its VMs and disks.
+
+On a server:
+
+```bash
+umask 077
+gxctl node rejoin-token node3 > rejoin.token
+```
+
+Copy the token to the host (mode 0600), then on the host:
+
+```bash
+cargo run -p glidex-install -- --rejoin 192.0.2.11:8842 \
+  --advertise 198.51.100.7:8842 --token-file rejoin.token
+```
+
+This works on an agent too: root's rejoin is the one request an agent's
+own API socket takes. The tunnel address follows the new address unless
+the node had one set apart; `--tunnel-ip <ip>` sets it. The cluster
+refuses an address another node uses (`address_taken`).
+
+The host must reach a server from its new address, and the servers must
+reach it there (port 8842, and OVN's Geneve tunnels for cluster
+networks). `--rejoin` may name any server the host reaches from there.
+
 ### End the cluster
 
 On the last node, after every other node has left:

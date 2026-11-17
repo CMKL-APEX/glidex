@@ -7332,3 +7332,156 @@ async fn a_server_joining_from_a_snapshot_follows_the_ovn_setting() {
     })
     .await;
 }
+
+/// D37: an agent whose host moved rejoins at its new address. Root may ask
+/// that of the agent's own socket, which serves nothing else; the cluster
+/// records the new address, and the tunnel address follows it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_agent_rejoins_at_a_new_address() {
+    let _one = serial().await;
+    let cfg = test_config();
+    let server = new_cp();
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    let agent = new_cp();
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
+    agent.manager.initialize().await.unwrap();
+    let agent_id = cluster(&agent).identity.node_id.clone();
+
+    // The agent's own API socket: root gets through to rejoin and nothing else.
+    let mut acfg = Config::default();
+    let group = nix::unistd::Group::from_gid(nix::unistd::getgid())
+        .unwrap()
+        .unwrap()
+        .name;
+    (acfg.users_group, acfg.admin_group) = (group.clone(), group);
+    let no_site_policies = tempfile::tempdir().unwrap();
+    acfg.authz.policy_files_dir = no_site_policies.path().to_path_buf();
+    let auth =
+        glidex_control_plane::auth::AuthService::new(agent.manager.database(), acfg).unwrap();
+    let api = glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App {
+        manager: agent.manager.clone(),
+        auth,
+    }));
+    let local = |uid: u32, method: &str, uri: &str, body: Option<Value>| {
+        let mut req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("content-type", "application/json")
+            .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+            .unwrap();
+        req.extensions_mut()
+            .insert(glidex_control_plane::api::Listener::Api);
+        req.extensions_mut()
+            .insert(glidex_control_plane::api::PeerUid(uid));
+        let api = api.clone();
+        async move {
+            let resp = api.oneshot(req).await.unwrap();
+            let status = resp.status();
+            let body: Value =
+                serde_json::from_slice(&resp.into_body().collect().await.unwrap().to_bytes())
+                    .unwrap_or(Value::Null);
+            (status, body)
+        }
+    };
+    let bad_rejoin = json!({"server": "not-an-address", "token": "x"});
+    // Past the login: the rejoin itself refuses the address.
+    let (s, v) = local(0, "POST", "/cluster/rejoin", Some(bad_rejoin.clone())).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("invalid")),
+        "{v}"
+    );
+    // Anything else, even for root, still says where to log in.
+    let (s, v) = local(0, "GET", "/cluster/status", None).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::FORBIDDEN, Some("agent_no_local_api")),
+        "{v}"
+    );
+    let me = nix::unistd::getuid().as_raw();
+    if me != 0 {
+        let (s, v) = local(me, "POST", "/cluster/rejoin", Some(bad_rejoin)).await;
+        assert_eq!(
+            (s, v["error"].as_str()),
+            (StatusCode::FORBIDDEN, Some("agent_no_local_api")),
+            "only root: {v}"
+        );
+    }
+
+    // The host moved: it rejoins at the new address, and its tunnel follows.
+    let moved: std::net::SocketAddr = format!("127.0.0.2:{}", free_port()).parse().unwrap();
+    let (s, t) = call(
+        &server,
+        "POST",
+        &format!("/nodes/{agent_id}/rejoin-token"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    manage::rejoin(
+        &agent.manager,
+        &cfg,
+        manage::RejoinOptions {
+            server: server.addr,
+            token: t["token"].as_str().unwrap().to_string(),
+            node_id: None,
+            advertise: Some(moved),
+            tunnel_ip: None,
+            listen: Some(moved),
+        },
+    )
+    .await
+    .unwrap();
+    let id = cluster(&agent).identity.clone();
+    assert_eq!(id.node_id, agent_id, "the same node");
+    assert_eq!(id.advertise, moved);
+    assert_eq!(id.tunnel_ip, Some(moved.ip()));
+    let n = node_json(&server, &agent_id).await;
+    assert_eq!(n["status"]["advertise"], moved.to_string(), "{n}");
+    assert_eq!(n["status"]["tunnel_ip"], "127.0.0.2", "{n}");
+    wait_for(
+        "the server to reach the agent at its new address",
+        || async {
+            let n = node_json(&server, &agent_id).await;
+            n["status"]["ready"] == READY
+        },
+    )
+    .await;
+}
