@@ -1338,6 +1338,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         post(issuer::trust_cluster),
     )
     .add(
+        "PATCH",
+        "/directory/clusters/{cluster}",
+        "trustCluster",
+        patch(issuer::update_cluster),
+    )
+    .add(
         "DELETE",
         "/directory/clusters/{cluster}",
         "untrustCluster",

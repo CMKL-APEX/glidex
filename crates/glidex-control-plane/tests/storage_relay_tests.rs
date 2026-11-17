@@ -172,6 +172,8 @@ async fn the_relay_reads_a_trusted_clusters_storage_as_the_person() {
                 ui_callback: None,
                 report: None,
                 whole: None,
+                waiting: Default::default(),
+                auto_opt_in: false,
             })
             .unwrap();
     }
@@ -318,6 +320,8 @@ async fn a_renewal_the_cluster_announced_is_pinned_once_seen() {
             ui_callback: None,
             report: None,
             whole: None,
+            waiting: Default::default(),
+            auto_opt_in: false,
         })
         .unwrap();
     let (_, s) = c.session("alice", true);

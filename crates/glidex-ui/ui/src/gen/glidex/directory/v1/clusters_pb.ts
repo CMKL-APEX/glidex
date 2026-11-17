@@ -18,7 +18,7 @@ import type { Message } from "@bufbuild/protobuf";
  * Describes the file glidex/directory/v1/clusters.proto.
  */
 export const file_glidex_directory_v1_clusters: GenFile = /*@__PURE__*/
-  fileDesc("CiJnbGlkZXgvZGlyZWN0b3J5L3YxL2NsdXN0ZXJzLnByb3RvEhNnbGlkZXguZGlyZWN0b3J5LnYxImkKFkRpcmVjdG9yeUNsdXN0ZXJUZW5hbnQSCgoCaWQYASABKAkSDAoEc2x1ZxgCIAEoCRI1CgZzdGF0dXMYAyABKA4yJS5nbGlkZXguZGlyZWN0b3J5LnYxLkNsdXN0ZXJBZG1pc3Npb24i9AEKEERpcmVjdG9yeUNsdXN0ZXISCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRILCgNhcGkYAyABKAkSDQoFd2hvbGUYBCABKAgSMAoFYWRtaXQYBSABKA4yIS5nbGlkZXguZGlyZWN0b3J5LnYxLkFkbWl0U2V0dGluZxI8Cgd0ZW5hbnRzGAYgAygLMisuZ2xpZGV4LmRpcmVjdG9yeS52MS5EaXJlY3RvcnlDbHVzdGVyVGVuYW50EjoKCmNyZWF0ZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpjcmVhdGVkX2F0Ih4KHExpc3REaXJlY3RvcnlDbHVzdGVyc1JlcXVlc3QiWAodTGlzdERpcmVjdG9yeUNsdXN0ZXJzUmVzcG9uc2USNwoIY2x1c3RlcnMYASADKAsyJS5nbGlkZXguZGlyZWN0b3J5LnYxLkRpcmVjdG9yeUNsdXN0ZXIiJAoTVHJ1c3RDbHVzdGVyUmVxdWVzdBINCgVvZmZlchgBIAEoCSJOChRUcnVzdENsdXN0ZXJSZXNwb25zZRI2CgdjbHVzdGVyGAEgASgLMiUuZ2xpZGV4LmRpcmVjdG9yeS52MS5EaXJlY3RvcnlDbHVzdGVyIigKFVVudHJ1c3RDbHVzdGVyUmVxdWVzdBIPCgdjbHVzdGVyGAEgASgJIhgKFlVudHJ1c3RDbHVzdGVyUmVzcG9uc2UqYQoMQWRtaXRTZXR0aW5nEh0KGUFETUlUX1NFVFRJTkdfVU5TUEVDSUZJRUQQABIWChJBRE1JVF9TRVRUSU5HX09QRU4QARIaChZBRE1JVF9TRVRUSU5HX0FQUFJPVkFMEAIqkwEKEENsdXN0ZXJBZG1pc3Npb24SIQodQ0xVU1RFUl9BRE1JU1NJT05fVU5TUEVDSUZJRUQQABIeChpDTFVTVEVSX0FETUlTU0lPTl9BRE1JVFRFRBABEh0KGUNMVVNURVJfQURNSVNTSU9OX1BFTkRJTkcQAhIdChlDTFVTVEVSX0FETUlTU0lPTl9SRUZVU0VEEAMyjgQKE0NsdXN0ZXJUcnVzdFNlcnZpY2UStgEKFUxpc3REaXJlY3RvcnlDbHVzdGVycxIxLmdsaWRleC5kaXJlY3RvcnkudjEuTGlzdERpcmVjdG9yeUNsdXN0ZXJzUmVxdWVzdBoyLmdsaWRleC5kaXJlY3RvcnkudjEuTGlzdERpcmVjdG9yeUNsdXN0ZXJzUmVzcG9uc2UiNsrpGDIKFXJlYWREaXJlY3RvcnlDbHVzdGVycxABGhdHRVQgL2RpcmVjdG9yeS9jbHVzdGVycxKTAQoMVHJ1c3RDbHVzdGVyEiguZ2xpZGV4LmRpcmVjdG9yeS52MS5UcnVzdENsdXN0ZXJSZXF1ZXN0GikuZ2xpZGV4LmRpcmVjdG9yeS52MS5UcnVzdENsdXN0ZXJSZXNwb25zZSIuyukYKgoMdHJ1c3RDbHVzdGVyEAIaGFBPU1QgL2RpcmVjdG9yeS9jbHVzdGVycxKnAQoOVW50cnVzdENsdXN0ZXISKi5nbGlkZXguZGlyZWN0b3J5LnYxLlVudHJ1c3RDbHVzdGVyUmVxdWVzdBorLmdsaWRleC5kaXJlY3RvcnkudjEuVW50cnVzdENsdXN0ZXJSZXNwb25zZSI8yukYOAoOdW50cnVzdENsdXN0ZXIQAhokREVMRVRFIC9kaXJlY3RvcnkvY2x1c3RlcnMve2NsdXN0ZXJ9YgZwcm90bzM", [file_glidex_api_v1_options, file_google_protobuf_timestamp]);
+  fileDesc("CiJnbGlkZXgvZGlyZWN0b3J5L3YxL2NsdXN0ZXJzLnByb3RvEhNnbGlkZXguZGlyZWN0b3J5LnYxImkKFkRpcmVjdG9yeUNsdXN0ZXJUZW5hbnQSCgoCaWQYASABKAkSDAoEc2x1ZxgCIAEoCRI1CgZzdGF0dXMYAyABKA4yJS5nbGlkZXguZGlyZWN0b3J5LnYxLkNsdXN0ZXJBZG1pc3Npb24ilgIKEERpcmVjdG9yeUNsdXN0ZXISCgoCaWQYASABKAkSDAoEbmFtZRgCIAEoCRILCgNhcGkYAyABKAkSDQoFd2hvbGUYBCABKAgSMAoFYWRtaXQYBSABKA4yIS5nbGlkZXguZGlyZWN0b3J5LnYxLkFkbWl0U2V0dGluZxI8Cgd0ZW5hbnRzGAYgAygLMisuZ2xpZGV4LmRpcmVjdG9yeS52MS5EaXJlY3RvcnlDbHVzdGVyVGVuYW50EjoKCmNyZWF0ZWRfYXQYByABKAsyGi5nb29nbGUucHJvdG9idWYuVGltZXN0YW1wUgpjcmVhdGVkX2F0EiAKC2F1dG9fb3B0X2luGAggASgIUgthdXRvX29wdF9pbiIeChxMaXN0RGlyZWN0b3J5Q2x1c3RlcnNSZXF1ZXN0IlgKHUxpc3REaXJlY3RvcnlDbHVzdGVyc1Jlc3BvbnNlEjcKCGNsdXN0ZXJzGAEgAygLMiUuZ2xpZGV4LmRpcmVjdG9yeS52MS5EaXJlY3RvcnlDbHVzdGVyIkYKE1RydXN0Q2x1c3RlclJlcXVlc3QSDQoFb2ZmZXIYASABKAkSIAoLYXV0b19vcHRfaW4YAiABKAhSC2F1dG9fb3B0X2luIk4KFFRydXN0Q2x1c3RlclJlc3BvbnNlEjYKB2NsdXN0ZXIYASABKAsyJS5nbGlkZXguZGlyZWN0b3J5LnYxLkRpcmVjdG9yeUNsdXN0ZXIiZwodVXBkYXRlRGlyZWN0b3J5Q2x1c3RlclJlcXVlc3QSDwoHY2x1c3RlchgBIAEoCRIlCgthdXRvX29wdF9pbhgCIAEoCEgAUgthdXRvX29wdF9pbogBAUIOCgxfYXV0b19vcHRfaW4iWAoeVXBkYXRlRGlyZWN0b3J5Q2x1c3RlclJlc3BvbnNlEjYKB2NsdXN0ZXIYASABKAsyJS5nbGlkZXguZGlyZWN0b3J5LnYxLkRpcmVjdG9yeUNsdXN0ZXIiKAoVVW50cnVzdENsdXN0ZXJSZXF1ZXN0Eg8KB2NsdXN0ZXIYASABKAkiGAoWVW50cnVzdENsdXN0ZXJSZXNwb25zZSphCgxBZG1pdFNldHRpbmcSHQoZQURNSVRfU0VUVElOR19VTlNQRUNJRklFRBAAEhYKEkFETUlUX1NFVFRJTkdfT1BFThABEhoKFkFETUlUX1NFVFRJTkdfQVBQUk9WQUwQAiqTAQoQQ2x1c3RlckFkbWlzc2lvbhIhCh1DTFVTVEVSX0FETUlTU0lPTl9VTlNQRUNJRklFRBAAEh4KGkNMVVNURVJfQURNSVNTSU9OX0FETUlUVEVEEAESHQoZQ0xVU1RFUl9BRE1JU1NJT05fUEVORElORxACEh0KGUNMVVNURVJfQURNSVNTSU9OX1JFRlVTRUQQAzLNBQoTQ2x1c3RlclRydXN0U2VydmljZRK2AQoVTGlzdERpcmVjdG9yeUNsdXN0ZXJzEjEuZ2xpZGV4LmRpcmVjdG9yeS52MS5MaXN0RGlyZWN0b3J5Q2x1c3RlcnNSZXF1ZXN0GjIuZ2xpZGV4LmRpcmVjdG9yeS52MS5MaXN0RGlyZWN0b3J5Q2x1c3RlcnNSZXNwb25zZSI2yukYMgoVcmVhZERpcmVjdG9yeUNsdXN0ZXJzEAEaF0dFVCAvZGlyZWN0b3J5L2NsdXN0ZXJzEpMBCgxUcnVzdENsdXN0ZXISKC5nbGlkZXguZGlyZWN0b3J5LnYxLlRydXN0Q2x1c3RlclJlcXVlc3QaKS5nbGlkZXguZGlyZWN0b3J5LnYxLlRydXN0Q2x1c3RlclJlc3BvbnNlIi7K6RgqCgx0cnVzdENsdXN0ZXIQAhoYUE9TVCAvZGlyZWN0b3J5L2NsdXN0ZXJzErwBChZVcGRhdGVEaXJlY3RvcnlDbHVzdGVyEjIuZ2xpZGV4LmRpcmVjdG9yeS52MS5VcGRhdGVEaXJlY3RvcnlDbHVzdGVyUmVxdWVzdBozLmdsaWRleC5kaXJlY3RvcnkudjEuVXBkYXRlRGlyZWN0b3J5Q2x1c3RlclJlc3BvbnNlIjnK6Rg1Cgx0cnVzdENsdXN0ZXIQAhojUEFUQ0ggL2RpcmVjdG9yeS9jbHVzdGVycy97Y2x1c3Rlcn0SpwEKDlVudHJ1c3RDbHVzdGVyEiouZ2xpZGV4LmRpcmVjdG9yeS52MS5VbnRydXN0Q2x1c3RlclJlcXVlc3QaKy5nbGlkZXguZGlyZWN0b3J5LnYxLlVudHJ1c3RDbHVzdGVyUmVzcG9uc2UiPMrpGDgKDnVudHJ1c3RDbHVzdGVyEAIaJERFTEVURSAvZGlyZWN0b3J5L2NsdXN0ZXJzL3tjbHVzdGVyfWIGcHJvdG8z", [file_glidex_api_v1_options, file_google_protobuf_timestamp]);
 
 /**
  * @generated from message glidex.directory.v1.DirectoryClusterTenant
@@ -113,6 +113,13 @@ export type DirectoryCluster = Message<"glidex.directory.v1.DirectoryCluster"> &
    * @generated from field: google.protobuf.Timestamp created_at = 7 [json_name = "created_at"];
    */
   createdAt?: Timestamp | undefined;
+
+  /**
+   * The directory opts each of its tenants in by itself (D99).
+   *
+   * @generated from field: bool auto_opt_in = 8 [json_name = "auto_opt_in"];
+   */
+  autoOptIn: boolean;
 };
 
 /**
@@ -161,6 +168,13 @@ export type DirectoryClusterJson = {
    * @generated from field: google.protobuf.Timestamp created_at = 7 [json_name = "created_at"];
    */
   created_at?: TimestampJson;
+
+  /**
+   * The directory opts each of its tenants in by itself (D99).
+   *
+   * @generated from field: bool auto_opt_in = 8 [json_name = "auto_opt_in"];
+   */
+  auto_opt_in?: boolean;
 };
 
 /**
@@ -226,6 +240,13 @@ export type TrustClusterRequest = Message<"glidex.directory.v1.TrustClusterReque
    * @generated from field: string offer = 1;
    */
   offer: string;
+
+  /**
+   * Opt every tenant in by itself, new ones too (D99).
+   *
+   * @generated from field: bool auto_opt_in = 2 [json_name = "auto_opt_in"];
+   */
+  autoOptIn: boolean;
 };
 
 /**
@@ -238,6 +259,13 @@ export type TrustClusterRequestJson = {
    * @generated from field: string offer = 1;
    */
   offer?: string;
+
+  /**
+   * Opt every tenant in by itself, new ones too (D99).
+   *
+   * @generated from field: bool auto_opt_in = 2 [json_name = "auto_opt_in"];
+   */
+  auto_opt_in?: boolean;
 };
 
 /**
@@ -275,6 +303,74 @@ export const TrustClusterResponseSchema: GenMessage<TrustClusterResponse, {jsonT
   messageDesc(file_glidex_directory_v1_clusters, 5);
 
 /**
+ * @generated from message glidex.directory.v1.UpdateDirectoryClusterRequest
+ */
+export type UpdateDirectoryClusterRequest = Message<"glidex.directory.v1.UpdateDirectoryClusterRequest"> & {
+  /**
+   * @generated from field: string cluster = 1;
+   */
+  cluster: string;
+
+  /**
+   * Absent: unchanged.
+   *
+   * @generated from field: optional bool auto_opt_in = 2 [json_name = "auto_opt_in"];
+   */
+  autoOptIn?: boolean | undefined;
+};
+
+/**
+ * @generated from message glidex.directory.v1.UpdateDirectoryClusterRequest
+ */
+export type UpdateDirectoryClusterRequestJson = {
+  /**
+   * @generated from field: string cluster = 1;
+   */
+  cluster?: string;
+
+  /**
+   * Absent: unchanged.
+   *
+   * @generated from field: optional bool auto_opt_in = 2 [json_name = "auto_opt_in"];
+   */
+  auto_opt_in?: boolean;
+};
+
+/**
+ * Describes the message glidex.directory.v1.UpdateDirectoryClusterRequest.
+ * Use `create(UpdateDirectoryClusterRequestSchema)` to create a new message.
+ */
+export const UpdateDirectoryClusterRequestSchema: GenMessage<UpdateDirectoryClusterRequest, {jsonType: UpdateDirectoryClusterRequestJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_clusters, 6);
+
+/**
+ * @generated from message glidex.directory.v1.UpdateDirectoryClusterResponse
+ */
+export type UpdateDirectoryClusterResponse = Message<"glidex.directory.v1.UpdateDirectoryClusterResponse"> & {
+  /**
+   * @generated from field: glidex.directory.v1.DirectoryCluster cluster = 1;
+   */
+  cluster?: DirectoryCluster | undefined;
+};
+
+/**
+ * @generated from message glidex.directory.v1.UpdateDirectoryClusterResponse
+ */
+export type UpdateDirectoryClusterResponseJson = {
+  /**
+   * @generated from field: glidex.directory.v1.DirectoryCluster cluster = 1;
+   */
+  cluster?: DirectoryClusterJson;
+};
+
+/**
+ * Describes the message glidex.directory.v1.UpdateDirectoryClusterResponse.
+ * Use `create(UpdateDirectoryClusterResponseSchema)` to create a new message.
+ */
+export const UpdateDirectoryClusterResponseSchema: GenMessage<UpdateDirectoryClusterResponse, {jsonType: UpdateDirectoryClusterResponseJson}> = /*@__PURE__*/
+  messageDesc(file_glidex_directory_v1_clusters, 7);
+
+/**
  * @generated from message glidex.directory.v1.UntrustClusterRequest
  */
 export type UntrustClusterRequest = Message<"glidex.directory.v1.UntrustClusterRequest"> & {
@@ -299,7 +395,7 @@ export type UntrustClusterRequestJson = {
  * Use `create(UntrustClusterRequestSchema)` to create a new message.
  */
 export const UntrustClusterRequestSchema: GenMessage<UntrustClusterRequest, {jsonType: UntrustClusterRequestJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_clusters, 6);
+  messageDesc(file_glidex_directory_v1_clusters, 8);
 
 /**
  * @generated from message glidex.directory.v1.UntrustClusterResponse
@@ -318,7 +414,7 @@ export type UntrustClusterResponseJson = {
  * Use `create(UntrustClusterResponseSchema)` to create a new message.
  */
 export const UntrustClusterResponseSchema: GenMessage<UntrustClusterResponse, {jsonType: UntrustClusterResponseJson}> = /*@__PURE__*/
-  messageDesc(file_glidex_directory_v1_clusters, 7);
+  messageDesc(file_glidex_directory_v1_clusters, 9);
 
 /**
  * How the cluster treats this directory's tenants' opt-ins (D93).
@@ -424,6 +520,17 @@ export const ClusterTrustService: GenService<{
     methodKind: "unary";
     input: typeof TrustClusterRequestSchema;
     output: typeof TrustClusterResponseSchema;
+  },
+  /**
+   * Change how the directory uses a cluster it trusts as a whole: with
+   * `auto_opt_in`, it opts each of its tenants in by itself (D99).
+   *
+   * @generated from rpc glidex.directory.v1.ClusterTrustService.UpdateDirectoryCluster
+   */
+  updateDirectoryCluster: {
+    methodKind: "unary";
+    input: typeof UpdateDirectoryClusterRequestSchema;
+    output: typeof UpdateDirectoryClusterResponseSchema;
   },
   /**
    * End this directory's trust with a cluster as a whole: every tenant's

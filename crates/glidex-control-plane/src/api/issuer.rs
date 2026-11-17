@@ -459,3 +459,18 @@ pub async fn untrust_cluster(
     .await?;
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
+
+/// `PATCH /directory/clusters/{cluster}` (D99).
+pub async fn update_cluster(
+    c: super::Caller,
+    axum::extract::Path(cluster): axum::extract::Path<String>,
+    Json(mut req): Json<glidex_api::proto::glidex::directory::v1::UpdateDirectoryClusterRequest>,
+) -> Result<
+    Json<glidex_api::proto::glidex::directory::v1::UpdateDirectoryClusterResponse>,
+    super::ApiErr,
+> {
+    req.cluster = cluster;
+    Ok(Json(
+        crate::service::cluster_trust::update_directory_cluster(&c, req).await?,
+    ))
+}

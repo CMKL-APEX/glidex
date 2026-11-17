@@ -1283,7 +1283,17 @@ const SUBCOMMANDS: &[(&str, &[&str])] = &[
     ),
     (
         "directory",
-        &["list", "create", "delete", "keys", "settings"],
+        &[
+            "list",
+            "create",
+            "delete",
+            "keys",
+            "settings",
+            "clusters",
+            "trust-cluster",
+            "cluster-set",
+            "untrust-cluster",
+        ],
     ),
     (
         "disk",

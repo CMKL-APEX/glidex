@@ -211,7 +211,7 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
              | remove-member <t> user:<id>|team:<id> | bindings <t> | bind <t> <tenant-admin|tenant-auditor> <principal> \
              | unbind <t> <link> | device-pools <t> \
              | device-pool set <t> <name> --from <cluster pool> --max N [--projects p1,p2] \
-             | device-pool remove <t> <name> | clusters <t> | opt-in <t> --offer TOKEN | opt-out <t> --cluster ID";
+             | device-pool remove <t> <name> | clusters <t> [--available] | opt-in <t> --offer TOKEN | opt-in <t> --cluster ID | opt-out <t> --cluster ID";
     let Some(t) = transport(client).await else {
         return;
     };
@@ -386,6 +386,7 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
             match svc
                 .list_tenant_clusters(ListTenantClustersRequest {
                     id,
+                    available: crate::has_flag(args, "--available"),
                     ..Default::default()
                 })
                 .await
@@ -394,7 +395,18 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
                 Ok(r) if r.clusters.is_empty() => println!("  No clusters of other organizations."),
                 Ok(r) => {
                     for c in &r.clusters {
-                        println!("  {}  {:<20} {}", c.cluster_id.cyan(), c.name, c.api);
+                        use glidex_api::proto::glidex::tenancy::v1::TenantClusterStatus as S;
+                        let st = match c.status.as_known() {
+                            Some(S::TENANT_CLUSTER_STATUS_PENDING) => {
+                                "pending".yellow().to_string()
+                            }
+                            Some(S::TENANT_CLUSTER_STATUS_REFUSED) => "refused".red().to_string(),
+                            Some(S::TENANT_CLUSTER_STATUS_AVAILABLE) => {
+                                "available: opt-in --cluster".dimmed().to_string()
+                            }
+                            _ => "admitted".green().to_string(),
+                        };
+                        println!("  {}  {:<20} {}  {st}", c.cluster_id.cyan(), c.name, c.api);
                         // Its last report (spec/19-tenancy.md D70).
                         match c.report.as_option() {
                             Some(rep) => {
@@ -431,13 +443,19 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
             }
         }
         "opt-in" => {
-            let (Some(id), Some(offer)) = (id(1), crate::flag_value(args, "--offer")) else {
+            // An offer, or a cluster the directory trusts as a whole (D93).
+            let (offer, cluster) = (
+                crate::flag_value(args, "--offer"),
+                crate::flag_value(args, "--cluster"),
+            );
+            let Some(id) = id(1).filter(|_| offer.is_some() != cluster.is_some()) else {
                 return usage(u);
             };
             match svc
                 .opt_in_cluster(OptInClusterRequest {
                     id: id.clone(),
-                    offer: offer.to_string(),
+                    offer: offer.unwrap_or_default().to_string(),
+                    cluster: cluster.unwrap_or_default().to_string(),
                     ..Default::default()
                 })
                 .await
@@ -445,13 +463,23 @@ pub async fn tenant(client: &ApiClient, args: &[&str]) {
             {
                 Ok(r) => {
                     if let Some(c) = r.cluster.as_option() {
-                        println!(
-                            "  Tenant {} now uses cluster {} ({}) at {}",
-                            id.cyan(),
-                            c.name,
-                            c.cluster_id,
-                            c.api
-                        );
+                        use glidex_api::proto::glidex::tenancy::v1::TenantClusterStatus as S;
+                        if c.status.as_known() == Some(S::TENANT_CLUSTER_STATUS_PENDING) {
+                            println!(
+                                "  Tenant {} asked to use cluster {} ({}): pending its operator's approval",
+                                id.cyan(),
+                                c.name,
+                                c.cluster_id
+                            );
+                        } else {
+                            println!(
+                                "  Tenant {} now uses cluster {} ({}) at {}",
+                                id.cyan(),
+                                c.name,
+                                c.cluster_id,
+                                c.api
+                            );
+                        }
                     }
                 }
                 Err(e) => err(rpc_err(e)),

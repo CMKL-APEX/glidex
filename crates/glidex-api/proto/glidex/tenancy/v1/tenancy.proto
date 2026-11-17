@@ -141,7 +141,9 @@ service TenantService {
     };
   }
   // Redeem a cluster's offer (`gxo_…`): this directory and that cluster
-  // trust each other for the tenant from then on.
+  // trust each other for the tenant from then on. Or opt in to a cluster
+  // the directory trusts as a whole, with no offer: admitted or pending,
+  // by the cluster's setting (spec/19-tenancy.md D93).
   rpc OptInCluster(OptInClusterRequest) returns (OptInClusterResponse) {
     option (glidex.api.v1.op) = {
       action: "manageTenantClusters"
@@ -691,6 +693,19 @@ message TenantCluster {
   // What the cluster last reported of this tenant; absent before its
   // first report.
   TenantClusterReport report = 5;
+  // Where the tenant's opt-in stands (spec/19-tenancy.md D93); `AVAILABLE`:
+  // not opted in, but the directory trusts the cluster as a whole.
+  TenantClusterStatus status = 6;
+  // The directory trusts the cluster as a whole (D92).
+  bool whole = 7;
+}
+
+enum TenantClusterStatus {
+  TENANT_CLUSTER_STATUS_UNSPECIFIED = 0;
+  TENANT_CLUSTER_STATUS_ADMITTED = 1;
+  TENANT_CLUSTER_STATUS_PENDING = 2;
+  TENANT_CLUSTER_STATUS_REFUSED = 3;
+  TENANT_CLUSTER_STATUS_AVAILABLE = 4;
 }
 
 // A cluster's report of one tenant (spec/19-tenancy.md D70).
@@ -726,6 +741,9 @@ message TenantStorageReport {
 
 message ListTenantClustersRequest {
   string id = 1;
+  // Also the clusters the directory trusts as a whole that the tenant
+  // hasn't opted in to (D93).
+  bool available = 2;
 }
 message ListTenantClustersResponse {
   repeated TenantCluster clusters = 1;
@@ -735,6 +753,8 @@ message OptInClusterRequest {
   string id = 1;
   // The `gxo_…` offer token the cluster's operator sent.
   string offer = 2;
+  // Or, with no offer, a cluster the directory trusts as a whole (D93).
+  string cluster = 3;
 }
 message OptInClusterResponse {
   TenantCluster cluster = 1;
