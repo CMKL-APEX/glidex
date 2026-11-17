@@ -4,7 +4,10 @@
 //!
 //! - It **redeems** a cluster's offer ([`FakeDirectory::redeem`]) and
 //!   **ends** trust ([`FakeDirectory::end_trust`]), as a directory's
-//!   tenant administrator would.
+//!   tenant administrator would; it redeems a directory offer
+//!   ([`FakeDirectory::trust_cluster`]) and opts a tenant in to a cluster
+//!   that trusts it as a whole ([`FakeDirectory::opt_in`]), as its owner
+//!   and a tenant's administrator would (D91–D94).
 //! - It **serves** the feed of the rows a test puts in it, takes reports,
 //!   logouts and ended trust, and runs a browser login's `authorize` and
 //!   `token` for the person a test names ([`FakeDirectory::login_as`]).
@@ -26,8 +29,9 @@ use crate::feed::Entity;
 use crate::key::{ClusterKey, Signer, jwks};
 use crate::peer::{self, Replays};
 use crate::wire::{
-    self, EndAtCluster, OfferToken, RedeemAnswer, RedeemRequest, RemoteTenant, Row, Snapshot,
-    StorageProjectReport, StorageReport, normalize_issuer,
+    self, AdmissionStatus, AdmitAnswer, AdmitRequest, EndAtCluster, OfferScope, OfferToken,
+    RedeemAnswer, RedeemRequest, RemoteTenant, Row, Snapshot, StorageProjectReport, StorageReport,
+    normalize_issuer,
 };
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
@@ -237,6 +241,11 @@ pub struct FakeCluster {
     pub jwks: Value,
     /// The tenant ids opted in to it.
     pub tenants: Vec<String>,
+    /// Trusted as a whole (D92): the redeem's answer's setting.
+    pub whole: Option<wire::AdmitSetting>,
+    /// Where each opted-in tenant's admission stands, by tenant id: from
+    /// the admit's answer, then the reports (D93).
+    pub admissions: HashMap<String, AdmissionStatus>,
     pub ui_callback: Option<String>,
     /// Its last report, as it sent it.
     pub report: Option<Value>,
@@ -382,12 +391,46 @@ impl FakeDirectory {
     /// Redeem cluster offer `offer` (`gxo_…`) for `tenant`, as the
     /// tenant's administrator does (D65). The cluster's answer.
     pub async fn redeem(&self, offer: &str, tenant: &RemoteTenant) -> Result<RedeemAnswer, String> {
+        self.redeem_inner(offer, Some(tenant), false).await
+    }
+
+    /// Redeem directory offer `offer`, as the directory's owner does
+    /// (D92): the cluster then trusts this directory as a whole.
+    pub async fn trust_cluster(&self, offer: &str) -> Result<RedeemAnswer, String> {
+        self.redeem_inner(offer, None, false).await
+    }
+
+    /// Redeem `offer` with `tenant` or none, whatever the offer's scope:
+    /// what a directory never sends, for tests of a cluster's checks.
+    pub async fn redeem_as(
+        &self,
+        offer: &str,
+        tenant: Option<&RemoteTenant>,
+    ) -> Result<RedeemAnswer, String> {
+        self.redeem_inner(offer, tenant, true).await
+    }
+
+    async fn redeem_inner(
+        &self,
+        offer: &str,
+        tenant: Option<&RemoteTenant>,
+        force: bool,
+    ) -> Result<RedeemAnswer, String> {
         let t = OfferToken::decode(offer).ok_or("not an offer token")?;
         if normalize_issuer(&t.directory).as_deref() != Some(self.inner.issuer.as_str()) {
             return Err(format!("the offer is for directory {}", t.directory));
         }
-        if t.tenant != tenant.slug {
-            return Err(format!("the offer is for tenant {}", t.tenant));
+        if !force {
+            match (t.scope, tenant) {
+                (OfferScope::Tenant, Some(x)) if x.slug == t.tenant => {}
+                (OfferScope::Tenant, _) => {
+                    return Err(format!("the offer is for tenant {}", t.tenant));
+                }
+                (OfferScope::Directory, None) => {}
+                (OfferScope::Directory, Some(_)) => {
+                    return Err("a directory offer is redeemed by the directory's owner".into());
+                }
+            }
         }
         let now = crate::now();
         let a = peer::assertion(
@@ -402,7 +445,7 @@ impl FakeDirectory {
             secret: t.secret.clone(),
             issuer: self.inner.issuer.clone(),
             directory: self.inner.name.clone(),
-            tenant: tenant.clone(),
+            tenant: tenant.cloned(),
             jwks: self.jwks(),
             api: self.https.base.clone(),
             tls_sha256: self.https.pin.clone(),
@@ -433,6 +476,8 @@ impl FakeDirectory {
                 next_tls_sha256: None,
                 jwks: Value::Null,
                 tenants: Vec::new(),
+                whole: None,
+                admissions: HashMap::new(),
                 ui_callback: None,
                 report: None,
                 storage: HashMap::new(),
@@ -446,22 +491,75 @@ impl FakeDirectory {
             .ui_callback
             .clone()
             .filter(|u| wire::valid_callback(u));
-        if !c.tenants.contains(&tenant.id) {
-            c.tenants.push(tenant.id.clone());
+        if let Some(tenant) = tenant {
+            if !c.tenants.contains(&tenant.id) {
+                c.tenants.push(tenant.id.clone());
+            }
+            c.admissions
+                .insert(tenant.id.clone(), AdmissionStatus::Admitted);
+        }
+        if answer.admit.is_some() {
+            c.whole = answer.admit;
         }
         Ok(answer)
     }
 
-    /// Tenant `tenant` stops using cluster `cluster_id` (D66): forgotten
-    /// here, and the cluster told, its certificate pinned as a directory
-    /// pins it, the announced one too (D88). The cluster's status.
+    /// Tenant `tenant` opts in to cluster `cluster_id`, which trusts this
+    /// directory as a whole, with no offer (D93), as its administrator
+    /// does. The cluster's answer: `admitted` or `pending`; `Err` with
+    /// its status when it refuses.
+    pub async fn opt_in(
+        &self,
+        cluster_id: &str,
+        tenant: &RemoteTenant,
+    ) -> Result<AdmissionStatus, String> {
+        let c = self.cluster(cluster_id).ok_or("no such cluster")?;
+        let a = peer::assertion(
+            &self.inner.key,
+            &self.inner.issuer,
+            cluster_id,
+            wire::ADMIT,
+            crate::now(),
+        )?;
+        let body = AdmitRequest {
+            issuer: self.inner.issuer.clone(),
+            tenant: tenant.clone(),
+        };
+        let (s, v, _) = peer::post_any(
+            &c.api,
+            &wire::accepted_pins(&c.tls_sha256, c.next_tls_sha256.as_deref()),
+            wire::ADMIT_PATH,
+            &a,
+            &serde_json::to_value(&body).map_err(|e| e.to_string())?,
+        )
+        .await?;
+        if s != 200 {
+            return Err(format!("the cluster refused the opt-in ({s})"));
+        }
+        let answer: AdmitAnswer = serde_json::from_value(v).map_err(|e| e.to_string())?;
+        let mut st = self.inner.state.lock().unwrap();
+        if let Some(c) = st.clusters.get_mut(cluster_id) {
+            if !c.tenants.contains(&tenant.id) {
+                c.tenants.push(tenant.id.clone());
+            }
+            c.admissions.insert(tenant.id.clone(), answer.status);
+        }
+        Ok(answer.status)
+    }
+
+    /// Tenant `tenant` stops using cluster `cluster_id` (D66), or, with
+    /// `tenant` empty, the directory's owner ends its trust as a whole
+    /// (D94): forgotten here, and the cluster told, its certificate pinned
+    /// as a directory pins it, the announced one too (D88). The cluster's
+    /// status.
     pub async fn end_trust(&self, cluster_id: &str, tenant: &str) -> Result<u16, String> {
         let c = {
             let mut st = self.inner.state.lock().unwrap();
             let c = st.clusters.get_mut(cluster_id).ok_or("no such cluster")?;
             c.tenants.retain(|t| t != tenant);
+            c.admissions.remove(tenant);
             let c = c.clone();
-            if c.tenants.is_empty() {
+            if tenant.is_empty() || (c.tenants.is_empty() && c.whole.is_none()) {
                 st.clusters.remove(cluster_id);
             }
             c
@@ -737,7 +835,17 @@ impl Inner {
                 // must read as such (D85).
                 let mut storage = HashMap::new();
                 let mut project_storage = HashMap::new();
+                let mut admissions = HashMap::new();
                 for t in b["report"]["tenants"].as_array().into_iter().flatten() {
+                    // Where each opt-in stands (D93): admitted when left out.
+                    if let Some(id) = t["tenant"].as_str() {
+                        match serde_json::from_value::<AdmissionStatus>(
+                            t.get("admission").cloned().unwrap_or(json!("admitted")),
+                        ) {
+                            Ok(a) => admissions.insert(id.to_string(), a),
+                            Err(_) => return Reply::status(422),
+                        };
+                    }
                     if let Some(ps) = t.get("project_storage") {
                         match serde_json::from_value::<Vec<StorageProjectReport>>(ps.clone()) {
                             Ok(ps) => project_storage
@@ -757,6 +865,11 @@ impl Inner {
                 if let Some(c) = st.clusters.get_mut(c) {
                     c.report = Some(b["report"].clone());
                     c.storage = storage;
+                    for (id, a) in admissions {
+                        if c.tenants.contains(&id) {
+                            c.admissions.insert(id, a);
+                        }
+                    }
                     wire::announce_pin(
                         &c.tls_sha256,
                         &mut c.next_tls_sha256,
@@ -774,10 +887,12 @@ impl Inner {
             }),
             ("POST", "/trust/v1/end") => self.peer(&req, wire::END, |me, c, b| {
                 let mut st = me.state.lock().unwrap();
+                let tenant = b["tenant"].as_str().unwrap_or_default();
                 if let Some(x) = st.clusters.get_mut(c) {
-                    x.tenants
-                        .retain(|t| Some(t.as_str()) != b["tenant"].as_str());
-                    if x.tenants.is_empty() {
+                    x.tenants.retain(|t| t != tenant);
+                    x.admissions.remove(tenant);
+                    // No tenant: the cluster ended the whole trust (D94).
+                    if tenant.is_empty() || (x.tenants.is_empty() && x.whole.is_none()) {
                         st.clusters.remove(c);
                     }
                 }

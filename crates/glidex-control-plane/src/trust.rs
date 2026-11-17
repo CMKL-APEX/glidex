@@ -10,8 +10,8 @@ use std::sync::Arc;
 
 pub use glidex_trust::{
     END, EndedChains, FEED, FEED_TABLES, FeedState, LOGIN_SECS, LOGOUT, OFFER_DAYS, OFFER_MAX_DAYS,
-    OFFER_PREFIX, OfferToken, PendingLogin, PendingLogins, REDEEM, REPORT, RemoteTenant, Row,
-    Snapshot, TrustedDirectory, normalize_issuer, revision_of, trusted_id,
+    OFFER_PREFIX, OfferScope, OfferToken, PendingLogin, PendingLogins, REDEEM, REPORT,
+    RemoteTenant, Row, Snapshot, TrustedDirectory, normalize_issuer, revision_of, trusted_id,
 };
 
 const TRUSTED_DIRECTORIES: TableDefinition<&str, &[u8]> =
@@ -468,6 +468,7 @@ mod tests {
             tenants: vec![],
             created_at: 0,
             max_staleness_minutes: None,
+            whole: None,
         };
         let row = |key: &str| Row {
             table: "users".into(),

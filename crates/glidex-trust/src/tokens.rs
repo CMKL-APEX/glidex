@@ -97,6 +97,7 @@ mod tests {
             tenants: vec![],
             created_at: 0,
             max_staleness_minutes: None,
+            whole: None,
         }
     }
 

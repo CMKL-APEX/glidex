@@ -2050,7 +2050,20 @@ T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started;
 T9 has tasks 1–6 (settings and the label; creating one's own tenant; automatic admission; open pools; the real check, passed on 2026-11-05; a tenant at first sign-in).
 T8 (D75–D77) is implemented; its real check passed on 2026-11-03.
-T11 (D91–D98, §12.6) is specified, not started.
+T11 (D91–D98, §12.6) has task 1: glidex-trust's wire for directory
+offers (`OfferScope`, an optional tenant on the redeem, `admit` in its
+answer), `AdmitRequest`/`AdmitAnswer` and the `admit` purpose, the end
+with no tenant, a storage report entry's `admission`
+(`StorageTenantReport.admission`; glidex's own `TenantReport` gains it in
+task 3), and the cluster-side checks and
+records (`check_redeem` by scope, `redeemed_directory` making a record
+whole, `check_admit`, `admit`, `decide`, `ended`; `TrustedDirectory.whole`
+with its pending and refused tenants). The fake directory redeems a
+directory offer, opts tenants in and reads their status from reports.
+Glidex's control plane still makes and redeems tenant offers only: its
+directory refuses a directory offer at a tenant's opt-in, and an end
+with no tenant ends the directory's trust and every admission of it.
+Tasks 2–6 are not started.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,

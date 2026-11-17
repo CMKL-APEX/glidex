@@ -13,6 +13,9 @@ pub const FEED: &str = "feed";
 pub const REPORT: &str = "report";
 /// A cluster telling a directory that one of its sessions ended (D72).
 pub const LOGOUT: &str = "logout";
+/// A directory asking a cluster that trusts it as a whole to admit one
+/// of its tenants (D93).
+pub const ADMIT: &str = "admit";
 
 /// The tables a feed carries rows of (D67), by name.
 pub const FEED_TABLES: [&str; 7] = [
@@ -29,6 +32,7 @@ pub const FEED_TABLES: [&str; 7] = [
 /// A cluster's paths, which a directory calls.
 pub const REDEEM_PATH: &str = "/trust/v1/redeem";
 pub const END_PATH: &str = "/trust/v1/end";
+pub const ADMIT_PATH: &str = "/trust/v1/admit";
 
 /// A directory's paths, which a cluster calls: `/d/<directory>` and these.
 pub fn feed_path(directory: &str) -> String {
@@ -162,8 +166,24 @@ pub const OFFER_PREFIX: &str = "gxo_";
 pub const OFFER_DAYS: u64 = 7;
 pub const OFFER_MAX_DAYS: u64 = 30;
 
-/// What an offer token carries (D64): enough for the directory to reach
-/// the cluster, pin it, and redeem the offer.
+/// What an offer is for (D91): one tenant's admission, or trust in the
+/// whole directory, whose tenants then opt in by themselves.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OfferScope {
+    #[default]
+    Tenant,
+    Directory,
+}
+
+impl OfferScope {
+    pub fn is_tenant(&self) -> bool {
+        *self == OfferScope::Tenant
+    }
+}
+
+/// What an offer token carries (D64, D91): enough for the directory to
+/// reach the cluster, pin it, and redeem the offer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OfferToken {
     pub cluster_id: String,
@@ -172,8 +192,13 @@ pub struct OfferToken {
     pub api: String,
     /// Its certificate's SHA-256, 64 hex digits.
     pub tls_sha256: String,
-    /// The tenant's slug and its directory's issuer.
+    /// A tenant offer's is left out, so tokens read as before (D91).
+    #[serde(default, skip_serializing_if = "OfferScope::is_tenant")]
+    pub scope: OfferScope,
+    /// The tenant's slug: a tenant offer's; empty in a directory offer.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub tenant: String,
+    /// The directory's issuer.
     pub directory: String,
     pub offer: String,
     pub secret: String,
@@ -189,12 +214,15 @@ impl OfferToken {
         )
     }
 
+    /// The token `s`, if it is one whose tenant fits its scope: a tenant
+    /// offer names one, a directory offer none.
     pub fn decode(s: &str) -> Option<OfferToken> {
         let b = s.trim().strip_prefix(OFFER_PREFIX)?;
         let json = base64::engine::general_purpose::URL_SAFE_NO_PAD
             .decode(b)
             .ok()?;
-        serde_json::from_slice(&json).ok()
+        let t: OfferToken = serde_json::from_slice(&json).ok()?;
+        (t.tenant.is_empty() == (t.scope == OfferScope::Directory)).then_some(t)
     }
 }
 
@@ -237,12 +265,91 @@ pub struct TrustedDirectory {
     pub tls_sha256: String,
     /// Its signing keys as the handshake brought them (a JWKS).
     pub jwks: Value,
+    /// The tenants admitted here.
     pub tenants: Vec<RemoteTenant>,
     pub created_at: u64,
     /// How long its credentials stay good after its last feed (D13);
     /// `None`: the cluster's default.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_staleness_minutes: Option<u64>,
+    /// Trusted as a whole (D92): its tenants opt in by themselves. `None`:
+    /// only the tenants it redeemed offers for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole: Option<WholeDirectory>,
+}
+
+/// How a cluster treats the opt-ins of a directory it trusts as a whole
+/// (D93; hyperstor's D346).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AdmitSetting {
+    /// Admitted at once.
+    #[default]
+    Open,
+    /// Pending until the cluster's operator approves or refuses.
+    Approval,
+}
+
+/// Where a tenant's opt-in stands at a cluster (D93).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AdmissionStatus {
+    #[default]
+    Admitted,
+    Pending,
+    Refused,
+}
+
+impl AdmissionStatus {
+    pub fn is_admitted(&self) -> bool {
+        *self == AdmissionStatus::Admitted
+    }
+}
+
+/// A directory trusted as a whole (D92, D93): its setting, and the
+/// opt-ins not admitted (yet).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WholeDirectory {
+    pub admit: AdmitSetting,
+    pub since: u64,
+    /// Waiting for the operator, one entry per tenant (D97).
+    #[serde(default)]
+    pub pending: Vec<RemoteTenant>,
+    /// Refused, kept until the tenant asks again, so the reports say so.
+    #[serde(default)]
+    pub refused: Vec<RemoteTenant>,
+}
+
+impl TrustedDirectory {
+    /// Where tenant `id`'s opt-in stands here: `None` if it has none.
+    pub fn admission(&self, id: &str) -> Option<AdmissionStatus> {
+        if self.tenants.iter().any(|t| t.id == id) {
+            return Some(AdmissionStatus::Admitted);
+        }
+        let w = self.whole.as_ref()?;
+        if w.pending.iter().any(|t| t.id == id) {
+            Some(AdmissionStatus::Pending)
+        } else if w.refused.iter().any(|t| t.id == id) {
+            Some(AdmissionStatus::Refused)
+        } else {
+            None
+        }
+    }
+
+    /// Every tenant with an opt-in here and its status, for the reports:
+    /// admitted first.
+    pub fn admissions(&self) -> Vec<(&RemoteTenant, AdmissionStatus)> {
+        let mut v: Vec<_> = self
+            .tenants
+            .iter()
+            .map(|t| (t, AdmissionStatus::Admitted))
+            .collect();
+        if let Some(w) = &self.whole {
+            v.extend(w.pending.iter().map(|t| (t, AdmissionStatus::Pending)));
+            v.extend(w.refused.iter().map(|t| (t, AdmissionStatus::Refused)));
+        }
+        v
+    }
 }
 
 /// The id a trusted directory's records take here.
@@ -251,14 +358,16 @@ pub fn trusted_id(issuer: &str) -> String {
     format!("trusted-{}", &h[..16])
 }
 
-/// `POST /trust/v1/redeem`'s body, from the directory (D65).
+/// `POST /trust/v1/redeem`'s body, from the directory (D65, D92).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RedeemRequest {
     pub offer: String,
     pub secret: String,
     pub issuer: String,
     pub directory: String,
-    pub tenant: RemoteTenant,
+    /// A tenant offer's tenant; `None` for a directory offer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant: Option<RemoteTenant>,
     pub jwks: Value,
     pub api: String,
     pub tls_sha256: String,
@@ -273,19 +382,41 @@ pub struct RedeemAnswer {
     /// Where the directory sends the cluster's browser logins back (D69).
     #[serde(default)]
     pub ui_callback: Option<String>,
+    /// A directory offer's: how the cluster treats opt-ins (D92).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admit: Option<AdmitSetting>,
 }
 
-/// `POST /trust/v1/end`'s body, at the cluster (D66).
+/// `POST /trust/v1/admit`'s body, from a directory the cluster trusts as
+/// a whole (D93).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdmitRequest {
+    pub issuer: String,
+    pub tenant: RemoteTenant,
+}
+
+/// The cluster's answer to an admit: `admitted` or `pending`; a refusal
+/// is `403 trust_refused`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AdmitAnswer {
+    pub status: AdmissionStatus,
+}
+
+/// `POST /trust/v1/end`'s body, at the cluster (D66): one tenant leaves;
+/// with `tenant` empty, the directory's trust ends as a whole (D94).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndAtCluster {
     pub issuer: String,
+    #[serde(default)]
     pub tenant: String,
 }
 
-/// `POST /d/<dir>/trust/v1/end`'s body, at the directory (D66).
+/// `POST /d/<dir>/trust/v1/end`'s body, at the directory (D66): as
+/// [`EndAtCluster`], `tenant` empty for the whole directory (D94).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndAtDirectory {
     pub cluster_id: String,
+    #[serde(default)]
     pub tenant: String,
 }
 
@@ -370,6 +501,10 @@ pub struct StorageTenantReport {
     /// Admitted, or suspended (D9).
     #[serde(default)]
     pub suspended: bool,
+    /// Where its opt-in stands (D93); admitted when left out. A tenant
+    /// not admitted holds nothing, so its storage is empty.
+    #[serde(default, skip_serializing_if = "AdmissionStatus::is_admitted")]
+    pub admission: AdmissionStatus,
     pub storage: StorageReport,
     /// The same, per project of the tenant that holds any (D89): the
     /// directory refuses deleting a project while it holds storage here.
@@ -422,6 +557,7 @@ mod tests {
             cluster_name: "north".into(),
             api: "https://north.example:8841".into(),
             tls_sha256: "ab".repeat(32),
+            scope: OfferScope::Tenant,
             tenant: "acme".into(),
             directory: "https://id.acme.example/d/acme".into(),
             offer: "o1".into(),
@@ -430,7 +566,27 @@ mod tests {
         };
         let s = t.encode();
         assert!(s.starts_with(OFFER_PREFIX));
-        assert_eq!(OfferToken::decode(&s), Some(t));
+        assert_eq!(OfferToken::decode(&s), Some(t.clone()));
+        // A tenant offer's token reads as before: no `scope` written.
+        assert!(!serde_json::to_string(&t).unwrap().contains("scope"));
+        // A directory offer (D91) names no tenant; a token whose tenant
+        // doesn't fit its scope isn't one.
+        let whole = OfferToken {
+            scope: OfferScope::Directory,
+            tenant: String::new(),
+            ..t.clone()
+        };
+        assert_eq!(OfferToken::decode(&whole.encode()), Some(whole.clone()));
+        let bad = OfferToken {
+            tenant: "acme".into(),
+            ..whole
+        };
+        assert_eq!(OfferToken::decode(&bad.encode()), None);
+        let bad = OfferToken {
+            tenant: String::new(),
+            ..t.clone()
+        };
+        assert_eq!(OfferToken::decode(&bad.encode()), None);
         assert_eq!(OfferToken::decode("gxo_!!"), None);
         assert_eq!(OfferToken::decode("gxt_abc"), None);
         assert_eq!(

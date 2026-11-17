@@ -235,6 +235,19 @@ async fn an_offer_is_redeemed_between_two_control_planes() {
     );
     let (s, _) = opt_in(offer("acme", "https://other.example/d/x".into()).await).await;
     assert_eq!(s, StatusCode::BAD_REQUEST);
+    // A directory offer (D91) isn't a tenant's to redeem.
+    let mut whole =
+        glidex_control_plane::trust::OfferToken::decode(&offer("acme", issuer.clone()).await)
+            .unwrap();
+    whole.scope = glidex_control_plane::trust::OfferScope::Directory;
+    whole.tenant.clear();
+    let (s, v) = opt_in(whole.encode()).await;
+    assert_eq!(
+        (s, v["error"].as_str()),
+        (StatusCode::BAD_REQUEST, Some("offer_refused")),
+        "{v}"
+    );
+    assert!(v.to_string().contains("whole directory"), "{v}");
 
     // Redeemed.
     let token = offer("acme", issuer.clone()).await;
@@ -336,6 +349,30 @@ async fn an_offer_is_redeemed_between_two_control_planes() {
     assert!(
         v["directories"].as_array().is_none_or(|a| a.is_empty()),
         "the cluster was told: {v}"
+    );
+    let (_, v) = north.rest("GET", "/admissions", None, &op).await;
+    assert!(!v.to_string().contains(&tenant), "{v}");
+
+    // Ending a directory's trust as a whole (D94, an end with no tenant)
+    // forgets it and every admission of it.
+    let (s, v) = opt_in(offer("acme", issuer.clone()).await).await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let mut d = north
+        .app
+        .auth
+        .trust
+        .directory_by_issuer(&issuer)
+        .unwrap()
+        .unwrap();
+    glidex_control_plane::api::trust::forget_tenant_here(&north.app, &mut d, "");
+    assert!(
+        north
+            .app
+            .auth
+            .trust
+            .directory_by_issuer(&issuer)
+            .unwrap()
+            .is_none()
     );
     let (_, v) = north.rest("GET", "/admissions", None, &op).await;
     assert!(!v.to_string().contains(&tenant), "{v}");
