@@ -484,6 +484,9 @@ same ids and names.
 |  | `RevokeInvitation` | `DELETE /invitations/{id}` |
 | `DirectorySettingsService` | `GetDirectorySettings` | `GET /directory/settings` |
 |  | `UpdateDirectorySettings` | `PUT /directory/settings` |
+| `ClusterTrustService` | `ListDirectoryClusters` | `GET /directory/clusters` |
+|  | `TrustCluster` | `POST /directory/clusters` |
+|  | `UntrustCluster` | `DELETE /directory/clusters/{cluster}` |
 | `SigningKeyService` | `ListSigningKeys` | `GET /directory/keys` |
 |  | `RotateSigningKey` | `POST /directory/keys/rotate` |
 

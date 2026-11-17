@@ -9,9 +9,10 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub use glidex_trust::{
-    END, EndedChains, FEED, FEED_TABLES, FeedState, LOGIN_SECS, LOGOUT, OFFER_DAYS, OFFER_MAX_DAYS,
-    OFFER_PREFIX, OfferScope, OfferToken, PendingLogin, PendingLogins, REDEEM, REPORT,
-    RemoteTenant, Row, Snapshot, TrustedDirectory, normalize_issuer, revision_of, trusted_id,
+    AdmitSetting, END, EndedChains, FEED, FEED_TABLES, FeedState, LOGIN_SECS, LOGOUT, OFFER_DAYS,
+    OFFER_MAX_DAYS, OFFER_PREFIX, OfferScope, OfferToken, PendingLogin, PendingLogins, REDEEM,
+    REPORT, RemoteTenant, Row, Snapshot, TrustedDirectory, normalize_issuer, revision_of,
+    trusted_id,
 };
 
 const TRUSTED_DIRECTORIES: TableDefinition<&str, &[u8]> =
@@ -66,9 +67,20 @@ pub struct TrustedCluster {
     /// What it last reported of the opted-in tenants (D70).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub report: Option<ClusterReport>,
+    /// Trusted as a whole (D92): how it treats this directory's tenants'
+    /// opt-ins. `None`: only through tenant offers. Such a record stays
+    /// when its last tenant leaves (D94).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub whole: Option<glidex_trust::AdmitSetting>,
 }
 
 impl TrustedCluster {
+    /// Whether the record goes once `tenants` is empty: one made only by
+    /// tenant offers (D66); a directory-wide one stays (D94).
+    pub fn ends_with_its_tenants(&self) -> bool {
+        self.whole.is_none()
+    }
+
     /// The pins its certificate may have (D88).
     pub fn pins(&self) -> Vec<&str> {
         glidex_trust::accepted_pins(&self.tls_sha256, self.next_tls_sha256.as_deref())

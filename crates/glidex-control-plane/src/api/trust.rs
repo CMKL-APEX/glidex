@@ -229,7 +229,7 @@ pub async fn end_at_directory(
     }
     // No tenant: the cluster ended this directory's trust as a whole (D94).
     c.tenants.retain(|t| *t != b.tenant);
-    let _ = if b.tenant.is_empty() || c.tenants.is_empty() {
+    let _ = if b.tenant.is_empty() || (c.tenants.is_empty() && c.ends_with_its_tenants()) {
         app.auth.trust.remove_cluster(&dir, &c.cluster_id)
     } else {
         app.auth.trust.put_cluster(&c)

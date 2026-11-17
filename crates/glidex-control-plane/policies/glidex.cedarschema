@@ -206,6 +206,12 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   action updateDirectorySettings in ["directory.tenants", "directory-scoped"]
     appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  // Clusters of other organizations the directory trusts as a whole
+  // (spec/19-tenancy.md §12.6, D92, D94).
+  action readDirectoryClusters in ["directory.read", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
+  action trustCluster, untrustCluster in ["directory.tenants", "step-up", "directory-scoped"]
+    appliesTo { principal: [User, Token], resource: [Directory], context: Ctx };
   // SCIM bearer tokens (spec/19-tenancy.md §8.1): who holds one provisions
   // the connector's users.
   action readScimTokens in ["directory.read", "directory-scoped"]

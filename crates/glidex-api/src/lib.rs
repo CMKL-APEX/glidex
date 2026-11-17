@@ -146,6 +146,7 @@ mod tests {
                 "glidex.cluster.v1.ClusterService",
                 "glidex.cluster.v1.NodeService",
                 "glidex.cluster.v1.ImportService",
+                "glidex.directory.v1.ClusterTrustService",
                 "glidex.directory.v1.ConnectorService",
                 "glidex.directory.v1.FederationService",
                 "glidex.directory.v1.InvitationService",

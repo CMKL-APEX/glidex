@@ -1,0 +1,95 @@
+// Clusters of other organizations this directory trusts as a whole
+// (spec/19-tenancy.md §12.6, D91–D94): its owner redeems a cluster's
+// directory offer once, and the directory's tenants then opt in to that
+// cluster without an offer of their own.
+syntax = "proto3";
+
+package glidex.directory.v1;
+
+import "glidex/api/v1/options.proto";
+import "google/protobuf/timestamp.proto";
+
+service ClusterTrustService {
+  // The clusters of other organizations this directory trusts: as a
+  // whole, or for some tenants through tenant offers.
+  rpc ListDirectoryClusters(ListDirectoryClustersRequest) returns (ListDirectoryClustersResponse) {
+    option (glidex.api.v1.op) = {
+      action: "readDirectoryClusters"
+      kind: KIND_READ
+      rest: "GET /directory/clusters"
+    };
+  }
+  // Redeem a cluster's directory offer (`gxo_…` with scope `directory`):
+  // the cluster trusts this directory as a whole from then on (D92).
+  rpc TrustCluster(TrustClusterRequest) returns (TrustClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "trustCluster"
+      kind: KIND_WRITE
+      rest: "POST /directory/clusters"
+    };
+  }
+  // End this directory's trust with a cluster as a whole: every tenant's
+  // too (D94). The cluster is told.
+  rpc UntrustCluster(UntrustClusterRequest) returns (UntrustClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "untrustCluster"
+      kind: KIND_WRITE
+      rest: "DELETE /directory/clusters/{cluster}"
+    };
+  }
+}
+
+// How the cluster treats this directory's tenants' opt-ins (D93).
+enum AdmitSetting {
+  ADMIT_SETTING_UNSPECIFIED = 0;
+  // Admitted at once.
+  ADMIT_SETTING_OPEN = 1;
+  // Pending until the cluster's operator approves or refuses.
+  ADMIT_SETTING_APPROVAL = 2;
+}
+
+// Where a tenant's opt-in stands at the cluster (D93).
+enum ClusterAdmission {
+  CLUSTER_ADMISSION_UNSPECIFIED = 0;
+  CLUSTER_ADMISSION_ADMITTED = 1;
+  CLUSTER_ADMISSION_PENDING = 2;
+  CLUSTER_ADMISSION_REFUSED = 3;
+}
+
+message DirectoryClusterTenant {
+  string id = 1;
+  string slug = 2;
+  ClusterAdmission status = 3;
+}
+
+message DirectoryCluster {
+  string id = 1;
+  string name = 2;
+  // Its API, `https://host[:port]`.
+  string api = 3;
+  // Trusted as a whole: its tenants may opt in without an offer.
+  bool whole = 4;
+  // For a cluster trusted as a whole: how it treats opt-ins.
+  AdmitSetting admit = 5;
+  // The tenants opted in to it, with where each stands.
+  repeated DirectoryClusterTenant tenants = 6;
+  google.protobuf.Timestamp created_at = 7 [json_name = "created_at"];
+}
+
+message ListDirectoryClustersRequest {}
+message ListDirectoryClustersResponse {
+  repeated DirectoryCluster clusters = 1;
+}
+
+message TrustClusterRequest {
+  // The `gxo_…` directory offer the cluster's operator sent.
+  string offer = 1;
+}
+message TrustClusterResponse {
+  DirectoryCluster cluster = 1;
+}
+
+message UntrustClusterRequest {
+  string cluster = 1;
+}
+message UntrustClusterResponse {}
