@@ -69,6 +69,7 @@ and pools for GPUs, DPUs and NICs.
 | H25 | Tenant pools bind the tenant's grant | Once a tenant has tenant pools on a cluster pool, its tenant grant (`tenant_grants`) lets its projects use the cluster pool only through those tenant pools: a request naming the cluster pool itself is refused (`403`), `GET /pci-pools?project=` leaves it out, and `gpus` without a pool picks the tenant pool. A grant made to the project itself (`pci.allow` with `projects`) and host roles with `usePciPool` (`host.devices`) still allow it directly. VMs created before keep their requests. | Otherwise a tenant pool's `max` and project list bind nothing: any project of the tenant could ask for the cluster pool by name. |
 | H26 | A grant names one project | A device grant's project (`pci.allow` `projects`, for a device or a pool) is a project id, `<tenant>/<project>` (the tenant by id or slug), or a bare project name. A bare name grants only while exactly one project has it: the control plane refuses to start when `control-plane.json`'s grants in force name a project that several projects have, `PUT /cluster/settings/pci` refuses one (`400`), and creating a project whose name such a grant uses while a project of that name exists is refused (`409 name_in_device_grant`). A bare name that names several anyway (written by an older build) grants none of them, with a warning in the log. | Project names are unique per tenant only (spec/19-tenancy.md D24); a bare name used to grant the first match, which could be another tenant's project. |
 | H27 | Operator grants name tenants in `local` | An operator's grant (`pci.allow` for a device or a pool, a host network's grants) names a tenant by id or by its slug in the `local` directory, whoever asks; a tenant of another directory is named by id. This holds for `tenants` and for the tenant of `<tenant>/<project>`. A host network's project grant follows H26: an id, `<tenant>/<project>`, or a bare name only one project has; a bare name that several have is refused (`409 ambiguous`), naming `<tenant>/<project>` or the id. Network grants are stored as ids, so no start-up check is needed. | Tenant slugs are unique per directory only (spec/19-tenancy.md D24), and a directory's users may create tenants (D78): a slug looked up in the caller's directory meant another tenant to a caller of another directory. Host-network grants already read slugs as `local`'s; a bare project name there took the first project of that name. |
+| H28 | Devices kept at D0 | A pool with `power_save: false` keeps its devices out of PCIe power saving on each node (§5.3a). The node keeps each of the pool's devices that is on `vfio-pci`, whoever bound it, at D0: the device gets `power/control=on`, so it isn't runtime-suspended while no VM holds it, and `d3cold_allowed=0`. Each bridge above it, up to and including its root port, also gets `d3cold_allowed=0`. The default, `power_save: true`, changes nothing. A host's `pci.overrides` may set it for that host (H23), and `--vfio-devices <pool>` copies it, so the boot binding applies it too. Glidex never sets `vfio-pci`'s `disable_idle_d3`. | The user's call (2026-11-17, issue #548). On the HGX host, waking idle A100s from D3cold failed thousands of times a day, and the NVMe drives behind the neighbouring switch dropped off the bus at the same moments. The per-device settings take effect at once and stay on the hosts and pools that need them. The module parameter covers every vfio device on the host and needs a reload or a reboot. Keeping devices at D0 costs their idle power. |
 
 ## 3. Model
 
@@ -305,7 +306,10 @@ acted on:
 - `hugepages_unbalanced`: hugepages on some NUMA nodes and not others
   while devices sit on the ones without;
 - `pmd_without_devices`: OVS-DPDK PMDs on a NUMA node whose NICs are on
-  another (09-networking.md §3).
+  another (09-networking.md §3);
+- `power_save_on`: a device to keep at D0 (H28, §5.3a) that reads
+  D3cold, or whose `power/control` or `d3cold_allowed` (its own, or a
+  bridge's above it) still allows power saving.
 
 ### 5.3 Preparing a device
 
@@ -326,6 +330,39 @@ group with such a device. It does not persist across reboots by itself.
 The installer gains `--vfio-devices <pool or addresses>` for the
 `modprobe.d` / `driverctl` persistence. A pool with `prepare: true`
 (§9.1) is prepared by each node at start.
+
+### 5.3a Keeping a device at D0
+
+A pool with `power_save: false` (H28; the setting's value, or this
+host's `pci.overrides`) is kept out of power saving on each node it is
+on:
+
+- **What.** Each device of the pool on `vfio-pci`, whoever bound it
+  (the boot binding, `prepare: true`, `prepare-device` or by hand),
+  except a device this host keeps (`exclude`). netd writes
+  `power/control=on` and `d3cold_allowed=0` for the device, and
+  `d3cold_allowed=0` for each bridge on its path up to and including its
+  root port. A device of two pools is kept if either says so.
+- **How.** netd op `keep_devices_on {addresses}`: the whole set this
+  node keeps, each time. netd writes only what differs and records
+  each attribute's value before its first write (`power` table in its
+  store). A device that leaves the set (its pool changed, it left
+  `vfio-pci`, it was released) gets its own values back, and a bridge
+  gets its value back once no kept device is below it.
+- **When.** The control plane sends the set at start, after the
+  `prepare: true` pass, and after each topology read (H14). sysfs values
+  don't survive a rebind or a reboot, so they are written again then. A
+  rebind sends a udev `pci` event and so triggers a read. The boot unit
+  (`glidex-netd --boot-devices`, spec/27-gpu-vms.md §10) applies a
+  selector's `power_save: false` once its devices are bound, before any
+  VM or the control plane starts.
+- **Reporting.** The full tree gives each function's `power`
+  (`state` from `power_state`, `control`, `d3cold_allowed`). A summary
+  device gets `kept_on: true` once it and its bridges hold the settings.
+  The node warns `power_save_on` (§5.2) for a device to keep that
+  doesn't, or that reads D3cold.
+- **Cost.** A kept GPU draws its idle power while no VM holds it. The
+  setting is per pool and per host for that reason.
 
 ### 5.4 Health
 
@@ -739,6 +776,8 @@ setting. Devices no pool covers may form discovered pools (§9.1b).
 - `match` takes `vendor_id` and `device_id`, `class_code`, `addresses`
   or node device labels (`labels`); every given key must match.
 - `nodes` limits a pool to some nodes; absent means every node.
+- `power_save: false` keeps the pool's devices at D0 on its nodes
+  (H28, §5.3a); absent means `true`, the kernel's default.
 - A device belongs to at most one pool. Overlap is refused at load,
   naming both pools.
 - A pool's free count per cluster is the number of ready, unclaimed
@@ -842,7 +881,8 @@ A server's own file says what only that host decides (H23):
     ],
     "overrides": {
       "r9700": { "bar_mib": 16384 },
-      "amd-7551": { "prepare": true }
+      "amd-7551": { "prepare": true },
+      "nvidia-20b0": { "power_save": false }
     }
   }
 }
@@ -852,8 +892,10 @@ A server's own file says what only that host decides (H23):
   pool, defined or discovered, and a VM naming its address isn't placed
   on that node: the host keeps it. It stays in the summary with
   `excluded: true`, so operators see why.
-- `overrides` set `bar_mib` and `prepare` for the named pool's devices
-  on this host; the setting's values are the default elsewhere. G19's
+- `overrides` set `bar_mib`, `prepare` and `power_save` for the named
+  pool's devices on this host; the setting's values are the default
+  elsewhere. A discovered pool has `power_save: true` unless a host
+  overrides it. G19's
   rule (the smaller `bar_mib` of two pools) still applies after it.
 - The node marks each summary device it keeps `excluded`; the leader
   reads that, not the file, and never needs a host's `bar_mib` (only the
@@ -967,7 +1009,7 @@ is a device of class `dpu`:
 | 04-hypervisors.md | The arguments of §7.2 and §7.3 here; the QEMU shim's vCPU pinning after launch and adoption. |
 | 03-data-model.md | `VmConfig.placement`, `hugepage_size`, `spec.device_nodes`; `status.placement.{numa_node, cpus, devices, hugepages}`; conditions `NumaAligned`, `DeviceHealthy`, `HugepagesUnavailable`; node `status.pci_groups`. |
 | 12-reconciliation.md | The placement drop-in (§7.1) and the start-time check (§7.4). |
-| 09-networking.md | netd ops `prepare_device`, `release_device`, `set_sriov_vfs`; Appendix B's "NUMA locality" note points here. |
+| 09-networking.md | netd ops `prepare_device`, `release_device`, `set_sriov_vfs`, `keep_devices_on`; Appendix B's "NUMA locality" note points here. |
 | 06-rest-api.md, 18-grpc.md, 01-cli.md, 07-web-ui.md | §4.2, §4.3, §5.3, §9.1 endpoints and commands; the Topology card; Placement in the VM form. |
 | 11-security.md | `PciDevice::"<node>/<address>"`, actions `host.device.prepare` and `host.device.cordon`. |
 | 19-tenancy.md | §20 points here (done); quotas `devices.<pool>`; `pci.allow` grants by pool; tenant pools (§9.1a). |
@@ -988,6 +1030,7 @@ is a device of class `dpu`:
 | **HT4b** Tenant pools | §9.1a: tenant pools over cluster pools, their API, CLI and UI | Admission tests: a tenant pool's `max`, membership, and the tenant's own cap all apply. |
 | **HT5** SR-IOV VFs | §10.1 VF enumeration, `sriov_numvfs` through netd, VF pools | Host test with an SR-IOV NIC: enable VFs, a pool of VFs, two VMs each with one, NUMA-aligned. |
 | **HT6** Replicated and discovered pools | H20–H23: `pci_settings` with its API, gxctl and Cluster page card; the file's migration; discovered pools; `exclude` and `overrides` and their summary fields; the installer's `--vfio-devices` through the setting | Unit tests: the migration writes once and a differing file is ignored; every server resolves the same pools from the same summaries; a defined pool, an exclude and a slug clash each remove a device from discovery; a tenant can't see or request a discovered pool, a host role can; a rename with VMs requesting the pool is refused. Cluster test: a pool set on the leader is requested through a follower and after a leader change. On the R9700 host in the three-server test cluster: `amd-7551` discovered with both R9700s, adopted as `r9700`, a 1-GPU VM created while the single-A100 host leads. |
+| **HT7** Devices kept at D0 | H28, §5.3a: `power_save` on pools, in `pci.overrides` and in the boot selectors; netd's `keep_devices_on` with its `power` table; the control plane's set at start and after each read; `power` in the full tree, `kept_on` in the summary, the `power_save_on` warning; the pool form, gxctl and docs | netd tests with a fake sysfs: the device and its bridges up to the root port are written, a device leaving the set and a bridge with no kept device below get their values back, a second call writes nothing. Unit tests: overrides and a device in two pools; the set leaves out excluded devices and devices not on `vfio-pci`; the warning. On the HGX host: a pool with `power_save: false` keeps the idle A100s at D0 across a control-plane restart and a reboot. |
 
 HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
@@ -1026,6 +1069,10 @@ Still open:
   "at most 2 on any one node", for spreading a team's GPUs?
 - **Cordon scope:** cordon a device per node (as written) or by model
   across the cluster (a firmware recall)?
+- **Wake failures in the kernel log:** should the node also read the
+  kernel log for `Unable to change power state from D3cold to D0` on a
+  pool's devices and report them as device events (§5.4)? HT7 warns only
+  on what sysfs shows (H28).
 
 ## 17. Implementation notes
 

@@ -491,6 +491,10 @@ glidex-install --no-vfio-devices                    # remove what it wrote
 - **VF counts.** `--sriov PF=N` is applied by the same unit before the
   binding, so the VFs exist to bind. Pools with `vf_of` and
   `prepare: true` then take them as today.
+- **Kept at D0.** A pool with `power_save: false` (spec/22-host-topology.md
+  H28) has it copied into its selector, with the host's override, as
+  `bar_mib` is. The unit keeps the devices it selects at D0 once bound,
+  as netd's `keep_devices_on` does.
 - **The udev rules** (`90-glidex-vfio-<group>.rules`) already persist;
   they stay.
 - **NVSwitches** of a node with a fabric service VM are bound the same
