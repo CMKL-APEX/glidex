@@ -110,7 +110,12 @@ fn host_exec(total: u16) -> Arc<RecordingExec> {
         let vf = format!("0000:61:02.{}", 3 + n);
         exec.link(&format!("{PF}/virtfn{n}"), &vf);
         exec.link(&format!("/sys/bus/pci/devices/{vf}/driver"), "vfio-pci");
+        exec.link(
+            &format!("/sys/bus/pci/devices/{vf}/iommu_group"),
+            &(30 + n).to_string(),
+        );
     }
+    exec.file("/dev/vfio/30", "");
     exec
 }
 
@@ -202,6 +207,20 @@ fn dpu_on_a_healthy_dpu_gets_a_vfio_vf() {
     assert_eq!(writes[at("sriov_drivers_autoprobe").unwrap()].1, "0");
     assert_eq!(writes[at("sriov_numvfs").unwrap()].1, "2");
     assert!(at("sriov_drivers_autoprobe") < at("sriov_numvfs"));
+    // Step 7: the VF's IOMMU group is the VMs' group's, as for a
+    // passed-through device (spec/22-host-topology.md §5.3).
+    let rule = &writes[at("90-glidex-vfio-30.rules").unwrap()].1;
+    assert!(
+        rule.contains("KERNEL==\"30\"") && rule.contains("MODE=\"0660\""),
+        "{rule}"
+    );
+    assert!(
+        host.calls()
+            .iter()
+            .any(|c| c.starts_with("chgrp ") && c.contains("/dev/vfio/30; chmod 660")),
+        "{:?}",
+        host.calls()
+    );
     let records: Vec<VmPortRecord> =
         serde_json::from_value(netd.handle(Op::ListVmPorts, &root()).unwrap()).unwrap();
     assert_eq!(records[0].dpu_vf, Some(glidex_dpu::VfId { pf: 0, vf: 0 }));
@@ -223,6 +242,10 @@ fn dpu_on_a_healthy_dpu_gets_a_vfio_vf() {
     assert!(
         w.iter()
             .any(|(p, _)| p.ends_with("0000:61:02.3/driver/unbind"))
+    );
+    assert!(
+        host.calls()
+            .contains(&"rm /etc/udev/rules.d/90-glidex-vfio-30.rules".to_string())
     );
     let records: Vec<VmPortRecord> =
         serde_json::from_value(netd.handle(Op::ListVmPorts, &root()).unwrap()).unwrap();

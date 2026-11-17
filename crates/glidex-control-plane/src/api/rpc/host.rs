@@ -12,18 +12,7 @@ pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc
     PciServiceExt::register(Svc::new(app), router)
 }
 
-/// A synchronous operation.
-macro_rules! op {
-    ($self:ident, $ctx:ident, $req:ident, $f:path) => {{
-        let req = $req.to_owned_message();
-        unary(&$self.app, &$ctx, |c| async move {
-            $f(&c.expect("authenticated operation"), req)
-        })
-        .await
-    }};
-}
-
-/// An async one.
+/// An operation (all of this service's are async).
 macro_rules! op_async {
     ($self:ident, $ctx:ident, $req:ident, $f:path) => {{
         let req = $req.to_owned_message();
@@ -134,7 +123,7 @@ impl PciService for Svc {
         ctx: RequestContext,
         req: ServiceRequest<'_, ListPciDevicesRequest>,
     ) -> ServiceResult<ListPciDevicesResponse> {
-        op!(self, ctx, req, svc::list_pci_devices)
+        op_async!(self, ctx, req, svc::list_pci_devices)
     }
 }
 

@@ -3184,6 +3184,8 @@ impl VmManager {
                     .iter()
                     .flat_map(|p| p.pool_devices.iter().map(|d| &d.address)),
             )
+            // Its DPU NICs' VFs (spec/31-dpu.md §12.2).
+            .chain(vm.status.nics.iter().filter_map(|n| n.vfio.as_ref()))
     }
 
     /// Refuse `devices` that a VM other than `except` claims on `node`,
@@ -3244,9 +3246,24 @@ impl VmManager {
                 for d in Self::devices_held(vm) {
                     claimed.insert(crate::scheduler::pci_address(d), vm.name.clone());
                 }
+                for n in &vm.status.nics {
+                    if let Some(bdf) = &n.vfio {
+                        claimed.insert(
+                            crate::scheduler::pci_address(bdf),
+                            format!("{} (dpu port {}/{})", vm.name, vm.name, n.nic_index),
+                        );
+                    }
+                }
             }
         }
         claimed
+    }
+
+    /// The PCI devices this host's VMs hold: address → the VM's name, or
+    /// `<vm> (dpu port <vm>/<nic>)` for a DPU NIC's VF.
+    pub async fn local_device_claims(&self) -> BTreeMap<String, String> {
+        let node = self.local_node_id();
+        self.claimed_on(&*self.vms.read().await, &node, None)
     }
 
     /// Why each of `devices` on `node` can't be given to a VM now, by the
@@ -6694,6 +6711,59 @@ mod tests {
 
     fn test_config(json: serde_json::Value) -> VmConfig {
         serde_json::from_value(json).unwrap()
+    }
+
+    /// spec/31-dpu.md §12.2: a DPU NIC's VF is held like a VFIO device, so
+    /// another VM can't be given it.
+    #[tokio::test]
+    async fn a_dpu_nics_vf_is_held_by_its_vm() {
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path(dir.path().join("t.db")).unwrap();
+        let config = || {
+            test_config(serde_json::json!({
+                "vcpu_count": 1, "mem_size_mib": 256,
+                "kernel_image_path": "/k", "rootfs_path": "/r", "kernel_args": ""
+            }))
+        };
+        let web = manager.create_vm("web".into(), config()).await.unwrap();
+        let other = manager.create_vm("other".into(), config()).await.unwrap();
+        {
+            let mut vms = manager.vms.write().await;
+            vms.get_mut(&web.id).unwrap().status.nics = vec![crate::models::NicStatus {
+                network: "n".into(),
+                nic_index: 1,
+                mac: "02:00:00:00:00:02".into(),
+                port: Some("en3f0pf0sf3000".into()),
+                ipv4: None,
+                port_ok: true,
+                metadata_index: None,
+                backend: Some(glidex_dpu::Backend::Dpu),
+                vfio: Some("0000:61:02.3".into()),
+            }];
+        }
+        let claims = manager.local_device_claims().await;
+        assert_eq!(claims["0000:61:02.3"], "web (dpu port web/1)");
+
+        let err = manager
+            .attach_device(&other.id, "/sys/bus/pci/devices/0000:61:02.3".into(), None)
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("0000:61:02.3") && err.contains("dpu port web/1"),
+            "{err}"
+        );
+        // The VM that holds it isn't refused its own VF (a restart).
+        assert!(
+            manager
+                .refuse_claimed_devices(
+                    &*manager.vms.read().await,
+                    &manager.local_node_id(),
+                    &["0000:61:02.3".into()],
+                    Some(&web.id),
+                )
+                .is_ok()
+        );
     }
 
     /// §7.7: a VM being deleted keeps its name until it is gone, so neither

@@ -525,9 +525,17 @@ fn nic_args(nic: &NicBinding, vhost_net: bool) -> Vec<(&'static str, String)> {
                 format!("vhost-user,id={},chardev=chr-{}{}", id, id, queues),
             ));
         }
-        // A DPU VF is a VFIO device, not a netdev (spec/31-dpu.md §12.2,
-        // D6); the control plane asks for none yet.
-        VmPortBinding::Vfio { .. } => return out,
+        // A DPU VF is a VFIO device, not a netdev (spec/31-dpu.md §12.2):
+        // the guest sees the virtio-net function the DPU emulates, with the
+        // MAC and MTU the DPU programmed. The NIC's id keeps it apart from
+        // a user's VFIO devices (`vfio_…`).
+        VmPortBinding::Vfio { bdf } => {
+            out.push((
+                "-device",
+                format!("vfio-pci,host={},id=dev-{id}", super::full_bdf(bdf)),
+            ));
+            return out;
+        }
     }
     let mut device = format!("virtio-net-pci,netdev={},id=dev-{},mac={}", id, id, nic.mac);
     if matches!(nic.binding, VmPortBinding::VhostUser { .. }) {
@@ -1311,6 +1319,40 @@ mod tests {
             values(&spec(&config).args(), "-device")
                 .contains(&"vfio-pci,host=0000:41:00.0,id=vfio_0000_41_00_0")
         );
+    }
+
+    #[test]
+    fn a_dpu_nic_is_a_vfio_pci_device_without_shared_memory() {
+        let mut config = config(serde_json::json!({}));
+        config.nic_bindings = vec![
+            tap("net0", "gxabc-0", "02:00:00:00:00:01", 1, None),
+            NicBinding {
+                id: "net1".into(),
+                mac: "02:00:00:00:00:02".into(),
+                binding: VmPortBinding::Vfio {
+                    bdf: "0000:61:02.3".into(),
+                },
+                queue_pairs: 4,
+                mtu: Some(1442),
+            },
+        ];
+        let args = spec(&config).args();
+        let devices = values(&args, "-device");
+        assert!(
+            devices.contains(&"vfio-pci,host=0000:61:02.3,id=dev-net1"),
+            "{devices:?}"
+        );
+        // The tap is still a virtio-net device; the VF has no netdev.
+        assert!(
+            devices
+                .iter()
+                .any(|d| d.starts_with("virtio-net-pci,netdev=net0,"))
+        );
+        let netdevs = values(&args, "-netdev");
+        assert_eq!(netdevs.len(), 1, "{netdevs:?}");
+        assert!(netdevs[0].starts_with("tap,id=net0,"));
+        // No shared memory backend for a VF.
+        assert!(!args.iter().any(|a| a.contains("share=on")), "{args:?}");
     }
 
     #[test]
