@@ -7314,18 +7314,19 @@ async fn a_server_joining_from_a_snapshot_follows_the_ovn_setting() {
     )
     .await
     .unwrap();
-    let joined = cluster(&second)
+    // The join can return before the leader's snapshot arrives.
+    cluster(&second)
         .node
         .as_ref()
         .unwrap()
         .raft
-        .metrics()
-        .borrow()
-        .clone();
-    assert!(
-        joined.snapshot.is_some_and(|s| s.index >= applied),
-        "joined from a snapshot: {joined:?}"
-    );
+        .wait(Some(Duration::from_secs(30)))
+        .metrics(
+            |m| m.snapshot.is_some_and(|s| s.index >= applied),
+            "the joined server to install the snapshot",
+        )
+        .await
+        .unwrap();
     wait_for("the joined server to follow the OVN setting", || async {
         second.manager.ovn_enabled()
     })
