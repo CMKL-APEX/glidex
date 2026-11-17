@@ -28,10 +28,18 @@ fn admit_pb(a: Option<AdmitSetting>) -> pb::AdmitSetting {
 
 /// Cluster `c` as its directory sees it: its tenants with their slugs.
 fn cluster_pb(call: &Call, c: &TrustedCluster) -> pb::DirectoryCluster {
+    let status_pb = |st: crate::trust::AdmissionStatus| match st {
+        crate::trust::AdmissionStatus::Admitted => pb::ClusterAdmission::CLUSTER_ADMISSION_ADMITTED,
+        crate::trust::AdmissionStatus::Pending => pb::ClusterAdmission::CLUSTER_ADMISSION_PENDING,
+        crate::trust::AdmissionStatus::Refused => pb::ClusterAdmission::CLUSTER_ADMISSION_REFUSED,
+    };
+    // Admitted first, then those waiting (D93).
     let tenants = c
         .tenants
         .iter()
-        .map(|id| pb::DirectoryClusterTenant {
+        .map(|id| (id, crate::trust::AdmissionStatus::Admitted))
+        .chain(c.waiting.iter().map(|(id, st)| (id, *st)))
+        .map(|(id, st)| pb::DirectoryClusterTenant {
             id: id.clone(),
             slug: call
                 .auth()
@@ -41,7 +49,7 @@ fn cluster_pb(call: &Call, c: &TrustedCluster) -> pb::DirectoryCluster {
                 .flatten()
                 .map(|t| t.slug)
                 .unwrap_or_default(),
-            status: pb::ClusterAdmission::CLUSTER_ADMISSION_ADMITTED.into(),
+            status: status_pb(st).into(),
             ..Default::default()
         })
         .collect();
@@ -53,6 +61,7 @@ fn cluster_pb(call: &Call, c: &TrustedCluster) -> pb::DirectoryCluster {
         admit: admit_pb(c.whole).into(),
         tenants,
         created_at: ts(c.created_at).into(),
+        auto_opt_in: c.auto_opt_in,
         ..Default::default()
     }
 }
@@ -86,10 +95,49 @@ pub async fn trust_cluster(
     let mut c = cluster_record(call, &dir, &token, &answer)?;
     // A cluster that answers with no setting admits by default (D93).
     c.whole = Some(serde_json::from_value(answer["admit"].clone()).unwrap_or(AdmitSetting::Open));
+    c.auto_opt_in = req.auto_opt_in;
     call.auth().trust.put_cluster(&c).map_err(trust_err)?;
     call.set_target(format!("directory:{dir}"));
     call.detail("cluster", serde_json::json!(c.cluster_id));
+    call.detail("auto_opt_in", serde_json::json!(c.auto_opt_in));
+    // Its tenants now, rather than at the next round (D99).
+    crate::api::trust::auto_opt_in(&call.app, &mut c).await;
     Ok(pb::TrustClusterResponse {
+        cluster: cluster_pb(call, &c).into(),
+        ..Default::default()
+    })
+}
+
+/// Change how this directory uses cluster `cluster`, trusted as a whole:
+/// `auto_opt_in` (D99), whose tenants are then opted in at once.
+pub async fn update_directory_cluster(
+    call: &Call,
+    req: pb::UpdateDirectoryClusterRequest,
+) -> ServiceResult<pb::UpdateDirectoryClusterResponse> {
+    call.require(call.directory_ent(), crate::authz::EntitySet::new())?;
+    let dir = call.p.directory_id().to_string();
+    let mut c = call
+        .auth()
+        .trust
+        .cluster(&dir, &req.cluster)
+        .map_err(trust_err)?
+        .filter(|c| c.whole.is_some())
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "this directory doesn't trust that cluster as a whole",
+            )
+        })?;
+    if let Some(a) = req.auto_opt_in {
+        c.auto_opt_in = a;
+    }
+    call.auth().trust.put_cluster(&c).map_err(trust_err)?;
+    call.set_target(format!("directory:{dir}"));
+    call.detail("cluster", serde_json::json!(c.cluster_id));
+    call.detail("auto_opt_in", serde_json::json!(c.auto_opt_in));
+    crate::api::trust::auto_opt_in(&call.app, &mut c).await;
+    Ok(pb::UpdateDirectoryClusterResponse {
         cluster: cluster_pb(call, &c).into(),
         ..Default::default()
     })

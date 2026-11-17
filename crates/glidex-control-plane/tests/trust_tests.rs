@@ -1798,6 +1798,8 @@ struct WholeCluster {
     trusted: std::sync::Mutex<Option<glidex_trust::TrustedDirectory>>,
     /// The ends it was told of.
     ends: std::sync::Mutex<Vec<glidex_trust::EndAtCluster>>,
+    /// Its setting for opt-ins.
+    admit: glidex_trust::AdmitSetting,
 }
 
 impl WholeCluster {
@@ -1823,7 +1825,7 @@ impl WholeCluster {
                     directory: issuer,
                     scope: glidex_trust::OfferScope::Directory,
                     tenant: "",
-                    admit: glidex_trust::AdmitSetting::Approval,
+                    admit: self.admit,
                 };
                 let Ok(r) =
                     cluster::check_redeem(&a, &b, Some(offer), Self::ID, &self.replays, now)
@@ -1842,6 +1844,28 @@ impl WholeCluster {
                         admit: r.whole,
                     })
                     .unwrap(),
+                )
+            }
+            "/trust/v1/admit" => {
+                let Ok(b) = serde_json::from_slice::<glidex_trust::AdmitRequest>(&req.body) else {
+                    return refused();
+                };
+                let cur = self.trusted.lock().unwrap().clone();
+                let Ok(mut d) = cluster::check_admit(
+                    &a,
+                    &b,
+                    |iss| cur.filter(|d| d.issuer == iss),
+                    Self::ID,
+                    &self.replays,
+                    now,
+                ) else {
+                    return refused();
+                };
+                let status = cluster::admit(&mut d, &b.tenant);
+                *self.trusted.lock().unwrap() = Some(d);
+                Reply::json(
+                    200,
+                    serde_json::to_value(glidex_trust::AdmitAnswer { status }).unwrap(),
                 )
             }
             "/trust/v1/end" => {
@@ -1911,6 +1935,7 @@ async fn a_directory_trusts_a_cluster_as_a_whole() {
         replays: glidex_trust::Replays::default(),
         trusted: std::sync::Mutex::new(None),
         ends: std::sync::Mutex::new(Vec::new()),
+        admit: glidex_trust::AdmitSetting::Approval,
     });
     let (c2, iss) = (c.clone(), issuer.clone());
     let handler: glidex_trust::fake::Handler = Arc::new(move |req| {
@@ -2022,4 +2047,390 @@ async fn a_directory_trusts_a_cluster_as_a_whole() {
         )
         .await;
     assert_eq!(s, StatusCode::NOT_FOUND);
+}
+
+/// D93, D95, D97 at the directory: tenants of a directory trusted as a
+/// whole opt in with no offer; pending until the cluster approves, as its
+/// reports say; only admitted tenants are in the feed; a refused tenant
+/// asks again; a pending one opts out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tenants_opt_in_to_a_cluster_trusted_as_a_whole() {
+    let acme = cp().await;
+    let admin = acme.admin();
+    let issuer = format!("{}/d/local", acme.base);
+    let root = acme
+        .app
+        .auth
+        .store
+        .user_for_identity("pam", "root", "root", None, false)
+        .unwrap()
+        .unwrap()
+        .id;
+    let mut ids = std::collections::HashMap::new();
+    for slug in ["physics", "chem"] {
+        let (s, v) = acme
+            .rest(
+                "POST",
+                "/tenants",
+                Some(json!({"slug": slug, "display_name": slug})),
+                &admin,
+            )
+            .await;
+        assert!(s.is_success(), "{v}");
+        let id = v["tenant"]["id"].as_str().unwrap().to_string();
+        acme.app
+            .auth
+            .add_link(
+                "role.tenant-admin",
+                Ent::User(root.clone()),
+                Ent::Tenant(id.clone()),
+                "test",
+            )
+            .unwrap();
+        ids.insert(slug, id);
+    }
+    let c = Arc::new(WholeCluster {
+        key: glidex_trust::key::ClusterKey::generate("storage-1:1").unwrap(),
+        open: std::sync::Mutex::new(true),
+        replays: glidex_trust::Replays::default(),
+        trusted: std::sync::Mutex::new(None),
+        ends: std::sync::Mutex::new(Vec::new()),
+        admit: glidex_trust::AdmitSetting::Approval,
+    });
+    let (c2, iss) = (c.clone(), issuer.clone());
+    let handler: glidex_trust::fake::Handler = Arc::new(move |req| {
+        let (c, iss) = (c2.clone(), iss.clone());
+        Box::pin(async move { c.handle(req, &iss) })
+    });
+    let https = glidex_trust::fake::serve_https(handler).await.unwrap();
+    let opt_in = |slug: &'static str| {
+        let (acme, admin) = (&acme, admin.clone());
+        async move {
+            acme.rest(
+                "POST",
+                &format!("/tenants/{slug}/clusters"),
+                Some(json!({"cluster": WholeCluster::ID})),
+                &admin,
+            )
+            .await
+        }
+    };
+    let status = |slug: &'static str| {
+        let (acme, admin) = (&acme, admin.clone());
+        async move {
+            let (_, v) = acme
+                .rest(
+                    "GET",
+                    &format!("/tenants/{slug}/clusters?available=true"),
+                    None,
+                    &admin,
+                )
+                .await;
+            v["clusters"][0]["status"]
+                .as_str()
+                .unwrap_or("none")
+                .to_string()
+        }
+    };
+    // What the cluster's operator does, and its report to the directory.
+    let report = || {
+        let d = c.trusted.lock().unwrap().clone().unwrap();
+        let r = glidex_trust::ClusterReport {
+            at: glidex_trust::now(),
+            tenants: d
+                .admissions()
+                .into_iter()
+                .map(|(t, a)| glidex_trust::StorageTenantReport {
+                    tenant: t.id.clone(),
+                    suspended: false,
+                    admission: a,
+                    storage: Default::default(),
+                    project_storage: vec![],
+                })
+                .collect::<Vec<_>>(),
+        };
+        let key = &c.key;
+        async move {
+            glidex_trust::client::push_report(
+                key,
+                WholeCluster::ID,
+                &d,
+                &r,
+                None,
+                glidex_trust::now(),
+            )
+            .await
+            .unwrap()
+        }
+    };
+    let fed = || {
+        let d = c.trusted.lock().unwrap().clone().unwrap();
+        let key = &c.key;
+        async move {
+            match glidex_trust::client::pull_feed(
+                key,
+                WholeCluster::ID,
+                &d,
+                "",
+                glidex_trust::now(),
+            )
+            .await
+            .unwrap()
+            {
+                glidex_trust::client::Feed::Changed(s) => s
+                    .rows
+                    .iter()
+                    .filter(|r| r.table == "tenants")
+                    .map(|r| r.key.clone())
+                    .collect::<Vec<_>>(),
+                _ => panic!("a snapshot"),
+            }
+        }
+    };
+
+    // Not trusted yet: no such cluster; an offer and a cluster both: invalid.
+    let (s, v) = opt_in("physics").await;
+    assert_eq!(s, StatusCode::NOT_FOUND, "{v}");
+    let (s, _) = acme
+        .rest(
+            "POST",
+            "/tenants/physics/clusters",
+            Some(json!({"cluster": WholeCluster::ID, "offer": "gxo_x"})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+
+    let whole = glidex_control_plane::trust::OfferToken {
+        cluster_id: WholeCluster::ID.into(),
+        cluster_name: "storage".into(),
+        api: https.base.clone(),
+        tls_sha256: https.pin.clone(),
+        scope: glidex_control_plane::trust::OfferScope::Directory,
+        tenant: String::new(),
+        directory: issuer.clone(),
+        offer: "o1".into(),
+        secret: "s".into(),
+        expires_at: u64::MAX,
+    }
+    .encode();
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/directory/clusters",
+            Some(json!({"offer": whole})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    // Available to opt in to; no tenant in the feed yet (D95).
+    assert_eq!(status("physics").await, "TENANT_CLUSTER_STATUS_AVAILABLE");
+    assert!(fed().await.is_empty());
+
+    // Approval: pending, and not fed.
+    let (s, v) = opt_in("physics").await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(
+        v["cluster"]["status"], "TENANT_CLUSTER_STATUS_PENDING",
+        "{v}"
+    );
+    assert!(fed().await.is_empty());
+    // The operator approves; the report says so; fed from then on.
+    let mut d = c.trusted.lock().unwrap().clone().unwrap();
+    assert!(glidex_trust::cluster::decide(&mut d, &ids["physics"], true));
+    *c.trusted.lock().unwrap() = Some(d);
+    report().await;
+    assert_eq!(status("physics").await, "TENANT_CLUSTER_STATUS_ADMITTED");
+    assert_eq!(fed().await, vec![ids["physics"].clone()]);
+
+    // Refused, as a report says; not fed; asking again is pending again.
+    assert_eq!(opt_in("chem").await.0, StatusCode::CREATED);
+    let mut d = c.trusted.lock().unwrap().clone().unwrap();
+    assert!(glidex_trust::cluster::decide(&mut d, &ids["chem"], false));
+    *c.trusted.lock().unwrap() = Some(d);
+    report().await;
+    assert_eq!(status("chem").await, "TENANT_CLUSTER_STATUS_REFUSED");
+    assert_eq!(fed().await, vec![ids["physics"].clone()]);
+    let (s, v) = opt_in("chem").await;
+    assert_eq!(
+        v["cluster"]["status"], "TENANT_CLUSTER_STATUS_PENDING",
+        "{s} {v}"
+    );
+    // The directory's list shows both, each with its status.
+    let (_, v) = acme.rest("GET", "/directory/clusters", None, &admin).await;
+    let shown: Vec<_> = v["clusters"][0]["tenants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["slug"].as_str().unwrap(), t["status"].as_str().unwrap()))
+        .collect();
+    assert_eq!(
+        shown,
+        vec![
+            ("physics", "CLUSTER_ADMISSION_ADMITTED"),
+            ("chem", "CLUSTER_ADMISSION_PENDING")
+        ],
+        "{v}"
+    );
+
+    // A pending tenant opts out: the cluster told, the record kept.
+    let (s, v) = acme
+        .rest(
+            "DELETE",
+            &format!("/tenants/chem/clusters/{}", WholeCluster::ID),
+            None,
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    assert_eq!(status("chem").await, "TENANT_CLUSTER_STATUS_AVAILABLE");
+    let d = c.trusted.lock().unwrap().clone().unwrap();
+    assert_eq!(d.admission(&ids["chem"]), None);
+    // The last admitted tenant leaves; the directory's trust stays (D94).
+    let (s, _) = acme
+        .rest(
+            "DELETE",
+            &format!("/tenants/physics/clusters/{}", WholeCluster::ID),
+            None,
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT);
+    let (_, v) = acme.rest("GET", "/directory/clusters", None, &admin).await;
+    assert_eq!(v["clusters"][0]["id"], WholeCluster::ID, "{v}");
+    assert!(c.trusted.lock().unwrap().is_some());
+}
+
+/// D99: with `auto_opt_in`, the directory opts its tenants in by itself:
+/// those there when it trusts the cluster, and later ones at the next
+/// round; an open cluster admits them, and they are fed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_opts_its_tenants_in_by_itself() {
+    let acme = cp().await;
+    let admin = acme.admin();
+    let issuer = format!("{}/d/local", acme.base);
+    let tenant = |slug: &'static str| {
+        let (acme, admin) = (&acme, admin.clone());
+        async move {
+            let (s, v) = acme
+                .rest(
+                    "POST",
+                    "/tenants",
+                    Some(json!({"slug": slug, "display_name": slug})),
+                    &admin,
+                )
+                .await;
+            assert!(s.is_success(), "{v}");
+            v["tenant"]["id"].as_str().unwrap().to_string()
+        }
+    };
+    let physics = tenant("physics").await;
+    let c = Arc::new(WholeCluster {
+        key: glidex_trust::key::ClusterKey::generate("storage-1:1").unwrap(),
+        open: std::sync::Mutex::new(true),
+        replays: glidex_trust::Replays::default(),
+        trusted: std::sync::Mutex::new(None),
+        ends: std::sync::Mutex::new(Vec::new()),
+        admit: glidex_trust::AdmitSetting::Open,
+    });
+    let (c2, iss) = (c.clone(), issuer.clone());
+    let handler: glidex_trust::fake::Handler = Arc::new(move |req| {
+        let (c, iss) = (c2.clone(), iss.clone());
+        Box::pin(async move { c.handle(req, &iss) })
+    });
+    let https = glidex_trust::fake::serve_https(handler).await.unwrap();
+    let whole = glidex_control_plane::trust::OfferToken {
+        cluster_id: WholeCluster::ID.into(),
+        cluster_name: "storage".into(),
+        api: https.base.clone(),
+        tls_sha256: https.pin.clone(),
+        scope: glidex_control_plane::trust::OfferScope::Directory,
+        tenant: String::new(),
+        directory: issuer.clone(),
+        offer: "o1".into(),
+        secret: "s".into(),
+        expires_at: u64::MAX,
+    }
+    .encode();
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/directory/clusters",
+            Some(json!({"offer": whole, "auto_opt_in": true})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["cluster"]["auto_opt_in"], true, "{v}");
+    // The tenants there already: admitted at once, the cluster being open.
+    let admitted = |id: &str| {
+        c.trusted
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|d| d.admission(id))
+    };
+    assert_eq!(
+        admitted(&physics),
+        Some(glidex_trust::AdmissionStatus::Admitted)
+    );
+    let rec = || {
+        acme.app
+            .auth
+            .trust
+            .cluster("local", WholeCluster::ID)
+            .unwrap()
+            .unwrap()
+    };
+    assert!(rec().tenants.contains(&physics));
+    // A tenant made later: at the next round.
+    let chem = tenant("chem").await;
+    assert_eq!(admitted(&chem), None);
+    let mut r = rec();
+    assert_eq!(
+        glidex_control_plane::api::trust::auto_opt_in(&acme.app, &mut r).await,
+        1
+    );
+    assert_eq!(
+        admitted(&chem),
+        Some(glidex_trust::AdmissionStatus::Admitted)
+    );
+    assert!(rec().tenants.contains(&chem));
+    // Nothing left to ask.
+    assert_eq!(
+        glidex_control_plane::api::trust::auto_opt_in(&acme.app, &mut rec()).await,
+        0
+    );
+    // Turned off: a new tenant isn't opted in.
+    let (s, v) = acme
+        .rest(
+            "PATCH",
+            &format!("/directory/clusters/{}", WholeCluster::ID),
+            Some(json!({"auto_opt_in": false})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    // proto3 JSON leaves a false bool out.
+    assert!(v["cluster"]["auto_opt_in"].as_bool() != Some(true), "{v}");
+    let bio = tenant("bio").await;
+    assert_eq!(
+        glidex_control_plane::api::trust::auto_opt_in(&acme.app, &mut rec()).await,
+        0
+    );
+    assert_eq!(admitted(&bio), None);
+    // On again: at once.
+    let (s, _) = acme
+        .rest(
+            "PATCH",
+            &format!("/directory/clusters/{}", WholeCluster::ID),
+            Some(json!({"auto_opt_in": true})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(
+        admitted(&bio),
+        Some(glidex_trust::AdmissionStatus::Admitted)
+    );
 }

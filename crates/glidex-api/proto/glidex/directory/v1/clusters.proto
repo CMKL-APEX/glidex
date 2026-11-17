@@ -28,6 +28,15 @@ service ClusterTrustService {
       rest: "POST /directory/clusters"
     };
   }
+  // Change how the directory uses a cluster it trusts as a whole: with
+  // `auto_opt_in`, it opts each of its tenants in by itself (D99).
+  rpc UpdateDirectoryCluster(UpdateDirectoryClusterRequest) returns (UpdateDirectoryClusterResponse) {
+    option (glidex.api.v1.op) = {
+      action: "trustCluster"
+      kind: KIND_WRITE
+      rest: "PATCH /directory/clusters/{cluster}"
+    };
+  }
   // End this directory's trust with a cluster as a whole: every tenant's
   // too (D94). The cluster is told.
   rpc UntrustCluster(UntrustClusterRequest) returns (UntrustClusterResponse) {
@@ -74,6 +83,8 @@ message DirectoryCluster {
   // The tenants opted in to it, with where each stands.
   repeated DirectoryClusterTenant tenants = 6;
   google.protobuf.Timestamp created_at = 7 [json_name = "created_at"];
+  // The directory opts each of its tenants in by itself (D99).
+  bool auto_opt_in = 8 [json_name = "auto_opt_in"];
 }
 
 message ListDirectoryClustersRequest {}
@@ -84,8 +95,19 @@ message ListDirectoryClustersResponse {
 message TrustClusterRequest {
   // The `gxo_…` directory offer the cluster's operator sent.
   string offer = 1;
+  // Opt every tenant in by itself, new ones too (D99).
+  bool auto_opt_in = 2 [json_name = "auto_opt_in"];
 }
 message TrustClusterResponse {
+  DirectoryCluster cluster = 1;
+}
+
+message UpdateDirectoryClusterRequest {
+  string cluster = 1;
+  // Absent: unchanged.
+  optional bool auto_opt_in = 2 [json_name = "auto_opt_in"];
+}
+message UpdateDirectoryClusterResponse {
   DirectoryCluster cluster = 1;
 }
 
