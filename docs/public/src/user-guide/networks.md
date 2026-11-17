@@ -285,6 +285,40 @@ call `https://<gateway>:8841`. To open it on every NAT network of a host,
 set `"nat_host_api": true` in its `control-plane.json`. The API still
 needs a valid token for everything.
 
+## NICs on a DPU (clusters)
+
+A node with a BlueField DPU can switch a VM's NIC on the DPU instead of
+on the host: the guest gets a virtio-net device that the DPU emulates,
+and the DPU, a chassis of the cluster's OVN, carries the NIC's logical
+port. A cluster NAT or isolated network's **backend** says where its
+NICs go:
+
+| Backend | NICs go | When a node's DPU isn't ready |
+|---|---|---|
+| `host` (default) | on the node's own chassis | – |
+| `dpu` | on the node's DPU | the VM isn't placed there |
+| `auto` | on the DPU when it is ready, else on the host | on the host |
+
+```
+gxctl> network-add fast --isolated --cluster --backend dpu
+gxctl> network backend fast auto
+```
+
+or `"backend": "NETWORK_BACKEND_DPU"` when creating it, and `PUT
+/networks/<id>/backend` to change it (host network administrators). A
+change applies to NICs placed from then on: a running VM's NICs stay
+where they are until its next placement. Node networks, provider
+networks and networks of a single host keep the `host` backend (`400
+invalid_network`).
+
+The scheduler places a VM with a NIC on a `dpu` network only on a node
+whose DPU is prepared, is connected to the cluster's OVN, and has a VF
+free of the VMs placed there, and says so when none is; an `auto` network
+prefers such a node. `GET /networks/<id>` on an `auto` network lists the
+NICs that went on a host (`host_backend_nics`), and a VM whose NIC fell
+back has `NetworkDegraded` (`HostBackend`): on the host, the data path
+is enforced by the host rather than off it.
+
 ## Delete a network
 
 A network can't be deleted while any VM uses it, even a stopped one.

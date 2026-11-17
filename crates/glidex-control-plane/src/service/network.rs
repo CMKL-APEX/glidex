@@ -86,6 +86,25 @@ fn scope_pb(s: NetworkScope) -> pb::NetworkScope {
     }
 }
 
+fn backend_pb(b: crate::network::BackendPolicy) -> pb::NetworkBackend {
+    use crate::network::BackendPolicy;
+    match b {
+        BackendPolicy::Host => pb::NetworkBackend::NETWORK_BACKEND_HOST,
+        BackendPolicy::Dpu => pb::NetworkBackend::NETWORK_BACKEND_DPU,
+        BackendPolicy::Auto => pb::NetworkBackend::NETWORK_BACKEND_AUTO,
+    }
+}
+
+fn backend_of(b: pb::NetworkBackend) -> crate::network::BackendPolicy {
+    use crate::network::BackendPolicy;
+    match b {
+        pb::NetworkBackend::NETWORK_BACKEND_DPU => BackendPolicy::Dpu,
+        pb::NetworkBackend::NETWORK_BACKEND_AUTO => BackendPolicy::Auto,
+        pb::NetworkBackend::NETWORK_BACKEND_HOST
+        | pb::NetworkBackend::NETWORK_BACKEND_UNSPECIFIED => BackendPolicy::Host,
+    }
+}
+
 fn scope_of(s: pb::NetworkScope) -> Option<NetworkScope> {
     match s {
         pb::NetworkScope::NETWORK_SCOPE_NODE => Some(NetworkScope::Node),
@@ -133,6 +152,7 @@ pub fn network_pb(n: &Network) -> pb::Network {
         dns: Some(n.dns),
         owns_bridge: Some(n.owns_bridge),
         host_api: n.host_api.then_some(true),
+        backend: backend_pb(n.backend).into(),
         created_at: ts(n.created_at).into(),
         project: n.project.clone(),
         all_projects: Some(n.all_projects),
@@ -218,6 +238,7 @@ fn spec_of(
         physnet,
         router,
         node: None,
+        backend: Default::default(),
     })
 }
 
@@ -327,13 +348,18 @@ pub fn list_networks(
     })
 }
 
-pub fn get_network(
+pub async fn get_network(
     call: &Call,
     req: pb::GetNetworkRequest,
 ) -> ServiceResult<pb::GetNetworkResponse> {
     let n = viewed(call, visible_network(call, &req.id)?)?;
+    let mut pb = network_pb(&n);
+    // Where an `auto` network's NICs fell back (spec/31-dpu.md §11).
+    if n.backend == crate::network::BackendPolicy::Auto {
+        pb.host_backend_nics = call.manager().host_backend_nics(&n.id).await;
+    }
     Ok(pb::GetNetworkResponse {
-        network: network_pb(&n).into(),
+        network: pb.into(),
         ..Default::default()
     })
 }
@@ -366,6 +392,7 @@ pub async fn create_network(
         req.router,
     )?;
     spec.node = req.node;
+    spec.backend = backend_of(req.backend.as_known().unwrap_or_default());
     let n = call
         .manager()
         .create_host_network(spec, grants, tenants, req.all_projects)
@@ -537,6 +564,29 @@ pub fn set_network_host_api(
         .set_network_host_api(&n.id, req.host_api)
         .map_err(manager_err)?;
     Ok(pb::SetNetworkHostApiResponse {
+        network: network_pb(&n).into(),
+        ..Default::default()
+    })
+}
+
+/// Where a cluster network's NICs are switched from now on
+/// (`setNetworkBackend`, a host network administrator's; spec/31-dpu.md
+/// §12.1).
+pub fn set_network_backend(
+    call: &Call,
+    req: pb::SetNetworkBackendRequest,
+) -> ServiceResult<pb::SetNetworkBackendResponse> {
+    let n = visible_network(call, &req.id)?;
+    let mut es = EntitySet::new();
+    let e = add_network(&mut es, &n);
+    call.require(e, es)?;
+    let backend = backend_of(req.backend.as_known().unwrap_or_default());
+    call.detail("backend", serde_json::json!(backend));
+    let n = call
+        .manager()
+        .set_network_backend(&n.id, backend)
+        .map_err(manager_err)?;
+    Ok(pb::SetNetworkBackendResponse {
         network: network_pb(&n).into(),
         ..Default::default()
     })

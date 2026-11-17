@@ -231,6 +231,7 @@ fn port_spec(
     mac: String,
     queue_pairs: u8,
     att: &crate::models::NetworkAttachment,
+    placed_on_dpu: bool,
 ) -> VmPortSpec {
     let cluster = net.scope == crate::network::NetworkScope::Cluster;
     VmPortSpec {
@@ -250,8 +251,13 @@ fn port_spec(
         ovn_lport: cluster.then(|| glidex_ovs::names::port_name(vm_id, nic).unwrap_or_default()),
         port_security: att.port_security,
         allowed_addresses: att.allowed_addresses.clone(),
-        // The DPU backend is chosen at placement (spec/31-dpu.md D6).
-        backend: glidex_ovs::vm_port::PortBackend::Host,
+        // Placement chose the DPU (spec/31-dpu.md §8.4); netd gets the
+        // network's policy, so an `auto` NIC may still fall back.
+        backend: if cluster && placed_on_dpu {
+            net.backend
+        } else {
+            glidex_ovs::vm_port::PortBackend::Host
+        },
     }
 }
 
@@ -1590,6 +1596,7 @@ impl VmManager {
         }
         let _ports = self.ports_lock.lock().await;
         let mut out = Vec::new();
+        let mut fell_back: Vec<usize> = Vec::new();
         for (i, att) in networks.iter().enumerate() {
             let net = self
                 .networks
@@ -1620,7 +1627,12 @@ impl VmManager {
             }
             let queue_pairs =
                 nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count);
-            let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs, att);
+            let on_dpu = vm
+                .status
+                .placement
+                .as_ref()
+                .is_some_and(|p| p.backend_of(i as u8) == glidex_dpu::Backend::Dpu);
+            let spec = port_spec(&vm.id, &net, i as u8, mac.clone(), queue_pairs, att, on_dpu);
             let netd = self.netd.clone();
             let res: AttachResult = blocking(move || netd.call(Op::AttachVmPort(spec))).await??;
             if let Some(n) = st.nics.iter_mut().find(|n| n.nic_index as usize == i) {
@@ -1628,6 +1640,13 @@ impl VmManager {
                 n.ipv4 = res.ipv4;
                 n.metadata_index = res.metadata_index;
                 n.port_ok = true;
+                // Where it landed: the leader moves `requested-chassis` to
+                // match a fallback (spec/31-dpu.md §8.4).
+                n.backend =
+                    (net.backend != glidex_ovs::vm_port::PortBackend::Host).then_some(res.backend);
+            }
+            if on_dpu && res.backend == glidex_dpu::Backend::Host {
+                fell_back.push(i);
             }
             out.push(NicBinding {
                 id: format!("net{}", i),
@@ -1636,6 +1655,39 @@ impl VmManager {
                 queue_pairs,
                 mtu: net.mtu,
             });
+        }
+        // An `auto` NIC the DPU couldn't take is on the host's chassis: the
+        // data path is enforced on the host (spec/31-dpu.md §11).
+        if fell_back.is_empty() {
+            if st
+                .conditions
+                .iter()
+                .any(|c| c.kind == "NetworkDegraded" && c.status == Tristate::True)
+            {
+                set_cond(
+                    &mut st.conditions,
+                    "NetworkDegraded",
+                    Tristate::False,
+                    "DpuBackend",
+                    "",
+                );
+            }
+        } else {
+            set_cond(
+                &mut st.conditions,
+                "NetworkDegraded",
+                Tristate::True,
+                "HostBackend",
+                format!(
+                    "NIC{} {} fell back to the host's chassis: the node's DPU was unavailable",
+                    if fell_back.len() == 1 { "" } else { "s" },
+                    fell_back
+                        .iter()
+                        .map(|i| i.to_string())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+            );
         }
         // Ports on OVN networks carry traffic once ovn-controller has their
         // flows (§11.5): wait a little, then launch anyway and say so.
@@ -2181,6 +2233,11 @@ impl VmManager {
             let Some(port) = nic.port.clone() else {
                 continue;
             };
+            // A DPU port isn't on this host's OVS: netd restores it from
+            // its own records (spec/31-dpu.md §7.4).
+            if nic.backend == Some(glidex_dpu::Backend::Dpu) {
+                continue;
+            }
             let Ok(Some(net)) = self.networks.get(&nic.network) else {
                 continue;
             };
@@ -2211,6 +2268,7 @@ impl VmManager {
                 nic.mac.clone(),
                 nic_queue_pairs(att.queue_pairs, net.port_type, vm.config().vcpu_count),
                 att,
+                false,
             );
             let _ports = self.ports_lock.lock().await;
             let netd = self.netd.clone();

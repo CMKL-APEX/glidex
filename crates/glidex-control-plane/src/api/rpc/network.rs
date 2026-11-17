@@ -58,7 +58,7 @@ impl NetworkService for Svc {
         ctx: RequestContext,
         req: ServiceRequest<'_, GetNetworkRequest>,
     ) -> ServiceResult<GetNetworkResponse> {
-        op!(self, ctx, req, svc::get_network)
+        op_async!(self, ctx, req, svc::get_network)
     }
 
     async fn delete_network(
@@ -107,6 +107,14 @@ impl NetworkService for Svc {
         req: ServiceRequest<'_, SetNetworkHostApiRequest>,
     ) -> ServiceResult<SetNetworkHostApiResponse> {
         op!(self, ctx, req, svc::set_network_host_api)
+    }
+
+    async fn set_network_backend(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SetNetworkBackendRequest>,
+    ) -> ServiceResult<SetNetworkBackendResponse> {
+        op!(self, ctx, req, svc::set_network_backend)
     }
 
     async fn create_project_network(

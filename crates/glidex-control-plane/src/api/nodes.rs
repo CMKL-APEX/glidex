@@ -296,3 +296,16 @@ pub async fn delete_spare_image_files(
         svc::delete_spare_image_files(&c, req)?,
     ))
 }
+
+/// `GET /nodes/{id}/dpus` (spec/31-dpu.md §12.4).
+pub async fn dpus(c: Caller, Path(id): Path<String>) -> Result<impl IntoResponse, ApiErr> {
+    Ok(Json(svc::node_dpus(&c, id).await?))
+}
+
+/// `GET /nodes/{id}/dpus/{dpu}/ports` (spec/31-dpu.md §12.4).
+pub async fn dpu_ports(
+    c: Caller,
+    Path((id, dpu)): Path<(String, String)>,
+) -> Result<impl IntoResponse, ApiErr> {
+    Ok(Json(svc::node_dpu_ports(&c, id, dpu).await?))
+}

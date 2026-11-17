@@ -41,6 +41,15 @@ pub enum NetworkScope {
     Cluster,
 }
 
+/// Where a cluster network's NICs are switched (spec/31-dpu.md §12.1):
+/// the node's own chassis, its DPU, or the DPU when it is healthy. The
+/// network's policy is the port's (glidex-ovs), so netd gets it as is.
+pub type BackendPolicy = glidex_ovs::vm_port::PortBackend;
+
+fn is_host_backend(b: &BackendPolicy) -> bool {
+    *b == BackendPolicy::Host
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Network {
     /// UUID; the key of the record, of Cedar's `Network` entity, of VM
@@ -84,6 +93,10 @@ pub struct Network {
     /// (spec/29-workload-identity.md §15). Set by host network administrators.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub host_api: bool,
+    /// Cluster networks: where its NICs are switched (spec/31-dpu.md
+    /// §12.1). `host` keeps networks from before DPUs as they were.
+    #[serde(default, skip_serializing_if = "is_host_backend")]
+    pub backend: BackendPolicy,
     pub created_at: u64,
     /// Project networks (spec/11-security.md §6.2) belong to a project and
     /// are usable by it and the projects in `shares`. Host networks have
@@ -204,6 +217,10 @@ pub struct CreateNetworkRequest {
     /// the request (the leader, in a cluster).
     #[serde(default)]
     pub node: Option<String>,
+    /// Cluster NAT and isolated networks: where its NICs are switched
+    /// (spec/31-dpu.md §12.1).
+    #[serde(default)]
+    pub backend: BackendPolicy,
 }
 
 fn default_port_type() -> VmPortKind {
@@ -415,6 +432,7 @@ impl CreateNetworkRequest {
             dns: self.dns,
             owns_bridge: self.mode != NetworkMode::Bridged,
             host_api: false,
+            backend: self.backend,
             created_at: now(),
             project: None,
             all_projects: false,
@@ -550,6 +568,7 @@ mod tests {
             physnet: None,
             router: None,
             node: None,
+            backend: Default::default(),
         }
     }
 

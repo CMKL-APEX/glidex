@@ -485,6 +485,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         put(net::set_network_host_api),
     )
     .add(
+        "PUT",
+        "/networks/{id}/backend",
+        "setNetworkBackend",
+        put(net::set_network_backend),
+    )
+    .add(
         "POST",
         "/networks/{id}/shares",
         "offerNetworkShare",
@@ -733,6 +739,18 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/nodes/{id}/topology",
         "readHostTopology",
         get(nodes::topology),
+    )
+    .add(
+        "GET",
+        "/nodes/{id}/dpus",
+        "readHostTopology",
+        get(nodes::dpus),
+    )
+    .add(
+        "GET",
+        "/nodes/{id}/dpus/{dpu}/ports",
+        "readHostTopology",
+        get(nodes::dpu_ports),
     )
     .add("GET", "/pci-pools", "listPciPools", get(nodes::pci_pools))
     .add(

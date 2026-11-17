@@ -286,6 +286,46 @@ pub struct DpuStatus {
     pub ovn_version: Option<String>,
 }
 
+impl DpuStatus {
+    /// §6's health, as the scheduler reads it: prepared, a chassis
+    /// connected to the SB, and a free VF.
+    pub fn healthy(&self) -> bool {
+        self.state == DpuState::Prepared && self.sb_connected && self.vfs_free > 0
+    }
+
+    /// The node's view of a DPU from netd's `dpu_probe` answer. The chassis
+    /// and its SB connection come from `dpu_ovn_status`, when known.
+    pub fn from_probe(
+        probe: &serde_json::Value,
+        chassis: Option<String>,
+        sb_connected: bool,
+    ) -> Option<DpuStatus> {
+        let id = probe.get("id")?.as_str()?.to_string();
+        let reachable = probe["reachable"].as_bool().unwrap_or(false);
+        let gaps = probe["missing"].as_array().map(|m| m.len()).unwrap_or(0);
+        let state = if !reachable {
+            DpuState::Unreachable
+        } else if gaps > 0 {
+            DpuState::Unprepared
+        } else {
+            DpuState::Prepared
+        };
+        let n = |k: &str| probe[k].as_u64().unwrap_or(0) as u32;
+        Some(DpuStatus {
+            id,
+            state,
+            vfs_total: n("vfs_total"),
+            vfs_free: n("vfs_free"),
+            chassis,
+            sb_connected,
+            ovn_version: probe
+                .pointer("/capabilities/ovn_version")
+                .and_then(|v| v.as_str())
+                .map(String::from),
+        })
+    }
+}
+
 /// Why a DPU whose `ovn-controller` is `dpu_ovn` can't be a chassis of a
 /// cluster whose ovn-northd is `northd`: the rule [`ovn_outdated`] applies
 /// to every chassis (an older controller lacks northd's pipeline). The
@@ -601,6 +641,9 @@ impl NodeStore {
         node.status.ui_url = probe.ui_url;
         node.status.api_pin = probe.api_pin;
         node.status.api_pin_pending = probe.api_pin_pending;
+        if let Some(dpus) = probe.dpus {
+            node.status.dpus = dpus;
+        }
         if node != before || self.get(id)?.is_none() {
             node.meta.resource_version += 1;
             self.put(&node)?;
@@ -626,6 +669,10 @@ pub struct SelfProbe {
     /// Its API certificate's pin, and a renewed one's it holds (D90).
     pub api_pin: Option<String>,
     pub api_pin_pending: Option<String>,
+    /// The node's DPUs from netd's `dpu_probe` (spec/31-dpu.md §12.3);
+    /// `None` when netd didn't say (unreachable, or older than DPUs), which
+    /// keeps what was reported before.
+    pub dpus: Option<Vec<DpuStatus>>,
 }
 
 /// The first line of `<program> --version` (`ovn-controller 24.03.2`), its
@@ -751,6 +798,7 @@ impl SelfProbe {
             ui_url: None,
             api_pin: None,
             api_pin_pending: None,
+            dpus: None,
         }
     }
 }
@@ -791,6 +839,37 @@ mod dpu_tests {
         assert!(v.get("dpus").is_none());
         let back: NodeStatus = serde_json::from_value(v).unwrap();
         assert!(back.dpus.is_empty());
+    }
+
+    #[test]
+    fn a_dpu_is_reported_from_netds_probe() {
+        // netd's `dpu_probe` answer (glidex-netd `DpuProbe`), trimmed.
+        let probe = serde_json::json!({
+            "id": "dpu0", "reachable": true, "vfs_total": 16, "vfs_free": 15,
+            "missing": [], "capabilities": { "ovn_version": "24.03.8" },
+        });
+        let d = DpuStatus::from_probe(&probe, Some("node:n1-dpu".into()), true).unwrap();
+        assert_eq!(d.state, DpuState::Prepared);
+        assert_eq!((d.vfs_total, d.vfs_free), (16, 15));
+        assert_eq!(d.ovn_version.as_deref(), Some("24.03.8"));
+        assert!(d.healthy());
+
+        let gaps =
+            serde_json::json!({ "id": "dpu0", "reachable": true, "missing": ["link_address"] });
+        let d = DpuStatus::from_probe(&gaps, None, false).unwrap();
+        assert_eq!(d.state, DpuState::Unprepared);
+        assert!(!d.healthy());
+        let down = serde_json::json!({ "id": "dpu0", "reachable": false, "missing": [] });
+        assert_eq!(
+            DpuStatus::from_probe(&down, None, false).unwrap().state,
+            DpuState::Unreachable
+        );
+        // Prepared, but its chassis isn't connected, or no VF is free.
+        let d = DpuStatus::from_probe(&probe, Some("node:n1-dpu".into()), false).unwrap();
+        assert!(!d.healthy());
+        let full = serde_json::json!({ "id": "dpu0", "reachable": true, "vfs_total": 2, "vfs_free": 0, "missing": [] });
+        assert!(!DpuStatus::from_probe(&full, None, true).unwrap().healthy());
+        assert!(DpuStatus::from_probe(&serde_json::json!({}), None, false).is_none());
     }
 }
 
