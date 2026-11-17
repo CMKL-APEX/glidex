@@ -429,6 +429,7 @@ shared datastore has `datastore` and `datastore_name` instead of a
 | `GET` | `/networks/{id}/events` | The network's last events |
 | `GET` | `/networks/{id}/ovn` | A cluster network as OVN sees it: switch, ports, router |
 | `PUT` | `/networks/{id}/host_api` | Open this host's API to a NAT network's guests, or close it: `{host_api: true\|false}` → `{network}` (host network administrators) |
+| `PUT` | `/networks/{id}/backend` | Where a cluster network's NICs are switched from now on: `{backend: NETWORK_BACKEND_HOST\|NETWORK_BACKEND_DPU\|NETWORK_BACKEND_AUTO}` → `{network}` (host network administrators; spec/31-dpu.md §12.1) |
 | `PUT` | `/networks/{id}/grants` | Which projects and tenants may use a host network (replaces the grants) |
 | `POST` | `/networks/{id}/shares` | Offer a project network to another project |
 | `DELETE` | `/networks/{id}/shares/{project}` | Withdraw a share |
@@ -771,6 +772,8 @@ id or its name.
 | `GET` | `/nodes` | List nodes; a server's status has `ui_url`, the web UI address it publishes |
 | `GET` | `/nodes/{id}` | Get a node |
 | `GET` | `/nodes/{id}/topology` | A node's NUMA nodes and PCIe tree, read on that node |
+| `GET` | `/nodes/{id}/dpus` | The node's DPUs: what it reports (`status`: state, VFs, chassis), whether it is `healthy`, and netd's live `probe` (or `probe_error`) |
+| `GET` | `/nodes/{id}/dpus/{dpu}/ports` | The VM ports on that DPU, as its agent lists them |
 | `POST` | `/nodes/{id}/devices/{address}/prepare` | Bind a device's IOMMU group to vfio-pci on its node |
 | `POST` | `/nodes/{id}/devices/{address}/sriov` | Set a physical function's SR-IOV virtual functions: `{"vfs": N}` (0 removes them) |
 | `POST` | `/nodes/{id}/devices/{address}/release` | Put a prepared device back on its drivers |

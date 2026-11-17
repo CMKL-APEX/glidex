@@ -120,6 +120,23 @@ pub async fn list_networks(client: &ApiClient) {
 }
 
 /// The body of `network-add <name> …` (a host network).
+/// `--backend host|dpu|auto` (spec/31-dpu.md §12.4).
+fn backend_flag(args: &[&str]) -> Result<NetworkBackend, String> {
+    match flag_value(args, "--backend") {
+        None => Ok(NetworkBackend::NETWORK_BACKEND_UNSPECIFIED),
+        Some(b) => backend_word(b),
+    }
+}
+
+fn backend_word(b: &str) -> Result<NetworkBackend, String> {
+    match b {
+        "host" => Ok(NetworkBackend::NETWORK_BACKEND_HOST),
+        "dpu" => Ok(NetworkBackend::NETWORK_BACKEND_DPU),
+        "auto" => Ok(NetworkBackend::NETWORK_BACKEND_AUTO),
+        other => Err(format!("--backend is host, dpu or auto, not {other}")),
+    }
+}
+
 fn host_network_request(name: &str, args: &[&str]) -> Result<CreateNetworkRequest, String> {
     let (mode, bridge) = if let Some(b) = flag_value(args, "--bridged") {
         (NetworkMode::NETWORK_MODE_BRIDGED, Some(b))
@@ -164,6 +181,7 @@ fn host_network_request(name: &str, args: &[&str]) -> Result<CreateNetworkReques
         node: flag_value(args, "--node")
             .filter(|v| !v.starts_with("--"))
             .map(str::to_string),
+        backend: backend_flag(args)?.into(),
         ..Default::default()
     })
 }
@@ -172,7 +190,7 @@ fn host_network_request(name: &str, args: &[&str]) -> Result<CreateNetworkReques
 pub async fn create_host(client: &ApiClient, args: &[&str]) {
     let Some(name) = args.first().filter(|a| !a.starts_with("--")) else {
         usage(
-            "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster | --node [N]]",
+            "Usage: network-add <name> [--nat [--subnet CIDR] | --isolated | --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster [--backend host|dpu|auto] | --node [N]]",
         );
         return;
     };
@@ -314,6 +332,18 @@ async fn show(client: &ApiClient, net: &str) {
     if n.host_api == Some(true) {
         println!("  Host API:   open to its guests");
     }
+    if matches!(
+        n.backend.as_known(),
+        Some(NetworkBackend::NETWORK_BACKEND_DPU | NetworkBackend::NETWORK_BACKEND_AUTO)
+    ) {
+        println!(
+            "  Backend:    {}",
+            enum_word(&n.backend, "NETWORK_BACKEND_")
+        );
+    }
+    if !n.host_backend_nics.is_empty() {
+        println!("  On host:    {}", n.host_backend_nics.join(", "));
+    }
     if let Some(v) = n.vlan {
         println!("  VLAN:       {}", v);
     }
@@ -375,7 +405,7 @@ fn share_line(sh: &NetworkShare) -> String {
 // ---- `network …` ----------------------------------------------------------------
 
 pub async fn network(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: network list | show <net> | create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] ... | rm <name> | grant <host-net> [--project P]... [--tenant T]... [--all-projects] | host-api <net> on|off | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
+    let u = "Usage: network list | show <net> | create <name> [--project P [--isolated] [--vhost-user]] [--subnet CIDR] ... | rm <name> | grant <host-net> [--project P]... [--tenant T]... [--all-projects] | host-api <net> on|off | backend <net> host|dpu|auto | share <net> <project-id> | unshare <net> <project-id> | shares <project> | accept <project> <net> | leave <project> <net>";
     match args.first().copied().unwrap_or("list") {
         "list" | "ls" => list_networks(client).await,
         "show" | "get" => match args.get(1) {
@@ -479,6 +509,30 @@ pub async fn network(client: &ApiClient, args: &[&str]) {
                     "{} the guests of {} are kept from this host's API",
                     "Closed:".green(),
                     net.yellow()
+                ),
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        // Where a cluster network's NICs are switched (spec/31-dpu.md §12.1).
+        "backend" => {
+            let (Some(net), Some(word)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
+            let backend = match backend_word(word) {
+                Ok(b) => b,
+                Err(e) => return err(e),
+            };
+            let req = SetNetworkBackendRequest {
+                id: net.to_string(),
+                backend: backend.into(),
+                ..Default::default()
+            };
+            match svc!(rpc(client)).set_network_backend(req).await {
+                Ok(_) => println!(
+                    "{} {} places its NICs on the {} backend",
+                    "Backend set:".green(),
+                    net.yellow(),
+                    word
                 ),
                 Err(e) => err(rpc_err(e)),
             }
@@ -645,6 +699,24 @@ mod tests {
         assert_eq!(r.node, None);
 
         assert!(host_network_request("x", &["x", "--vlan", "seven"]).is_err());
+
+        let r = host_network_request("v", &["v", "--cluster", "--backend", "auto"]).unwrap();
+        assert_eq!(
+            r.backend.as_known(),
+            Some(NetworkBackend::NETWORK_BACKEND_AUTO)
+        );
+        assert_eq!(
+            r.scope.as_known(),
+            Some(NetworkScope::NETWORK_SCOPE_CLUSTER)
+        );
+        assert_eq!(
+            host_network_request("v", &["v"])
+                .unwrap()
+                .backend
+                .as_known(),
+            Some(NetworkBackend::NETWORK_BACKEND_UNSPECIFIED)
+        );
+        assert!(host_network_request("x", &["x", "--backend", "gpu"]).is_err());
     }
 
     #[test]

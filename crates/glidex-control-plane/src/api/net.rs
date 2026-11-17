@@ -41,7 +41,7 @@ pub async fn get_network(c: Caller, Path(id): Path<String>) -> Result<impl IntoR
         id,
         ..Default::default()
     };
-    Ok(Proto(StatusCode::OK, svc::get_network(&c, req)?))
+    Ok(Proto(StatusCode::OK, svc::get_network(&c, req).await?))
 }
 
 /// `GET /networks/{id}/ovn` (spec/16-clustering-ui.md §8): a cluster network
@@ -106,6 +106,15 @@ pub async fn set_network_host_api(
 ) -> Result<impl IntoResponse, ApiErr> {
     let req: pb::SetNetworkHostApiRequest = body_with(v, &[("id", &id)])?;
     Ok(Proto(StatusCode::OK, svc::set_network_host_api(&c, req)?))
+}
+
+pub async fn set_network_backend(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(v): Json<Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let req: pb::SetNetworkBackendRequest = body_with(v, &[("id", &id)])?;
+    Ok(Proto(StatusCode::OK, svc::set_network_backend(&c, req)?))
 }
 
 pub async fn grant_network(

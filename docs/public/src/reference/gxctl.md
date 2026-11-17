@@ -169,10 +169,11 @@ A datastore is named by its name or id. See
 |---|---|
 | `networks`, `nets`, `network list` | List networks |
 | `network show <net>` | A network's id, mode, grants or shares |
-| `network-add <name> [--nat [--subnet CIDR] \| --isolated \| --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster \| --node [N]]`, `net-add` | Create a host or cluster network (default NAT). `--cluster` / `--node`: on OVN across the cluster, or on one node's bridge; `--node N` on node N's (no `--subnet` or `--bridged` there) |
+| `network-add <name> [--nat [--subnet CIDR] \| --isolated \| --bridged <bridge>] [--vhost-user] [--vlan N] [--bridge NAME] [--cluster [--backend host\|dpu\|auto] \| --node [N]]`, `net-add` | Create a host or cluster network (default NAT). `--cluster` / `--node`: on OVN across the cluster, or on one node's bridge; `--node N` on node N's (no `--subnet` or `--bridged` there). `--backend`: where a cluster network's NICs are switched (DPU NICs) |
 | `network create <name> --project P [--isolated] [--vhost-user] [--subnet CIDR] [--mtu N]` | Create a project network (NAT unless `--isolated`). Without `--project`, same as `network-add` |
 | `network rm <net>`, `network-rm`, `net-rm` | Delete, waiting up to a minute |
 | `network host-api <net> on\|off` | Open this host's API to a NAT network's guests, or close it (host network administrators) |
+| `network backend <net> host\|dpu\|auto` | Where a cluster network's NICs are switched: the node's own chassis, its DPU, or the DPU when ready (host network administrators) |
 | `network grant <host-net> [--project P]… [--tenant T]… [--all-projects]` | Who may use a host network (replaces the current grants) |
 | `network share <net> <project-id>` | Offer a project network to another project |
 | `network unshare <net> <project-id>` | Withdraw the offer |
@@ -198,6 +199,7 @@ Routers have no `gxctl` command yet: use the web UI or the
 | `uplink-reapply <bridge> <name>` | Set up again an uplink rolled back at start |
 | `uplink-rm <bridge> <name>` | Remove an uplink, restoring the NIC |
 | `pci`, `pci-devices` | List the host's PCI devices, with their NUMA node and whether each is ready for passthrough |
+| `dpu status [--node N]` | Each node's DPU (or one node's): state, VFs free, chassis and SB connection, and what its probe finds missing |
 | `pci pools [--project P]` | The device pools: their devices per node, holders, and how many are free; with `--project`, the pools that project may use and how many are free |
 | `pci pool show <pool>` | One pool of the cluster setting as JSON, with its grants |
 | `pci pool set <pool.json>` | Add a pool to the cluster setting from a file holding one pool (`{"name": ..., "match": {...}}`), or replace the pool of that name |

@@ -12,6 +12,7 @@ mod config;
 mod console;
 mod directory;
 mod dirlogin;
+mod dpu;
 mod host;
 mod network;
 mod storage;
@@ -674,6 +675,10 @@ fn help_text() -> String {
     );
     line!("  {}               - List host PCI devices", "pci".cyan());
     line!(
+        "  {} - Each node's DPU: state, VFs, chassis, gaps",
+        "dpu status [--node N]".cyan()
+    );
+    line!(
         "  {}     - Show detailed info (incl. sysfs path) for one device",
         "pci <address>".cyan()
     );
@@ -1151,6 +1156,8 @@ const COMMANDS: &[&str] = &[
     "rm",
     "pci",
     "pci-devices",
+    "dpu",
+    "dpus",
     "nodes",
     "node",
     "cluster",
@@ -1627,6 +1634,8 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "nodes" | "node" => cluster::node(client, &parts[1..]).await,
 
         "pci" | "pci-devices" => host::pci(client, &parts[1..]).await,
+
+        "dpu" | "dpus" => dpu::dpu(client, &parts[1..]).await,
 
         "attach-device" => vm::device(client, true, &parts[1..]).await,
         "detach-device" => vm::device(client, false, &parts[1..]).await,
