@@ -1609,6 +1609,7 @@ impl VmManager {
                     ipv4: None,
                     port_ok: false,
                     metadata_index: None,
+                    backend: None,
                 });
                 if let Some(stored) = self
                     .write_status(&vm.id, vm.generation, st.clone(), vec![])

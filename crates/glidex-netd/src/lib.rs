@@ -7,6 +7,7 @@ pub mod auth;
 pub mod boot;
 pub mod client;
 pub mod dpu;
+pub mod dpu_chassis;
 pub mod proto;
 pub mod sd;
 pub mod server;

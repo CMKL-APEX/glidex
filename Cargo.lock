@@ -1456,6 +1456,7 @@ dependencies = [
  "glidex-api",
  "glidex-auth",
  "glidex-authd",
+ "glidex-dpu",
  "glidex-hv-client",
  "glidex-netd",
  "glidex-ovn",

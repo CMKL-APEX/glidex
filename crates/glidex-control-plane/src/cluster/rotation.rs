@@ -374,6 +374,33 @@ impl Cluster {
         Ok(true)
     }
 
+    /// A certificate for this node's DPU chassis (spec/31-dpu.md §8.3) from
+    /// the signing CA, for `csr`, the DPU's. Returns the certificate and
+    /// the trust bundle; no key is involved here.
+    pub async fn dpu_chassis_cert(&self, csr: &str) -> Result<(String, String), ClusterError> {
+        let r = self
+            .post_any(
+                "/cluster/v1/dpu-chassis-cert",
+                json!({ "csr": csr }).to_string().into(),
+            )
+            .await?;
+        if !r.status.is_success() {
+            return Err(other(format!(
+                "DPU chassis certificate refused: {} {}",
+                r.status,
+                String::from_utf8_lossy(&r.body)
+            )));
+        }
+        let v: Value = serde_json::from_slice(&r.body).map_err(other)?;
+        let cert = v["cert_pem"]
+            .as_str()
+            .ok_or_else(|| other("no certificate in the answer"))?;
+        let trust = v["trust_pem"]
+            .as_str()
+            .ok_or_else(|| other("no trust bundle in the answer"))?;
+        Ok((cert.to_string(), trust.to_string()))
+    }
+
     /// POST to the leader, or to a seed when this node has none of its own.
     pub async fn post_any(
         &self,

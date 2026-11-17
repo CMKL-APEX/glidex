@@ -85,6 +85,8 @@ pub struct Netd {
     /// The node's DPU, from `dpu.json` (spec/31-dpu.md §10.1); none: the
     /// DPU backend is unavailable.
     dpu: Option<Arc<DpuBackend>>,
+    /// The DPU's chassis ops (spec/31-dpu.md §8.3), relayed to its agent.
+    dpu_chassis: Option<Arc<dyn crate::dpu_chassis::DpuChassis>>,
 }
 
 fn to_value<T: serde::Serialize>(v: T) -> Result<Value, OvsError> {
@@ -121,7 +123,22 @@ impl Netd {
             ct: Mutex::new(None),
             ct_events: false.into(),
             dpu: None,
+            dpu_chassis: None,
         })
+    }
+
+    /// Relay the DPU chassis ops to `dpu` (the agent client, or a fake).
+    pub fn with_dpu_chassis(mut self, dpu: Arc<dyn crate::dpu_chassis::DpuChassis>) -> Self {
+        self.dpu_chassis = Some(dpu);
+        self
+    }
+
+    fn dpu_chassis(&self) -> Result<&dyn crate::dpu_chassis::DpuChassis, OvsError> {
+        self.dpu_chassis
+            .as_deref()
+            .ok_or_else(|| OvsError::Unsupported {
+                missing: vec!["dpu.json".into()],
+            })
     }
 
     /// Use the node's DPU (`dpu.json`).
@@ -284,6 +301,51 @@ impl Netd {
                     .map(|(_, p)| p)
                     .collect::<Vec<_>>(),
             ),
+            Op::EnsureDpuChassis(a) => {
+                // The DPU's own encapsulation address is the agent's to
+                // fill in; the rest is checked here, before anything moves.
+                glidex_dpu::ovs::ChassisSettings {
+                    system_id: a.chassis.clone(),
+                    sb_remotes: a.sb_remotes.clone(),
+                    encap_ip: std::net::Ipv4Addr::UNSPECIFIED.into(),
+                    br_int: glidex_ovs::ovn::BR_INT.into(),
+                }
+                .validate()
+                .map_err(|e| OvsError::invalid(e.to_string()))?;
+                a.certs.validate()?;
+                let st = self
+                    .dpu_chassis()?
+                    .ensure(&a.id, &a.chassis, &a.sb_remotes, &a.certs)?;
+                tracing::info!(dpu = %a.id, chassis = %a.chassis, "DPU chassis ensured");
+                to_value(st)
+            }
+            Op::DpuOvnStatus { id } => to_value(self.dpu_chassis()?.status(&id)?),
+            Op::LeaveDpuOvn { id, confirm } => {
+                if !confirm {
+                    return Err(OvsError::ConfirmationRequired {
+                        impact: format!(
+                            "DPU {id} stops being a chassis; its VM ports lose their flows"
+                        ),
+                    });
+                }
+                self.dpu_chassis()?.leave(&id)?;
+                tracing::info!(dpu = %id, "DPU left OVN");
+                Ok(Value::Null)
+            }
+            Op::DpuChassisCsr { id, chassis } => {
+                if !chassis.ends_with("-dpu") {
+                    return Err(OvsError::invalid(format!(
+                        "chassis {chassis} is not a DPU's (node:<node id>-dpu)"
+                    )));
+                }
+                let csr = self.dpu_chassis()?.csr(&id, &chassis)?;
+                if csr.contains("PRIVATE KEY") {
+                    return Err(OvsError::Io(
+                        "the DPU answered with a private key; refusing to pass it on".into(),
+                    ));
+                }
+                to_value(serde_json::json!({ "csr": csr }))
+            }
             Op::LeaveOvn { confirm } => {
                 glidex_ovs::ovn::leave(self.ex(), confirm, &self.config.ovn_dir)?;
                 tracing::info!("left OVN");

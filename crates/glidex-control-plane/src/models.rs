@@ -375,6 +375,21 @@ pub struct Placement {
     /// The devices picked for the VM's pool requests (§9).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pool_devices: Vec<PoolDevice>,
+    /// The NICs (by index) placed on the node's DPU (spec/31-dpu.md §8.4);
+    /// the others are on the host's own chassis.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dpu_nics: Vec<u8>,
+}
+
+impl Placement {
+    /// The backend placement chose for NIC `nic`.
+    pub fn backend_of(&self, nic: u8) -> glidex_dpu::Backend {
+        if self.dpu_nics.contains(&nic) {
+            glidex_dpu::Backend::Dpu
+        } else {
+            glidex_dpu::Backend::Host
+        }
+    }
 }
 
 /// KiB of ordinary memory pages.
@@ -671,6 +686,10 @@ pub struct NicStatus {
     /// §7.1): how glidex-metad knows this NIC's requests.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_index: Option<u16>,
+    /// Where the node attached it (spec/31-dpu.md §8.4): a NIC placed on
+    /// the DPU that fell back reports `host`, and its logical port follows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<glidex_dpu::Backend>,
 }
 
 impl Vm {

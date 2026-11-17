@@ -46,6 +46,7 @@ impl VmManager {
                         numa: choice.numa,
                         cpus: choice.cpus,
                         pool_devices: choice.pool_devices,
+                        dpu_nics: Vec::new(),
                     });
                     let policy =
                         !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();
