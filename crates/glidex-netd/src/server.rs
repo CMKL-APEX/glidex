@@ -1424,6 +1424,8 @@ impl Netd {
         report
             .errors
             .extend(pass.errors.iter().map(|e| format!("source routes: {e}")));
+        // The DPU's ports: on the DPU, not this host's OVS (spec/31-dpu.md §7.4).
+        self.reconcile_dpu(&mut report);
         let caps = host::probe(ex, &self.config.probe);
         if !caps.ovs_running {
             if !self
@@ -1934,7 +1936,77 @@ fn dpu_err(e: glidex_dpu::DpuError) -> OvsError {
     }
 }
 
+/// What the DPU is told about a NIC (§7.1 steps 4–5).
+fn dpu_port_spec(spec: &VmPortSpec, lsp: String) -> DpuPortSpec {
+    DpuPortSpec {
+        vm_id: spec.vm_id.clone(),
+        nic: spec.nic_index,
+        lsp,
+        mac: spec.mac.clone(),
+        mtu: spec.mtu.unwrap_or(1500),
+        queue_pairs: spec.queue_pairs,
+    }
+}
+
 impl Netd {
+    /// §7.4 at start: a recorded DPU port the DPU lacks is re-created on
+    /// the DPU (steps 4–6; the host keeps its VF and `vfio-pci` binding),
+    /// event `PortRestored`; a tagged DPU port with no record is reported,
+    /// never deleted. An unreachable agent is an error in the report.
+    fn reconcile_dpu(&self, report: &mut ReconcileReport) {
+        let Some(d) = &self.dpu else { return };
+        let rows: Vec<glidex_dpu::ovs::DpuPortRow> = match d.call(AgentOp::ListPorts) {
+            Ok(r) => r,
+            Err(e) => {
+                report.errors.push(format!("DPU ports not reconciled: {e}"));
+                return;
+            }
+        };
+        let records: Vec<VmPortRecord> = self
+            .vm_ports()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.backend == Backend::Dpu)
+            .collect();
+        for r in &records {
+            if rows
+                .iter()
+                .any(|p| p.vm_id == r.spec.vm_id && p.nic == r.spec.nic_index)
+            {
+                continue;
+            }
+            let (Some(vf), Some(lsp)) = (r.dpu_vf, r.spec.ovn_lport.clone()) else {
+                report.errors.push(format!(
+                    "{}: a DPU record without its VF or logical port",
+                    r.port
+                ));
+                continue;
+            };
+            match d.call::<AttachRepResult>(AgentOp::AttachRep {
+                vf,
+                spec: dpu_port_spec(&r.spec, lsp),
+                bridge: d.config.bridges.representor_bridge.clone(),
+                timeout_secs: d.config.port_timeout_secs,
+            }) {
+                Ok(rep) => {
+                    tracing::info!(vm = %r.spec.vm_id, nic = r.spec.nic_index, port = %rep.representor, "PortRestored");
+                    report
+                        .repaired
+                        .push(format!("PortRestored {}", rep.representor));
+                }
+                Err(e) => report.errors.push(format!("DPU port {}: {e}", r.port)),
+            }
+        }
+        for p in rows {
+            if !records
+                .iter()
+                .any(|r| r.spec.vm_id == p.vm_id && r.spec.nic_index == p.nic)
+            {
+                report.orphans.push(format!("DPU port {}", p.name));
+            }
+        }
+    }
+
     fn dpu(&self) -> Result<&Arc<DpuBackend>, OvsError> {
         self.dpu.as_ref().ok_or_else(|| OvsError::DpuUnavailable {
             reason: format!("no DPU configured ({})", dpu::DPU_CONFIG),
@@ -2016,18 +2088,10 @@ impl Netd {
             Some(vf) => vf,
             None => self.vf_allocator(&pf)?.allocate(&key).map_err(dpu_err)?,
         };
-        let dspec = DpuPortSpec {
-            vm_id: spec.vm_id.clone(),
-            nic: spec.nic_index,
-            lsp,
-            mac: spec.mac.clone(),
-            mtu: spec.mtu.unwrap_or(1500),
-            queue_pairs: spec.queue_pairs,
-        };
         let rep: AttachRepResult = d
             .call(AgentOp::AttachRep {
                 vf,
-                spec: dspec,
+                spec: dpu_port_spec(&spec, lsp),
                 bridge: d.config.bridges.representor_bridge.clone(),
                 timeout_secs: d.config.port_timeout_secs,
             })

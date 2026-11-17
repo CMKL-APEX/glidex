@@ -1,0 +1,7 @@
+{
+  "listen": "192.0.2.2:7443",
+  "ca": "/etc/glidex/dpu-agent/ca.pem",
+  "cert": "/etc/glidex/dpu-agent/agent.pem",
+  "key": "/etc/glidex/dpu-agent/agent.key",
+  "client_identity": "glidex-netd"
+}
