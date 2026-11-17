@@ -170,6 +170,9 @@ organizations that **operate** it, and lets each keep its own identity.
 | D93 | A tenant opts in without an offer | For a cluster its directory trusts directory-wide, a tenant's admin opts in from the directory: `gxctl tenant opt-in <t> --cluster <id>` (`optIn` with `{cluster}`, `tenant.clusters`, step-up), as fleets' opt-in already takes (§12.2). The directory posts `POST /trust/v1/admit {tenant: {id, slug, display_name}}`, signed with its key (`purpose: admit`, D63), over the pinned certificate. The cluster answers `{status: "admitted" \| "pending"}`, by its admission setting (hyperstor's D346), or refuses (`403 trust_refused`). The directory records the opt-in with that status. A pending tenant's status changes later through the reports (D70), which carry each opted-in tenant's `admission` (`admitted`, `pending`, `refused`). Only an admitted tenant is in the feed (D67) and gets tokens and sessions for the cluster (D69); a pending or refused one sends nothing about its members. | Each tenant still decides whether its members and projects go to the other organization; the operator decides once, by policy, rather than once per tenant. Learning a later decision from the reports needs no new call from the cluster to the directory. |
 | D94 | Ending a directory's trust | A tenant leaves as in D66. The whole directory's trust ends from either side: the directory's owner (`gxctl directory untrust-cluster <id>`) or the cluster's operator, each telling the other with `POST /trust/v1/end` with no `tenant`. That ends every admission of the directory on that cluster. A directory trusted directory-wide stays trusted when its last tenant leaves: D66's forgetting applies only to trust made from tenant offers. Amends D66. | Either organization can still leave alone. Keeping the trust with no tenant lets the next tenant opt in without a new offer. |
 | D95 | The feed with no admitted tenant | A cluster trusted directory-wide pulls the feed (D67) even with no admitted tenant. The answer then carries the directory's keys and ended `sid`s and no tenant. | The cluster has the directory's current keys when the first tenant is admitted, and can check its signed `admit`. |
+| D96 | A glidex cluster takes directory offers too | Glidex's control plane holds the cluster side of D91–D95 as hyperstor does. `gxctl admission offer --directory ISSUER [--admit open\|approval] [--cap key=value,…] [--days N]`, with no tenant, makes a directory offer (`cluster.admissions`, step-up). Its redeem stores a directory-wide `TrustedDirectory` with its **admission setting** (`admit`, default `open`) and **default cap** (as D79's). An admit is answered by the setting: `open` admits the tenant with a copy of the default cap; `approval` records it pending until `gxctl admission approve\|reject <directory> <tenant>` or the Admissions page. A change to the default cap applies to later admissions only (hyperstor's D347). `gxctl admission directories` shows each trusted directory's scope, setting and default cap; `gxctl admission untrust <directory>` ends a directory's trust as a whole (D94). Settled by the owner on 2026-11-17. | One way to share a glidex cluster with another organization's tenants, whichever kind of cluster it is; the cluster-side checks are glidex-trust's (D84) either way. |
+| D97 | Asking again | A tenant whose opt-in was refused, or is pending, may opt in again at any time. A cluster keeps one pending request per tenant (a second replaces the first's time); a refusal is not remembered against a later request. Settled by the owner on 2026-11-17. | The operator can always end the directory's trust; remembering refusals would add a state to clear by hand. |
+| D98 | Every tenant may opt in | Any tenant of a directory trusted as a whole may opt in, by its admin (`tenant.clusters`); the directory's owner doesn't limit which. A cluster that wants to choose sets `approval`. Settled by the owner on 2026-11-17. | Opting in is the tenant's consent; which tenants a cluster takes is the cluster's choice, which `approval` gives. |
 
 ## 3. Threat model additions
 
@@ -1319,7 +1322,7 @@ API address holds a renewed certificate, the leader announces its pin
 and records which directories took it, and the node switches once all
 have, or 7 days before the old certificate expires.
 
-### 12.6 Trusting a directory as a whole (D91–D95)
+### 12.6 Trusting a directory as a whole (D91–D98)
 
 With tenant offers (§12.1), each tenant of a directory needs its own
 offer from the cluster's operator. For a storage cluster used by many
@@ -1361,26 +1364,10 @@ whole.
 a redeem with no tenant and of an admit are in the crate, so hyperstor
 and a glidex cluster share them.
 
-**Open questions** (to settle before code):
-
-1. **Does a glidex cluster take directory offers too?** (a) Not yet:
-   glidex-trust gets the wire types and the cluster-side checks for
-   hyperstor, and glidex's control plane refuses a directory offer
-   (`gxctl admission offer` still needs `--tenant`). A glidex cluster
-   already admits tenants of directories it hosts by itself (D79).
-   (b) Yes, with `admission offer --directory` alone, an `admit` setting
-   and default caps, as hyperstor has. **Recommendation: (a)**, and (b)
-   when a glidex cluster is shared across organizations.
-2. **A refused or pending opt-in.** (a) The tenant's admin may opt in
-   again at any time; the cluster keeps one pending request per tenant.
-   (b) Again only after the operator clears the refusal. **Recommendation:
-   (a)**: the operator can end the directory's trust if a tenant keeps
-   asking.
-3. **Which tenants may opt in.** (a) Every tenant of the directory,
-   by its admin. (b) The directory's owner may limit it to some
-   tenants or teams. **Recommendation: (a)** now; the cluster's
-   `approval` setting already covers a directory where anyone may make
-   a tenant (D82).
+**Settled** (by the owner, 2026-11-17): a glidex cluster takes
+directory offers too, with an admission setting and a default cap
+(D96); a refused or pending tenant may opt in again at any time (D97);
+every tenant of the directory may opt in (D98).
 
 ## 13. Directory secrets (D21, D27)
 
@@ -1686,7 +1673,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
 | **T9** self-service tenants | §11.1, D78–D82: directory settings, `createOwnTenant`, limits, pending tenants and approval, a tenant at first sign-in, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the three-server test cluster with the Google connector. |
 | **T10** members by email | §6.4, D83: a user named by a verified email where members and roles are added; identities record whether their address was verified | Service tests; gxctl and the forms take an address. |
-| **T11** trusting a directory as a whole | §12.6, D91–D95: directory offers, redeemed by the directory's owner; tenants opting in without an offer; admission status from the cluster; ending a directory's trust; glidex-trust's wire and cluster-side checks for hyperstor (D345–D347); gxctl and UI | glidex-trust tests (both offer kinds, redeem, admit, end, reports, a pending tenant left out of the feed); service and policy tests at the directory; a real check with the three-server test cluster's hyperstor: a directory offer, a tenant opting in, a hyperstor disk created in its project. |
+| **T11** trusting a directory as a whole | §12.6, D91–D98: directory offers, redeemed by the directory's owner; tenants opting in without an offer; admission status from the cluster; ending a directory's trust; glidex-trust's wire and cluster-side checks (hyperstor's D345–D347); a glidex cluster's side, with its admission setting, default cap and approvals; gxctl and UI | glidex-trust tests (both offer kinds, redeem, admit, end, reports, a pending tenant left out of the feed); service and policy tests at the directory; a real check with the three-server test cluster's hyperstor: a directory offer, a tenant opting in, a hyperstor disk created in its project. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Directory`, `Tenant`, `Admission` and stores;
@@ -1946,7 +1933,7 @@ order):
    address, refused before resolving for a caller who may not add),
    docs.
 
-**T11 tasks** (trusting a directory as a whole, §12.6, D91–D95; one
+**T11 tasks** (trusting a directory as a whole, §12.6, D91–D98; one
 PR each, in order):
 
 1. **glidex-trust** (D91–D95 wire): `OfferToken.scope` and an optional
@@ -1968,15 +1955,25 @@ PR each, in order):
    answer and the reports; the feed and tokens for admitted tenants
    only; opt-out; tests (open, pending then admitted, refused, a
    pending tenant's members not sent, opt-out).
-4. **gxctl and web UI**: `directory trust-cluster|untrust-cluster|clusters`,
+4. **A glidex cluster's side** (D96, D97): `admission offer --directory`
+   with no tenant (`--admit`, `--cap`); the redeem with no tenant; a
+   directory-wide `TrustedDirectory` with its setting and default cap;
+   `POST /trust/v1/admit` (open: admitted with the cap; approval:
+   pending, one per tenant); `admission approve|reject|untrust`;
+   `admission directories` with scope, setting and cap; the end with no
+   tenant; the Admissions page's pending opt-ins; tests (both settings,
+   asking again, a cap change for later admissions only, ending as a
+   whole).
+5. **gxctl and web UI**: `directory trust-cluster|untrust-cluster|clusters`,
    `tenant opt-in --cluster`, `tenant clusters --available`; the
    directory page's trusted clusters, the tenant page's available
    clusters with **Opt in** and each status; docs (operator guide's
    clusters page, the user guide); UI e2e.
-5. **The real check** (spec/20-idp-checks.md): the three-server test
+6. **The real check** (spec/20-idp-checks.md): the three-server test
    cluster's hyperstor offers trust to the hosted directory, its owner
    redeems it, a tenant opts in, and a hyperstor disk is created in one
-   of its projects.
+   of its projects; and, between two glidex clusters, a directory offer,
+   an opt-in under `approval` and its approval.
 
 ## 19. Out of scope
 
@@ -2053,7 +2050,7 @@ T0–T6 are implemented (T5: kind `jwt`; T6 through task 8b, the real
 check with two organizations); T2b, T4b, T6b and T7 are not started;
 T9 has tasks 1–6 (settings and the label; creating one's own tenant; automatic admission; open pools; the real check, passed on 2026-11-05; a tenant at first sign-in).
 T8 (D75–D77) is implemented; its real check passed on 2026-11-03.
-T11 (D91–D95, §12.6) is specified, not started: its open questions are to settle first.
+T11 (D91–D98, §12.6) is specified, not started.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
