@@ -731,6 +731,9 @@ fn join_cluster(j: &JoinOptions) -> Result<()> {
     if let Some(a) = &j.advertise {
         args.extend(["--advertise".into(), a.clone()]);
     }
+    if let Some(t) = &j.tunnel_ip {
+        args.extend(["--tunnel-ip".into(), t.clone()]);
+    }
     if let Some(n) = j.name.as_ref().filter(|_| !j.rejoin) {
         args.extend(["--name".into(), n.clone()]);
     }
@@ -937,6 +940,8 @@ struct JoinOptions {
     role: String,
     token_file: Option<String>,
     advertise: Option<String>,
+    /// `--tunnel-ip`: the address OVN's tunnels use, when not the advertise IP.
+    tunnel_ip: Option<String>,
     name: Option<String>,
 }
 
@@ -1106,6 +1111,10 @@ impl Options {
                     o.join.get_or_insert_with(JoinOptions::default).advertise =
                         Some(value("--advertise")?)
                 }
+                "--tunnel-ip" => {
+                    o.join.get_or_insert_with(JoinOptions::default).tunnel_ip =
+                        Some(value("--tunnel-ip")?)
+                }
                 "--node-name" => {
                     o.join.get_or_insert_with(JoinOptions::default).name =
                         Some(value("--node-name")?)
@@ -1120,7 +1129,7 @@ impl Options {
         if let Some(j) = &mut o.join {
             if j.server.is_empty() {
                 bail!(
-                    "--role, --token-file, --advertise and --node-name go with --join <server:8842>"
+                    "--role, --token-file, --advertise, --tunnel-ip and --node-name go with --join <server:8842>"
                 );
             }
             if j.role.is_empty() {
@@ -1223,13 +1232,15 @@ fn print_help() {
          \x20     --role ROLE            agent (default: VMs only) or server\n\
          \x20     --token-file FILE      read the token from FILE (default: stdin)\n\
          \x20     --advertise IP:PORT    the address other nodes use for this one\n\
+         \x20     --tunnel-ip IP         OVN's tunnel address (default: the advertise IP)\n\
          \x20     --node-name NAME       default: this host's name\n\n\
          A standalone host with VMs brings them along (§5.9; nothing is committed until\n\
          an administrator approves the plan on a server, `gxctl node import`):\n\
          \x20     --import               with --join: import this host's resources\n\n\
-         A repaired host, or one whose certificate expired, comes back as the same\n\
-         node (§5.7) with a token from `gxctl node rejoin-token`:\n\
-         \x20     --rejoin SERVER:8842   rejoin as the same node (--token-file, --node-id ID)\n\
+         A repaired host, one whose certificate expired, or one with a new address\n\
+         comes back as the same node (§5.7) with a token from `gxctl node rejoin-token`:\n\
+         \x20     --rejoin SERVER:8842   rejoin as the same node (--token-file, --node-id ID,\n\
+         \x20                            --advertise IP:PORT and --tunnel-ip IP for a new address)\n\
          A host whose node a server removed leaves the cluster (§5.5):\n\
          \x20     --leave                go back to a standalone host (once a server\n\
          \x20                            confirms the removal; works offline)\n\
@@ -4321,6 +4332,31 @@ mod tests {
                 "{bad}"
             );
         }
+    }
+
+    /// A node at a new address rejoins with it (spec/14-clustering.md D37):
+    /// `--advertise` and `--tunnel-ip` go with `--rejoin`, and neither is saved.
+    #[test]
+    fn a_rejoin_takes_a_new_address() {
+        let o = Options::parse(
+            None,
+            &args(&[
+                "--rejoin",
+                "192.0.2.11:8842",
+                "--advertise",
+                "198.51.100.7:8842",
+                "--tunnel-ip",
+                "198.51.100.7",
+            ]),
+        )
+        .unwrap();
+        let j = o.join.as_ref().unwrap();
+        assert!(j.rejoin);
+        assert_eq!(j.server, "192.0.2.11:8842");
+        assert_eq!(j.advertise.as_deref(), Some("198.51.100.7:8842"));
+        assert_eq!(j.tunnel_ip.as_deref(), Some("198.51.100.7"));
+        assert!(!o.render().contains("198.51.100.7"), "{}", o.render());
+        assert!(Options::parse(None, &args(&["--tunnel-ip", "198.51.100.7"])).is_err());
     }
 
     /// The mounts offered: directly under the root, not yet a datastore.
