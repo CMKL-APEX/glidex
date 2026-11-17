@@ -179,11 +179,12 @@ host commands.
 
 ### 5.1 Port kinds
 
-`VmPortKind` (`crates/glidex-ovs/src/vm_port.rs:15`) gains one variant;
-`VmPortBinding` gains one, with the same serde style:
+`VmPortBinding` (`crates/glidex-ovs/src/vm_port.rs`) gains one variant,
+with the same serde style. `VmPortKind` is unchanged (as built in D3): it
+stays the host port's kind, which the host backend and a fallback use;
+the backend says whether the port is on the DPU.
 
 ```rust
-pub enum VmPortKind    { Tap, VhostUser, DpuVirtio }        // + DpuVirtio
 pub enum VmPortBinding {
     Tap { ifname: String },
     VhostUser { socket: PathBuf },
@@ -194,14 +195,18 @@ pub enum VmPortBinding {
 `VmPortSpec` gains one optional field (the default keeps old records
 valid); the logical port stays `ovn_lport`
 ([14-clustering.md §11.3](14-clustering.md#113-hosts-joining-ovn-netd)),
-whose addresses and port security the leader sets in the NB:
+whose addresses and port security the leader sets in the NB. It carries
+the network's policy, not only placement's choice, so that netd can apply
+§6's table again at launch (an `auto` NIC falls back, a `dpu` one fails):
 
 ```rust
 pub struct VmPortSpec {
     /* existing, including ovn_lport */
-    pub backend: Backend,                  // Host (default) | Dpu: the one placement chose (§8.4)
+    pub backend: PortBackend,              // Host (default) | Dpu | Auto; not Host needs ovn_lport
 }
 ```
+
+netd's `vm_ports` record keeps the backend the port got and its `dpu_vf`.
 
 The result carries the chosen backend:
 
@@ -973,7 +978,7 @@ D0's findings are in §0.**
 | **D0** hardware bring-up (no glidex code; **met, except traffic through a VF, which is D4's**: acceptance (1) met (findings 16–18), with virtio-net from a stock image in run 6 (finding 36); (3) **met** in run 5 (findings 19-28); (2) **met**: firmware activated, the virtio-net PF served across DPU reboots, and the values unchanged by a reinstall (findings 29-31, 34, 36); (4) **mostly met** (finding 35): a VF created through `pci-pf-stub`, configured and its representor on `br-int`; traffic through it is D4's; (5) **met**: `crates/glidex-dpu/tests/fixtures/` holds the scrubbed outputs with no VF and with one) | Operator-run scripts and a runbook under `scripts/dpu/` (next to `scripts/dev/`): `dpu-probe.sh` collects every §9.2 field as JSON; `dpu-prepare.sh` is the §9.3 sequence as idempotent shell with `--dry-run`, per-step timing, and the restart/underlay handling; `dpu-reinit.sh` generates the §9.4.1 `bf.cfg` and drives `bfb-install -r … -c … -b …`, capturing the rshim `console`. Run on a DPU that may be wiped, from a stock BFB. Scripts hold no secrets and take paths and keys as arguments. | Findings recorded in §0 (and the open questions closed): (1) from a freshly reinstalled DPU, `dpu-prepare.sh` alone reaches a probe with no gaps and a `doca` bridge carrying traffic, and a second run changes nothing; (2) **O13**: stage the §9.1 firmware values (operator decision), follow the cold-reset procedure, record `mlxconfig q`, reinstall with `WITH_NIC_FW_UPDATE=no`, record it again; (3) the `bf.cfg` path: where `authorized_keys` and the agent unit must go under `/mnt/`, unit enablement by symlink, key-only first login and the `DPU is ready` gate (**O17**), the console markers a job can key on, the measured duration (**O15**), and which devices the BFB writes (**O16**); (4) with firmware staged, **O1–O3** (representor bridge, `virtnet` flags, minimal parameter set); (5) every command's raw output saved as fixtures under `crates/glidex-dpu/tests/fixtures/`, scrubbed of addresses, MACs and identifiers, as the canned inputs for D1's probe-parsing tests. |
 | **D1** `glidex-dpu` core (**built**: `crates/glidex-dpu`, unit tests and `tests/fixtures.rs` against both D0 fixture sets) | types, `Exec`/`RecordingExec`, command builders (`ovs-vsctl`, `virtnet`), probe parsing, VF allocator | Unit tests: exact commands per port; idempotency flags; `type=doca` with no options; refusal of `dpdk`/`netdev` on a DOCA DPU; probe parsed from canned output of the test DPU; allocator reuse after free. |
 | **D2** the DPU chassis in the cluster's OVN | `ensure_ovn_chassis`/`leave_ovn`/`ovn_status` with a DPU target (relayed to a fake agent), CSR signing by the leader with the cluster CA, the version rule, tombstone clean-up of `<node>-dpu`, `requested-chassis` by backend, the backend at placement and the follow-up after a node's fallback | Unit tests: the agent's `external_ids` and `br-int` for a DPU target; a signed certificate's subject and issuer; a DPU newer than `ovn-northd` not enrolled; `requested-chassis` per backend and after a reported fallback. Cluster tests (`cluster_tests.rs`, fake agent): a node reporting a prepared DPU gets its chassis enrolled; removing the node deletes both chassis; the DPU's key never reaches the control plane. |
-| **D3** agent + netd backend | agent binary, mTLS, allow-list, `Backend` trait, `HostOvsBackend` adapter, backend selection and stickiness, `dpu.json`, the management link's host side (§10.1) | Fake-agent tests: every §6 table row; recorded backend wins on re-attach; agent down → `dpu_unavailable`/fallback; an unparseable `dpu.json` stops netd. Link tests (`RecordingExec`, netlink events faked): netd applies `link.address` at start; re-applies it when `tmfifo_net0` is recreated (finding 32) and leaves an address it finds already set alone; `dpu_probe` reports `missing: ["link_address"]` while it is absent. On the test host (ignored, `GLIDEX_TEST_DPU`): `systemctl restart rshim` and the agent answers `hello` again without anyone touching the host. |
+| **D3** agent + netd backend (**mostly built**: `crates/glidex-dpu-agent` (agent binary, mTLS that requires netd's certificate from the channel CA and its CN, `hello`, `probe`, `list_ports`, `attach_rep`, `detach_rep`) and netd's DPU backend in `crates/glidex-netd/src/dpu.rs` (`dpu.json`, §6 selection with a 5 s health cache, stickiness, the host's VF steps and `vfio-pci` binding, `dpu_probe`, `dpu_list_ports`, the link's host side with an `ip monitor link` watcher); tests: `glidex-netd/tests/dpu_tests.rs` with the real agent code in process on the test DPU's fixtures, and the agent's own TLS tests. **Not yet:** a `PortBackend` trait with a `HostOvsBackend` adapter (the host path stays inline in netd's `attach`), the `glidex-dpu-agent.service` unit and an example `dpu.json` under `packaging/`, §7.4 reconciliation of DPU ports at start, and the ignored test on the host) | agent binary, mTLS, allow-list, `Backend` trait, `HostOvsBackend` adapter, backend selection and stickiness, `dpu.json`, the management link's host side (§10.1) | Fake-agent tests: every §6 table row; recorded backend wins on re-attach; agent down → `dpu_unavailable`/fallback; an unparseable `dpu.json` stops netd. Link tests (`RecordingExec`, netlink events faked): netd applies `link.address` at start; re-applies it when `tmfifo_net0` is recreated (finding 32) and leaves an address it finds already set alone; `dpu_probe` reports `missing: ["link_address"]` while it is absent. On the test host (ignored, `GLIDEX_TEST_DPU`): `systemctl restart rshim` and the agent answers `hello` again without anyone touching the host. |
 | **D4** DPU attach (hardware; needs D0) | §7.1 end to end on one DPU, `dpu_probe`, the DPU chassis enrolled on real hardware | Ignored e2e (`GLIDEX_TEST_DPU`, a one-server cluster): a VM gets a virtio NIC, a DHCP address from the cluster's OVN, pings a host-backed VM on the same logical switch and, through `gx-edge`, an address outside; detach leaves no tagged rows; the DPU's private key never appears on the host. **Also settles O1–O3** and trims §9.1. |
 | **D5** `dpu_prepare` (needs D0) | §9.3 incl. hugepage persistence, `stop_local_central` | Unit tests per step; e2e: from a stock DPU (firmware already set, local central running) to a probe with no gaps; restart interruption reported; underlay re-applied; DPU-local central stopped only with the flag. |
 | **D5b** `dpu_reinit` (needs D0) | §9.4: device identity checks, BFB checksum, `bf.cfg` generation, `bfb-install` under a transient unit, the eight phases, jobs table, admin-only policy, `gxctl dpu reinit` | Unit tests with `RecordingExec`: exact `bfb-install` arguments; refusal on rshim mismatch, bad checksum, running tenant, concurrent job, default route through the DPU; `bf.cfg` contains a public key and the CA certificate and **no** password or private key; each phase's failure rule; a netd restart mid-install reattaches instead of starting a second install. Ignored e2e (`GLIDEX_TEST_DPU_REINIT=1` **and** an explicit DPU id; never in CI): from a running DPU to a verified `release`, with the timing recorded for O15. |

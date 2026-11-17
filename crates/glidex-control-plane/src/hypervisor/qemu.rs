@@ -525,6 +525,9 @@ fn nic_args(nic: &NicBinding, vhost_net: bool) -> Vec<(&'static str, String)> {
                 format!("vhost-user,id={},chardev=chr-{}{}", id, id, queues),
             ));
         }
+        // A DPU VF is a VFIO device, not a netdev (spec/31-dpu.md §12.2,
+        // D6); the control plane asks for none yet.
+        VmPortBinding::Vfio { .. } => return out,
     }
     let mut device = format!("virtio-net-pci,netdev={},id=dev-{},mac={}", id, id, nic.mac);
     if matches!(nic.binding, VmPortBinding::VhostUser { .. }) {

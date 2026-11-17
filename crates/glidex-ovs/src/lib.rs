@@ -69,6 +69,16 @@ pub enum OvsError {
     #[error("migration rolled back: {reason}")]
     MigrationRolledBack { reason: String },
 
+    /// The DPU backend can't be used (spec/31-dpu.md §6).
+    #[error("the DPU is unavailable: {reason}")]
+    DpuUnavailable { reason: String },
+
+    #[error("no capacity on the DPU: {message}")]
+    DpuCapacity { message: String },
+
+    #[error("DPU port timeout: {message}")]
+    DpuPortTimeout { message: String },
+
     #[error("{program} exited with {status}: {stderr_tail}")]
     CommandFailed {
         program: String,
@@ -135,6 +145,9 @@ impl OvsError {
             OvsError::Unsupported { .. } => "unsupported",
             OvsError::HostInterfaceInUse { .. } => "host_interface_in_use",
             OvsError::MigrationRolledBack { .. } => "migration_rolled_back",
+            OvsError::DpuUnavailable { .. } => "dpu_unavailable",
+            OvsError::DpuCapacity { .. } => "dpu_capacity",
+            OvsError::DpuPortTimeout { .. } => "dpu_port_timeout",
             OvsError::CommandFailed { .. } => "command_failed",
             OvsError::Io(_) => "internal",
         }
