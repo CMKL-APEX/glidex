@@ -712,6 +712,12 @@ pub(crate) fn topology_lines(
                     a.correctable, a.nonfatal, a.fatal
                 ));
             }
+            if let Some(state) = d.power.as_option().and_then(|p| p.state.as_deref()) {
+                l.push_str(&format!("  {state}"));
+            }
+            if d.kept_on {
+                l.push_str("  kept at D0");
+            }
         }
         format!("{l}  {ready}")
     };

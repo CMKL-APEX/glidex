@@ -59,6 +59,8 @@ function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
         {d.iommu_group && ` · IOMMU group ${d.iommu_group}`}
         {d.switch && ` · switch ${d.switch}`}
         {d.link && ` · ${d.link.current_speed} x${d.link.current_width}`}
+        {d.power?.state && ` · ${d.power.state}`}
+        {d.kept_on && " (kept at D0)"}
         {d.sriov && ` · VFs ${d.sriov.enabled_vfs ?? 0}/${d.sriov.total_vfs ?? 0}`}
         {d.sriov && (d.sriov.enabled_vfs ?? 0) > 0 && ` (${d.sriov.ready_vfs ?? 0} ready${d.sriov.vf_driver ? `, on ${d.sriov.vf_driver}` : ""})`}
       </div>

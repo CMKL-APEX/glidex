@@ -540,6 +540,9 @@ message PciPoolSpec {
   PciPerDevice per_device = 6 [json_name = "per_device"];
   // The largest GPU window, in MiB, a power of two.
   optional uint32 bar_mib = 7 [json_name = "bar_mib"];
+  // `false`: each node keeps the pool's devices on `vfio-pci` at D0, out
+  // of PCIe power saving. Absent: `true`.
+  optional bool power_save = 8 [json_name = "power_save"];
 }
 
 // A grant: one device (`bdf`, on every node or on `node`) or one pool, to

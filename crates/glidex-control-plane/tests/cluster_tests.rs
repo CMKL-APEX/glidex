@@ -5898,6 +5898,7 @@ async fn file_pools_move_to_the_setting_once() {
         prepare: false,
         per_device: None,
         bar_mib: Some(16384),
+        power_save: true,
     };
     let mut cfg = test_config();
     cfg.pci.pools = vec![pool("r9700", "0x7551")];

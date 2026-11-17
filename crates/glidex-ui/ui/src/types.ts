@@ -2330,6 +2330,10 @@ export interface PciFunction {
   /** Why a VM can't be given it now: a VM holds it or its IOMMU group, or it is cordoned. Unset: free. */
   taken?: string;
   aer?: { correctable?: U64; nonfatal?: U64; fatal?: U64 };
+  /** Its power state and settings (spec/22-host-topology.md §5.3a). */
+  power?: { state?: string; control?: string; d3cold_allowed?: boolean };
+  /** Kept at D0: never runtime-suspended, and D3cold off on it and the bridges above it (H28). */
+  kept_on?: boolean;
 }
 
 export interface HostTopology {

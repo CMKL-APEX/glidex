@@ -4,7 +4,7 @@ use crate::auth::{self, Peer};
 use crate::dpu::{self, DpuBackend};
 use crate::proto::*;
 use crate::store::{
-    self, ARP_SAVED, BRIDGES, DEVICES, META, NAT, SOURCE_TABLES, Store, UPLINKS, VM_PORTS,
+    self, ARP_SAVED, BRIDGES, DEVICES, META, NAT, POWER, SOURCE_TABLES, Store, UPLINKS, VM_PORTS,
 };
 use crate::supervisor::Supervisor;
 use glidex_dpu::{Backend, DpuPortSpec, VfAllocator};
@@ -102,6 +102,10 @@ pub struct BootReport {
     /// Address → why it was left as it was.
     pub skipped: Vec<(String, String)>,
     pub failed: Vec<(String, String)>,
+    /// Devices kept at D0 (spec/22-host-topology.md H28), when a selector
+    /// asks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub power: Option<glidex_ovs::power::KeepReport>,
 }
 
 impl Netd {
@@ -294,6 +298,7 @@ impl Netd {
             Op::DpuProbe { id } => to_value(self.dpu_probe(id.as_deref())?),
             Op::DpuListPorts => to_value(self.dpu_list_ports()?),
             Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
+            Op::KeepDevicesOn { addresses } => to_value(self.keep_devices_on(&addresses)?),
             Op::ListPreparedDevices => to_value(
                 self.store
                     .list::<glidex_ovs::vfio::Prepared>(DEVICES)?
@@ -565,6 +570,43 @@ impl Netd {
         Ok(state)
     }
 
+    /// spec/22-host-topology.md §5.3a: keep exactly `addresses` at D0,
+    /// recording what each attribute was before netd first changed it and
+    /// putting that back for anything no longer kept.
+    pub fn keep_devices_on(
+        &self,
+        addresses: &[String],
+    ) -> Result<glidex_ovs::power::KeepReport, OvsError> {
+        let addresses = glidex_ovs::power::checked(addresses)?;
+        let saved: Vec<glidex_ovs::power::Saved> = self
+            .store
+            .list::<glidex_ovs::power::Saved>(POWER)?
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect();
+        let (report, now) = glidex_ovs::power::keep_on(self.ex(), &addresses, &saved);
+        for s in &saved {
+            if !now.iter().any(|n| n.key() == s.key()) {
+                self.store.delete(POWER, &s.key())?;
+            }
+        }
+        for s in now.iter().filter(|n| !saved.contains(n)) {
+            self.store.put(POWER, &s.key(), s)?;
+        }
+        if !report.written.is_empty() || !report.restored.is_empty() {
+            tracing::info!(
+                kept = ?addresses,
+                written = ?report.written,
+                restored = ?report.restored,
+                "devices kept at D0"
+            );
+        }
+        for (what, why) in &report.failed {
+            tracing::warn!("keeping {what} at D0: {why}");
+        }
+        Ok(report)
+    }
+
     /// Refuse while a process (a VM) has one of `groups` open.
     fn refuse_held(&self, groups: &[String]) -> Result<(), OvsError> {
         let held = glidex_ovs::vfio::group_holders(self.ex(), groups);
@@ -626,6 +668,14 @@ impl Netd {
                     Ok(_) => report.bound.push(address),
                     Err(e) => report.failed.push((address, e.to_string())),
                 },
+            }
+        }
+        if let Some(keep) = glidex_ovs::boot_devices::kept_on(self.ex(), cfg) {
+            match self.keep_devices_on(&keep) {
+                Ok(r) => report.power = Some(r),
+                Err(e) => report
+                    .failed
+                    .push(("keep_devices_on".into(), e.to_string())),
             }
         }
         report

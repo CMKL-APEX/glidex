@@ -494,6 +494,7 @@ A pool (`pools[]`):
 | `prepare` | bool, default `false` | Each node binds the pool's devices to `vfio-pci` when its control plane starts (new VFs also right after `node sriov`). With `false`, a device on its host driver is listed as not ready. |
 | `per_device` | object | What a `gpus` request gets per device unless the VM sizes itself: `vcpus` and `memory_mib` (required), `hugepages` (bool) and `cpu_policy` (`"shared"` or `"dedicated"`). Without it, a VM asking `gpus` gives its own `vcpu_count` and `mem_size_mib`. |
 | `bar_mib` | integer | The largest GPU memory window, in MiB, a power of two (`16384`). Without it, the window is sized against the host's memory ([AMD GPUs](#amd-gpus)). |
+| `power_save` | bool, default `true` | `false` keeps the pool's devices on `vfio-pci` at full power (D0) while no VM holds them ([Keep devices out of power saving](#keep-devices-out-of-power-saving)). |
 
 A match (`match`) holds keys that must all match:
 
@@ -581,9 +582,11 @@ What only one host decides stays in that host's `control-plane.json`:
   host: it is in no pool, Glidex never prepares it, and a VM that names
   its address isn't placed on this host. `gxctl pci pools` leaves it
   out.
-- `overrides` set a pool's `bar_mib` and `prepare` on this host only.
-  Use it when hosts differ in memory, since the safe GPU window size
-  depends on it.
+- `overrides` set a pool's `bar_mib`, `prepare` and `power_save` on
+  this host only. Use it when hosts differ in memory, since the safe GPU
+  window size depends on it, or to keep one host's devices out of power
+  saving (`{"nvidia-20b0": {"power_save": false}}`; a discovered pool's
+  name works too).
 
 Restart the control plane after changing either.
 
@@ -592,6 +595,42 @@ address. For GPUs, `"gpus": {"count": 4}` also places and sizes the VM
 from the pool's `per_device`. Pools, their grants, quotas, tenant
 pools, GPU requests and metering are in
 [Device pools](host-resources.md#device-pools).
+
+### Keep devices out of power saving
+
+While no VM holds a device on `vfio-pci`, the kernel lets it sleep: an
+idle GPU drops to D3hot, and from there to D3cold, where its power is
+cut. On some hosts, waking a GPU from D3cold fails (`vfio-pci …: Unable
+to change power state from D3cold to D0, device inaccessible` in the
+kernel log), and devices behind the same or a neighbouring PCIe switch
+can drop off the bus at the same moments: NVMe drives stop answering
+(`no usable path - requeuing I/O`).
+
+A pool with `power_save: false` keeps its devices at full power (D0).
+On each of its nodes, for each of the pool's devices on `vfio-pci`,
+whoever bound it:
+
+- runtime power management is off for the device (`power/control` is
+  `on`), and it can't enter D3cold (`d3cold_allowed` is `0`);
+- no bridge above it, up to its root port, can enter D3cold either.
+
+Glidex sets these each time the node reports itself: when the control
+plane starts, every two minutes, and after a device is prepared or
+released. The boot binding (`--vfio-devices
+<pool>`) sets them as soon as the devices are bound. When a device
+leaves the pool, or the pool goes back to `power_save: true`, the
+device and its bridges get back the values they had. To keep only one
+host's devices at full power, set it in that host's `overrides`
+(above).
+
+`gxctl node topology <node> --devices` and the node page show each
+device's power state, and `kept at D0` once the settings hold. The node
+warns `power_save_on` for a device of such a pool that still allows
+power saving, or that is in D3cold.
+
+The cost is the devices' idle power while no VM holds them. Glidex never sets the `vfio-pci` module
+parameter `disable_idle_d3`, which applies to every vfio device on the
+host and needs `vfio-pci` reloaded.
 
 ## NVLink fabric (NVSwitch)
 
@@ -732,6 +771,7 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | After a reboot, devices are back on their host drivers, or VFs are gone | Keep them with the installer's `--vfio-devices` and `--sriov`. `journalctl -u glidex-vfio-boot` shows what the boot unit did, and `journalctl -b \| grep 'glidex-netd: claim'` what the claim did. |
 | `glidex-vfio-boot`: `driver/unbind: Permission denied` for a GPU | The host driver was still starting on the card when the unit ran: a host installed before the claim. Run `glidex-install` again (it writes the claim), or run `glidex-netd --boot-devices` once the driver is idle. |
 | `… 64-bit BAR of … MiB doesn't fit PCI segment …'s window` (Cloud Hypervisor, Pylon) | The VM's GPUs on one NUMA node need more address space than the hypervisor gives that node's PCI segment: each large BAR is aligned to its own size. Give the VM fewer GPUs per NUMA node, shrink the GPUs' windows (a pool's `bar_mib`), or use QEMU. |
+| `vfio-pci …: Unable to change power state from D3cold to D0` in the kernel log, often with NVMe `no usable path` messages at the same moments | Idle passthrough devices are put in D3cold and fail to wake. Give their pool `power_save: false` ([Keep devices out of power saving](#keep-devices-out-of-power-saving)). |
 | `pool …: 1 of 2 free`, `no device pool …` | See [Host resources](host-resources.md#troubleshooting). |
 | A VM stays **Waiting for a node** with `PCI device …` in a node's reason | `no PCI device …`: the node doesn't report it. `… is used by VM …` or `… shares IOMMU group …`: every node with it has it taken. The VM is placed once a device is free. |
 

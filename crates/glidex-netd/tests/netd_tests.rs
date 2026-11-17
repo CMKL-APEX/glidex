@@ -2659,3 +2659,71 @@ fn dpu_chassis_ops_have_their_own_names() {
     let v: Op = serde_json::from_str(r#"{"op":"ovn_status"}"#).unwrap();
     assert_eq!(v, Op::OvnStatus);
 }
+
+/// spec/22-host-topology.md §5.3a: the set kept at D0 is written once,
+/// its earlier values survive a restart of netd, and an empty set puts
+/// them back; anything but a PCI address is refused.
+#[test]
+fn devices_are_kept_at_d0_and_given_back_their_values() {
+    let exec = exec();
+    let gpu = "0000:4e:00.0";
+    for (bdf, link) in [
+        (gpu, "../../../devices/pci0000:4a/0000:4a:00.0/0000:4e:00.0"),
+        ("0000:4a:00.0", "../../../devices/pci0000:4a/0000:4a:00.0"),
+    ] {
+        let d = format!("/sys/bus/pci/devices/{bdf}");
+        exec.file(&d, "");
+        exec.link(&d, link);
+        exec.file(&format!("{d}/power/control"), "auto\n");
+        exec.file(&format!("{d}/d3cold_allowed"), "1\n");
+    }
+    let read = |p: &str| {
+        glidex_ovs::Exec::read_file(exec.as_ref(), std::path::Path::new(p))
+            .unwrap()
+            .trim()
+            .to_string()
+    };
+    let dir = TempDir::new().unwrap();
+    {
+        let (netd, _) = netd(exec.clone(), &dir);
+        let r = netd
+            .handle(
+                Op::KeepDevicesOn {
+                    addresses: vec![gpu.to_uppercase()],
+                },
+                &peer(),
+            )
+            .unwrap();
+        assert_eq!(r["written"].as_array().unwrap().len(), 3, "{r}");
+        assert_eq!(
+            read("/sys/bus/pci/devices/0000:4e:00.0/power/control"),
+            "on"
+        );
+        assert_eq!(
+            read("/sys/bus/pci/devices/0000:4a:00.0/d3cold_allowed"),
+            "0"
+        );
+        let err = netd
+            .handle(
+                Op::KeepDevicesOn {
+                    addresses: vec!["../../power".into()],
+                },
+                &peer(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("not a PCI address"), "{err}");
+    }
+    let (netd, _) = netd(exec.clone(), &dir);
+    let r = netd
+        .handle(Op::KeepDevicesOn { addresses: vec![] }, &peer())
+        .unwrap();
+    assert_eq!(r["restored"].as_array().unwrap().len(), 3, "{r}");
+    assert_eq!(
+        read("/sys/bus/pci/devices/0000:4e:00.0/power/control"),
+        "auto"
+    );
+    assert_eq!(
+        read("/sys/bus/pci/devices/0000:4a:00.0/d3cold_allowed"),
+        "1"
+    );
+}

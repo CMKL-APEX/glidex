@@ -78,6 +78,11 @@ pub struct Selector {
     /// beside the pool's `match`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar_mib: Option<u64>,
+    /// The pool's `power_save`: `false` keeps what this selects at D0 once
+    /// bound (spec/22-host-topology.md H28); the installer copies it beside
+    /// `bar_mib`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_save: Option<bool>,
 }
 
 fn hex_id(s: &str) -> String {
@@ -172,6 +177,30 @@ pub fn plan_devices(exec: &dyn Exec, cfg: &BootDevices) -> Vec<(String, Action)>
         .collect();
     out.sort_by(|a, b| a.0.cmp(&b.0));
     out
+}
+
+/// The devices to keep at D0 (spec/22-host-topology.md H28): those on
+/// `vfio-pci` that a selector with `power_save: false` chooses and the
+/// host doesn't keep. `None` when no selector says so, so the boot unit
+/// leaves netd's records to the control plane.
+pub fn kept_on(exec: &dyn Exec, cfg: &BootDevices) -> Option<Vec<String>> {
+    let keeps: Vec<&Selector> = cfg
+        .select
+        .iter()
+        .filter(|s| s.power_save == Some(false))
+        .collect();
+    if keeps.is_empty() {
+        return None;
+    }
+    Some(
+        exec.list_dir(Path::new("/sys/bus/pci/devices"))
+            .into_iter()
+            .filter(|bdf| !cfg.keeps(exec, bdf) && keeps.iter().any(|s| s.matches(exec, bdf)))
+            .filter(|bdf| {
+                exec.link_name(&dev_dir(bdf).join("driver")).as_deref() == Some("vfio-pci")
+            })
+            .collect(),
+    )
 }
 
 /// The selectors a claim covers: VFs (`vf_of`) appear only once the boot
@@ -494,6 +523,37 @@ mod tests {
             ..Default::default()
         };
         assert!(plan_devices(&exec, &none).is_empty());
+    }
+
+    #[test]
+    fn devices_to_keep_on_are_the_selected_ones_on_vfio_that_the_host_doesnt_keep() {
+        let exec = RecordingExec::new();
+        for (bdf, driver) in [
+            ("0000:47:00.0", "vfio-pci"),
+            ("0000:4e:00.0", "vfio-pci"),
+            ("0000:87:00.0", "nvidia"),
+        ] {
+            let d = format!("/sys/bus/pci/devices/{bdf}");
+            exec.file(&d, "");
+            exec.file(&format!("{d}/vendor"), "0x10de\n");
+            exec.link(&format!("{d}/driver"), driver);
+        }
+        let gpus = |power_save| Selector {
+            vendor_id: Some("0x10de".into()),
+            power_save,
+            ..Default::default()
+        };
+        let mut cfg = BootDevices {
+            select: vec![gpus(None)],
+            ..Default::default()
+        };
+        assert_eq!(kept_on(&exec, &cfg), None, "no selector asks");
+        cfg.select.push(gpus(Some(false)));
+        cfg.exclude.push(Selector {
+            addresses: vec!["0000:4e:00.0".into()],
+            ..Default::default()
+        });
+        assert_eq!(kept_on(&exec, &cfg), Some(vec!["0000:47:00.0".to_string()]));
     }
 
     #[test]
