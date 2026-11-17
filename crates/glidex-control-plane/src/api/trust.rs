@@ -64,16 +64,21 @@ pub async fn redeem(
             open: o.is_open(t),
             secret_hash: &o.secret_hash,
             directory: &o.directory,
+            // This cluster makes tenant offers only (19-tenancy.md T11
+            // task 4 adds directory offers).
+            scope: glidex_trust::OfferScope::Tenant,
             tenant: &o.tenant,
+            admit: glidex_trust::AdmitSetting::Open,
         }),
         &cluster,
         &app.auth.peer_replays,
         t,
     );
-    let (r, mut offer) = match (checked, offer.take()) {
-        (Ok(r), Some(o)) => (r, o),
-        (Err(why), _) => return refused(&app, ACTION, &why),
-        (Ok(_), None) => return refused(&app, ACTION, "no such offer"),
+    let (r, mut offer, tenant) = match (checked, offer.take(), b.tenant.clone()) {
+        (Ok(r), Some(o), Some(tenant)) => (r, o, tenant),
+        (Err(why), _, _) => return refused(&app, ACTION, &why),
+        (Ok(_), None, _) => return refused(&app, ACTION, "no such offer"),
+        (Ok(_), _, None) => return refused(&app, ACTION, "no tenant for a tenant offer"),
     };
     let issuer = r.issuer.clone();
     // Once: the offer is spent before anything else is written.
@@ -92,7 +97,7 @@ pub async fn redeem(
         .and_then(|_| {
             app.auth
                 .tenants
-                .admit_remote(&b.tenant.id, &d.id, offer.cap.clone(), &by)
+                .admit_remote(&tenant.id, &d.id, offer.cap.clone(), &by)
                 .map_err(|e| e.to_string())
         })
         .and_then(|_| {
@@ -115,10 +120,10 @@ pub async fn redeem(
         &format!("directory:{issuer}"),
         "",
         ACTION,
-        Some(&format!("tenant:{}", b.tenant.id)),
+        Some(&format!("tenant:{}", tenant.id)),
         "allowed",
         None,
-        json!({ "offer": offer.id, "tenant": b.tenant.slug }),
+        json!({ "offer": offer.id, "tenant": tenant.slug }),
     );
     // Where the directory sends this cluster's browser logins back (D69).
     let ui_callback = super::trusted_login::callback_url(&app, &d.id);
@@ -127,7 +132,7 @@ pub async fn redeem(
 }
 
 /// `POST /trust/v1/end`, at the cluster: a trusted directory ends a
-/// tenant's trust (D66).
+/// tenant's trust (D66), or with no tenant its own as a whole (D94).
 pub async fn end_at_cluster(
     State(app): State<AppState>,
     headers: HeaderMap,
@@ -153,17 +158,36 @@ pub async fn end_at_cluster(
     StatusCode::OK.into_response()
 }
 
-/// This cluster stops admitting `tenant` of trusted directory `d`; a
-/// directory left with none is forgotten (D66).
+/// This cluster stops admitting `tenant` of trusted directory `d`, or
+/// with `tenant` empty every tenant of it (D94); a directory whose trust
+/// ends so is forgotten (D66, `glidex_trust::cluster::ended`).
 pub fn forget_tenant_here(app: &AppState, d: &mut TrustedDirectory, tenant: &str) {
-    let _ = app.auth.tenants.remove_admission(tenant);
-    d.tenants.retain(|x| x.id != tenant);
-    let _ = if d.tenants.is_empty() {
-        let _ = app.auth.trust.drop_replica(&d.id);
-        let _ = app.auth.reload_policies();
-        app.auth.trust.remove_directory(&d.id)
+    let leaving: Vec<String> = if tenant.is_empty() {
+        d.admissions()
+            .into_iter()
+            .map(|(t, _)| t.id.clone())
+            .collect()
     } else {
-        app.auth.trust.put_directory(d)
+        vec![tenant.to_string()]
+    };
+    for t in &leaving {
+        let _ = app.auth.tenants.remove_admission(t);
+    }
+    let end = glidex_trust::EndAtCluster {
+        issuer: d.issuer.clone(),
+        tenant: tenant.to_string(),
+    };
+    let _ = match glidex_trust::cluster::ended(d.clone(), &end) {
+        Some(kept) => {
+            *d = kept;
+            app.auth.trust.put_directory(d)
+        }
+        None => {
+            d.tenants.clear();
+            let _ = app.auth.trust.drop_replica(&d.id);
+            let _ = app.auth.reload_policies();
+            app.auth.trust.remove_directory(&d.id)
+        }
     };
 }
 
@@ -203,8 +227,9 @@ pub async fn end_at_directory(
     ) {
         return refused(&app, ACTION, &e.to_string());
     }
+    // No tenant: the cluster ended this directory's trust as a whole (D94).
     c.tenants.retain(|t| *t != b.tenant);
-    let _ = if c.tenants.is_empty() {
+    let _ = if b.tenant.is_empty() || (c.tenants.is_empty() && c.ends_with_its_tenants()) {
         app.auth.trust.remove_cluster(&dir, &c.cluster_id)
     } else {
         app.auth.trust.put_cluster(&c)

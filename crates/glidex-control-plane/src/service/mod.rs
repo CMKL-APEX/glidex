@@ -11,6 +11,7 @@
 
 pub mod access;
 pub mod cluster;
+pub mod cluster_trust;
 pub mod common;
 pub mod directories;
 pub mod directory;

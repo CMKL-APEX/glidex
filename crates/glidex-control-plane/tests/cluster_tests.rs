@@ -7722,3 +7722,117 @@ async fn a_prepared_dpu_becomes_a_chassis_and_leaves_with_its_node() {
     // And a removed node gets no more certificates.
     assert!(cluster(&agent).dpu_chassis_cert(&csr).await.is_err());
 }
+
+/// A server that joins from a snapshot follows what the snapshot holds
+/// (here the OVN setting) without a restart: installing a snapshot tells
+/// the store's subscribers, as a re-list does (#526).
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_server_joining_from_a_snapshot_follows_the_ovn_setting() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let _one = serial().await;
+    let cfg = test_config();
+    let first = new_cp();
+    first.manager.configure(&cfg);
+    manage::init(
+        &first.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(first.addr),
+            tunnel_ip: None,
+            listen: Some(first.addr),
+        },
+    )
+    .await
+    .unwrap();
+    first.manager.initialize().await.unwrap();
+
+    // OVN on (the node says it has OVN).
+    let id = first.manager.local_node_id();
+    let db = first.manager.database();
+    let mut n: Value = {
+        let txn = db.begin_read().unwrap();
+        let t = txn.open_table(TableId::Nodes.definition()).unwrap();
+        serde_json::from_slice(t.get(id.as_str()).unwrap().unwrap().value()).unwrap()
+    };
+    n["status"]["versions"]["ovn"] = json!("24.03.2");
+    n["status"]["features"]["ovn_central"] = json!(true);
+    db.write(
+        Origin::Api,
+        |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+            tx.open_table(TableId::Nodes.definition())?
+                .insert(id.as_str(), n.to_string().as_bytes())?;
+            Ok(())
+        },
+    )
+    .unwrap();
+    let (s, v) = call(
+        &first,
+        "PUT",
+        "/cluster/settings/ovn",
+        Some(json!({ "enabled": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert!(first.manager.ovn_enabled());
+
+    // The log so far becomes a snapshot and is purged: a server joining now
+    // gets the setting only in the snapshot.
+    let raft = cluster(&first).node.as_ref().unwrap().raft.clone();
+    let applied = raft.metrics().borrow().last_applied.unwrap().index;
+    raft.trigger().snapshot().await.unwrap();
+    raft.wait(Some(Duration::from_secs(30)))
+        .metrics(
+            |m| m.snapshot.is_some_and(|s| s.index >= applied),
+            "a snapshot",
+        )
+        .await
+        .unwrap();
+    raft.trigger().purge_log(applied).await.unwrap();
+    raft.wait(Some(Duration::from_secs(30)))
+        .metrics(
+            |m| m.purged.is_some_and(|p| p.index >= applied),
+            "the purge",
+        )
+        .await
+        .unwrap();
+
+    let second = new_cp();
+    second.manager.configure(&cfg);
+    assert!(!second.manager.ovn_enabled());
+    let token = manage::join_token(&cluster(&first), NodeRole::Server, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &second.manager,
+        &cfg,
+        JoinOptions {
+            server: first.addr,
+            token,
+            role: NodeRole::Server,
+            advertise: Some(second.addr),
+            tunnel_ip: None,
+            name: Some("cp2".into()),
+            listen: Some(second.addr),
+        },
+    )
+    .await
+    .unwrap();
+    // The join can return before the leader's snapshot arrives.
+    cluster(&second)
+        .node
+        .as_ref()
+        .unwrap()
+        .raft
+        .wait(Some(Duration::from_secs(30)))
+        .metrics(
+            |m| m.snapshot.is_some_and(|s| s.index >= applied),
+            "the joined server to install the snapshot",
+        )
+        .await
+        .unwrap();
+    wait_for("the joined server to follow the OVN setting", || async {
+        second.manager.ovn_enabled()
+    })
+    .await;
+}

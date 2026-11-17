@@ -2034,6 +2034,8 @@ only tests do).
   database is a *mirror* (`Db::set_mirror`): `GET /cluster/v1/list` fills it,
   `GET /cluster/v1/watch?from=` (long poll, 20 s) brings the changes. A server
   keeps the last 20,000 applied write sets in memory; older → `410`, re-list.
+  A server that installs a snapshot starts that log again at the snapshot's
+  revision, so watches from before it re-list too (#526).
   A node receives shared catalogs (projects, images, networks, nodes, image
   caches), and only *its own* VMs, disks, events and credentials
   (`sync::filter_for`).

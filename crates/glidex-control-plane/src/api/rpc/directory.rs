@@ -2,7 +2,9 @@
 
 use super::{Svc, unary};
 use crate::api::AppState;
-use crate::service::{directory, directory_settings, federations, invitations, signing_keys};
+use crate::service::{
+    cluster_trust, directory, directory_settings, federations, invitations, signing_keys,
+};
 use connectrpc::{RequestContext, ServiceRequest, ServiceResult};
 use glidex_api::proto::glidex::directory::v1::*;
 
@@ -11,6 +13,7 @@ pub(super) fn register(app: &AppState, router: connectrpc::Router) -> connectrpc
     let router = FederationServiceExt::register(Svc::new(app), router);
     let router = SigningKeyServiceExt::register(Svc::new(app), router);
     let router = DirectorySettingsServiceExt::register(Svc::new(app), router);
+    let router = ClusterTrustServiceExt::register(Svc::new(app), router);
     InvitationServiceExt::register(Svc::new(app), router)
 }
 
@@ -19,6 +22,16 @@ macro_rules! op {
         let req = $req.to_owned_message();
         unary(&$self.app, &$ctx, |c| async move {
             $f(&c.expect("authenticated operation"), req)
+        })
+        .await
+    }};
+}
+
+macro_rules! op_async {
+    ($self:ident, $ctx:ident, $req:ident, $f:path) => {{
+        let req = $req.to_owned_message();
+        unary(&$self.app, &$ctx, |c| async move {
+            $f(&c.expect("authenticated operation"), req).await
         })
         .await
     }};
@@ -242,5 +255,32 @@ impl DirectorySettingsService for Svc {
             req,
             directory_settings::update_directory_settings
         )
+    }
+}
+
+#[allow(refining_impl_trait)]
+impl ClusterTrustService for Svc {
+    async fn list_directory_clusters(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ListDirectoryClustersRequest>,
+    ) -> ServiceResult<ListDirectoryClustersResponse> {
+        op!(self, ctx, req, cluster_trust::list_directory_clusters)
+    }
+
+    async fn trust_cluster(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, TrustClusterRequest>,
+    ) -> ServiceResult<TrustClusterResponse> {
+        op_async!(self, ctx, req, cluster_trust::trust_cluster)
+    }
+
+    async fn untrust_cluster(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UntrustClusterRequest>,
+    ) -> ServiceResult<UntrustClusterResponse> {
+        op_async!(self, ctx, req, cluster_trust::untrust_cluster)
     }
 }

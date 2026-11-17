@@ -1324,6 +1324,25 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "updateDirectorySettings",
         put(issuer::put_settings),
     )
+    // ---- clusters the directory trusts as a whole (spec/19-tenancy.md §12.6)
+    .add(
+        "GET",
+        "/directory/clusters",
+        "readDirectoryClusters",
+        get(issuer::list_clusters),
+    )
+    .add(
+        "POST",
+        "/directory/clusters",
+        "trustCluster",
+        post(issuer::trust_cluster),
+    )
+    .add(
+        "DELETE",
+        "/directory/clusters/{cluster}",
+        "untrustCluster",
+        delete(issuer::untrust_cluster),
+    )
     // ---- directory connectors (spec/19-tenancy.md §5; REST twins of glidex.directory.v1)
     .add(
         "GET",
