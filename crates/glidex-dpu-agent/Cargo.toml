@@ -1,0 +1,29 @@
+[package]
+name = "glidex-dpu-agent"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+# Installed on the DPU by glidex (spec/31-dpu.md §9.4), not from crates.io.
+publish = false
+description = "The glidex agent on a BlueField DPU, and its client for netd (spec/31-dpu.md §10.2)"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "glidex-dpu-agent"
+path = "src/main.rs"
+
+[dependencies]
+glidex-dpu = { path = "../glidex-dpu" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+rustls-pki-types = { version = "1", features = ["std"] }
+x509-parser = "0.18"
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }

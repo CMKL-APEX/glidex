@@ -10,7 +10,7 @@ use glidex_ovs::bridge::{BridgeSpec, Datapath};
 use glidex_ovs::host::HostCapabilities;
 use glidex_ovs::names;
 use glidex_ovs::nat::NatSpec;
-use glidex_ovs::vm_port::{VmPortKind, VmPortSpec};
+use glidex_ovs::vm_port::{PortBackend, VmPortKind, VmPortSpec};
 use glidex_ovs::{Output, RecordingExec};
 use std::sync::Arc;
 use std::time::Duration;
@@ -100,6 +100,7 @@ fn port_spec() -> VmPortSpec {
         ovn_lport: None,
         port_security: true,
         allowed_addresses: vec![],
+        backend: PortBackend::Host,
     }
 }
 

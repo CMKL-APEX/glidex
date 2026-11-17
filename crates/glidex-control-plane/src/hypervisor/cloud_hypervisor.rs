@@ -102,6 +102,9 @@ fn net_args(config: &VmConfig) -> Vec<String> {
                     q(&socket.to_string_lossy()),
                     glidex_ovs::tuning::VHOST_QUEUE_SIZE
                 )),
+                // A DPU VF is a VFIO device, not a `--net` (spec/31-dpu.md
+                // §12.2, D6); the control plane asks for none yet.
+                VmPortBinding::Vfio { .. } => {}
             }
             v
         })

@@ -47,6 +47,9 @@ pub enum DpuError {
     #[error("no free VF on the DPU ({total} in use)")]
     DpuCapacity { total: u16 },
 
+    #[error("the VF's representor did not appear: {message}")]
+    DpuPortTimeout { message: String },
+
     #[error("{program} exited with {status}: {stderr_tail}")]
     CommandFailed {
         program: String,
@@ -72,6 +75,7 @@ impl DpuError {
             DpuError::Unsupported { .. } => "unsupported",
             DpuError::DpuUnavailable { .. } => "dpu_unavailable",
             DpuError::DpuCapacity { .. } => "dpu_capacity",
+            DpuError::DpuPortTimeout { .. } => "dpu_port_timeout",
             DpuError::CommandFailed { .. } => "command_failed",
             DpuError::Parse { .. } => "internal",
             DpuError::Io(_) => "internal",

@@ -17,6 +17,24 @@ pub enum VmPortKind {
     VhostUser,
 }
 
+/// Which chassis may switch the port (spec/31-dpu.md §6): the host's
+/// `br-int`, the node's DPU, or the DPU with a fallback to the host. Only
+/// OVN ports (`ovn_lport`) may ask for the DPU.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortBackend {
+    #[default]
+    Host,
+    Dpu,
+    Auto,
+}
+
+impl PortBackend {
+    fn is_host(&self) -> bool {
+        *self == PortBackend::Host
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct VmPortSpec {
     pub bridge: String,
@@ -43,6 +61,11 @@ pub struct VmPortSpec {
     /// of, its own (spec/09-networking.md decision 20); empty: none given.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub allowed_addresses: Vec<String>,
+    /// The backend asked for; `host` (the default) keeps older records
+    /// and callers as they were. `kind` is the host port's, used by the
+    /// host backend and by a fallback.
+    #[serde(default, skip_serializing_if = "PortBackend::is_host")]
+    pub backend: PortBackend,
 }
 
 fn default_queue_pairs() -> u8 {
@@ -86,6 +109,11 @@ impl VmPortSpec {
         } else if self.bridge == crate::ovn::BR_INT {
             return Err(OvsError::invalid("br-int is OVN's: give ovn_lport"));
         }
+        if !self.backend.is_host() && self.ovn_lport.is_none() {
+            return Err(OvsError::invalid(
+                "a DPU port is on a cluster network: give ovn_lport (spec/31-dpu.md decision 6)",
+            ));
+        }
         crate::port_security::parse_allowed(&self.allowed_addresses)?;
         if !(1..=8).contains(&self.queue_pairs) {
             return Err(OvsError::invalid("queue_pairs must be 1-8"));
@@ -113,6 +141,11 @@ pub enum VmPortBinding {
     /// The hypervisor must run as the vhost-user *server* on this path.
     VhostUser {
         socket: PathBuf,
+    },
+    /// A virtio-net VF of the node's DPU, bound to `vfio-pci`, for the
+    /// hypervisor's VFIO device path (spec/31-dpu.md §7.1 step 7).
+    Vfio {
+        bdf: String,
     },
 }
 
@@ -316,6 +349,7 @@ mod tests {
             ovn_lport: None,
             port_security: true,
             allowed_addresses: vec![],
+            backend: PortBackend::Host,
         }
     }
 
