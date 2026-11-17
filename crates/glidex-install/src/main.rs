@@ -443,6 +443,13 @@ fn leave_offline() -> Result<()> {
 /// as the service user with its home (where its database is), then start it
 /// again: standalone on success, as it was otherwise.
 fn offline_step(mode: &str, failed: &str) -> Result<()> {
+    offline_run(&[mode], None, failed)
+}
+
+/// [`offline_step`] with more arguments, and `input` on the mode's standard
+/// input (a token: never on a command line).
+fn offline_run(mode: &[&str], input: Option<&str>, failed: &str) -> Result<()> {
+    use std::io::Write;
     let _ = sudo(&argv(&[
         "systemctl",
         "stop",
@@ -456,7 +463,22 @@ fn offline_step(mode: &str, failed: &str) -> Result<()> {
     if !is_root() {
         ensure_sudo()?;
     }
-    let ok = run("sudo", &["-u", SERVICE_USER, "env", &home, &bin, mode]).is_ok();
+    let mut args = vec!["-u", SERVICE_USER, "env", &home, &bin];
+    args.extend_from_slice(mode);
+    let ok = (|| -> Result<bool> {
+        let mut child = Command::new("sudo")
+            .args(&args)
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .context("running glidex-control-plane")?;
+        let mut stdin = child.stdin.take().context("its stdin")?;
+        if let Some(i) = input {
+            stdin.write_all(i.as_bytes())?;
+        }
+        drop(stdin);
+        Ok(child.wait()?.success())
+    })()
+    .unwrap_or(false);
     sudo(&argv(&[
         "systemctl",
         "start",
@@ -695,10 +717,31 @@ fn os_release(key: &str) -> Option<String> {
         .map(|v| v.trim().trim_matches('"').to_string())
 }
 
+/// The control plane's offline rejoin for `j` (D37); the token goes on stdin.
+fn rejoin_offline_args(j: &JoinOptions) -> Vec<&str> {
+    let mut mode = vec!["--rejoin-offline", "--server", j.server.as_str()];
+    if let Some(a) = &j.advertise {
+        mode.extend(["--advertise", a.as_str()]);
+    }
+    if let Some(t) = &j.tunnel_ip {
+        mode.extend(["--tunnel-ip", t.as_str()]);
+    }
+    mode
+}
+
 fn join_cluster(j: &JoinOptions) -> Result<()> {
     use std::io::Write;
     section("Joining the cluster");
     let token = read_join_token(j.token_file.as_deref())?;
+    // D37: an agent serves no API, so it rejoins with its control plane stopped.
+    let agent = cluster_identity().is_some_and(|i| i["role"] == "agent");
+    if j.rejoin && agent {
+        return offline_run(
+            &rejoin_offline_args(j),
+            Some(&token),
+            "the rejoin failed (see above); the host is unchanged",
+        );
+    }
     for _ in 0..30 {
         if Path::new(API_SOCKET).exists() {
             break;
@@ -4356,6 +4399,19 @@ mod tests {
         assert_eq!(j.advertise.as_deref(), Some("198.51.100.7:8842"));
         assert_eq!(j.tunnel_ip.as_deref(), Some("198.51.100.7"));
         assert!(!o.render().contains("198.51.100.7"), "{}", o.render());
+        // An agent rejoins offline with them; the token is never an argument.
+        assert_eq!(
+            rejoin_offline_args(j),
+            [
+                "--rejoin-offline",
+                "--server",
+                "192.0.2.11:8842",
+                "--advertise",
+                "198.51.100.7:8842",
+                "--tunnel-ip",
+                "198.51.100.7"
+            ]
+        );
         assert!(Options::parse(None, &args(&["--tunnel-ip", "198.51.100.7"])).is_err());
     }
 

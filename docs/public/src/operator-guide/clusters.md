@@ -417,10 +417,11 @@ cargo run -p glidex-install -- --rejoin 192.0.2.11:8842 \
   --advertise 198.51.100.7:8842 --token-file rejoin.token
 ```
 
-This works on an agent too: root's rejoin is the one request an agent's
-own API socket takes. The tunnel address follows the new address unless
-the node had one set apart; `--tunnel-ip <ip>` sets it. The cluster
-refuses an address another node uses (`address_taken`).
+On an agent, which serves no API of its own, the installer stops the
+control plane, rejoins with it stopped, and starts it again. The tunnel
+address follows the new address unless the node had one set apart;
+`--tunnel-ip <ip>` sets it. The cluster refuses an address another node
+uses (`address_taken`).
 
 The host must reach a server from its new address, and the servers must
 reach it there (port 8842, and OVN's Geneve tunnels for cluster
