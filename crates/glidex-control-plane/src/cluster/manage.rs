@@ -513,15 +513,53 @@ fn rejoin_tunnel_ip(
     }
 }
 
-/// §5.7: come back as the same node, with a new certificate. A server whose
-/// Raft state can't be trusted (D18) starts it from nothing and returns as a
-/// learner; one whose state is intact simply resumes.
-pub async fn rejoin(
-    manager: &Arc<VmManager>,
+/// D37: an agent rejoins with its control plane stopped, since it serves no
+/// API of its own (spec/16-clustering-ui.md §3.6). It asks the cluster for
+/// its new certificate and saves that and its identity; the service, started
+/// again, runs with them. A server rejoins through its own API instead: its
+/// Raft may have to start afresh with a running cluster. Returns the node's
+/// name and its new cluster address.
+pub async fn rejoin_offline(
+    db_path: &std::path::Path,
     cfg: &crate::config::Config,
     opts: RejoinOptions,
-) -> Result<Value, ClusterError> {
-    let files = Files::beside(manager.db_path());
+) -> Result<(String, SocketAddr), ClusterError> {
+    let files = Files::beside(db_path);
+    match files.load_identity()? {
+        None => return Err(other("this host is not part of a cluster")),
+        Some(i) if i.role == NodeRole::Server => {
+            return Err(other(
+                "a server rejoins through its own API: `gxctl cluster rejoin`",
+            ));
+        }
+        Some(_) => {}
+    }
+    let Rejoined {
+        identity,
+        key,
+        resp,
+        ..
+    } = rejoin_exchange(&files, &cfg.cluster, &opts).await?;
+    files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;
+    files.save_identity(&identity)?;
+    Ok((identity.name, identity.advertise))
+}
+
+/// §5.7 and D37: what a rejoin asks the cluster for, and what it answers:
+/// the node's new identity, its key and the server's reply, and the server
+/// that took it. Changes nothing on this host.
+struct Rejoined {
+    identity: Identity,
+    key: NodeKey,
+    resp: JoinResponse,
+    target: String,
+}
+
+async fn rejoin_exchange(
+    files: &Files,
+    ccfg: &ClusterConfig,
+    opts: &RejoinOptions,
+) -> Result<Rejoined, ClusterError> {
     let old = files.load_identity()?;
     let node_id = opts.node_id.clone().or_else(|| old.as_ref().map(|i| i.node_id.clone())).ok_or_else(|| other("this host has no cluster identity: pass the node id from `gxctl node rejoin-token`"))?;
     let (_, _, ca_hash) = tokens::parse(&opts.token).map_err(other)?;
@@ -529,13 +567,11 @@ pub async fn rejoin(
     let ca_pem = pin_ca(&net::fetch_ca_untrusted(&server).await?, ca_hash, "rejoin")?;
     let trusting = net::client_trusting(&ca_pem)?;
     await_pinned(&trusting, &server).await?;
-    let ccfg = cfg.cluster.clone();
     let advertise = match (opts.advertise, &old) {
         (Some(a), _) => a,
         (None, Some(i)) => i.advertise,
-        (None, None) => resolve_advertise(None, &ccfg)?,
+        (None, None) => resolve_advertise(None, ccfg)?,
     };
-    let listen = opts.listen.unwrap_or(ccfg.listen);
     let key = NodeKey::generate()?;
     let csr = key.csr(&[advertise.ip()], &[])?;
     let tunnel_ip = rejoin_tunnel_ip(opts.tunnel_ip, old.as_ref(), advertise);
@@ -610,6 +646,33 @@ pub async fn rejoin(
         ca_fingerprint: ca_hash.to_string(),
         seeds: vec![target.clone()],
     };
+    Ok(Rejoined {
+        identity,
+        key,
+        resp,
+        target,
+    })
+}
+
+/// §5.7: come back as the same node, with a new certificate. A server whose
+/// Raft state can't be trusted (D18) starts it from nothing and returns as a
+/// learner; one whose state is intact simply resumes.
+pub async fn rejoin(
+    manager: &Arc<VmManager>,
+    cfg: &crate::config::Config,
+    opts: RejoinOptions,
+) -> Result<Value, ClusterError> {
+    let files = Files::beside(manager.db_path());
+    let ccfg = cfg.cluster.clone();
+    let listen = opts.listen.unwrap_or(ccfg.listen);
+    let Rejoined {
+        identity,
+        key,
+        resp,
+        target,
+    } = rejoin_exchange(&files, &ccfg, &opts).await?;
+    let role = identity.role;
+    let node_id = identity.node_id.clone();
     // The old runtime goes before its files change.
     manager.detach_cluster().await;
     files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;

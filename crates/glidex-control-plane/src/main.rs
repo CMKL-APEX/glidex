@@ -177,6 +177,62 @@ async fn main() {
         }
     }
 
+    // `--rejoin-offline --server <ip:8842> [--advertise <ip:port>] [--tunnel-ip <ip>]`
+    // (spec/14-clustering.md D37): an agent comes back as the same node, at a
+    // new address if given, its rejoin token on stdin. Run with the service
+    // stopped; started again, it uses the new certificate and identity.
+    if args.iter().any(|a| a == "--rejoin-offline") {
+        let value = |flag: &str| {
+            args.iter()
+                .position(|a| a == flag)
+                .and_then(|i| args.get(i + 1))
+                .cloned()
+        };
+        let fail = |e: String| -> ! {
+            eprintln!("rejoining failed, nothing changed: {e}");
+            std::process::exit(1);
+        };
+        let parsed = (|| -> Result<_, String> {
+            let server = value("--server")
+                .ok_or("--server <ip:8842> is needed")?
+                .parse()
+                .map_err(|_| "--server is <ip>:<port>")?;
+            let advertise = value("--advertise")
+                .map(|a| a.parse().map_err(|_| "--advertise is <ip>:<port>"))
+                .transpose()?;
+            let tunnel_ip = value("--tunnel-ip")
+                .map(|t| t.parse().map_err(|_| "--tunnel-ip is an IP address"))
+                .transpose()?;
+            let mut token = String::new();
+            std::io::Read::read_to_string(&mut std::io::stdin(), &mut token)
+                .map_err(|e| format!("reading the token from stdin: {e}"))?;
+            let token = token.trim().to_string();
+            if token.is_empty() {
+                return Err("no rejoin token on stdin".into());
+            }
+            Ok(glidex_control_plane::cluster::manage::RejoinOptions {
+                server,
+                token,
+                node_id: None,
+                advertise,
+                tunnel_ip,
+                listen: None,
+            })
+        })();
+        let opts = parsed.unwrap_or_else(|e| fail(e));
+        let cfg = config::Config::load().unwrap_or_else(|e| fail(e.to_string()));
+        let db = state::VmManager::default_db_path_pub();
+        match glidex_control_plane::cluster::manage::rejoin_offline(&db, &cfg, opts).await {
+            Ok((name, advertise)) => {
+                println!(
+                    "Rejoined as {name} at {advertise}: a new certificate is in place. Start the control plane."
+                );
+                return;
+            }
+            Err(e) => fail(e.to_string()),
+        }
+    }
+
     // `--detach-offline` (spec/14-clustering.md §5.8.3): leave with this host's resources
     // while no server can be reached, then exit. Run with the service stopped.
     if args.iter().any(|a| a == "--detach-offline") {
