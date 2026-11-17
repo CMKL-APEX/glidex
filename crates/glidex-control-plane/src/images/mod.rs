@@ -1243,12 +1243,16 @@ impl ImageManager {
             }
         }
         let disks: Vec<Disk> = self.disks.read().unwrap().values().cloned().collect();
+        let me = self.node_id.load_full();
         for d in &disks {
             let path = self.disk_path(d);
             // Only a file is looked for here: a hyperstor volume's path is
             // no file, and an inactive LVM volume has no device node. The
-            // disk controller asks their drivers.
-            if self.on_files(d) && !path.exists() {
+            // disk controller asks their drivers. A file another node holds
+            // (not on a shared directory) isn't expected here.
+            let elsewhere =
+                d.node.as_deref().is_some_and(|n| n != me.as_str()) && !self.on_shared_dir(d);
+            if self.on_files(d) && !elsewhere && !path.exists() {
                 tracing::warn!(disk = %d.name, path = %path.display(), "disk file is missing");
             }
             known.insert(path);
@@ -1436,6 +1440,16 @@ impl ImageManager {
                         DriverSpec::Dir { .. } | DriverSpec::SharedDir { .. }
                     )
                 })
+    }
+
+    /// Whether `d`'s file is on a directory every node shares.
+    fn on_shared_dir(&self, d: &Disk) -> bool {
+        use crate::datastore::record::DriverSpec;
+        d.datastore != crate::datastore::LOCAL
+            && crate::datastore::record::find(&self.db, &d.datastore)
+                .ok()
+                .flatten()
+                .is_some_and(|ds| matches!(ds.driver, DriverSpec::SharedDir { .. }))
     }
 
     /// Whether `d` is on a hyperstor datastore (spec/24-storage.md §11.2).
