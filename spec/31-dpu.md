@@ -1,6 +1,6 @@
 # DPU Integration: virtio-net ports on OVS-DOCA, a chassis of the cluster's OVN
 
-**Status: D0 met; D1 built (`crates/glidex-dpu`); the rest is design.**
+**Status: D0 met; D1 built (`crates/glidex-dpu`); D2 built except its cluster tests; the rest is design.**
 §14 says what each milestone has. §0 records what was verified on a real BlueField-3 pair
 while writing it; items marked **(verify)** must be checked on hardware
 during the milestone that uses them (§14).
@@ -89,8 +89,10 @@ IDs are deliberately left out of this document.
 | 12 | PKI | The DPU chassis's certificate is the **cluster CA's** (revised 2026-11-16). The DPU generates its key and a CSR; the leader signs it. The key never leaves the DPU (§8.3). |
 | 13 | NB | The NB is the cluster's, written only by the leader's network controller from the cluster's records (14-clustering.md §11). This module adds no NB state of its own (revised 2026-11-16). |
 | 14 | DPU reinitialization | An explicit, confirmed, **destructive** operation, `dpu_reinit`: netd writes an operator-supplied, checksum-verified **BFB** to the DPU through `rshim` (`bfb-install`), then re-bootstraps the agent, re-enrols the chassis certificate and re-runs `dpu_prepare`. It runs as an asynchronous **job**, is admin-only, refuses while any DPU-backed VM is running, and is never triggered automatically (§9.4). |
-| 15 | The DPU chassis | Each DPU is a chassis named **`<node id>-dpu`**, next to the host's `<node id>`, enrolled by the leader through `ensure_ovn_chassis` (§8.3). It is **never a gateway**: gateways stay on host `br-int`s with the `system` datapath, which external-traffic metering needs (14-clustering.md D22). |
+| 15 | The DPU chassis | Each DPU is a chassis named **`<node id>-dpu`**, next to the host's `<node id>`, enrolled through `ensure_dpu_chassis` with a certificate the leader signs (§8.3, decision 17). It is **never a gateway**: gateways stay on host `br-int`s with the `system` datapath, which external-traffic metering needs (14-clustering.md D22). |
 | 16 | Which chassis a port binds to | A NIC's **backend picks its `requested-chassis`**: `<node>-dpu` for the DPU, `<node>` for the host. The scheduler chooses the backend at placement; a node that falls back at launch reports it, and the leader moves `requested-chassis` to match (§8.4). |
+| 17 | Who enrols the DPU chassis | **The node, with the leader's signature** (2026-11-17, D2). As for the node's own chassis, its controller drives it every half minute: netd asks the DPU for a CSR (`dpu_chassis_csr`), the leader signs it (`POST /cluster/v1/dpu-chassis-cert`, which signs only for the asking node's own `node:<id>-dpu`), and netd hands the certificate and the cluster CA to the DPU (`ensure_dpu_chassis`). Why: the leader can't reach another node's netd; netd is a local socket. The certificate's OU is `glidex-dpu-chassis` and it is for client auth only; the cluster's own mTLS refuses it as a node identity. |
+| 18 | DPU chassis ops | **Ops of their own** (`ensure_dpu_chassis`, `dpu_ovn_status`, `leave_dpu_ovn`, `dpu_chassis_csr`) rather than a `target` on the host's chassis ops (2026-11-17, D2). Why: an older netd ignores an unknown field and would act on the host's chassis; it refuses an unknown op with `protocol_error`. `ovn_status` also takes no arguments, and adding one would break its wire form. |
 
 ## 2. Scope
 
@@ -164,7 +166,7 @@ hardware milestone (D4) decides which layout works.
 |---|---|
 | `crates/glidex-dpu/` | **New library.** DPU-side command builders (`ovs-vsctl`, `virtnet`), VF allocation, DPU probe parsing, the DPU chassis's `Open_vSwitch` settings. |
 | `crates/glidex-dpu-agent/` | **New binary**, runs on the DPU. Protocol server around `glidex-dpu`; allow-listed programs only. No OVN central access. |
-| `crates/glidex-netd/` | New ops and a `Backend` abstraction (§6); `ensure_ovn_chassis`, `leave_ovn` and `ovn_status` gain a DPU target, relayed to the agent (§8.3); holds the agent credential; does the host-side steps (VF creation, `vfio-pci` binding, and the `rshim`/`bfb-install` reinitialization jobs of §9.4). |
+| `crates/glidex-netd/` | New ops and a `Backend` abstraction (§6); the DPU chassis ops (`ensure_dpu_chassis`, `dpu_ovn_status`, `leave_dpu_ovn`, `dpu_chassis_csr`, decision 18), relayed to the agent (§8.3); holds the agent credential; does the host-side steps (VF creation, `vfio-pci` binding, and the `rshim`/`bfb-install` reinitialization jobs of §9.4). |
 | `crates/glidex-ovs/` | Unchanged API. Gains a `Backend::HostOvs` adapter over today's `vm_port` (§11). |
 | `crates/glidex-ovn/` | Unchanged. |
 | `crates/glidex-control-plane/` | The DPU chassis's enrolment and CSR signing by the leader, `requested-chassis` by backend, the DPU in node status and the scheduler, VF claims, REST (§8, §12). |
@@ -402,9 +404,10 @@ chassis step (§9.3 step 4).
   `node:<node id>`, the form SB RBAC matches against a certificate's CN
   (`glidex_ovs::ovn::chassis_name`). This document writes them
   `<node>-dpu` and `<node>`. The node's status lists both.
-- **Enrolment:** when a node reports a prepared DPU, the leader calls
-  `ensure_ovn_chassis` with `target: {dpu: <id>}`. netd relays it to
-  the agent, which sets the DPU's `Open_vSwitch` `external_ids`
+- **Enrolment** (decision 17): when a node reports a prepared DPU
+  (`status.dpus[].state = prepared`), the node's controller gets the
+  certificate signed by the leader and calls `ensure_dpu_chassis`. netd
+  relays it to the agent, which sets the DPU's `Open_vSwitch` `external_ids`
   (`system-id`, `ovn-remote` the same SB remotes as the host's chassis,
   `ovn-encap-type=geneve`, `ovn-encap-ip` from `dpu.json`, no
   `ovn-bridge-mappings` in v1), makes sure `br-int` exists on the `doca`
@@ -422,10 +425,12 @@ chassis step (§9.3 step 4).
   cluster's MTU rule (`underlay_mtu − 58`,
   [14-clustering.md §11.6](14-clustering.md#116-mtu-and-offload));
   **verify** O6.
-- **Version:** the DPU's `ovn-controller` must not be newer than the
-  cluster's `ovn-northd`, the rule the cluster applies to every chassis;
-  `dpu_probe` reports `ovn_version`, and a DPU that breaks the rule is
-  not enrolled (`unsupported { missing: ["ovn<=<ver>"] }`). On the test
+- **Version:** the DPU's `ovn-controller` must not be older than the
+  cluster's `ovn-northd` series, the rule the cluster applies to every
+  chassis (`node::ovn_outdated`: an older controller lacks northd's
+  pipeline; corrected 2026-11-17, this said "newer"); `dpu_probe` reports
+  `ovn_version`, and a DPU that breaks the rule is not enrolled
+  (`unsupported { missing: ["ovn>=<series>"] }`). On the test
   pair both are 24.03.8 (finding 11). The DOCA bundle ships the DPU's
   OVN; glidex never upgrades it.
 - **A DPU's own central** (finding 12): reported as
@@ -946,8 +951,9 @@ New ops on the **full** sockets only (never the status socket);
 | `dpu_list_ports` | – → records with live DPU state |
 | `dpu_reinit` | `{id?, confirm}` → `{job}` (`ConfirmationRequired` first; §9.4) |
 | `dpu_job` | `{job, abandon?}` → `JobStatus {phase, state, log_tail, result?}` |
-| `dpu_chassis_csr` | `{id}` → `{csr}` (the agent's, §8.3) |
-| `ensure_ovn_chassis` / `leave_ovn` / `ovn_status` | gain `target: host (default) \| {dpu: id}`; the DPU target is relayed to the agent, with the signed certificate on `ensure_ovn_chassis` |
+| `dpu_chassis_csr` | `{id, chassis}` → `{csr}` (the agent's, §8.3) |
+| `ensure_dpu_chassis` | `{id, chassis, sb_remotes, certs: {cert_pem, ca_pem}}` → `OvnStatus`; relayed to the agent; refuses a private key (decision 18) |
+| `dpu_ovn_status` · `leave_dpu_ovn` | `{id}` → `OvnStatus` (read-only) · `{id, confirm}` |
 | `attach_vm_port` / `detach_vm_port` / `release_vm` | extended as in §5, no new op names |
 
 Agent-side ops (netd → agent, not on netd's sockets): `hello`, `probe`,
@@ -963,7 +969,7 @@ an unknown op with `protocol_error`. Per-op policy
 default `glidex-admin: ["*"]` covers them, and the default `glidex`
 policy gets `dpu_probe`, `dpu_list_ports`, `dpu_chassis_csr`,
 `attach_vm_port`, `detach_vm_port`, `release_vm`, `dpu_job` (status
-only) and the DPU target of the chassis ops, but **not** `dpu_prepare` or
+only) and the DPU chassis ops, but **not** `dpu_prepare` or
 **`dpu_reinit`** (they restart OVS or erase the DPU).
 
 ## 14. Milestones
@@ -986,7 +992,7 @@ D0's findings are in §0.**
 |---|---|---|
 | **D0** hardware bring-up (no glidex code; **met, except traffic through a VF, which is D4's**: acceptance (1) met (findings 16–18), with virtio-net from a stock image in run 6 (finding 36); (3) **met** in run 5 (findings 19-28); (2) **met**: firmware activated, the virtio-net PF served across DPU reboots, and the values unchanged by a reinstall (findings 29-31, 34, 36); (4) **mostly met** (finding 35): a VF created through `pci-pf-stub`, configured and its representor on `br-int`; traffic through it is D4's; (5) **met**: `crates/glidex-dpu/tests/fixtures/` holds the scrubbed outputs with no VF and with one) | Operator-run scripts and a runbook under `scripts/dpu/` (next to `scripts/dev/`): `dpu-probe.sh` collects every §9.2 field as JSON; `dpu-prepare.sh` is the §9.3 sequence as idempotent shell with `--dry-run`, per-step timing, and the restart/underlay handling; `dpu-reinit.sh` generates the §9.4.1 `bf.cfg` and drives `bfb-install -r … -c … -b …`, capturing the rshim `console`. Run on a DPU that may be wiped, from a stock BFB. Scripts hold no secrets and take paths and keys as arguments. | Findings recorded in §0 (and the open questions closed): (1) from a freshly reinstalled DPU, `dpu-prepare.sh` alone reaches a probe with no gaps and a `doca` bridge carrying traffic, and a second run changes nothing; (2) **O13**: stage the §9.1 firmware values (operator decision), follow the cold-reset procedure, record `mlxconfig q`, reinstall with `WITH_NIC_FW_UPDATE=no`, record it again; (3) the `bf.cfg` path: where `authorized_keys` and the agent unit must go under `/mnt/`, unit enablement by symlink, key-only first login and the `DPU is ready` gate (**O17**), the console markers a job can key on, the measured duration (**O15**), and which devices the BFB writes (**O16**); (4) with firmware staged, **O1–O3** (representor bridge, `virtnet` flags, minimal parameter set); (5) every command's raw output saved as fixtures under `crates/glidex-dpu/tests/fixtures/`, scrubbed of addresses, MACs and identifiers, as the canned inputs for D1's probe-parsing tests. |
 | **D1** `glidex-dpu` core (**built**: `crates/glidex-dpu`, unit tests and `tests/fixtures.rs` against both D0 fixture sets) | types, `Exec`/`RecordingExec`, command builders (`ovs-vsctl`, `virtnet`), probe parsing, VF allocator | Unit tests: exact commands per port; idempotency flags; `type=doca` with no options; refusal of `dpdk`/`netdev` on a DOCA DPU; probe parsed from canned output of the test DPU; allocator reuse after free. |
-| **D2** the DPU chassis in the cluster's OVN | `ensure_ovn_chassis`/`leave_ovn`/`ovn_status` with a DPU target (relayed to a fake agent), CSR signing by the leader with the cluster CA, the version rule, tombstone clean-up of `<node>-dpu`, `requested-chassis` by backend, the backend at placement and the follow-up after a node's fallback | Unit tests: the agent's `external_ids` and `br-int` for a DPU target; a signed certificate's subject and issuer; a DPU newer than `ovn-northd` not enrolled; `requested-chassis` per backend and after a reported fallback. Cluster tests (`cluster_tests.rs`, fake agent): a node reporting a prepared DPU gets its chassis enrolled; removing the node deletes both chassis; the DPU's key never reaches the control plane. |
+| **D2** the DPU chassis in the cluster's OVN (**built**, except the cluster tests: the netd ops relayed to a `DpuChassis` (`RecordingDpuChassis` until D3's agent client), `Ca::sign_dpu_chassis`, the leader's signing endpoint, node-driven enrolment (decision 17) with the version rule, `status.dpus`, `requested-chassis` by `placement.dpu_nics` and the reported `status.nics[].backend`, and the tombstone and leave clean-up of `node:<id>-dpu`; unit tests for each. **Not yet:** the cluster tests below; filling `status.dpus` from netd (D3's `dpu_probe`); the scheduler choosing `dpu_nics` (D6)) | `ensure_ovn_chassis`/`leave_ovn`/`ovn_status` with a DPU target (relayed to a fake agent), CSR signing by the leader with the cluster CA, the version rule, tombstone clean-up of `<node>-dpu`, `requested-chassis` by backend, the backend at placement and the follow-up after a node's fallback | Unit tests: the agent's `external_ids` and `br-int` for a DPU target; a signed certificate's subject and issuer; a DPU older than `ovn-northd` not enrolled; `requested-chassis` per backend and after a reported fallback. Cluster tests (`cluster_tests.rs`, fake agent): a node reporting a prepared DPU gets its chassis enrolled; removing the node deletes both chassis; the DPU's key never reaches the control plane. |
 | **D3** agent + netd backend (**mostly built**: `crates/glidex-dpu-agent` (agent binary, mTLS that requires netd's certificate from the channel CA and its CN, `hello`, `probe`, `list_ports`, `attach_rep`, `detach_rep`) and netd's DPU backend in `crates/glidex-netd/src/dpu.rs` (`dpu.json`, §6 selection with a 5 s health cache, stickiness, the host's VF steps and `vfio-pci` binding, `dpu_probe`, `dpu_list_ports`, the link's host side with an `ip monitor link` watcher); tests: `glidex-netd/tests/dpu_tests.rs` with the real agent code in process on the test DPU's fixtures, and the agent's own TLS tests. §7.4 reconciliation at netd start (a recorded port missing on the DPU is re-created, `PortRestored`; an untracked tagged one is reported); `packaging/glidex-dpu-agent.service`, `dpu.json.example`, `dpu-agent.json.example`. The backend is dispatched inline rather than through a trait (§6, as built). **Not yet:** §7.4 on agent reconnect and every resync (only at start), and the ignored test on the host) | agent binary, mTLS, allow-list, `Backend` trait, `HostOvsBackend` adapter, backend selection and stickiness, `dpu.json`, the management link's host side (§10.1) | Fake-agent tests: every §6 table row; recorded backend wins on re-attach; agent down → `dpu_unavailable`/fallback; an unparseable `dpu.json` stops netd. Link tests (`RecordingExec`, netlink events faked): netd applies `link.address` at start; re-applies it when `tmfifo_net0` is recreated (finding 32) and leaves an address it finds already set alone; `dpu_probe` reports `missing: ["link_address"]` while it is absent. On the test host (ignored, `GLIDEX_TEST_DPU`): `systemctl restart rshim` and the agent answers `hello` again without anyone touching the host. |
 | **D4** DPU attach (hardware; needs D0) | §7.1 end to end on one DPU, `dpu_probe`, the DPU chassis enrolled on real hardware | Ignored e2e (`GLIDEX_TEST_DPU`, a one-server cluster): a VM gets a virtio NIC, a DHCP address from the cluster's OVN, pings a host-backed VM on the same logical switch and, through `gx-edge`, an address outside; detach leaves no tagged rows; the DPU's private key never appears on the host. **Also settles O1–O3** and trims §9.1. |
 | **D5** `dpu_prepare` (needs D0) | §9.3 incl. hugepage persistence, `stop_local_central` | Unit tests per step; e2e: from a stock DPU (firmware already set, local central running) to a probe with no gaps; restart interruption reported; underlay re-applied; DPU-local central stopped only with the flag. |

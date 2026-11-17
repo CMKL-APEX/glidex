@@ -519,22 +519,63 @@ impl VmManager {
             return Ok(());
         };
         let netd = self.netd.clone();
-        let (ip, chassis, server) = (
-            addr.ip().to_string(),
-            glidex_ovs::ovn::chassis_name(&n.meta.id),
-            n.spec.role == NodeRole::Server,
-        );
+        let members = ovn_members_of(n, addr.ip());
         tokio::task::spawn_blocking(move || {
-            netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(
-                glidex_netd::proto::ForgetOvnMemberArgs {
-                    address: ip,
-                    chassis,
-                    server,
-                },
-            ))
+            for args in members {
+                netd.call::<()>(glidex_netd::proto::Op::ForgetOvnMember(args))?;
+            }
+            Ok::<(), crate::network::NetError>(())
         })
         .await
         .map_err(failed)?
         .map_err(|e| MemberError::Failed(format!("OVN: {e}")))
+    }
+}
+
+/// What leaving takes out of OVN for `n`: its own membership and chassis,
+/// then its DPU's chassis (spec/31-dpu.md §8.3), which `chassis-del
+/// --if-exists` leaves alone when the node has no DPU.
+fn ovn_members_of(n: &Node, ip: std::net::IpAddr) -> Vec<glidex_netd::proto::ForgetOvnMemberArgs> {
+    vec![
+        glidex_netd::proto::ForgetOvnMemberArgs {
+            address: ip.to_string(),
+            chassis: glidex_ovs::ovn::chassis_name(&n.meta.id),
+            server: n.spec.role == NodeRole::Server,
+        },
+        glidex_netd::proto::ForgetOvnMemberArgs {
+            address: String::new(),
+            chassis: glidex_dpu::types::chassis_name(&n.meta.id),
+            server: false,
+        },
+    ]
+}
+
+#[cfg(test)]
+mod ovn_members_tests {
+    use super::*;
+    use crate::node::NodeSpec;
+
+    #[test]
+    fn leaving_forgets_the_node_and_its_dpu_chassis() {
+        let n = Node::new(
+            "n1",
+            NodeSpec {
+                name: "node-a".into(),
+                role: NodeRole::Server,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
+            },
+        );
+        let m = ovn_members_of(&n, "192.0.2.11".parse().unwrap());
+        assert_eq!(m.len(), 2);
+        assert_eq!((m[0].chassis.as_str(), m[0].server), ("node:n1", true));
+        assert_eq!(m[0].address, "192.0.2.11");
+        // The DPU is never an OVN database member: only its chassis goes.
+        assert_eq!((m[1].chassis.as_str(), m[1].server), ("node:n1-dpu", false));
+        assert!(m[1].address.is_empty());
     }
 }

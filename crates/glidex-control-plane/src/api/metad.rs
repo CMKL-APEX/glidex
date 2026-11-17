@@ -315,6 +315,7 @@ mod tests {
                 ipv4: None,
                 port_ok,
                 metadata_index: Some(index),
+                backend: None,
             }],
             ..Default::default()
         }
