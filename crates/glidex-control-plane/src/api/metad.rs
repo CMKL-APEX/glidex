@@ -316,6 +316,7 @@ mod tests {
                 port_ok,
                 metadata_index: Some(index),
                 backend: None,
+                vfio: None,
             }],
             ..Default::default()
         }

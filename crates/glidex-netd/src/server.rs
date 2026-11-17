@@ -2164,7 +2164,7 @@ impl Netd {
             })?;
         // Step 7; on failure the DPU side is undone (§7.3).
         let bound = dpu::vf_bdf(self.ex(), &pf, vf.vf)
-            .and_then(|bdf| dpu::bind_vfio(self.ex(), &bdf).map(|_| bdf));
+            .and_then(|bdf| dpu::bind_vfio(self.ex(), &bdf, &self.config.group).map(|_| bdf));
         let bdf = match bound {
             Ok(b) => b,
             Err(e) => {

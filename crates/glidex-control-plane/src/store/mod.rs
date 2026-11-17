@@ -936,6 +936,7 @@ mod tests {
             port_ok: false,
             metadata_index: None,
             backend: None,
+            vfio: None,
         });
         db.write(Origin::System, |tx| -> Result<(), PersistenceError> {
             let mut vms = tx.open_table(TableId::Vms.definition())?;

@@ -338,10 +338,30 @@ pub fn vf_bdf(exec: &dyn Exec, pf: &str, n: u16) -> Result<String, OvsError> {
         .ok_or_else(|| OvsError::not_found(format!("VF {n} of {pf}")))
 }
 
-/// Step 7: the VF to `vfio-pci`, for the hypervisor.
-pub fn bind_vfio(exec: &dyn Exec, bdf: &str) -> Result<(), OvsError> {
+/// Step 7: the VF to `vfio-pci`, for the hypervisor, and its IOMMU
+/// group's device to `vm_group`, as for a passed-through device
+/// (spec/22-host-topology.md §5.3): the hypervisor runs as the VM user.
+pub fn bind_vfio(exec: &dyn Exec, bdf: &str, vm_group: &str) -> Result<(), OvsError> {
     exec.check(&Cmd::new(Program::Modprobe, ["vfio-pci"]))?;
-    bind(exec, bdf, "vfio-pci").map(|_| ())
+    bind(exec, bdf, "vfio-pci")?;
+    let group = glidex_ovs::vfio::iommu_group(exec, bdf).ok_or_else(|| {
+        OvsError::invalid(format!(
+            "{bdf} has no IOMMU group: turn the IOMMU on (intel_iommu=on / amd_iommu=on)"
+        ))
+    })?;
+    exec.write_file(
+        &glidex_ovs::vfio::udev_rule_path(&group),
+        format!(
+            "# glidex: IOMMU group {group} ({bdf}) for a DPU port\n\
+             SUBSYSTEM==\"vfio\", KERNEL==\"{group}\", GROUP=\"{vm_group}\", MODE=\"0660\"\n"
+        )
+        .as_bytes(),
+    )?;
+    let node = PathBuf::from(format!("/dev/vfio/{group}"));
+    if exec.exists(&node) {
+        exec.set_group_mode(&node, vm_group, 0o660)?;
+    }
+    Ok(())
 }
 
 /// §7.2: off `vfio-pci`, left unbound (no host driver should take it).
@@ -353,6 +373,9 @@ pub fn unbind_vf(exec: &dyn Exec, bdf: &str) -> Result<(), OvsError> {
     exec.write_file(&dev(bdf).join("driver_override"), b"\n")?;
     if driver(exec, bdf).is_some() {
         exec.write_file(&dev(bdf).join("driver").join("unbind"), bdf.as_bytes())?;
+    }
+    if let Some(group) = glidex_ovs::vfio::iommu_group(exec, bdf) {
+        exec.remove_file(&glidex_ovs::vfio::udev_rule_path(&group))?;
     }
     Ok(())
 }

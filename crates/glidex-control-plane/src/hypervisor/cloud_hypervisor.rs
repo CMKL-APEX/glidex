@@ -10,7 +10,7 @@
 
 use super::{
     ConsoleDevice, HypervisorDriver, HypervisorError, HypervisorType, LaunchArgs,
-    needs_shared_memory, resolve_binary, vfio_device_id, vm_disks,
+    needs_shared_memory, resolve_binary, vfio_device_id, vfio_nics, vm_disks,
 };
 use crate::images::qemu_img::ImageType;
 use crate::models::VmConfig;
@@ -84,6 +84,8 @@ fn net_args(config: &VmConfig) -> Vec<String> {
     config
         .nic_bindings
         .iter()
+        // A DPU VF is a `--device` (`vfio_nics`), not a `--net`.
+        .filter(|nic| !matches!(nic.binding, VmPortBinding::Vfio { .. }))
         .map(|nic| {
             let mut v = format!(
                 "id={},mac={},num_queues={}",
@@ -102,9 +104,7 @@ fn net_args(config: &VmConfig) -> Vec<String> {
                     q(&socket.to_string_lossy()),
                     glidex_ovs::tuning::VHOST_QUEUE_SIZE
                 )),
-                // A DPU VF is a VFIO device, not a `--net` (spec/31-dpu.md
-                // §12.2, D6); the control plane asks for none yet.
-                VmPortBinding::Vfio { .. } => {}
+                VmPortBinding::Vfio { .. } => unreachable!("filtered above"),
             }
             v
         })
@@ -226,7 +226,8 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
         a.push("--net".into());
         a.extend(nets);
     }
-    if !config.vfio_devices.is_empty() {
+    let nic_devices = vfio_nics(config);
+    if !config.vfio_devices.is_empty() || !nic_devices.is_empty() {
         a.push("--device".into());
         a.extend(config.vfio_devices.iter().map(|p| {
             // `aligned`: on its guest NUMA node's segment.
@@ -236,6 +237,12 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
                 .map(|i| format!(",pci_segment={}", i + 1))
                 .unwrap_or_default();
             format!("path={},id={}{segment}", q(p), vfio_device_id(p))
+        }));
+        // DPU VFs, with the NIC's id (`net<i>`), so the device controller
+        // never takes them for a user's VFIO device. Segment 0, with the
+        // virtio NICs they stand in for.
+        a.extend(nic_devices.iter().map(|(id, bdf)| {
+            format!("path={},id={id}", q(&format!("/sys/bus/pci/devices/{bdf}")))
         }));
     }
     a.extend([
@@ -824,6 +831,69 @@ mod tests {
         assert_eq!(
             values(&a, "--device"),
             ["path=/sys/bus/pci/devices/0000:41:00.0,id=vfio_0000_41_00_0"]
+        );
+    }
+
+    #[test]
+    fn a_dpu_nic_is_a_vfio_device_without_shared_memory() {
+        use glidex_ovs::vm_port::VmPortBinding;
+        let mut c = config(serde_json::json!({
+            "vfio_devices": ["/sys/bus/pci/devices/0000:41:00.0"]
+        }));
+        c.nic_bindings = vec![
+            NicBinding {
+                id: "net0".into(),
+                mac: "02:00:00:00:00:01".into(),
+                binding: VmPortBinding::Tap {
+                    ifname: "gxabc-0".into(),
+                },
+                queue_pairs: 1,
+                mtu: None,
+            },
+            NicBinding {
+                id: "net1".into(),
+                mac: "02:00:00:00:00:02".into(),
+                binding: VmPortBinding::Vfio {
+                    bdf: "0000:61:02.3".into(),
+                },
+                queue_pairs: 4,
+                mtu: Some(1442),
+            },
+        ];
+        let a = args(&c, "/s");
+        // The tap stays a `--net`; the VF is no `--net` at all.
+        assert_eq!(
+            values(&a, "--net"),
+            ["id=net0,mac=02:00:00:00:00:01,num_queues=2,tap=gxabc-0"]
+        );
+        // The user's device keeps its `vfio_…` id; the VF has the NIC's,
+        // which the device controller never takes for a user's device.
+        assert_eq!(
+            values(&a, "--device"),
+            [
+                "path=/sys/bus/pci/devices/0000:41:00.0,id=vfio_0000_41_00_0",
+                "path=/sys/bus/pci/devices/0000:61:02.3,id=net1",
+            ]
+        );
+        assert_eq!(super::super::observed_vfio_id("net1"), None);
+        // The VF does its own DMA: no shared guest memory.
+        assert_eq!(values(&a, "--memory"), ["size=1024M"]);
+
+        // A short address (as `virtnet` prints it) gets its domain.
+        c.vfio_devices.clear();
+        c.nic_bindings.truncate(1);
+        c.nic_bindings.push(NicBinding {
+            id: "net1".into(),
+            mac: "02:00:00:00:00:02".into(),
+            binding: VmPortBinding::Vfio {
+                bdf: "61:02.3".into(),
+            },
+            queue_pairs: 1,
+            mtu: None,
+        });
+        assert_eq!(
+            values(&args(&c, "/s"), "--device"),
+            ["path=/sys/bus/pci/devices/0000:61:02.3,id=net1"]
         );
     }
 
