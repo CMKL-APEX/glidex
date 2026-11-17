@@ -171,6 +171,7 @@ async fn the_relay_reads_a_trusted_clusters_storage_as_the_person() {
                 created_at: now,
                 ui_callback: None,
                 report: None,
+                whole: None,
             })
             .unwrap();
     }
@@ -316,6 +317,7 @@ async fn a_renewal_the_cluster_announced_is_pinned_once_seen() {
             created_at: now,
             ui_callback: None,
             report: None,
+            whole: None,
         })
         .unwrap();
     let (_, s) = c.session("alice", true);

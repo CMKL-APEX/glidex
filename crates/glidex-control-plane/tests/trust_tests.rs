@@ -1788,3 +1788,238 @@ async fn api_tokens_work_on_the_clusters_they_list() {
         .unwrap();
     assert_eq!(get(&north, for_north).await.0, StatusCode::UNAUTHORIZED);
 }
+
+/// A cluster of another kind (as hyperstor is) that takes directory
+/// offers (D91, D92): built from glidex-trust's pieces, with `approval`.
+struct WholeCluster {
+    key: glidex_trust::key::ClusterKey,
+    open: std::sync::Mutex<bool>,
+    replays: glidex_trust::Replays,
+    trusted: std::sync::Mutex<Option<glidex_trust::TrustedDirectory>>,
+    /// The ends it was told of.
+    ends: std::sync::Mutex<Vec<glidex_trust::EndAtCluster>>,
+}
+
+impl WholeCluster {
+    const ID: &str = "storage-1";
+
+    fn handle(&self, req: glidex_trust::fake::Request, issuer: &str) -> glidex_trust::fake::Reply {
+        use glidex_trust::fake::Reply;
+        use glidex_trust::{cluster, peer};
+        let refused = || Reply::json(403, json!({ "code": "trust_refused" }));
+        let Some(a) = peer::from_headers(&req.headers) else {
+            return refused();
+        };
+        let now = glidex_trust::now();
+        match req.path.as_str() {
+            "/trust/v1/redeem" => {
+                let Ok(b) = serde_json::from_slice::<glidex_trust::RedeemRequest>(&req.body) else {
+                    return refused();
+                };
+                let hash = glidex_trust::sha256_hex(b"s");
+                let offer = cluster::Offer {
+                    open: *self.open.lock().unwrap(),
+                    secret_hash: &hash,
+                    directory: issuer,
+                    scope: glidex_trust::OfferScope::Directory,
+                    tenant: "",
+                    admit: glidex_trust::AdmitSetting::Approval,
+                };
+                let Ok(r) =
+                    cluster::check_redeem(&a, &b, Some(offer), Self::ID, &self.replays, now)
+                else {
+                    return refused();
+                };
+                *self.open.lock().unwrap() = false;
+                let mut t = self.trusted.lock().unwrap();
+                *t = Some(cluster::redeemed_directory(t.take(), &b, &r, now));
+                Reply::json(
+                    200,
+                    serde_json::to_value(glidex_trust::RedeemAnswer {
+                        cluster_id: Self::ID.into(),
+                        cluster_key: glidex_trust::key::jwks(&[&self.key]),
+                        ui_callback: None,
+                        admit: r.whole,
+                    })
+                    .unwrap(),
+                )
+            }
+            "/trust/v1/end" => {
+                let Ok(b) = serde_json::from_slice::<glidex_trust::EndAtCluster>(&req.body) else {
+                    return refused();
+                };
+                let cur = self.trusted.lock().unwrap().clone();
+                match cluster::check_end(
+                    &a,
+                    &b,
+                    |iss| cur.filter(|d| d.issuer == iss),
+                    Self::ID,
+                    &self.replays,
+                    now,
+                ) {
+                    Ok(d) => {
+                        *self.trusted.lock().unwrap() = cluster::ended(d, &b);
+                        self.ends.lock().unwrap().push(b);
+                        Reply::status(200)
+                    }
+                    Err(_) => refused(),
+                }
+            }
+            _ => Reply::status(404),
+        }
+    }
+}
+
+/// D92, D94 at the directory: its owner redeems a directory offer, the
+/// cluster is listed as trusted as a whole, a tenant can't redeem it and
+/// the owner can't redeem a tenant offer, and untrusting it tells the
+/// cluster with no tenant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_directory_trusts_a_cluster_as_a_whole() {
+    let acme = cp().await;
+    let admin = acme.admin();
+    let issuer = format!("{}/d/local", acme.base);
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/tenants",
+            Some(json!({"slug": "physics", "display_name": "Physics"})),
+            &admin,
+        )
+        .await;
+    assert!(s.is_success(), "{v}");
+    let root = acme
+        .app
+        .auth
+        .store
+        .user_for_identity("pam", "root", "root", None, false)
+        .unwrap()
+        .unwrap()
+        .id;
+    acme.app
+        .auth
+        .add_link(
+            "role.tenant-admin",
+            Ent::User(root),
+            Ent::Tenant(v["tenant"]["id"].as_str().unwrap().into()),
+            "test",
+        )
+        .unwrap();
+    let c = Arc::new(WholeCluster {
+        key: glidex_trust::key::ClusterKey::generate("storage-1:1").unwrap(),
+        open: std::sync::Mutex::new(true),
+        replays: glidex_trust::Replays::default(),
+        trusted: std::sync::Mutex::new(None),
+        ends: std::sync::Mutex::new(Vec::new()),
+    });
+    let (c2, iss) = (c.clone(), issuer.clone());
+    let handler: glidex_trust::fake::Handler = Arc::new(move |req| {
+        let (c, iss) = (c2.clone(), iss.clone());
+        Box::pin(async move { c.handle(req, &iss) })
+    });
+    let https = glidex_trust::fake::serve_https(handler).await.unwrap();
+    let token = |scope, tenant: &str| {
+        glidex_control_plane::trust::OfferToken {
+            cluster_id: WholeCluster::ID.into(),
+            cluster_name: "storage".into(),
+            api: https.base.clone(),
+            tls_sha256: https.pin.clone(),
+            scope,
+            tenant: tenant.into(),
+            directory: issuer.clone(),
+            offer: "o1".into(),
+            secret: "s".into(),
+            expires_at: u64::MAX,
+        }
+        .encode()
+    };
+    let whole = token(glidex_control_plane::trust::OfferScope::Directory, "");
+    let refused = |(s, v): (StatusCode, Value), says: &str| {
+        assert_eq!(
+            (s, v["error"].as_str()),
+            (StatusCode::BAD_REQUEST, Some("offer_refused")),
+            "{v}"
+        );
+        assert!(v.to_string().contains(says), "{v}");
+    };
+
+    // Not a tenant's to redeem; a tenant offer isn't the owner's.
+    refused(
+        acme.rest(
+            "POST",
+            "/tenants/physics/clusters",
+            Some(json!({"offer": whole})),
+            &admin,
+        )
+        .await,
+        "whole directory",
+    );
+    refused(
+        acme.rest(
+            "POST",
+            "/directory/clusters",
+            Some(json!({
+                "offer": token(glidex_control_plane::trust::OfferScope::Tenant, "physics")
+            })),
+            &admin,
+        )
+        .await,
+        "tenant opt-in",
+    );
+    assert!(*c.open.lock().unwrap(), "nothing was sent");
+
+    // Redeemed by the owner: trusted as a whole, with the cluster's setting.
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/directory/clusters",
+            Some(json!({"offer": whole})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["cluster"]["id"], WholeCluster::ID, "{v}");
+    assert_eq!(v["cluster"]["whole"], true, "{v}");
+    assert_eq!(v["cluster"]["admit"], "ADMIT_SETTING_APPROVAL", "{v}");
+    let d = c.trusted.lock().unwrap().clone().unwrap();
+    assert!(d.whole.is_some() && d.tenants.is_empty());
+    let (_, v) = acme.rest("GET", "/directory/clusters", None, &admin).await;
+    assert_eq!(v["clusters"][0]["id"], WholeCluster::ID, "{v}");
+    // Twice: refused by the cluster, the offer spent.
+    refused(
+        acme.rest(
+            "POST",
+            "/directory/clusters",
+            Some(json!({"offer": whole})),
+            &admin,
+        )
+        .await,
+        "refused the offer",
+    );
+
+    // Untrusted: forgotten here, and the cluster told with no tenant.
+    let (s, v) = acme
+        .rest(
+            "DELETE",
+            &format!("/directory/clusters/{}", WholeCluster::ID),
+            None,
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    let (_, v) = acme.rest("GET", "/directory/clusters", None, &admin).await;
+    assert!(v["clusters"].as_array().is_none_or(|a| a.is_empty()), "{v}");
+    let ends = c.ends.lock().unwrap().clone();
+    assert_eq!(ends.len(), 1);
+    assert!(ends[0].tenant.is_empty());
+    assert!(c.trusted.lock().unwrap().is_none());
+    let (s, _) = acme
+        .rest(
+            "DELETE",
+            &format!("/directory/clusters/{}", WholeCluster::ID),
+            None,
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+}

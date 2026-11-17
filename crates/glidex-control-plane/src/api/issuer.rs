@@ -414,3 +414,48 @@ pub async fn put_settings(
         crate::service::directory_settings::update_directory_settings(&c, req)?,
     ))
 }
+
+// ---- REST twins of glidex.directory.v1.ClusterTrustService (D92, D94) ----
+
+/// `GET /directory/clusters`.
+pub async fn list_clusters(
+    c: super::Caller,
+) -> Result<
+    Json<glidex_api::proto::glidex::directory::v1::ListDirectoryClustersResponse>,
+    super::ApiErr,
+> {
+    Ok(Json(
+        crate::service::cluster_trust::list_directory_clusters(&c, Default::default())?,
+    ))
+}
+
+/// `POST /directory/clusters`.
+pub async fn trust_cluster(
+    c: super::Caller,
+    Json(req): Json<glidex_api::proto::glidex::directory::v1::TrustClusterRequest>,
+) -> Result<
+    (
+        axum::http::StatusCode,
+        Json<glidex_api::proto::glidex::directory::v1::TrustClusterResponse>,
+    ),
+    super::ApiErr,
+> {
+    let r = crate::service::cluster_trust::trust_cluster(&c, req).await?;
+    Ok((axum::http::StatusCode::CREATED, Json(r)))
+}
+
+/// `DELETE /directory/clusters/{cluster}`.
+pub async fn untrust_cluster(
+    c: super::Caller,
+    axum::extract::Path(cluster): axum::extract::Path<String>,
+) -> Result<axum::http::StatusCode, super::ApiErr> {
+    crate::service::cluster_trust::untrust_cluster(
+        &c,
+        glidex_api::proto::glidex::directory::v1::UntrustClusterRequest {
+            cluster,
+            ..Default::default()
+        },
+    )
+    .await?;
+    Ok(axum::http::StatusCode::NO_CONTENT)
+}

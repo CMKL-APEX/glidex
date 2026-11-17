@@ -1489,23 +1489,46 @@ pub async fn opt_in_cluster(
     call: &Call,
     req: pb::OptInClusterRequest,
 ) -> ServiceResult<pb::OptInClusterResponse> {
-    use crate::trust::{OfferToken, REDEEM, TrustedCluster, normalize_issuer};
     let t = visible(call, &req.id)?;
     call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
+    let dir = t.directory_id.clone();
+    let (token, answer) = redeem_offer(call, &dir, &req.offer, Some(&t)).await?;
+    let mut c = cluster_record(call, &dir, &token, &answer)?;
+    if !c.tenants.contains(&t.id) {
+        c.tenants.push(t.id.clone());
+    }
+    call.auth().trust.put_cluster(&c).map_err(trust_err)?;
+    call.set_target(format!("tenant:{}", t.id));
+    call.detail("cluster", serde_json::json!(c.cluster_id));
+    Ok(pb::OptInClusterResponse {
+        cluster: tenant_cluster_pb(&c, &t.id).into(),
+        ..Default::default()
+    })
+}
+
+/// Redeem cluster offer `offer` for directory `dir` (D65, D92): for
+/// `tenant`, a tenant offer; with none, a directory offer, which the
+/// directory's owner redeems. The token and the cluster's answer.
+pub(crate) async fn redeem_offer(
+    call: &Call,
+    dir: &str,
+    offer: &str,
+    tenant: Option<&tenants::Tenant>,
+) -> ServiceResult<(crate::trust::OfferToken, serde_json::Value)> {
+    use crate::trust::{OfferScope, OfferToken, REDEEM, normalize_issuer};
     let bad = |m: String| ServiceError::new(StatusCode::BAD_REQUEST, "offer_refused", m);
     let token =
-        OfferToken::decode(&req.offer).ok_or_else(|| bad("not an offer token (gxo_…)".into()))?;
+        OfferToken::decode(offer).ok_or_else(|| bad("not an offer token (gxo_…)".into()))?;
     let now = crate::tenancy::now();
     if now >= token.expires_at {
         return Err(bad(
             "the offer expired: ask the cluster's operator for a new one".into(),
         ));
     }
-    let dir = t.directory_id.clone();
     let d = call
         .auth()
         .tenants
-        .get_directory(&dir)
+        .get_directory(dir)
         .map_err(tenant_error)?
         .ok_or_else(|| bad("no such directory".into()))?;
     let iss = crate::api::issuer::issuer_url(call.auth(), call.manager(), &d)
@@ -1517,44 +1540,52 @@ pub async fn opt_in_cluster(
             token.directory
         )));
     }
-    if token.scope == crate::trust::OfferScope::Directory {
-        return Err(bad(
-            "this is an offer for the whole directory: its owner redeems it, not a tenant (not built yet: 19-tenancy.md T11)".into(),
-        ));
-    }
-    if token.tenant != t.slug {
-        return Err(bad(format!(
-            "the offer is for tenant {}, not {}",
-            token.tenant, t.slug
-        )));
+    match (token.scope, tenant) {
+        (OfferScope::Directory, Some(_)) => {
+            return Err(bad(
+                "this is an offer for the whole directory: its owner redeems it (gxctl directory trust-cluster)".into(),
+            ));
+        }
+        (OfferScope::Tenant, None) => {
+            return Err(bad(format!(
+                "this is an offer for tenant {}: its administrator redeems it (gxctl tenant opt-in)",
+                token.tenant
+            )));
+        }
+        (OfferScope::Tenant, Some(t)) if token.tenant != t.slug => {
+            return Err(bad(format!(
+                "the offer is for tenant {}, not {}",
+                token.tenant, t.slug
+            )));
+        }
+        _ => {}
     }
     // The issuer is fixed from now: the cluster pins it.
     call.auth()
         .tenants
-        .set_issuer(&dir, &iss, false)
+        .set_issuer(dir, &iss, false)
         .map_err(tenant_error)?;
     let keys = &call.auth().connectors;
-    keys.maintain_signing_keys(&dir, now).map_err(|e| {
-        ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
-    })?;
-    let jwks = keys.jwks(&dir, now).map_err(|e| {
-        ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
-    })?;
+    let internal = |e: String| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e);
+    keys.maintain_signing_keys(dir, now)
+        .map_err(|e| internal(e.to_string()))?;
+    let jwks = keys.jwks(dir, now).map_err(|e| internal(e.to_string()))?;
     let api = offer_api(call)
         .ok_or_else(|| bad("this host has no public API address: set cluster.api_url".into()))?;
     let fp = crate::service::system::api_fingerprint(&call.app)
         .and_then(|f| glidex_tls::Trust::normalize_pin(&f))
         .ok_or_else(|| bad("this host's API has no TLS certificate to pin".into()))?;
     let assertion =
-        crate::directory::peer::assertion(keys, &dir, &iss, &token.cluster_id, REDEEM, now)
-            .map_err(|e| {
-                ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string())
-            })?;
-    let body = serde_json::json!({
+        crate::directory::peer::assertion(keys, dir, &iss, &token.cluster_id, REDEEM, now)
+            .map_err(|e| internal(e.to_string()))?;
+    let mut body = serde_json::json!({
         "offer": token.offer, "secret": token.secret, "issuer": iss, "directory": dir,
-        "tenant": { "id": t.id, "slug": t.slug, "display_name": t.display_name },
         "jwks": jwks, "api": api, "tls_sha256": fp,
     });
+    if let Some(t) = tenant {
+        body["tenant"] =
+            serde_json::json!({ "id": t.id, "slug": t.slug, "display_name": t.display_name });
+    }
     let (status, answer) = crate::directory::peer::post(
         &token.api,
         &token.tls_sha256,
@@ -1569,13 +1600,26 @@ pub async fn opt_in_cluster(
             "the cluster refused the offer (used, revoked, expired, or for someone else)".into(),
         ));
     }
+    Ok((token, answer))
+}
+
+/// This directory's record of the cluster that answered redeem `token`
+/// with `answer`: the one it had, its tenants kept, or a new one; its
+/// address, pin, key and callback as the redeem brought them (D65, D88).
+/// Not stored yet.
+pub(crate) fn cluster_record(
+    call: &Call,
+    dir: &str,
+    token: &crate::trust::OfferToken,
+    answer: &serde_json::Value,
+) -> ServiceResult<crate::trust::TrustedCluster> {
     let mut c = call
         .auth()
         .trust
-        .cluster(&dir, &token.cluster_id)
+        .cluster(dir, &token.cluster_id)
         .map_err(trust_err)?
-        .unwrap_or_else(|| TrustedCluster {
-            directory_id: dir.clone(),
+        .unwrap_or_else(|| crate::trust::TrustedCluster {
+            directory_id: dir.to_string(),
             cluster_id: token.cluster_id.clone(),
             name: token.cluster_name.clone(),
             api: token.api.clone(),
@@ -1583,9 +1627,10 @@ pub async fn opt_in_cluster(
             next_tls_sha256: None,
             jwks: serde_json::json!({ "keys": [] }),
             tenants: Vec::new(),
-            created_at: now,
+            created_at: crate::tenancy::now(),
             ui_callback: None,
             report: None,
+            whole: None,
         });
     c.api = token.api.clone();
     c.ui_callback = answer["ui_callback"]
@@ -1596,16 +1641,7 @@ pub async fn opt_in_cluster(
     c.tls_sha256 = token.tls_sha256.clone();
     c.next_tls_sha256 = None;
     c.jwks = answer["cluster_key"].clone();
-    if !c.tenants.contains(&t.id) {
-        c.tenants.push(t.id.clone());
-    }
-    call.auth().trust.put_cluster(&c).map_err(trust_err)?;
-    call.set_target(format!("tenant:{}", t.id));
-    call.detail("cluster", serde_json::json!(c.cluster_id));
-    Ok(pb::OptInClusterResponse {
-        cluster: tenant_cluster_pb(&c, &t.id).into(),
-        ..Default::default()
-    })
+    Ok(c)
 }
 
 /// Tenant `id` stops using a cluster (D66): forgotten here, and the
@@ -1631,7 +1667,7 @@ pub async fn opt_out_cluster(
             )
         })?;
     c.tenants.retain(|x| *x != t.id);
-    if c.tenants.is_empty() {
+    if c.tenants.is_empty() && c.ends_with_its_tenants() {
         call.auth()
             .trust
             .remove_cluster(&dir, &c.cluster_id)
