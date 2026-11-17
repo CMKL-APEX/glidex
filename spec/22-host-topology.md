@@ -349,10 +349,10 @@ on:
   store). A device that leaves the set (its pool changed, it left
   `vfio-pci`, it was released) gets its own values back, and a bridge
   gets its value back once no kept device is below it.
-- **When.** The control plane sends the set at start, after the
-  `prepare: true` pass, and after each topology read (H14). sysfs values
-  don't survive a rebind or a reboot, so they are written again then. A
-  rebind sends a udev `pci` event and so triggers a read. The boot unit
+- **When.** The control plane sends the set each time the node reports
+  itself: at start, every two minutes, after the `prepare: true` pass,
+  and after a device is prepared or released. sysfs values don't survive
+  a rebind or a reboot, so they are written again then. The boot unit
   (`glidex-netd --boot-devices`, spec/27-gpu-vms.md §10) applies a
   selector's `power_save: false` once its devices are bound, before any
   VM or the control plane starts.
