@@ -552,6 +552,40 @@ says `holding a renewed API certificate` when it starts waiting. If a proxy in
 front of the API address presents its own certificate, no node matches
 it, nothing is announced, and renewals wait for the 7-day fallback.
 
+## Trusting a storage cluster for the whole directory
+
+A cluster of another organization (a hyperstor storage cluster, say)
+can trust your whole directory once, rather than one tenant at a time.
+Its operator makes a **directory offer** (on hyperstor: `hyperstorctl
+admission offer --directory <issuer> --admit open|approval …`, no
+tenant) and sends you the token. As the directory's owner, redeem it:
+
+```bash
+# Paste the token at the hidden prompt, or keep it in a 0600 file
+gxctl directory trust-cluster --auto-opt-in
+gxctl directory trust-cluster --offer-file ./offer.txt --auto-opt-in
+```
+
+Each tenant then opts in with no offer of its own, and the cluster
+admits it at once (`open`) or after its operator approves (`approval`).
+With `--auto-opt-in` the directory opts every tenant in by itself, and
+new tenants within a minute; without it, a tenant's administrator runs
+`gxctl tenant opt-in <tenant> --cluster <id>` (`gxctl tenant clusters
+<tenant> --available` lists the clusters it may use).
+
+```bash
+gxctl directory clusters                              # each tenant's status
+gxctl directory cluster-set <id> --auto-opt-in on|off
+gxctl directory untrust-cluster <id>                  # ends it for every tenant
+```
+
+Only admitted tenants are sent to the cluster: their members, projects
+and roles. Turn on `--auto-opt-in` only for a cluster your organization
+runs or has agreed to share every tenant with, since each tenant's
+consent is then the directory owner's. Treat the offer token as a
+password: it is single use, but it lets whoever holds it make this
+cluster trust a directory until it expires.
+
 ## The web UI's address
 
 Agents send browsers to a server's web UI, at the address that server

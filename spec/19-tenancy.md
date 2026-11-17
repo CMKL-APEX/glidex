@@ -173,6 +173,7 @@ organizations that **operate** it, and lets each keep its own identity.
 | D96 | A glidex cluster takes directory offers too | Glidex's control plane holds the cluster side of D91–D95 as hyperstor does. `gxctl admission offer --directory ISSUER [--admit open\|approval] [--cap key=value,…] [--days N]`, with no tenant, makes a directory offer (`cluster.admissions`, step-up). Its redeem stores a directory-wide `TrustedDirectory` with its **admission setting** (`admit`, default `open`) and **default cap** (as D79's). An admit is answered by the setting: `open` admits the tenant with a copy of the default cap; `approval` records it pending until `gxctl admission approve\|reject <directory> <tenant>` or the Admissions page. A change to the default cap applies to later admissions only (hyperstor's D347). `gxctl admission directories` shows each trusted directory's scope, setting and default cap; `gxctl admission untrust <directory>` ends a directory's trust as a whole (D94). Settled by the owner on 2026-11-17. | One way to share a glidex cluster with another organization's tenants, whichever kind of cluster it is; the cluster-side checks are glidex-trust's (D84) either way. |
 | D97 | Asking again | A tenant whose opt-in was refused, or is pending, may opt in again at any time. A cluster keeps one pending request per tenant (a second replaces the first's time); a refusal is not remembered against a later request. Settled by the owner on 2026-11-17. | The operator can always end the directory's trust; remembering refusals would add a state to clear by hand. |
 | D98 | Every tenant may opt in | Any tenant of a directory trusted as a whole may opt in, by its admin (`tenant.clusters`); the directory's owner doesn't limit which. A cluster that wants to choose sets `approval`. Settled by the owner on 2026-11-17. | Opting in is the tenant's consent; which tenants a cluster takes is the cluster's choice, which `approval` gives. |
+| D99 | The directory opts its tenants in by itself | For a cluster it trusts as a whole, the directory's owner may turn on **automatic opt-in** (`gxctl directory trust-cluster --auto-opt-in`, `cluster-set <id> --auto-opt-in on`; `TrustedCluster.auto_opt_in`, `trustCluster`, step-up). The directory then opts in each of its tenants with no opt-in there (not pending approval at the directory, not suspended), at once and, for new tenants, every feed round (30 s) on the leader; each is audited (`autoOptIn`). A tenant the cluster refused isn't asked again by the directory (D97: it may ask itself); a tenant that opts out is asked again at the next round while it stays on, so the owner turns it off to let tenants choose. The cluster still admits by its own setting. Settled by the owner on 2026-11-17. | For a cluster the directory's own organization runs (its storage cluster), a click per tenant is friction with no one to consent to: the owner consents for its tenants. Off by default, so D93's per-tenant consent stays the rule. |
 
 ## 3. Threat model additions
 
@@ -1673,7 +1674,7 @@ Each milestone ships its API, CLI, UI and tests together and leaves
 | **T7** fleets | §12.2: the fleet role with its own directory and accounts (D38), registry and signed feed, claim codes and self-service registration with approval, the catalog and opt-in, `admitTenant` and the `fleet.open` template, labels by provenance, key continuity, leave and move, gxctl `fleet`, UI Registry and Fleet pages | §17 fleet tests; two operators' clusters in one fleet, one moved to a second fleet. Needs T6. |
 | **T9** self-service tenants | §11.1, D78–D82: directory settings, `createOwnTenant`, limits, pending tenants and approval, a tenant at first sign-in, automatic admission with the default cap, open pools, the display label, gxctl and UI | Policy and service tests (below); UI e2e: a user creates a lab, runs a VM in it under the default cap, hits the per-user limit; a real check on the three-server test cluster with the Google connector. |
 | **T10** members by email | §6.4, D83: a user named by a verified email where members and roles are added; identities record whether their address was verified | Service tests; gxctl and the forms take an address. |
-| **T11** trusting a directory as a whole | §12.6, D91–D98: directory offers, redeemed by the directory's owner; tenants opting in without an offer; admission status from the cluster; ending a directory's trust; glidex-trust's wire and cluster-side checks (hyperstor's D345–D347); a glidex cluster's side, with its admission setting, default cap and approvals; gxctl and UI | glidex-trust tests (both offer kinds, redeem, admit, end, reports, a pending tenant left out of the feed); service and policy tests at the directory; a real check with the three-server test cluster's hyperstor: a directory offer, a tenant opting in, a hyperstor disk created in its project. |
+| **T11** trusting a directory as a whole | §12.6, D91–D99: directory offers, redeemed by the directory's owner; tenants opting in without an offer; admission status from the cluster; ending a directory's trust; glidex-trust's wire and cluster-side checks (hyperstor's D345–D347); a glidex cluster's side, with its admission setting, default cap and approvals; gxctl and UI | glidex-trust tests (both offer kinds, redeem, admit, end, reports, a pending tenant left out of the feed); service and policy tests at the directory; a real check with the three-server test cluster's hyperstor: a directory offer, a tenant opting in, a hyperstor disk created in its project. |
 
 **T0 tasks** (files):
 1. `tenancy.rs`: `Directory`, `Tenant`, `Admission` and stores;
@@ -2075,9 +2076,32 @@ scope: a tenant offer refused at `TrustCluster`, a directory offer at
 `OptInCluster`); untrusting tells the cluster with no tenant. The
 cluster's client registration is the record's, so a directory-wide record
 has one. Tested against a cluster built from glidex-trust's pieces
-(`trust_tests::a_directory_trusts_a_cluster_as_a_whole`). Tasks 3–6 are
-not started; until task 3 a directory-wide cluster's tenants can't opt
-in, and its `tenants` are only those of tenant offers.
+(`trust_tests::a_directory_trusts_a_cluster_as_a_whole`). Task 3 is built: `OptInCluster` takes `{cluster}` with no offer for a
+cluster trusted as a whole and sends the signed admit
+(`POST /trust/v1/admit`, purpose `admit`, either pin); the answer's
+status is kept, a `403` as refused (the call answers `403
+opt_in_refused`; asking again is allowed, D97). `TrustedCluster.tenants`
+holds only admitted tenants, so the feed, tokens, sessions and the
+storage relay reach only those; `TrustedCluster.waiting` holds pending
+and refused ones. Each report's `admission` per tenant (`TenantReport`,
+admitted when left out) moves a tenant between them, audited as
+`clusterAdmission`. `ListTenantClusters` gives each cluster's `status`
+and `whole`, and with `available` the clusters the tenant could opt in
+to; the directory's list gives each tenant's status. Opting out
+withdraws a pending or refused opt-in too. Tested against the stand-in
+cluster (`trust_tests::tenants_opt_in_to_a_cluster_trusted_as_a_whole`:
+pending, approved by a report and then fed, refused and asked again,
+withdrawn, the last tenant leaving). D99 is built with it: `TrustedCluster.auto_opt_in`, set at `TrustCluster`
+or by `UpdateDirectoryCluster` (`PATCH /directory/clusters/{cluster}`),
+`api::trust::auto_opt_in` (at once, and each feed round on the leader;
+`ask_admission` shared with a tenant's opt-in); tested in
+`trust_tests::a_directory_opts_its_tenants_in_by_itself` (tenants there
+at trust, a later one at the next round, off and on again). Of task 5,
+gxctl is built: `directory clusters | trust-cluster [--offer-file]
+[--auto-opt-in] | cluster-set | untrust-cluster` (the offer read from a
+file or a hidden prompt), `tenant opt-in --cluster`, `tenant clusters
+--available`; the operator guide's clusters page. The web UI's part of
+task 5, task 4 (glidex's cluster side) and task 6 are not started.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,

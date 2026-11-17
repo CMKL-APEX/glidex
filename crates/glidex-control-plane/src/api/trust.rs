@@ -228,8 +228,8 @@ pub async fn end_at_directory(
         return refused(&app, ACTION, &e.to_string());
     }
     // No tenant: the cluster ended this directory's trust as a whole (D94).
-    c.tenants.retain(|t| *t != b.tenant);
-    let _ = if b.tenant.is_empty() || (c.tenants.is_empty() && c.ends_with_its_tenants()) {
+    c.forget(&b.tenant);
+    let _ = if b.tenant.is_empty() || (c.no_tenants() && c.ends_with_its_tenants()) {
         app.auth.trust.remove_cluster(&dir, &c.cluster_id)
     } else {
         app.auth.trust.put_cluster(&c)
@@ -625,6 +625,7 @@ pub async fn report_for(
         let mut r = trust::TenantReport {
             tenant: rt.id.clone(),
             suspended: a.status == crate::tenants::AdmissionStatus::Suspended,
+            admission: glidex_trust::AdmissionStatus::Admitted,
             cap: a.cap.clone(),
             projects: 0,
             vms: 0,
@@ -753,8 +754,25 @@ pub async fn report(
     let mut r = b.report;
     // Its own clock, not the cluster's.
     r.at = now();
-    r.tenants.retain(|t| c.tenants.contains(&t.tenant));
-    r.tenants.truncate(c.tenants.len());
+    // Only tenants opted in to it; where each stands is the cluster's word
+    // (D93): an admitted one is fed from now on, a pending or refused one
+    // not.
+    r.tenants.retain(|t| c.status_of(&t.tenant).is_some());
+    r.tenants.truncate(c.tenants.len() + c.waiting.len());
+    for t in &r.tenants {
+        if c.status_of(&t.tenant) != Some(t.admission) {
+            app.auth.audit_system(
+                &format!("cluster:{}", c.cluster_id),
+                "",
+                "clusterAdmission",
+                Some(&format!("tenant:{}", t.tenant)),
+                "allowed",
+                None,
+                json!({ "status": t.admission }),
+            );
+            c.set_status(&t.tenant, t.admission);
+        }
+    }
     // Per-project storage only of the tenant's own projects here (D89).
     let projects = app.manager.projects().list().unwrap_or_default();
     for t in &mut r.tenants {
@@ -926,6 +944,113 @@ use glidex_trust::cluster::FEED_EVERY;
 /// The task that pulls every trusted directory's feed: on a standalone
 /// host, or the cluster's leader (where writes go). And, on every server,
 /// the one that tells directories of the sessions that ended (D72).
+/// Ask cluster `c`, which tenant `t`'s directory trusts as a whole, to
+/// admit `t` (D93): a signed admit over either pin (D88). Its status:
+/// `admitted` or `pending` as answered, `refused` for a `403`; `Err` when
+/// the cluster can't be reached or answers otherwise. `c` takes a renewed
+/// pin it saw; the caller records the status and stores `c`.
+pub async fn ask_admission(
+    app: &AppState,
+    t: &crate::tenants::Tenant,
+    c: &mut trust::TrustedCluster,
+) -> Result<trust::AdmissionStatus, String> {
+    let dir = &t.directory_id;
+    let iss = app
+        .auth
+        .tenants
+        .get_directory(dir)
+        .ok()
+        .flatten()
+        .and_then(|d| d.issuer)
+        .ok_or("the directory has no issuer")?;
+    let a = peer::assertion(
+        &app.auth.connectors,
+        dir,
+        &iss,
+        &c.cluster_id,
+        trust::ADMIT,
+        now(),
+    )
+    .map_err(|e| e.to_string())?;
+    let body = json!({
+        "issuer": iss,
+        "tenant": { "id": t.id, "slug": t.slug, "display_name": t.display_name },
+    });
+    let (status, answer, seen) = peer::post_any(&c.api, &c.pins(), trust::ADMIT_PATH, &a, &body)
+        .await
+        .map_err(|e| e.to_string())?;
+    trust::promote_pin(&mut c.tls_sha256, &mut c.next_tls_sha256, &seen);
+    match status {
+        200 => serde_json::from_value::<trust::AdmitAnswer>(answer)
+            .map(|a| a.status)
+            .map_err(|_| "the cluster's answer isn't an admission".to_string()),
+        403 => Ok(trust::AdmissionStatus::Refused),
+        s => Err(format!("the cluster answered {s}")),
+    }
+}
+
+/// Opt in, for cluster `c` trusted as a whole with `auto_opt_in` (D99),
+/// every tenant of its directory that has no opt-in there: not pending
+/// approval at the directory, not suspended. A tenant the cluster refused
+/// keeps its refusal: it asks again itself (D97). Stores `c` when
+/// anything changed. How many were asked.
+pub async fn auto_opt_in(app: &AppState, c: &mut trust::TrustedCluster) -> usize {
+    if c.whole.is_none() || !c.auto_opt_in {
+        return 0;
+    }
+    let tenants: Vec<_> = app
+        .auth
+        .tenants
+        .list()
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|t| {
+            t.directory_id == c.directory_id
+                && !t.pending
+                && !t.suspended
+                && c.status_of(&t.id).is_none()
+        })
+        .collect();
+    let mut asked = 0;
+    for t in &tenants {
+        match ask_admission(app, t, c).await {
+            Ok(st) => {
+                c.set_status(&t.id, st);
+                asked += 1;
+                app.auth.audit_system(
+                    &format!("directory:{}", c.directory_id),
+                    "",
+                    "autoOptIn",
+                    Some(&format!("tenant:{}", t.id)),
+                    "allowed",
+                    None,
+                    json!({ "cluster": c.cluster_id, "status": st }),
+                );
+            }
+            Err(e) => {
+                tracing::warn!(cluster = %c.cluster_id, tenant = %t.slug, "opting in: {}", e);
+                break;
+            }
+        }
+    }
+    if asked > 0
+        && let Err(e) = app.auth.trust.put_cluster(c)
+    {
+        tracing::warn!(cluster = %c.cluster_id, "recording opt-ins: {}", e);
+    }
+    asked
+}
+
+/// Each round, every hosted directory's clusters with `auto_opt_in` (D99).
+async fn auto_opt_in_round(app: &AppState) {
+    let dirs = app.auth.tenants.directories().unwrap_or_default();
+    for d in dirs {
+        for mut c in app.auth.trust.clusters(&d.id).unwrap_or_default() {
+            auto_opt_in(app, &mut c).await;
+        }
+    }
+}
+
 pub fn spawn_feeds(app: AppState) {
     let logouts = app.clone();
     tokio::spawn(async move {
@@ -942,6 +1067,7 @@ pub fn spawn_feeds(app: AppState) {
                 continue;
             }
             feed_round(&app).await;
+            auto_opt_in_round(&app).await;
         }
     });
 }

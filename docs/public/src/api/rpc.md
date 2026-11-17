@@ -486,6 +486,7 @@ same ids and names.
 |  | `UpdateDirectorySettings` | `PUT /directory/settings` |
 | `ClusterTrustService` | `ListDirectoryClusters` | `GET /directory/clusters` |
 |  | `TrustCluster` | `POST /directory/clusters` |
+|  | `UpdateDirectoryCluster` | `PATCH /directory/clusters/{cluster}` |
 |  | `UntrustCluster` | `DELETE /directory/clusters/{cluster}` |
 | `SigningKeyService` | `ListSigningKeys` | `GET /directory/keys` |
 |  | `RotateSigningKey` | `POST /directory/keys/rotate` |

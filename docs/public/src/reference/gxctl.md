@@ -278,6 +278,8 @@ and [Access control](../operator-guide/access-control.md).
 | `tenant device-pool set <t> <name> --from <pool> --max N [--projects p1,p2]`, `device-pool remove <t> <name>` | Add or change a tenant pool, or remove one |
 | `tenant clusters <t>` | Clusters of other organizations the tenant uses, with each one's last report (a storage cluster's: volumes, provisioned and used, buckets, S3 keys) |
 | `tenant opt-in <t> --offer TOKEN`, `opt-out <t> --cluster ID` | Start using another organization's cluster with the offer token its operator sent, or stop |
+| `tenant opt-in <t> --cluster ID`, `tenant clusters <t> [--available]` | Opt in, with no offer, to a cluster the directory trusts as a whole: admitted or pending by the cluster's setting; `--available` lists those it may opt in to |
+| `directory clusters`, `directory trust-cluster [--offer-file PATH] [--auto-opt-in]`, `directory cluster-set <id> --auto-opt-in on\|off`, `directory untrust-cluster <id>` | Clusters of other organizations that trust the whole directory, with each tenant's status; redeem a directory offer (read from the file or a hidden prompt); opt every tenant in by itself; end the trust for every tenant. Trusting and ending need a recent login |
 | `admission list` | Tenants admitted on this site, with their caps |
 | `admission set <tenant> [key=value… \| unlimited] [--suspend \| --resume]` | Admit a tenant and set its caps: `vms`, `vcpus`, `memory_mib`, `disk_gib`, `running_vms`, `networks`, `routers`, `external_ips`, `devices.<pool>` |
 | `admission remove <tenant>` | Remove an admission |

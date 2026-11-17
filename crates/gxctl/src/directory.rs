@@ -1181,6 +1181,11 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
     if args.first() == Some(&"settings") {
         return settings(&t, &args[1..]).await;
     }
+    if let Some(&c @ ("clusters" | "trust-cluster" | "cluster-set" | "untrust-cluster")) =
+        args.first()
+    {
+        return clusters(&t, c, &args[1..]).await;
+    }
     let svc = SigningKeyServiceClient::new(t.clone(), t.config());
     match (args.first().copied(), args.get(1).copied()) {
         (Some("keys" | "key"), None | Some("list" | "ls")) => match svc
@@ -1308,5 +1313,138 @@ pub async fn directory(client: &ApiClient, args: &[&str]) {
         _ => usage(
             "directory list | create <id> --admin-email EMAIL [--name TEXT] [--owner SLUG] [--days N] [--trust-domain NAME] | delete <id> | keys [rotate] | settings [...]",
         ),
+    }
+}
+
+const CLUSTERS_USAGE: &str = "directory clusters \
+    | trust-cluster [--offer-file PATH] [--auto-opt-in] \
+    | cluster-set <cluster> --auto-opt-in on|off \
+    | untrust-cluster <cluster>";
+
+fn print_cluster(c: &DirectoryCluster) {
+    let admit = match c.admit.as_known() {
+        Some(AdmitSetting::ADMIT_SETTING_OPEN) => "open",
+        Some(AdmitSetting::ADMIT_SETTING_APPROVAL) => "approval",
+        _ => "-",
+    };
+    let scope = if c.whole {
+        format!("whole, admits {admit}")
+    } else {
+        "tenant offers".into()
+    };
+    let auto = if c.auto_opt_in {
+        ", every tenant opted in"
+    } else {
+        ""
+    };
+    println!("  {:<24} {:<20} {}  ({scope}{auto})", c.id, c.name, c.api);
+    for t in &c.tenants {
+        let st = match t.status.as_known() {
+            Some(ClusterAdmission::CLUSTER_ADMISSION_ADMITTED) => "admitted".green().to_string(),
+            Some(ClusterAdmission::CLUSTER_ADMISSION_PENDING) => "pending".yellow().to_string(),
+            Some(ClusterAdmission::CLUSTER_ADMISSION_REFUSED) => "refused".red().to_string(),
+            _ => "-".into(),
+        };
+        println!("      {:<24} {st}", t.slug);
+    }
+}
+
+/// `directory clusters | trust-cluster | cluster-set | untrust-cluster`
+/// (spec/19-tenancy.md §12.6, D92, D94, D99): clusters of other
+/// organizations the directory trusts as a whole. The offer token is read
+/// from a file or a hidden prompt, never from the command line.
+async fn clusters(t: &crate::client::RpcTransport, cmd: &str, args: &[&str]) {
+    let svc = ClusterTrustServiceClient::new(t.clone(), t.config());
+    let on_off = |v: Option<&str>| match v {
+        Some("on" | "true" | "yes") => Ok(true),
+        Some("off" | "false" | "no") => Ok(false),
+        _ => Err(()),
+    };
+    match cmd {
+        "clusters" => match svc
+            .list_directory_clusters(ListDirectoryClustersRequest::default())
+            .await
+            .map(|r| r.into_owned())
+        {
+            Ok(r) if r.clusters.is_empty() => {
+                println!("  No clusters of other organizations trust this directory.")
+            }
+            Ok(r) => r.clusters.iter().for_each(print_cluster),
+            Err(e) => err(rpc_err(e)),
+        },
+        "trust-cluster" => {
+            let offer = match flag_value(args, "--offer-file") {
+                Some(p) => match std::fs::read_to_string(p) {
+                    Ok(v) => Zeroizing::new(v.trim().to_string()),
+                    Err(e) => return err(format!("{p}: {e}")),
+                },
+                None => Zeroizing::new(
+                    prompt_hidden("Directory offer (gxo_…, input hidden): ")
+                        .trim()
+                        .to_string(),
+                ),
+            };
+            if offer.is_empty() {
+                return err("no offer given");
+            }
+            match svc
+                .trust_cluster(TrustClusterRequest {
+                    offer: offer.to_string(),
+                    auto_opt_in: has_flag(args, "--auto-opt-in"),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    println!("  Trusted as a whole:");
+                    if let Some(c) = r.cluster.as_option() {
+                        print_cluster(c);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        "cluster-set" => {
+            let (Some(id), Ok(auto)) = (
+                args.first().filter(|a| !a.starts_with("--")),
+                on_off(flag_value(args, "--auto-opt-in")),
+            ) else {
+                return usage(CLUSTERS_USAGE);
+            };
+            match svc
+                .update_directory_cluster(UpdateDirectoryClusterRequest {
+                    cluster: id.to_string(),
+                    auto_opt_in: Some(auto),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    if let Some(c) = r.cluster.as_option() {
+                        print_cluster(c);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        _ => {
+            let Some(id) = args.first() else {
+                return usage(CLUSTERS_USAGE);
+            };
+            match svc
+                .untrust_cluster(UntrustClusterRequest {
+                    cluster: id.to_string(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => {
+                    println!("  Trust with {id} ended, for every tenant; the cluster was told.")
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
     }
 }

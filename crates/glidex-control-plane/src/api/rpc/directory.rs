@@ -276,6 +276,14 @@ impl ClusterTrustService for Svc {
         op_async!(self, ctx, req, cluster_trust::trust_cluster)
     }
 
+    async fn update_directory_cluster(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UpdateDirectoryClusterRequest>,
+    ) -> ServiceResult<UpdateDirectoryClusterResponse> {
+        op_async!(self, ctx, req, cluster_trust::update_directory_cluster)
+    }
+
     async fn untrust_cluster(
         &self,
         ctx: RequestContext,

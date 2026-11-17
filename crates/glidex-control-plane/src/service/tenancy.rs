@@ -1404,6 +1404,20 @@ fn tenant_cluster_pb(c: &crate::trust::TrustedCluster, tenant: &str) -> pb::Tena
         api: c.api.clone(),
         created_at: ts(c.created_at).into(),
         report: report.into(),
+        status: match c.status_of(tenant) {
+            Some(crate::trust::AdmissionStatus::Admitted) => {
+                pb::TenantClusterStatus::TENANT_CLUSTER_STATUS_ADMITTED
+            }
+            Some(crate::trust::AdmissionStatus::Pending) => {
+                pb::TenantClusterStatus::TENANT_CLUSTER_STATUS_PENDING
+            }
+            Some(crate::trust::AdmissionStatus::Refused) => {
+                pb::TenantClusterStatus::TENANT_CLUSTER_STATUS_REFUSED
+            }
+            None => pb::TenantClusterStatus::TENANT_CLUSTER_STATUS_AVAILABLE,
+        }
+        .into(),
+        whole: c.whole.is_some(),
         ..Default::default()
     }
 }
@@ -1419,10 +1433,12 @@ pub fn list_tenant_clusters(
         .trust
         .clusters(&t.directory_id)
         .map_err(trust_err)?;
+    // Those it opted in to, and with `available` those its directory
+    // trusts as a whole that it could opt in to (D93).
     Ok(pb::ListTenantClustersResponse {
         clusters: all
             .iter()
-            .filter(|c| c.tenants.contains(&t.id))
+            .filter(|c| c.status_of(&t.id).is_some() || (req.available && c.whole.is_some()))
             .map(|c| tenant_cluster_pb(c, &t.id))
             .collect(),
         ..Default::default()
@@ -1492,6 +1508,17 @@ pub async fn opt_in_cluster(
     let t = visible(call, &req.id)?;
     call.require(Ent::Tenant(t.id.clone()), EntitySet::new())?;
     let dir = t.directory_id.clone();
+    match (req.offer.is_empty(), req.cluster.is_empty()) {
+        (true, false) => return opt_in_without_offer(call, &t, &req.cluster).await,
+        (false, true) => {}
+        _ => {
+            return Err(ServiceError::new(
+                StatusCode::BAD_REQUEST,
+                "invalid",
+                "give an offer token, or a cluster the directory trusts as a whole",
+            ));
+        }
+    }
     let (token, answer) = redeem_offer(call, &dir, &req.offer, Some(&t)).await?;
     let mut c = cluster_record(call, &dir, &token, &answer)?;
     if !c.tenants.contains(&t.id) {
@@ -1500,6 +1527,50 @@ pub async fn opt_in_cluster(
     call.auth().trust.put_cluster(&c).map_err(trust_err)?;
     call.set_target(format!("tenant:{}", t.id));
     call.detail("cluster", serde_json::json!(c.cluster_id));
+    Ok(pb::OptInClusterResponse {
+        cluster: tenant_cluster_pb(&c, &t.id).into(),
+        ..Default::default()
+    })
+}
+
+/// Tenant `t` opts in to cluster `cluster`, which its directory trusts as
+/// a whole, with no offer (D93): a signed admit, answered `admitted` or
+/// `pending`. A refusal is recorded as such, and the tenant may ask
+/// again (D97).
+async fn opt_in_without_offer(
+    call: &Call,
+    t: &tenants::Tenant,
+    cluster: &str,
+) -> ServiceResult<pb::OptInClusterResponse> {
+    let dir = t.directory_id.clone();
+    let mut c = call
+        .auth()
+        .trust
+        .cluster(&dir, cluster)
+        .map_err(trust_err)?
+        .filter(|c| c.whole.is_some())
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "the directory doesn't trust that cluster as a whole: ask its operator for an offer",
+            )
+        })?;
+    let admission = crate::api::trust::ask_admission(&call.app, t, &mut c)
+        .await
+        .map_err(|e| ServiceError::new(StatusCode::BAD_GATEWAY, "cluster_unreachable", e))?;
+    c.set_status(&t.id, admission);
+    call.auth().trust.put_cluster(&c).map_err(trust_err)?;
+    call.set_target(format!("tenant:{}", t.id));
+    call.detail("cluster", serde_json::json!(c.cluster_id));
+    call.detail("status", serde_json::json!(admission));
+    if admission == crate::trust::AdmissionStatus::Refused {
+        return Err(ServiceError::new(
+            StatusCode::FORBIDDEN,
+            "opt_in_refused",
+            "the cluster refused the opt-in: ask its operator",
+        ));
+    }
     Ok(pb::OptInClusterResponse {
         cluster: tenant_cluster_pb(&c, &t.id).into(),
         ..Default::default()
@@ -1631,6 +1702,8 @@ pub(crate) fn cluster_record(
             ui_callback: None,
             report: None,
             whole: None,
+            waiting: Default::default(),
+            auto_opt_in: false,
         });
     c.api = token.api.clone();
     c.ui_callback = answer["ui_callback"]
@@ -1658,7 +1731,7 @@ pub async fn opt_out_cluster(
         .trust
         .cluster(&dir, &req.cluster)
         .map_err(trust_err)?
-        .filter(|c| c.tenants.contains(&t.id))
+        .filter(|c| c.status_of(&t.id).is_some())
         .ok_or_else(|| {
             ServiceError::new(
                 StatusCode::NOT_FOUND,
@@ -1666,8 +1739,8 @@ pub async fn opt_out_cluster(
                 "the tenant doesn't use that cluster",
             )
         })?;
-    c.tenants.retain(|x| *x != t.id);
-    if c.tenants.is_empty() && c.ends_with_its_tenants() {
+    c.forget(&t.id);
+    if c.no_tenants() && c.ends_with_its_tenants() {
         call.auth()
             .trust
             .remove_cluster(&dir, &c.cluster_id)

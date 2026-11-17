@@ -9,10 +9,10 @@ use serde_json::Value;
 use std::sync::Arc;
 
 pub use glidex_trust::{
-    AdmitSetting, END, EndedChains, FEED, FEED_TABLES, FeedState, LOGIN_SECS, LOGOUT, OFFER_DAYS,
-    OFFER_MAX_DAYS, OFFER_PREFIX, OfferScope, OfferToken, PendingLogin, PendingLogins, REDEEM,
-    REPORT, RemoteTenant, Row, Snapshot, TrustedDirectory, normalize_issuer, revision_of,
-    trusted_id,
+    ADMIT, ADMIT_PATH, AdmissionStatus, AdmitAnswer, AdmitSetting, END, EndedChains, FEED,
+    FEED_TABLES, FeedState, LOGIN_SECS, LOGOUT, OFFER_DAYS, OFFER_MAX_DAYS, OFFER_PREFIX,
+    OfferScope, OfferToken, PendingLogin, PendingLogins, REDEEM, REPORT, RemoteTenant, Row,
+    Snapshot, TrustedDirectory, normalize_issuer, promote_pin, revision_of, trusted_id,
 };
 
 const TRUSTED_DIRECTORIES: TableDefinition<&str, &[u8]> =
@@ -72,13 +72,53 @@ pub struct TrustedCluster {
     /// when its last tenant leaves (D94).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub whole: Option<glidex_trust::AdmitSetting>,
+    /// Tenants opted in but not admitted (D93): pending, or refused, by
+    /// tenant id. `tenants` holds only admitted ones, so the feed, tokens
+    /// and sessions reach only those.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub waiting: std::collections::BTreeMap<String, glidex_trust::AdmissionStatus>,
+    /// For a cluster trusted as a whole: the directory opts each of its
+    /// tenants in by itself, new ones too (D99), as the owner chose.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub auto_opt_in: bool,
 }
 
 impl TrustedCluster {
-    /// Whether the record goes once `tenants` is empty: one made only by
+    /// Where tenant `id`'s opt-in stands: `None` if it has none (D93).
+    pub fn status_of(&self, id: &str) -> Option<glidex_trust::AdmissionStatus> {
+        if self.tenants.iter().any(|t| t == id) {
+            Some(glidex_trust::AdmissionStatus::Admitted)
+        } else {
+            self.waiting.get(id).copied()
+        }
+    }
+
+    /// Tenant `id`'s opt-in now stands at `status`, as the cluster said.
+    pub fn set_status(&mut self, id: &str, status: glidex_trust::AdmissionStatus) {
+        self.tenants.retain(|t| t != id);
+        self.waiting.remove(id);
+        if status.is_admitted() {
+            self.tenants.push(id.to_string());
+        } else {
+            self.waiting.insert(id.to_string(), status);
+        }
+    }
+
+    /// Tenant `id` has no opt-in here any more.
+    pub fn forget(&mut self, id: &str) {
+        self.tenants.retain(|t| t != id);
+        self.waiting.remove(id);
+    }
+
+    /// Whether the record goes once no tenant is left: one made only by
     /// tenant offers (D66); a directory-wide one stays (D94).
     pub fn ends_with_its_tenants(&self) -> bool {
         self.whole.is_none()
+    }
+
+    /// No tenant admitted, pending or refused.
+    pub fn no_tenants(&self) -> bool {
+        self.tenants.is_empty() && self.waiting.is_empty()
     }
 
     /// The pins its certificate may have (D88).
@@ -104,6 +144,12 @@ pub struct TenantReport {
     /// Admitted, or suspended (D9).
     #[serde(default)]
     pub suspended: bool,
+    /// Where its opt-in stands (D93); admitted when left out.
+    #[serde(
+        default,
+        skip_serializing_if = "glidex_trust::AdmissionStatus::is_admitted"
+    )]
+    pub admission: glidex_trust::AdmissionStatus,
     #[serde(default)]
     pub cap: crate::tenancy::Quotas,
     #[serde(default)]

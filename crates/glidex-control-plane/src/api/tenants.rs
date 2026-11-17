@@ -319,22 +319,35 @@ pub async fn revoke_offer(c: Caller, Path(id): Path<String>) -> Result<StatusCod
 
 // ---- trust (spec/19-tenancy.md D65) ---------------------------------------------
 
+#[derive(Deserialize)]
+pub struct ListClusters {
+    #[serde(default)]
+    available: bool,
+}
+
+/// `GET /tenants/{id}/clusters[?available=true]`.
 pub async fn list_tenant_clusters(
     c: Caller,
     Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<ListClusters>,
 ) -> Result<Json<pb::ListTenantClustersResponse>, ApiErr> {
     Ok(Json(svc::list_tenant_clusters(
         &c,
         pb::ListTenantClustersRequest {
             id,
+            available: q.available,
             ..Default::default()
         },
     )?))
 }
 
+/// An offer token, or a cluster the directory trusts as a whole (D93).
 #[derive(Deserialize)]
 pub struct OptIn {
+    #[serde(default)]
     offer: String,
+    #[serde(default)]
+    cluster: String,
 }
 
 pub async fn opt_in_cluster(
@@ -347,6 +360,7 @@ pub async fn opt_in_cluster(
         pb::OptInClusterRequest {
             id,
             offer: b.offer,
+            cluster: b.cluster,
             ..Default::default()
         },
     )
