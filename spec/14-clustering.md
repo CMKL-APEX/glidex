@@ -106,6 +106,7 @@ Non-goals for this revision (each in §18):
 | D34 | **A node's cluster address (`status.advertise`) is written only by the servers**, when the node joins, rejoins or is imported. A node's own status write may not change it, just as it may not change `phase`, `departed_ids` or `raft_id`. To change an address, the node rejoins. | Servers and other nodes dial a node at this address on behalf of users, so it is part of the node's identity, not a report from the node. No agent path changes it today. |
 | D35 | **A connection to a known node checks that node's identity**, not just the CA. When a server or agent dials a node it knows by id (relayed host actions, consoles and stats, image copies), the client requires the peer certificate's node id (its CN) to be that id, and refuses another node's certificate even when the address and the CA match. Dialling a seed address or a server whose id isn't known yet (join, the agent's server list) checks only the role. A relayed host request also names its target node in a header, and the receiver refuses one that names another node. | An address can move or be reused (DHCP, a rebuilt host, a mistaken `advertise`), and an IP SAN proves only that the CA signed that address for some node. The host action's authorization is for one node, so the node that runs it has to be that node. The header is a second check on the receiver's side, so it doesn't depend on every client path using the pinned dial. |
 | D36 | **A node certificate names only the node's own address, and a dial to "a server" takes only a server's certificate.** The CA signs a CSR only if every address it names is the node's: its `advertise` address at first server, join, rejoin and import, and the address the cluster records for it at renewal. A CSR naming another address or a DNS name is refused. A dial to an address that should be a server's, whichever one (the leader, a seed, the agent's server list, Raft), requires a server certificate (`OU=server`); a dial to a known node checks its id (D35). | An IP SAN is what a client checks when it doesn't know which node to expect, so it has to mean this node's address. A node's address changes only through rejoin (D34), which records the new one before the certificate is signed. D35 left the unpinned dials with the CA check alone; the role check closes that gap for the dials that only servers should answer. |
+| D37 | **A node at a new address rejoins with it, an agent too.** On an agent, whose API socket serves nobody (the cluster records no Unix user of another host), root may make one request: the rejoin (`gxctl cluster rejoin`, `glidex-install --rejoin`), run as the system principal and never forwarded. A rejoin's tunnel address is the one given (`--tunnel-ip`); else one the node had set apart from its cluster address, kept; else the new cluster address, so the OVN tunnel moves with the node. A join or rejoin is refused (`address_taken`) when its cluster address, or its tunnel address unless loopback, is another live node's. | D34 made rejoin the way to change an address, but an agent could not ask: its socket refused root's login like any other. The rejoin token, single-use and bound to one node, is what the cluster checks; root on the host could always send the same request to a server's cluster port itself, so letting glidex's own tools send it adds no power. What a host with a token could still do is name another node's address: D35 keeps cluster dials from reaching the wrong node, but OVN would send that node's tunnel traffic here, hence the check. A tunnel left at the old address after a move breaks the node's cluster networks without a word, so it follows unless set on its own. |
 
 ## 4. Topology
 
@@ -367,7 +368,8 @@ imported.
    re-placed elsewhere (12-reconciliation.md D8).
 2. On the host: `glidex-install --rejoin https://<server>:8842`, token
    from stdin or a file. The node gets a **new certificate for the same
-   node id**; the old serial stays deny-listed.
+   node id**; the old serial stays deny-listed. On an agent, root's
+   rejoin is the one request its own API socket takes (D37).
 3. The node re-lists, adopts the VMs and disks it finds on the host
    (12-reconciliation.md §9.4), and reports files with no record as orphans
    without deleting them (10-images.md §2). `Lost` VMs become normal again;
@@ -385,6 +387,12 @@ way: a server whose NB or SB database file is lost is kicked
 restarted with an empty file. If the node's advertise or tunnel address
 changed, the leader updates the Raft member address, the chassis
 encapsulation IP and `gx_nodes` in the same change.
+
+**A new address (D34, D37).** A node whose host moved rejoins with
+`--advertise <new ip:8842>`; the tunnel address follows it unless it was
+set apart (`--tunnel-ip` sets it). The certificate is signed for the new
+address only (D36). A cluster or tunnel address another live node holds
+is refused.
 
 ### 5.8 Leaving with resources (detach)
 
@@ -2341,7 +2349,7 @@ the commit. A further gain would come from there, not the apply.
 
 ### C11: peer identity
 
-Built: tasks 1–5. Decisions D33–D36.
+Built: tasks 1–6. Decisions D33–D37.
 
 | | |
 |---|---|
@@ -2355,7 +2363,9 @@ Built: tasks 1–5. Decisions D33–D36.
 | Tests | `a_relayed_host_request_runs_only_on_the_node_it_names`: the agent refuses a host request naming another node, and doesn't refuse one naming itself. Relayed host actions in the other cluster tests carry the header |
 | Spec \| Code | Task 5 (D36): `Ca::sign_node` takes the addresses the node may name and refuses a CSR naming any other, or a DNS name: `advertise` at first server, join, rejoin and import; the recorded `status.advertise` at renewal. `Target::server(addr)` requires `OU=server` in the peer certificate: the leader (writes, forwarding, read-index, console tickets, the UI gate, departure and import calls), seeds and the agent's server list, join and rejoin, and Raft's RPCs. CA rotation and the hand-over of the CA key to a new server dial the node by id (D35) |
 | Tests | `cluster::pki::tests::a_node_cert_names_only_the_nodes_own_address`: its own address is signed and named; another node's address, alone or beside its own, and a DNS name are refused. `a_request_to_a_known_node_checks_its_certificate`: a dial for a server is answered by the server and refused at the agent's address |
-| Not yet | Refusing a relayed host request without the header, once every server sends it (the next feature level) |
+| Spec \| Code | Task 6 (D37, glidex#551): `api::authenticate` gives root (peer uid 0) on an agent's API socket the system principal for `gate::agent_root_route` (`/cluster/rejoin` and `ClusterService/RejoinCluster`) only; every other request is still `agent_no_local_api`. Both routes are host-local in the gate, so a server never forwards its own rejoin. `manage::rejoin_tunnel_ip` picks the rejoin's tunnel address. `cluster::server::address_taken` refuses a join or rejoin naming another live node's cluster address, or its tunnel address unless loopback (`409 address_taken` on rejoin). `glidex-install` passes `--tunnel-ip` with `--join` and `--rejoin` |
+| Tests | `an_agent_rejoins_at_a_new_address`: on the agent's socket, root's rejoin gets past the login (and is refused for its bad address), root's `cluster status` and a non-root rejoin are `agent_no_local_api`; the agent then rejoins at 127.0.0.2 with no `--tunnel-ip`, keeps its node id, and the server records the new advertise and tunnel addresses and sees it ready. `manage::tests::a_rejoin_moves_the_tunnel_with_the_cluster_address`, `server::tests::a_node_may_not_take_another_nodes_address`, glidex-install's `a_rejoin_takes_a_new_address` |
+| Not yet | Refusing a relayed host request without the header, once every server sends it (the next feature level). D37 on real hosts: an agent moved to a new address, with its OVN tunnel (not run yet) |
 
 ### Validation against real OVN and conntrack (after C8)
 

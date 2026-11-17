@@ -1928,6 +1928,13 @@ async fn authenticate(State(app): State<AppState>, mut req: Request, next: Next)
     } else {
         let resolved = match listener {
             Listener::Api => match req.extensions().get::<PeerUid>() {
+                // D37: an agent records no users, but its root may still rejoin it.
+                Some(PeerUid(0))
+                    if app.manager.node_link().is_some()
+                        && gate::agent_root_route(req.uri().path()) =>
+                {
+                    Ok(Some(Principal::system()))
+                }
                 Some(PeerUid(uid)) => match app.auth.peer_principal(*uid) {
                     Ok(Some(p)) => Ok(Some(p)),
                     Ok(None) => {
