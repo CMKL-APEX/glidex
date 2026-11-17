@@ -1,0 +1,23 @@
+[Unit]
+Description=glidex DPU agent (OVS-DOCA ports and virtio-net VFs for the host's netd)
+Documentation=https://github.com/CMKL-APEX/glidex/blob/main/spec/31-dpu.md
+# Runs on the BlueField DPU, not on the host. It drives OVS-DOCA and the
+# virtio-net controller, so both must be up first.
+Wants=network-online.target openvswitch-switch.service virtio-net-controller.service
+After=network-online.target openvswitch-switch.service virtio-net-controller.service
+
+[Service]
+Type=simple
+# /etc/glidex/dpu-agent.json (root:root 0600): the management link's
+# address and port to listen on (never a wildcard), the channel's CA, the
+# agent's certificate and key, and the CN of the host's netd, the only
+# client it accepts (spec/31-dpu.md §10.2).
+ExecStart=/usr/local/bin/glidex-dpu-agent --config /etc/glidex/dpu-agent.json
+Restart=on-failure
+RestartSec=2
+# The agent keeps no state of its own: tagged OVSDB rows are the record.
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

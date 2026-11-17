@@ -26,8 +26,21 @@ fn fixture(name: &str) -> String {
     .unwrap()
 }
 
-/// The test DPU, prepared, with VF 0 there (fixture `one-vf`).
+/// A tagged VM port on the DPU, as `ovs-vsctl find` prints it.
+fn tagged(name: &str, vm: &str, nic: u8) -> String {
+    format!(
+        r#"["{name}",["map",[["glidex-nic","{nic}"],["glidex-owner","glidex"],["glidex-role","vm"],["glidex-vm-id","{vm}"]]]]"#
+    )
+}
+
+/// The test DPU, prepared, with VF 0 there (fixture `one-vf`) and VM's
+/// NIC 0 on its `br-int`.
 fn dpu_exec() -> Arc<glidex_dpu::RecordingExec> {
+    dpu_exec_with(&[tagged("en3f0pf0sf3000", VM, 0)])
+}
+
+/// The same with `ports` as the tagged ports on the DPU.
+fn dpu_exec_with(ports: &[String]) -> Arc<glidex_dpu::RecordingExec> {
     use glidex_dpu::Output;
     let exec = Arc::new(glidex_dpu::RecordingExec::new());
     for (name, cmd) in glidex_dpu::probe::probe_cmds(glidex_dpu::probe::DEFAULT_MST_DEVICE) {
@@ -54,7 +67,8 @@ fn dpu_exec() -> Arc<glidex_dpu::RecordingExec> {
     exec.on(
         "ovs-vsctl --format=json --columns=name,external_ids find Interface",
         Output::ok(format!(
-            r#"{{"data":[["en3f0pf0sf3000",["map",[["glidex-nic","0"],["glidex-owner","glidex"],["glidex-role","vm"],["glidex-vm-id","{VM}"]]]]],"headings":["name","external_ids"]}}"#
+            r#"{{"data":[{}],"headings":["name","external_ids"]}}"#,
+            ports.join(",")
         )),
     );
     exec
@@ -384,4 +398,80 @@ fn an_invalid_dpu_json_stops_netd() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
+}
+
+#[test]
+fn start_restores_missing_dpu_ports_and_reports_untracked_ones() {
+    let dir = TempDir::new().unwrap();
+    {
+        let netd = netd(host_exec(2), healthy(), &dir);
+        attach(&netd, spec(0, PortBackend::Dpu)).unwrap();
+    }
+    // The DPU was reset: NIC 0's representor is gone, and a port of a
+    // VM netd doesn't know is there.
+    const OTHER: &str = "9a2b3c4d-5e6f-4a1b-9c2d-0123456789ab";
+    let dpu = dpu_exec_with(&[tagged("en3f0pf0sf3001", OTHER, 0)]);
+    let netd2 = netd(host_exec(2), Arc::new(Agent::new(dpu.clone())), &dir);
+    let report = netd2.reconcile_startup();
+    assert!(
+        report
+            .repaired
+            .contains(&"PortRestored en3f0pf0sf3000".to_string()),
+        "{report:?}"
+    );
+    assert_eq!(report.orphans, ["DPU port en3f0pf0sf3001"]);
+    let calls = dpu.calls();
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.starts_with("virtnet modify -p 0 -v 0")),
+        "{calls:?}"
+    );
+    assert!(
+        calls
+            .iter()
+            .any(|c| c.contains("add-port br-int en3f0pf0sf3000"))
+    );
+    assert!(
+        !calls.iter().any(|c| c.contains("del-port")),
+        "an untracked port is never deleted"
+    );
+    drop(netd2);
+
+    // Nothing missing: nothing done.
+    let dpu = dpu_exec();
+    let netd3 = netd(host_exec(2), Arc::new(Agent::new(dpu.clone())), &dir);
+    let report = netd3.reconcile_startup();
+    assert!(
+        !report
+            .repaired
+            .iter()
+            .any(|r| r.starts_with("PortRestored"))
+    );
+    assert!(report.orphans.is_empty(), "{report:?}");
+    assert!(!dpu.calls().iter().any(|c| c.starts_with("virtnet modify")));
+    drop(netd3);
+
+    // The agent down: an error, no change.
+    let netd4 = netd(host_exec(2), Arc::new(Down), &dir);
+    let report = netd4.reconcile_startup();
+    assert!(
+        report
+            .errors
+            .iter()
+            .any(|e| e.starts_with("DPU ports not reconciled")),
+        "{report:?}"
+    );
+}
+
+#[test]
+fn the_packaged_example_dpu_json_parses() {
+    let text = std::fs::read(format!(
+        "{}/../../packaging/dpu.json.example",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let d = dpu::parse(&text).unwrap();
+    assert_eq!(d.id, "dpu0");
+    assert_eq!(d.link.unwrap().iface, "tmfifo_net0");
 }
