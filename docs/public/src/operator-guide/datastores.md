@@ -687,6 +687,12 @@ count the same free space.
   that another node's `hyperstor-vhost` left behind (see above); a hold
   of a disk operation is waited for.
 - **Metering** reports the disks' size, not the space they use.
+- **Projects.** Each disk's volume names its glidex project, and
+  hyperstor puts it in the project linked to it, when the project's
+  tenant has opted in to the hyperstor cluster. A disk of a tenant that
+  hasn't lands in hyperstor's `default` project instead (a warning is
+  logged), so glidex's identity there must be bound to `default`, as its
+  image volumes already need.
 
 ### Deleting
 
