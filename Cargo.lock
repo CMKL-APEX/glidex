@@ -1510,6 +1510,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-dpu"
+version = "0.0.9-dev"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "glidex-e2e"
 version = "0.0.9-dev"
 dependencies = [
