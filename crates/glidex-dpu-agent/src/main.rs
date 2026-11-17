@@ -20,6 +20,12 @@ struct Config {
     client_identity: String,
     #[serde(default)]
     mst_device: Option<String>,
+    /// Where the chassis key and certificates live (0700).
+    #[serde(default)]
+    ovn_dir: Option<PathBuf>,
+    /// The DPU's underlay address, when netd's `dpu.json` gives none.
+    #[serde(default)]
+    encap_ip: Option<std::net::IpAddr>,
 }
 
 fn main() {
@@ -52,6 +58,10 @@ fn main() {
     if let Some(d) = config.mst_device {
         agent.mst_device = d;
     }
+    if let Some(d) = config.ovn_dir {
+        agent.chassis.dir = d;
+    }
+    agent.chassis.encap_ip = config.encap_ip;
     let listener = std::net::TcpListener::bind(config.listen)
         .unwrap_or_else(|e| fail(format!("{}: {e}", config.listen)));
     tracing::info!(listen = %config.listen, "glidex-dpu-agent serving");

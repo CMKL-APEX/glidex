@@ -44,6 +44,24 @@ pub enum AgentOp {
         vm_id: String,
         nic: u8,
     },
+    /// §8.3: a CSR for the chassis from the key the DPU holds (made on
+    /// first use); the key itself never leaves the DPU.
+    Csr {
+        chassis: String,
+    },
+    /// §8.3: the certificate the leader signed and the cluster CA.
+    InstallCert {
+        cert_pem: String,
+        ca_pem: String,
+    },
+    /// §8.3: the chassis settings, `br-int` and the DPU's `ovn-controller`.
+    Chassis(crate::chassis::ChassisArgs),
+    /// The chassis's state.
+    OvnStatus {
+        br_int: String,
+    },
+    /// Stop being a chassis.
+    LeaveOvn,
 }
 
 impl AgentOp {
@@ -54,6 +72,11 @@ impl AgentOp {
             AgentOp::ListPorts => "list_ports",
             AgentOp::AttachRep { .. } => "attach_rep",
             AgentOp::DetachRep { .. } => "detach_rep",
+            AgentOp::Csr { .. } => "csr",
+            AgentOp::InstallCert { .. } => "install_cert",
+            AgentOp::Chassis(_) => "chassis",
+            AgentOp::OvnStatus { .. } => "ovn_status",
+            AgentOp::LeaveOvn => "leave_ovn",
         }
     }
 }

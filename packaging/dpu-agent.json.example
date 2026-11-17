@@ -3,5 +3,6 @@
   "ca": "/etc/glidex/dpu-agent/ca.pem",
   "cert": "/etc/glidex/dpu-agent/agent.pem",
   "key": "/etc/glidex/dpu-agent/agent.key",
-  "client_identity": "glidex-netd"
+  "client_identity": "glidex-netd",
+  "ovn_dir": "/etc/glidex/dpu-agent/ovn"
 }

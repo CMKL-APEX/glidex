@@ -3,6 +3,7 @@
 //! whose certificate it accepts; it has no OVN central program and no
 //! state of its own.
 
+pub mod chassis;
 pub mod client;
 pub mod proto;
 pub mod server;

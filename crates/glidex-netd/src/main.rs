@@ -340,7 +340,11 @@ fn main() {
     };
     let netd = match Netd::new(exec, Arc::new(DnsmasqSupervisor::new()), config.clone()) {
         Ok(n) => match dpu {
-            Some(d) => Arc::new(n.with_dpu(Arc::new(dpu_backend(d)))),
+            Some(d) => {
+                // One backend for both: the ports (§7) and the chassis (§8.3).
+                let backend = Arc::new(dpu_backend(d));
+                Arc::new(n.with_dpu(backend.clone()).with_dpu_chassis(backend))
+            }
             None => Arc::new(n),
         },
         Err(e) => {
