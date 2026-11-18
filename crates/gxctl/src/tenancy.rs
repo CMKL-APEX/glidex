@@ -849,38 +849,157 @@ async fn auto_admission(svc: &AdmissionServiceClient<RpcTransport>, args: &[&str
 }
 
 pub async fn admission(client: &ApiClient, args: &[&str]) {
-    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer <tenant> --directory ISSUER [--days N] | offers | revoke-offer <id> | directories | staleness <directory> <minutes|default> | auto [...]";
+    let u = "Usage: admission list | set <tenant> [key=value... | unlimited] [--suspend | --resume] | remove <tenant> | offer [<tenant>] --directory ISSUER [--admit open|approval] [--cap key=value,...] [--days N] | offers | revoke-offer <id> | directories | directory <directory> [--admit open|approval] [--cap key=value,...] | approve <directory> <tenant> | reject <directory> <tenant> | untrust <directory> [--yes] | staleness <directory> <minutes|default> | auto [...]";
     let Some(t) = transport(client).await else {
         return;
     };
     let svc = AdmissionServiceClient::new(t.clone(), t.config());
     match args.first().copied().unwrap_or("list") {
         "auto" => auto_admission(&svc, &args[1..]).await,
-        // An admission for a tenant of another directory (spec/19-tenancy.md D64).
+        // An admission for a tenant of another directory (spec/19-tenancy.md
+        // D64), or with no tenant, trust in the whole directory (D96).
         "offer" => {
-            let (Some(tenant), Some(directory)) =
-                (args.get(1), crate::flag_value(args, "--directory"))
-            else {
+            let tenant = args.get(1).filter(|a| !a.starts_with("--")).copied();
+            let Some(directory) = crate::flag_value(args, "--directory") else {
                 return usage(u);
             };
+            let admit = match crate::flag_value(args, "--admit") {
+                None => AdmitSetting::ADMIT_SETTING_UNSPECIFIED,
+                Some("open") => AdmitSetting::ADMIT_SETTING_OPEN,
+                Some("approval") => AdmitSetting::ADMIT_SETTING_APPROVAL,
+                Some(_) => return usage(u),
+            };
+            let cap = match cap_flag(args) {
+                Ok(c) => c,
+                Err(e) => return err(e),
+            };
             let req = OfferAdmissionRequest {
-                tenant: tenant.to_string(),
+                tenant: tenant.unwrap_or_default().to_string(),
                 directory: directory.to_string(),
                 days: crate::flag_value(args, "--days").and_then(|d| d.parse().ok()),
+                admit: admit.into(),
+                cap: cap.into(),
                 ..Default::default()
             };
             match svc.offer_admission(req).await.map(|r| r.into_owned()) {
                 Ok(r) => {
-                    println!(
-                        "  Offer for tenant {} of {}; send this token to its administrator (shown once):",
-                        tenant.cyan(),
-                        directory
-                    );
+                    match tenant {
+                        Some(tenant) => println!(
+                            "  Offer for tenant {} of {}; send this token to its administrator (shown once):",
+                            tenant.cyan(),
+                            directory
+                        ),
+                        None => println!(
+                            "  Offer of trust in the whole directory {}; send this token to its owner (shown once):",
+                            directory.cyan()
+                        ),
+                    }
                     println!("    {}", r.token.yellow());
-                    println!(
-                        "  They redeem it at their directory: gxctl tenant opt-in <tenant> --offer <token>"
-                    );
+                    match tenant {
+                        Some(_) => println!(
+                            "  They redeem it at their directory: gxctl tenant opt-in <tenant> --offer <token>"
+                        ),
+                        None => println!(
+                            "  They redeem it at their directory: gxctl directory trust-cluster --offer-file <file>"
+                        ),
+                    }
                 }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        // A directory trusted as a whole: its setting and default cap (D96).
+        "directory" => {
+            let Some(id) = args.get(1).filter(|a| !a.starts_with("--")) else {
+                return usage(u);
+            };
+            let admit = match crate::flag_value(args, "--admit") {
+                None => AdmitSetting::ADMIT_SETTING_UNSPECIFIED,
+                Some("open") => AdmitSetting::ADMIT_SETTING_OPEN,
+                Some("approval") => AdmitSetting::ADMIT_SETTING_APPROVAL,
+                Some(_) => return usage(u),
+            };
+            let cap = match cap_flag(args) {
+                Ok(c) => c,
+                Err(e) => return err(e),
+            };
+            match svc
+                .set_directory_admission(SetDirectoryAdmissionRequest {
+                    id: id.to_string(),
+                    admit: admit.into(),
+                    cap: cap.into(),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned())
+            {
+                Ok(r) => {
+                    if let Some(d) = r.directory.as_option() {
+                        print_trusted_directory(d);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        // A pending opt-in decided (D96).
+        verb @ ("approve" | "reject") => {
+            let (Some(id), Some(tenant)) = (args.get(1), args.get(2)) else {
+                return usage(u);
+            };
+            let (id, tenant) = (id.to_string(), tenant.to_string());
+            let r = if verb == "approve" {
+                svc.approve_opt_in(ApproveOptInRequest {
+                    id,
+                    tenant: tenant.clone(),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned().directory)
+            } else {
+                svc.reject_opt_in(RejectOptInRequest {
+                    id,
+                    tenant: tenant.clone(),
+                    ..Default::default()
+                })
+                .await
+                .map(|r| r.into_owned().directory)
+            };
+            match r {
+                Ok(d) => {
+                    let done = if verb == "approve" {
+                        "admitted"
+                    } else {
+                        "refused"
+                    };
+                    println!("  {} {done}", tenant.cyan());
+                    if let Some(d) = d.as_option() {
+                        print_trusted_directory(d);
+                    }
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
+        // Ending a directory's trust as a whole (D94).
+        "untrust" => {
+            let Some(id) = args.get(1) else {
+                return usage(u);
+            };
+            if !has_flag(args, "--yes")
+                && prompt(&format!(
+                    "End the trust in {id}? Every tenant of it leaves this cluster [y/N]: "
+                ))
+                .to_lowercase()
+                    != "y"
+            {
+                return println!("Cancelled");
+            }
+            match svc
+                .untrust_directory(UntrustDirectoryRequest {
+                    id: id.to_string(),
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(_) => println!("  {id} is no longer trusted; its tenants left."),
                 Err(e) => err(rpc_err(e)),
             }
         }
@@ -1067,15 +1186,47 @@ pub async fn admission(client: &ApiClient, args: &[&str]) {
     }
 }
 
-/// A trusted directory: its tenants, and how fresh its replica is here.
+/// `--cap key=value,...`, if given.
+fn cap_flag(args: &[&str]) -> Result<Option<Quotas>, String> {
+    match crate::flag_value(args, "--cap") {
+        None => Ok(None),
+        Some(c) => parse_cap(&c.split(',').map(str::trim).collect::<Vec<_>>()),
+    }
+}
+
+/// A trusted directory: its tenants, how it is trusted, and how fresh its
+/// replica is here.
 fn print_trusted_directory(d: &TrustedDirectory) {
-    let tenants: Vec<_> = d.tenants.iter().map(|t| t.slug.as_str()).collect();
+    let slugs = |ts: &[RemoteTenant]| {
+        ts.iter()
+            .map(|t| t.slug.clone())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
     println!(
         "  {}  {}  tenants: {}",
         d.id,
         d.issuer.cyan(),
-        tenants.join(", ")
+        slugs(&d.tenants)
     );
+    if d.whole {
+        let admit = match d.admit.as_known() {
+            Some(AdmitSetting::ADMIT_SETTING_APPROVAL) => "approval",
+            _ => "open",
+        };
+        println!(
+            "      trusted as a whole: opt-ins {admit}, default cap {}",
+            cap_line(d.default_cap.as_option())
+        );
+        if !d.pending.is_empty() {
+            println!("      {} {}", "pending:".yellow(), slugs(&d.pending));
+        }
+        if !d.refused.is_empty() {
+            println!("      refused: {}", slugs(&d.refused));
+        }
+    } else {
+        println!("      trusted for the tenants offered");
+    }
     let limit = format!(
         "{} min{}",
         d.effective_max_staleness_minutes,

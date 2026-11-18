@@ -20,6 +20,7 @@ export function TrustedDirectoriesCard({ manage }: { manage: boolean }) {
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState<api.TrustedDirectory | null>(null);
   const [minutes, setMinutes] = useState("");
+  const [ending, setEnding] = useState<api.TrustedDirectory | null>(null);
 
   const refresh = useCallback(() => {
     api
@@ -36,6 +37,17 @@ export function TrustedDirectoriesCard({ manage }: { manage: boolean }) {
     try {
       await api.setTrustedDirectory(editing.id ?? "", minutes.trim() ? Number(minutes) : undefined);
       setEditing(null);
+      refresh();
+    } catch (err) {
+      setError(errorMessage(err));
+    }
+  };
+
+  // A pending opt-in decided (D96): the directory hears at once.
+  const decide = async (d: api.TrustedDirectory, tenant: string, approve: boolean) => {
+    setError(null);
+    try {
+      await (approve ? api.approveOptIn : api.rejectOptIn)(d.id ?? "", tenant);
       refresh();
     } catch (err) {
       setError(errorMessage(err));
@@ -68,7 +80,31 @@ export function TrustedDirectoriesCard({ manage }: { manage: boolean }) {
                     <div className="font-mono text-xs break-all">{d.issuer}</div>
                     <div className="text-xs text-gray-500 font-mono">{d.id}</div>
                   </td>
-                  <td className="py-1.5 pr-3">{(d.tenants ?? []).map((t) => t.display_name || t.slug).join(", ") || "—"}</td>
+                  <td className="py-1.5 pr-3">
+                    <div>{(d.tenants ?? []).map((t) => t.display_name || t.slug).join(", ") || "—"}</div>
+                    {d.whole && (
+                      <div className="text-xs text-gray-500">
+                        Trusted as a whole: opt-ins {d.admit === "ADMIT_SETTING_APPROVAL" ? "need approval" : "admitted at once"}
+                        {(d.refused ?? []).length > 0 && <> · refused: {(d.refused ?? []).map((t) => t.slug).join(", ")}</>}
+                      </div>
+                    )}
+                    {(d.pending ?? []).map((t) => (
+                      <div key={t.id} className="mt-1 flex items-center gap-2" data-testid="pending-opt-in">
+                        <Badge kind="warn">pending</Badge>
+                        <span>{t.display_name || t.slug}</span>
+                        {manage && (
+                          <>
+                            <button type="button" className="text-sm text-sky-700 hover:underline" onClick={() => decide(d, t.id ?? "", true)}>
+                              Approve
+                            </button>
+                            <button type="button" className={dangerLink} onClick={() => decide(d, t.id ?? "", false)}>
+                              Refuse
+                            </button>
+                          </>
+                        )}
+                      </div>
+                    ))}
+                  </td>
                   <td className="py-1.5 pr-3">
                     {d.last_sync ? `${age(Number(d.lag_seconds ?? 0))} ago` : "not yet"}
                     {d.stale && (
@@ -93,6 +129,9 @@ export function TrustedDirectoriesCard({ manage }: { manage: boolean }) {
                       >
                         Limit
                       </button>
+                      <button type="button" className={`ml-3 ${dangerLink}`} onClick={() => setEnding(d)}>
+                        End trust
+                      </button>
                     </td>
                   )}
                 </tr>
@@ -100,6 +139,22 @@ export function TrustedDirectoriesCard({ manage }: { manage: boolean }) {
             </tbody>
           </table>
         </div>
+      )}
+      {ending && (
+        <ConfirmDialog
+          title="End Trust"
+          consequence={
+            <p>
+              Every tenant of <span className="font-mono">{ending.issuer}</span> leaves this cluster, and its people can no longer sign in here. The directory is told.
+            </p>
+          }
+          actionLabel="End trust"
+          onConfirm={async () => {
+            await api.untrustDirectory(ending.id ?? "");
+            refresh();
+          }}
+          onClose={() => setEnding(null)}
+        />
       )}
       {editing && (
         <Modal title="Staleness limit" onClose={() => setEditing(null)}>
@@ -224,7 +279,7 @@ export function OffersCard({ manage }: { manage: boolean }) {
             <tbody className="divide-y divide-gray-100">
               {offers.map((o) => (
                 <tr key={o.id}>
-                  <td className="py-1.5 pr-3">{o.tenant}</td>
+                  <td className="py-1.5 pr-3">{o.whole ? <span className="text-gray-500">the whole directory</span> : o.tenant}</td>
                   <td className="py-1.5 pr-3 font-mono text-xs break-all">{o.directory}</td>
                   <td className="py-1.5 pr-3">{state(o)}</td>
                   <td className="py-1.5 pr-3 text-xs text-gray-500">{formatTimestamp(o.expires_at)}</td>
@@ -246,7 +301,7 @@ export function OffersCard({ manage }: { manage: boolean }) {
       {revoking && (
         <ConfirmDialog
           title="Revoke Offer"
-          consequence={<p>The offer for {revoking.tenant} can't be accepted any more.</p>}
+          consequence={<p>The offer for {revoking.whole ? "the whole directory" : revoking.tenant} can't be accepted any more.</p>}
           actionLabel="Revoke"
           onConfirm={async () => {
             await api.revokeOffer(revoking.id ?? "");

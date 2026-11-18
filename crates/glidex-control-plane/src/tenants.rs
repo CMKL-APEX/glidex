@@ -383,6 +383,13 @@ pub struct Offer {
     pub expires_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub redeemed_at: Option<u64>,
+    /// A directory offer (D91, D96): `tenant` empty, `cap` the default cap
+    /// of the directory's tenants' admissions.
+    #[serde(default, skip_serializing_if = "crate::trust::OfferScope::is_tenant")]
+    pub scope: crate::trust::OfferScope,
+    /// A directory offer's: how its tenants' opt-ins are treated.
+    #[serde(default)]
+    pub admit: crate::trust::AdmitSetting,
 }
 
 impl Offer {

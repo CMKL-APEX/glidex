@@ -23,6 +23,18 @@ const FEED_STATE: TableDefinition<&str, &[u8]> = TableDefinition::new("feed_stat
 /// Per trusted directory, what it knows of this cluster's API certificate
 /// (D90): `DirectoryPins`, keyed by the directory's id.
 const DIRECTORY_PINS: TableDefinition<&str, &[u8]> = TableDefinition::new("trusted_directory_pins");
+/// Per directory trusted as a whole, the cap its tenants' admissions get
+/// (D96): `DirectoryCap`, keyed by the directory's id.
+const DIRECTORY_CAPS: TableDefinition<&str, &[u8]> = TableDefinition::new("trusted_directory_caps");
+
+/// The default cap of a directory trusted as a whole (D96): an admission
+/// takes a copy, so a change applies to later admissions only.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DirectoryCap {
+    pub cap: crate::tenancy::Quotas,
+    pub by: String,
+    pub at: u64,
+}
 
 /// What a trusted directory knows of this cluster's API certificate
 /// (D90), as the leader last found: the pin of the certificate its API
@@ -274,6 +286,7 @@ impl TrustStore {
 
     pub fn remove_directory(&self, id: &str) -> Result<(), StoreError> {
         self.put::<DirectoryPins>(DIRECTORY_PINS, id, None)?;
+        self.put::<DirectoryCap>(DIRECTORY_CAPS, id, None)?;
         self.put::<TrustedDirectory>(TRUSTED_DIRECTORIES, id, None)
     }
 
@@ -295,6 +308,24 @@ impl TrustStore {
 
     pub fn put_directory_pins(&self, id: &str, p: &DirectoryPins) -> Result<(), StoreError> {
         self.put(DIRECTORY_PINS, id, Some(p))
+    }
+
+    /// The default cap of directory `id`, trusted as a whole (D96).
+    pub fn directory_cap(&self, id: &str) -> Result<Option<DirectoryCap>, StoreError> {
+        let txn = self.db.begin_read()?;
+        let t = match txn.open_table(DIRECTORY_CAPS) {
+            Ok(t) => t,
+            Err(redb::TableError::TableDoesNotExist(_)) => return Ok(None),
+            Err(e) => return Err(e.into()),
+        };
+        Ok(match t.get(id)? {
+            Some(v) => Some(serde_json::from_slice(v.value())?),
+            None => None,
+        })
+    }
+
+    pub fn put_directory_cap(&self, id: &str, c: &DirectoryCap) -> Result<(), StoreError> {
+        self.put(DIRECTORY_CAPS, id, Some(c))
     }
 
     pub fn clusters(&self, directory: &str) -> Result<Vec<TrustedCluster>, StoreError> {

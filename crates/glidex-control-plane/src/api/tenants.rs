@@ -401,3 +401,41 @@ pub async fn set_trusted_directory(
     req.id = id;
     Ok(Json(svc::set_trusted_directory(&c, req)?))
 }
+
+pub async fn set_directory_admission(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(mut req): Json<pb::SetDirectoryAdmissionRequest>,
+) -> Result<Json<pb::SetDirectoryAdmissionResponse>, ApiErr> {
+    req.id = id;
+    Ok(Json(svc::set_directory_admission(&c, req)?))
+}
+
+pub async fn approve_opt_in(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(mut req): Json<pb::ApproveOptInRequest>,
+) -> Result<Json<pb::ApproveOptInResponse>, ApiErr> {
+    req.id = id;
+    Ok(Json(svc::approve_opt_in(&c, req)?))
+}
+
+pub async fn reject_opt_in(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(mut req): Json<pb::RejectOptInRequest>,
+) -> Result<Json<pb::RejectOptInResponse>, ApiErr> {
+    req.id = id;
+    Ok(Json(svc::reject_opt_in(&c, req)?))
+}
+
+pub async fn untrust_directory(c: Caller, Path(id): Path<String>) -> Result<StatusCode, ApiErr> {
+    svc::untrust_directory(
+        &c,
+        pb::UntrustDirectoryRequest {
+            id,
+            ..Default::default()
+        },
+    )?;
+    Ok(StatusCode::NO_CONTENT)
+}

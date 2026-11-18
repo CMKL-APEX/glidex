@@ -135,6 +135,9 @@ tables! {
     // What each trusted directory knows of this cluster's API certificate
     // (spec/19-tenancy.md D90).
     TrustedDirectoryPins = 65 => "trusted_directory_pins",
+    // The default cap of the admissions of each directory trusted as a
+    // whole (spec/19-tenancy.md D96).
+    TrustedDirectoryCaps = 66 => "trusted_directory_caps",
 }
 
 /// Whose a table's records are (spec/19-tenancy.md §4): a directory's (they
