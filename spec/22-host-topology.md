@@ -70,6 +70,8 @@ and pools for GPUs, DPUs and NICs.
 | H26 | A grant names one project | A device grant's project (`pci.allow` `projects`, for a device or a pool) is a project id, `<tenant>/<project>` (the tenant by id or slug), or a bare project name. A bare name grants only while exactly one project has it: the control plane refuses to start when `control-plane.json`'s grants in force name a project that several projects have, `PUT /cluster/settings/pci` refuses one (`400`), and creating a project whose name such a grant uses while a project of that name exists is refused (`409 name_in_device_grant`). A bare name that names several anyway (written by an older build) grants none of them, with a warning in the log. | Project names are unique per tenant only (spec/19-tenancy.md D24); a bare name used to grant the first match, which could be another tenant's project. |
 | H27 | Operator grants name tenants in `local` | An operator's grant (`pci.allow` for a device or a pool, a host network's grants) names a tenant by id or by its slug in the `local` directory, whoever asks; a tenant of another directory is named by id. This holds for `tenants` and for the tenant of `<tenant>/<project>`. A host network's project grant follows H26: an id, `<tenant>/<project>`, or a bare name only one project has; a bare name that several have is refused (`409 ambiguous`), naming `<tenant>/<project>` or the id. Network grants are stored as ids, so no start-up check is needed. | Tenant slugs are unique per directory only (spec/19-tenancy.md D24), and a directory's users may create tenants (D78): a slug looked up in the caller's directory meant another tenant to a caller of another directory. Host-network grants already read slugs as `local`'s; a bare project name there took the first project of that name. |
 | H28 | Devices kept at D0 | A pool with `power_save: false` keeps its devices out of PCIe power saving on each node (§5.3a). The node keeps each of the pool's devices that is on `vfio-pci`, whoever bound it, at D0: the device gets `power/control=on`, so it isn't runtime-suspended while no VM holds it, and `d3cold_allowed=0`. Each bridge above it, up to and including its root port, also gets `d3cold_allowed=0`. The default, `power_save: true`, changes nothing. A host's `pci.overrides` may set it for that host (H23), and `--vfio-devices <pool>` copies it, so the boot binding applies it too. Glidex never sets `vfio-pci`'s `disable_idle_d3`. | The user's call (2026-11-17, issue #548). On the HGX host, waking idle A100s from D3cold failed thousands of times a day, and the NVMe drives behind the neighbouring switch dropped off the bus at the same moments. The per-device settings take effect at once and stay on the hosts and pools that need them. The module parameter covers every vfio device on the host and needs a reload or a reboot. Keeping devices at D0 costs their idle power. |
+| H29 | Closest devices | Of a VM's pool picks on a node, after the NUMA order (§8.3), each prefers the device that shares the deepest switch with the VM's devices already picked, then the one with the closest free device in each of the VM's later pool requests, then the lowest address. The summary gives each device its `switches`: the upstream port of every switch above it, nearest first. A node of an older version reports none, and only its nearest `switch` counts. | The user's call (2026-11-18, issue #527). On an HGX board a GPU and its NIC meet two switch levels down from the root port, and every device under the root port shares the top switch: a 1-GPU, 1-NIC VM got a GPU whose only switch in common with its NIC was the top one, so their traffic crossed both levels. A request needs nothing new: a GPU and a NIC that share a switch are what GPUDirect needs, and nothing gains from the farther pair. |
+| H30 | ACS above a VFIO device | The node warns `acs_off` (§5.2) for each device on `vfio-pci` with a port above it, a root port or a switch's downstream port, that supports ACS but has Source Validation, Request Redirect, Completion Redirect or Upstream Forwarding off. Glidex never changes ACS. `glidex-netd` reads it, as only root can read a device's extended configuration. | The user's call (2026-11-18). The kernel forms IOMMU groups at boot from the ACS it enables then. A tool that turns ACS off afterwards (NVIDIA's `nvidia-acs-disable`, meant for GPUDirect on bare metal) leaves the groups as they were: a switch then forwards a passed-through device's requests to its neighbours without the IOMMU, at addresses that are the guest's. The VM's devices are no longer isolated, and peer-to-peer between them (issue #527) reaches the wrong addresses. |
 
 ## 3. Model
 
@@ -117,6 +119,8 @@ pub struct AssignableDevice {
     /// Root port it hangs off, and the switch, if any (§3.2).
     pub root_port: Option<String>,
     pub switch: Option<String>,
+    /// The upstream port of every switch above it, nearest first (H29).
+    pub switches: Vec<String>,
     pub link: Option<PcieLink>,       // current and max speed and width
     pub sriov: Option<SriovInfo>,     // §10
     /// Operator labels from pools and `gxctl node label-device` (§9).
@@ -309,7 +313,9 @@ acted on:
   another (09-networking.md §3);
 - `power_save_on`: a device to keep at D0 (H28, §5.3a) that reads
   D3cold, or whose `power/control` or `d3cold_allowed` (its own, or a
-  bridge's above it) still allows power saving.
+  bridge's above it) still allows power saving;
+- `acs_off`: a device on `vfio-pci` below a port whose ACS is off (H30),
+  naming the device and the port.
 
 ### 5.3 Preparing a device
 
@@ -579,9 +585,11 @@ shares rather than the whole node's. Ties as today. Within the node:
 - **CPUs** (`dedicated`): isolated CPUs first (H7), whole cores, lowest
   ids. The choice is deterministic, so the preview and the placement
   agree.
-- **Devices** from a pool: same switch as the VM's other devices, then
-  same root port, then lowest address. This keeps peer-close devices for
-  requests that need them.
+- **Devices** from a pool: the deepest switch shared with the VM's
+  devices already picked, then the closest free device in each of the
+  VM's later pool requests, then lowest address (H29). A GPU then gets
+  the NIC under its own switch, and the NIC picked for it is the one
+  near the GPU.
 
 `POST /scheduler/preview` returns, per node, the NUMA node, CPUs and
 devices it would take. The UI's Placement shows them.
