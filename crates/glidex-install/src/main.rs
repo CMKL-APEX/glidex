@@ -3003,7 +3003,8 @@ fn ensure_service_user(invoking: Option<&str>) -> Result<()> {
 /// are, pools as their `match` (spec/22-host-topology.md §9.1b). A pool is
 /// looked up in the cluster's setting (`cluster`, from the running control
 /// plane), else in this host's file, else read as a discovered pool's name
-/// (`amd-7551`, or `15b3-1021-vf` for the VFs of a card). The host's `pci.overrides` set its `bar_mib`, and its
+/// (`amd-7551`, or `15b3-1021-vf` for the VFs of a card). The host's `pci.overrides` set its `bar_mib` and
+/// `power_save`, and its
 /// `pci.exclude` is never bound. `None`: nothing set.
 fn boot_devices_config(
     devices: &[String],
@@ -3055,6 +3056,11 @@ fn boot_devices_config(
         m.bar_mib = cp["pci"]["overrides"][d.as_str()]["bar_mib"]
             .as_u64()
             .or(pool["bar_mib"].as_u64());
+        // Only `false` changes anything (spec/22-host-topology.md H28).
+        m.power_save = cp["pci"]["overrides"][d.as_str()]["power_save"]
+            .as_bool()
+            .or(pool["power_save"].as_bool())
+            .filter(|on| !on);
         select.push(m);
     }
     if !addresses.is_empty() {
@@ -3193,6 +3199,9 @@ fn setup_boot_devices(opts: &Options) -> Result<()> {
                     .unwrap_or_default()
             ),
         }
+    }
+    if cfg.select.iter().any(|s| s.power_save == Some(false)) {
+        println!("  a pool with power_save: false: its devices are kept at D0 once bound");
     }
     if opts.vfio_now {
         // netd is up: it applies through its own ops, sparing any device on
@@ -4478,7 +4487,7 @@ mod tests {
     #[test]
     fn boot_devices_take_pools_as_their_match_and_addresses_as_they_are() {
         let cp = r#"{"pci":{"pools":[
-            {"name":"a100","match":{"vendor_id":"0x10de","device_id":"0x20b0"},"bar_mib":16384},
+            {"name":"a100","match":{"vendor_id":"0x10de","device_id":"0x20b0"},"bar_mib":16384,"power_save":false},
             {"name":"cx7-vfs","match":{"vf_of":{"vendor_id":"0x15b3","device_id":"0xa2dc"}},"prepare":true}
         ]}}"#;
         assert_eq!(
@@ -4506,8 +4515,9 @@ mod tests {
             Some(16384),
             "the pool's window size beside its match"
         );
+        assert_eq!(c.select[0].power_save, Some(false), "kept at D0");
         assert!(c.select[1].vf_of.is_some());
-        assert_eq!(c.select[1].bar_mib, None);
+        assert_eq!((c.select[1].bar_mib, c.select[1].power_save), (None, None));
         assert_eq!(c.select[2].addresses, ["0000:87:00.0", "0000:90:00.0"]);
         assert_eq!(
             (c.sriov[0].pf.as_str(), c.sriov[0].vfs),
@@ -4537,7 +4547,7 @@ mod tests {
         let cp = r#"{"pci":{
             "pools":[{"name":"r9700","match":{"vendor_id":"0x1002","device_id":"0x7550"}}],
             "exclude":[{"addresses":["0000:43:00.0"]}],
-            "overrides":{"r9700":{"bar_mib":8192}}
+            "overrides":{"r9700":{"bar_mib":8192,"power_save":false}}
         }}"#;
         let cluster = serde_json::json!({ "source": "PCI_SETTINGS_SOURCE_CLUSTER",
             "settings": { "pools": [{ "name": "r9700", "bar_mib": 16384,
@@ -4551,6 +4561,7 @@ mod tests {
             "the cluster's"
         );
         assert_eq!(c.select[0].bar_mib, Some(8192), "the host's override");
+        assert_eq!(c.select[0].power_save, Some(false), "the host's override");
         assert_eq!(c.exclude[0].addresses, ["0000:43:00.0"]);
         // Without the cluster (a fresh install): the file's.
         let c = boot_devices_config(&["r9700".into()], &[], Some(cp), None)

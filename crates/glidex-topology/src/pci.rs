@@ -42,6 +42,29 @@ impl PcieLink {
     }
 }
 
+/// A function's power state and what the kernel may do with it
+/// (spec/22-host-topology.md §5.3a).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PciPower {
+    /// `power_state`: `D0`, `D3hot`, `D3cold`, …
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub state: Option<String>,
+    /// `power/control`: `auto` (runtime power management) or `on`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<String>,
+    /// `d3cold_allowed`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub d3cold_allowed: Option<bool>,
+}
+
+impl PciPower {
+    /// Kept out of power saving by its own settings: never
+    /// runtime-suspended, and never put in D3cold.
+    pub fn held_on(&self) -> bool {
+        self.control.as_deref() == Some("on") && self.d3cold_allowed == Some(false)
+    }
+}
+
 /// AER error counts since boot (spec/22-host-topology.md §5.4).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AerCounts {
@@ -162,6 +185,7 @@ pub struct RawPci {
     pub sriov: Option<Sriov>,
     pub physfn: Option<String>,
     pub aer: Option<AerCounts>,
+    pub power: Option<PciPower>,
 }
 
 /// A PCI-to-PCI bridge (class `0x0604`).
@@ -234,6 +258,12 @@ pub fn read_raw(sys: &Path) -> Vec<RawPci> {
             }),
             physfn: link_name(&dir, "physfn"),
             aer: aer_in(&dir),
+            power: Some(PciPower {
+                state: attr(&dir, "power_state"),
+                control: attr(&dir, "power/control"),
+                d3cold_allowed: attr(&dir, "d3cold_allowed").map(|v| v != "0"),
+            })
+            .filter(|p| *p != PciPower::default()),
             address,
         });
     }

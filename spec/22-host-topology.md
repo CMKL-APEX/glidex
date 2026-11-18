@@ -1042,6 +1042,13 @@ of §17). HT2's acceptance test (`numa_placement_e2e`,
 `qemu_numa_placement_e2e`) passes on a two-socket host with eight NUMA
 nodes and A100 GPUs, for both hypervisors.
 
+**HT7** is built and unit-tested (#548): `power_save` on pools, in
+`pci.overrides` and in the boot selectors; netd's `keep_devices_on`
+with its `power` table; the set sent with each report of the node; the
+`power` and `kept_on` fields (full tree, summary, `GetNodeTopology`,
+`gxctl node topology --devices`, the node page) and the `power_save_on`
+warning; docs. Its host check on the HGX host is not run yet.
+
 HT6's acceptance run on the R9700 host, in the three-server test
 cluster with the single-A100 host leading (term 1052), main at `5b56b25` on the three servers:
 

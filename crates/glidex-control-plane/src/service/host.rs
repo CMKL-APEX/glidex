@@ -810,6 +810,17 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                         ..Default::default()
                     })
                     .into(),
+                power: d
+                    .power
+                    .as_ref()
+                    .map(|p| pb::PciPower {
+                        state: p.state.clone(),
+                        control: p.control.clone(),
+                        d3cold_allowed: p.d3cold_allowed,
+                        ..Default::default()
+                    })
+                    .into(),
+                kept_on: d.kept_on,
                 ..Default::default()
             })
             .collect(),

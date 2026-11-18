@@ -17,6 +17,9 @@ pub const DEVICES: TableDefinition<&str, &[u8]> = TableDefinition::new("devices"
 pub const SOURCE_TABLES: TableDefinition<&str, &[u8]> = TableDefinition::new("source_tables");
 /// ifname → the ARP settings it had before netd set them (spec §8.6.6).
 pub const ARP_SAVED: TableDefinition<&str, &[u8]> = TableDefinition::new("arp_saved");
+/// `<address> <attr>` → a power attribute's value before netd kept the
+/// device at D0 (spec/22-host-topology.md §5.3a).
+pub const POWER: TableDefinition<&str, &[u8]> = TableDefinition::new("power");
 
 pub struct Store {
     db: Database,
@@ -74,6 +77,7 @@ impl Store {
             DEVICES,
             SOURCE_TABLES,
             ARP_SAVED,
+            POWER,
         ] {
             txn.open_table(t).map_err(err)?;
         }

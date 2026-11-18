@@ -52,6 +52,12 @@ pub fn apply_live(
             },
         }
     }
+    if let Some(addresses) = glidex_ovs::boot_devices::kept_on(exec, cfg) {
+        match call(Op::KeepDevicesOn { addresses }) {
+            Ok(v) => report.power = serde_json::from_value(v).ok(),
+            Err(e) => report.failed.push(("keep_devices_on".into(), e)),
+        }
+    }
     report
 }
 

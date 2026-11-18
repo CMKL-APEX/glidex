@@ -1984,6 +1984,7 @@ mod tests {
                 prepare: false,
                 per_device: None,
                 bar_mib: None,
+                power_save: true,
             },
             count,
             same_switch,

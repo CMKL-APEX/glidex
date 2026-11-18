@@ -568,6 +568,20 @@ message PciFunction {
   // group is held, or it is cordoned (spec/22-host-topology.md §8.4).
   // Unset: free.
   optional string taken = 20;
+  // Its power state and settings (spec/22-host-topology.md §5.3a).
+  PciPower power = 21;
+  // Kept at D0: never runtime-suspended, and D3cold disallowed on it and
+  // the bridges above it (spec/22-host-topology.md H28).
+  bool kept_on = 22 [json_name = "kept_on"];
+}
+
+// A PCI function's power state, and what the kernel may do with it.
+message PciPower {
+  // `power_state`: D0, D3hot, D3cold.
+  optional string state = 1;
+  // `power/control`: `auto` (runtime power management) or `on`.
+  optional string control = 2;
+  optional bool d3cold_allowed = 3 [json_name = "d3cold_allowed"];
 }
 
 message AerCounts {
@@ -578,7 +592,7 @@ message AerCounts {
 
 message TopologyWarning {
   // iommu_off, numa_unknown, group_shared, link_degraded,
-  // hugepages_unbalanced.
+  // hugepages_unbalanced, power_save_on.
   string kind = 1;
   string detail = 2;
 }

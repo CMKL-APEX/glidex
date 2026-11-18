@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 // The PCIe tree's reading and places, shared with hyperstor.
 pub use glidex_topology::pci::{
-    AerCounts, PciKind, PcieLink, RawPci, Sriov, aer_total, is_bridge, read_aer,
+    AerCounts, PciKind, PciPower, PcieLink, RawPci, Sriov, aer_total, is_bridge, read_aer,
 };
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -59,6 +59,10 @@ pub struct SummaryDevice {
     /// it there.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub excluded: bool,
+    /// Kept at D0: never runtime-suspended, and D3cold disallowed on it and
+    /// the bridges above it (H28, §5.3a).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept_on: bool,
 }
 
 /// A VF's physical function, as pools match it (`match.vf_of`).
@@ -105,6 +109,54 @@ impl TopologyTree {
             .collect()
     }
 
+    /// The devices to keep at D0 (H28, §5.3a): on `vfio-pci`, of a pool
+    /// with `power_save: false` (`pools` as this host has them), and not
+    /// one the host keeps.
+    pub fn to_keep_on(
+        &self,
+        pools: &[crate::config::PciPool],
+        exclude: &[crate::config::PoolMatch],
+    ) -> Vec<String> {
+        let keep: Vec<_> = pools.iter().filter(|p| !p.power_save).collect();
+        if keep.is_empty() {
+            return Vec::new();
+        }
+        self.devices
+            .iter()
+            .filter(|d| d.assignable && d.driver.as_deref() == Some("vfio-pci"))
+            .filter(|d| {
+                let s = self.summary_of(d);
+                !exclude.iter().any(|m| m.matches_device(&s))
+                    && keep.iter().any(|p| p.matches.matches_device(&s))
+            })
+            .map(|d| d.address.clone())
+            .collect()
+    }
+
+    /// Warn `power_save_on` (§5.2) for each of `keep` that isn't kept at
+    /// D0, or reads D3cold.
+    pub fn warn_power_save(&mut self, keep: &[String]) {
+        for a in keep {
+            let Some(d) = self.devices.iter().find(|d| d.address == *a) else {
+                continue;
+            };
+            let state = d.power.as_ref().and_then(|p| p.state.as_deref());
+            let detail = if state == Some("D3cold") {
+                format!("{a} is in D3cold although its pool has power_save: false")
+            } else if !d.kept_on {
+                format!(
+                    "{a} still allows power saving (power/control, or d3cold_allowed on it or a bridge above it) although its pool has power_save: false"
+                )
+            } else {
+                continue;
+            };
+            self.warnings.push(TopologyWarning {
+                kind: "power_save_on".into(),
+                detail,
+            });
+        }
+    }
+
     /// `d` as the summary has it.
     fn summary_of(&self, d: &PciFunction) -> SummaryDevice {
         SummaryDevice {
@@ -126,6 +178,7 @@ impl TopologyTree {
             }),
             sriov: d.sriov.clone(),
             excluded: false,
+            kept_on: d.kept_on,
         }
     }
 
@@ -420,13 +473,20 @@ pub struct PciFunction {
     pub not_ready: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub aer: Option<AerCounts>,
+    /// Its power state and settings (§5.3a).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power: Option<PciPower>,
+    /// Kept at D0: its own settings, and D3cold disallowed on each bridge
+    /// above it up to its root port (H28).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub kept_on: bool,
 }
 
 /// A gap the node reports, never acts on (§5.2).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopologyWarning {
     /// `iommu_off`, `numa_unknown`, `group_shared`, `link_degraded`,
-    /// `hugepages_unbalanced`.
+    /// `hugepages_unbalanced`, `power_save_on`.
     pub kind: String,
     pub detail: String,
 }
@@ -482,6 +542,17 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
         }
     }
     let multi_numa = summary.numa_nodes.len() > 1;
+    let by_address: BTreeMap<&str, &RawPci> = raw.iter().map(|r| (r.address.as_str(), r)).collect();
+    // Its own settings, and no bridge above it (the path's PCI functions
+    // but itself) allowing D3cold.
+    let kept_on = |r: &RawPci| {
+        r.power.as_ref().is_some_and(PciPower::held_on)
+            && r.path
+                .iter()
+                .filter(|c| **c != r.address)
+                .filter_map(|c| by_address.get(c.as_str()))
+                .all(|b| b.power.as_ref().and_then(|p| p.d3cold_allowed) == Some(false))
+    };
     let mut warnings = Vec::new();
     if !ctx.iommu {
         warnings.push(TopologyWarning {
@@ -598,6 +669,8 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             ready: assignable && not_ready.is_empty(),
             not_ready,
             aer: r.aer,
+            power: r.power.clone(),
+            kept_on: kept_on(r),
         });
     }
     devices.sort_by(|a, b| a.address.cmp(&b.address));
@@ -932,6 +1005,128 @@ mod tests {
         build_tree(summary, &raw, &ctx)
     }
 
+    /// A switch with a GPU on `vfio-pci` below a root port, and a GPU on its
+    /// host driver: each function's `power/control` and `d3cold_allowed`
+    /// from `on` (the addresses kept on), the GPU at 87:00.0 in `state`.
+    fn power_tree(on: &[&str], state: &str) -> TopologyTree {
+        let mut raw = vec![
+            raw(
+                "pci0000:80/0000:80:01.1",
+                "0x060400",
+                Some("pcieport"),
+                Some("1"),
+                Some(0),
+            ),
+            raw(
+                "pci0000:80/0000:80:01.1/0000:81:00.0",
+                "0x060400",
+                Some("pcieport"),
+                Some("2"),
+                Some(0),
+            ),
+            raw(
+                "pci0000:80/0000:80:01.1/0000:81:00.0/0000:82:00.0",
+                "0x060400",
+                Some("pcieport"),
+                Some("3"),
+                Some(0),
+            ),
+            raw(
+                "pci0000:80/0000:80:01.1/0000:81:00.0/0000:82:00.0/0000:87:00.0",
+                "0x030200",
+                Some("vfio-pci"),
+                Some("20"),
+                Some(0),
+            ),
+            raw(
+                "pci0000:00/0000:00:03.1/0000:07:00.0",
+                "0x030200",
+                Some("nvidia"),
+                Some("30"),
+                Some(0),
+            ),
+        ];
+        for r in &mut raw {
+            let kept = on.contains(&r.address.as_str());
+            r.power = Some(PciPower {
+                state: Some(
+                    if r.address == "0000:87:00.0" {
+                        state
+                    } else {
+                        "D0"
+                    }
+                    .into(),
+                ),
+                control: Some(if kept { "on" } else { "auto" }.into()),
+                d3cold_allowed: Some(!kept),
+            });
+        }
+        let ctx = ReadyContext {
+            iommu: true,
+            ..Default::default()
+        };
+        build_tree(TopologySummary::default(), &raw, &ctx)
+    }
+
+    #[test]
+    fn devices_kept_on_need_their_bridges_and_are_warned_when_not() {
+        let gpus = |power_save| crate::config::PciPool {
+            name: "a100".into(),
+            class: None,
+            matches: crate::config::PoolMatch {
+                class_code: Some("0x0302".into()),
+                ..Default::default()
+            },
+            nodes: vec![],
+            prepare: false,
+            per_device: None,
+            bar_mib: None,
+            power_save,
+        };
+        let t = power_tree(&[], "D3hot");
+        // Only the GPU on vfio-pci, of a pool that says so, and not kept
+        // by the host.
+        assert_eq!(t.to_keep_on(&[gpus(false)], &[]), ["0000:87:00.0"]);
+        assert!(t.to_keep_on(&[gpus(true)], &[]).is_empty());
+        let keep = crate::config::PoolMatch {
+            addresses: vec!["0000:87:00.0".into()],
+            ..Default::default()
+        };
+        assert!(t.to_keep_on(&[gpus(false)], &[keep]).is_empty());
+
+        let mut t = power_tree(&[], "D3hot");
+        assert!(!func(&t, "0000:87:00.0").kept_on);
+        t.warn_power_save(&["0000:87:00.0".into()]);
+        assert_eq!(t.warnings.len(), 1, "{:?}", t.warnings);
+        assert_eq!(t.warnings[0].kind, "power_save_on");
+        assert!(t.warnings[0].detail.contains("still allows power saving"));
+
+        let all = [
+            "0000:80:01.1",
+            "0000:81:00.0",
+            "0000:82:00.0",
+            "0000:87:00.0",
+        ];
+        let mut t = power_tree(&all, "D0");
+        assert!(func(&t, "0000:87:00.0").kept_on);
+        let s = t.summary_devices();
+        assert!(s.iter().any(|d| d.address == "0000:87:00.0" && d.kept_on));
+        t.warn_power_save(&["0000:87:00.0".into()]);
+        assert!(t.warnings.is_empty(), "{:?}", t.warnings);
+
+        // A bridge that still allows D3cold: not kept on.
+        let t = power_tree(&all[1..], "D0");
+        assert!(!func(&t, "0000:87:00.0").kept_on);
+
+        let mut t = power_tree(&all, "D3cold");
+        t.warn_power_save(&["0000:87:00.0".into()]);
+        assert!(
+            t.warnings[0].detail.contains("is in D3cold"),
+            "{:?}",
+            t.warnings
+        );
+    }
+
     fn func<'a>(t: &'a TopologyTree, a: &str) -> &'a PciFunction {
         t.devices.iter().find(|d| d.address == a).unwrap()
     }
@@ -1044,6 +1239,7 @@ mod tests {
             prepare: true,
             per_device: None,
             bar_mib: None,
+            power_save: true,
         };
         assert_eq!(
             t.to_prepare(std::slice::from_ref(&pool), &[]),
@@ -1144,6 +1340,7 @@ mod tests {
             prepare: true,
             per_device: None,
             bar_mib: None,
+            power_save: true,
         };
         // 87:00.0 is ready; the NIC isn't the pool's.
         assert_eq!(

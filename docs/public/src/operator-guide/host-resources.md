@@ -91,6 +91,7 @@ The topology reports what it notices. Glidex never acts on these.
 | `group_shared` | A device shares its IOMMU group with a device of another class. | Passing one through takes the other; move the card to another slot. |
 | `link_degraded` | A device's PCIe link runs slower or narrower than it can. GPUs aren't flagged: they slow their link when idle. | Reseat the card, or check the slot. |
 | `hugepages_unbalanced` | A device sits on a NUMA node with no hugepages while other NUMA nodes have some. | Reserve hugepages on that NUMA node too (see [Hugepages](#hugepages)). |
+| `power_save_on` | A device of a pool with `power_save: false` still allows power saving, or is in D3cold. | Check glidex-netd's log (`journalctl -u glidex-netd`) for why the settings didn't take; the node sets them again within two minutes (see [Keep devices out of power saving](pci-passthrough.md#keep-devices-out-of-power-saving)). |
 
 ## NUMA nodes
 
@@ -247,6 +248,7 @@ pool, and Glidex picks them. Pools are defined in
 | `nodes` | Node names or ids the pool is on. Default: every node. |
 | `prepare` | Each node binds its devices of the pool to `vfio-pci` when glidex starts (see [Prepare devices](#prepare-devices)). |
 | `bar_mib` | The largest memory window (resizable BAR), in MiB and a power of two, that the pool's GPUs get when a node prepares them for the pool: with `prepare: true`, or at boot with `--vfio-devices <pool>`. It only makes a window smaller; the cap below still holds (see [Prepare devices](#prepare-devices)). |
+| `power_save` | `false` keeps the pool's devices on `vfio-pci` at full power (D0) while no VM holds them: for hosts where waking a device from D3cold fails. Default `true`. See [Keep devices out of power saving](pci-passthrough.md#keep-devices-out-of-power-saving). |
 | `per_device` | What a VM asking for `gpus` from the pool gets per device, unless it sizes itself: `vcpus` and `memory_mib` (both required), and optionally `hugepages` (`true`/`false`) and `cpu_policy` (`shared` or `dedicated`). See [GPU requests](#gpu-requests). |
 
 The control plane refuses to start with two pools of the same name, a

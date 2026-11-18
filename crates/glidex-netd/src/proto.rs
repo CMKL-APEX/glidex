@@ -165,6 +165,13 @@ pub enum Op {
     DeviceHolders {
         groups: Vec<String>,
     },
+    /// Keep exactly these devices at D0: runtime power management off and
+    /// D3cold disallowed, on them and the bridges above them; anything kept
+    /// before and not listed gets its values back
+    /// (spec/22-host-topology.md §5.3a).
+    KeepDevicesOn {
+        addresses: Vec<String>,
+    },
     /// Give a physical function `vfs` SR-IOV virtual functions
     /// (spec/22-host-topology.md §10.1); 0 removes them.
     SetSriovVfs {
@@ -282,6 +289,7 @@ impl Op {
             Op::DpuProbe { .. } => "dpu_probe",
             Op::DpuListPorts => "dpu_list_ports",
             Op::SetSriovVfs { .. } => "set_sriov_vfs",
+            Op::KeepDevicesOn { .. } => "keep_devices_on",
         }
     }
 }

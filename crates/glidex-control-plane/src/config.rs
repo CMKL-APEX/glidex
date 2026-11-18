@@ -375,7 +375,8 @@ pub struct PciConfig {
     /// Devices this host keeps: in no pool, and never given to a VM here
     /// (spec/22-host-topology.md H23). Per host, never replicated.
     pub exclude: Vec<PoolMatch>,
-    /// A pool's `bar_mib` and `prepare` on this host, by pool name (H23).
+    /// A pool's `bar_mib`, `prepare` and `power_save` on this host, by pool
+    /// name (H23, H28).
     pub overrides: std::collections::BTreeMap<String, PoolOverride>,
 }
 
@@ -387,6 +388,8 @@ pub struct PoolOverride {
     pub bar_mib: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub prepare: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_save: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
@@ -440,6 +443,21 @@ pub struct PciPool {
     /// (spec/27-gpu-vms.md G17–G19).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bar_mib: Option<u64>,
+    /// `false`: each node keeps the pool's devices on `vfio-pci` at D0,
+    /// out of PCIe power saving (spec/22-host-topology.md H28, §5.3a).
+    #[serde(
+        default = "power_save_default",
+        skip_serializing_if = "is_power_save_default"
+    )]
+    pub power_save: bool,
+}
+
+fn power_save_default() -> bool {
+    true
+}
+
+fn is_power_save_default(v: &bool) -> bool {
+    *v
 }
 
 /// A VM's share per device of a pool (spec/27-gpu-vms.md §6).
@@ -534,6 +552,7 @@ impl PciConfig {
                 if let Some(o) = self.overrides.get(&p.name) {
                     p.bar_mib = o.bar_mib.or(p.bar_mib);
                     p.prepare = o.prepare.unwrap_or(p.prepare);
+                    p.power_save = o.power_save.unwrap_or(p.power_save);
                 }
                 p
             })
@@ -905,6 +924,7 @@ mod tests {
             prepare: false,
             per_device: None,
             bar_mib: None,
+            power_save: true,
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],
@@ -917,10 +937,14 @@ mod tests {
             PoolOverride {
                 bar_mib: Some(8192),
                 prepare: Some(true),
+                power_save: Some(false),
             },
         );
         let here = c.pools_here(&c.pools);
-        assert_eq!((here[0].bar_mib, here[0].prepare), (Some(8192), true));
+        assert_eq!(
+            (here[0].bar_mib, here[0].prepare, here[0].power_save),
+            (Some(8192), true, false)
+        );
         assert_eq!(c.pools_here(&[pool("t4", None)])[0].bar_mib, None);
         c.overrides.get_mut("a100").unwrap().bar_mib = Some(3000);
         assert!(c.check().unwrap_err().contains("power of two"));

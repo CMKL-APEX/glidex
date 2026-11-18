@@ -1612,11 +1612,19 @@ impl VmManager {
         }
         // The devices a VM could be given, with their readiness, for pools
         // (spec/22-host-topology.md §9).
+        // Each read also keeps the pools' devices at D0 that should be
+        // (§5.3a): a rebind or a reboot loses the settings.
         if let Some(t) = probe.topology.as_mut() {
-            t.devices = crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs(), |g| {
-                self.held_groups(g)
-            })
-            .summary_devices();
+            let read = || {
+                crate::topology::read_tree(t.clone(), self.dpdk_uplink_bdfs(), |g| {
+                    self.held_groups(g)
+                })
+            };
+            let mut tree = read();
+            if self.keep_devices_on(&tree) {
+                tree = read();
+            }
+            t.devices = tree.summary_devices();
             let file = self.pci_file.load();
             for d in &mut t.devices {
                 d.excluded = file.excludes(d);
@@ -4958,7 +4966,11 @@ impl VmManager {
             .and_then(|n| n.status.topology)
             .or_else(crate::topology::read)
             .unwrap_or_default();
-        crate::topology::read_tree(summary, self.dpdk_uplink_bdfs(), |g| self.held_groups(g))
+        let mut tree =
+            crate::topology::read_tree(summary, self.dpdk_uplink_bdfs(), |g| self.held_groups(g));
+        let keep = self.devices_to_keep_on(&tree);
+        tree.warn_power_save(&keep);
+        tree
     }
 
     /// IOMMU groups among `groups` that a process other than this host's
@@ -4991,20 +5003,11 @@ impl VmManager {
     /// report. A device netd refuses stays not ready; the pool is short of
     /// it and the warning says why.
     pub fn prepare_pools(&self) {
-        let me = self.local_node_id();
-        let name = self
-            .nodes
-            .get(&me)
-            .ok()
-            .flatten()
-            .map(|n| n.spec.name)
-            .unwrap_or_default();
         let file = self.pci_file.load_full();
-        let pools: Vec<_> = file
-            .pools_here(&self.pci_pools())
+        let pools: Vec<_> = self
+            .pools_on_this_node()
             .into_iter()
             .filter(|p| p.prepare)
-            .filter(|p| p.nodes.is_empty() || p.nodes.iter().any(|n| *n == me || *n == name))
             .collect();
         if pools.is_empty() {
             return;
@@ -5030,6 +5033,59 @@ impl VmManager {
             && let Err(e) = self.report_self()
         {
             tracing::warn!("reporting this node after preparing pool devices: {e}");
+        }
+    }
+
+    /// The pools in force on this node, with this host's `overrides`
+    /// applied (spec/22-host-topology.md H23).
+    fn pools_on_this_node(&self) -> Vec<crate::config::PciPool> {
+        let me = self.local_node_id();
+        let name = self
+            .nodes
+            .get(&me)
+            .ok()
+            .flatten()
+            .map(|n| n.spec.name)
+            .unwrap_or_default();
+        self.pci_file
+            .load()
+            .pools_here(&self.pci_pools())
+            .into_iter()
+            .filter(|p| p.nodes.is_empty() || p.nodes.iter().any(|n| *n == me || *n == name))
+            .collect()
+    }
+
+    /// The devices of `tree` this node keeps at D0
+    /// (spec/22-host-topology.md H28, §5.3a).
+    fn devices_to_keep_on(&self, tree: &crate::topology::TopologyTree) -> Vec<String> {
+        tree.to_keep_on(&self.pools_on_this_node(), &self.pci_file.load().exclude)
+    }
+
+    /// Have netd keep exactly `tree`'s devices to keep at D0, putting back
+    /// any it kept before (§5.3a). Whether it wrote anything, so the
+    /// caller reads the tree again.
+    fn keep_devices_on(&self, tree: &crate::topology::TopologyTree) -> bool {
+        let addresses = self.devices_to_keep_on(tree);
+        let wanted = !addresses.is_empty();
+        match self
+            .netd
+            .call::<glidex_ovs::power::KeepReport>(Op::KeepDevicesOn { addresses })
+        {
+            Ok(r) => {
+                for (what, why) in &r.failed {
+                    tracing::warn!("keeping {what} at D0: {why}");
+                }
+                !r.written.is_empty() || !r.restored.is_empty()
+            }
+            // Without netd there is nothing kept to put back.
+            Err(e) if wanted => {
+                tracing::warn!("keeping pool devices at D0: {e}");
+                false
+            }
+            Err(e) => {
+                tracing::debug!("keeping no device at D0: {e}");
+                false
+            }
         }
     }
 
