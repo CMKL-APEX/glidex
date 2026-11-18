@@ -3589,6 +3589,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
                 ipv4: None,
                 port_ok: true,
                 metadata_index: None,
+                backend: None,
             },
         )
         .collect();
@@ -6868,6 +6869,7 @@ async fn an_agents_metadata_tokens_come_from_the_leader() {
         ipv4: None,
         port_ok: true,
         metadata_index: Some(3),
+        backend: None,
     }];
     let ws = glidex_control_plane::store::WriteSet {
         format: 1,
@@ -7446,4 +7448,309 @@ async fn an_agent_rejoins_at_a_new_address() {
         .await
         .unwrap_err();
     assert!(e.to_string().contains("own API"), "{e}");
+}
+
+/// A netd for the DPU chassis tests (spec/31-dpu.md D2): it speaks netd's
+/// protocol on a run dir, answers the chassis ops the controllers send,
+/// relays the DPU ops to a `RecordingDpuChassis` (the stand-in for the
+/// agent) and keeps every request line, so a test can see what reached
+/// netd. The DPU's key is made here and stays here, as on a DPU.
+struct DpuNetd {
+    run_dir: std::path::PathBuf,
+    requests: Arc<std::sync::Mutex<Vec<String>>>,
+    dpu: Arc<glidex_netd::dpu_chassis::RecordingDpuChassis>,
+    dpu_key_pem: String,
+    _dir: tempfile::TempDir,
+}
+
+impl DpuNetd {
+    fn start() -> DpuNetd {
+        use glidex_control_plane::cluster::pki::NodeKey;
+        use glidex_netd::dpu_chassis::DpuChassis;
+        use glidex_netd::proto::{ErrorBody, Op, Request, Response};
+        use std::io::{BufRead, BufReader, Write};
+
+        let dir = tempfile::tempdir().unwrap();
+        let run_dir = dir.path().join("run");
+        std::fs::create_dir_all(&run_dir).unwrap();
+        let key = NodeKey::generate().unwrap();
+        let dpu = Arc::new(glidex_netd::dpu_chassis::RecordingDpuChassis::new(&[
+            "dpu0",
+        ]));
+        *dpu.csr_pem.lock().unwrap() = key.csr(&[], &[]).unwrap();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        for name in ["netd.sock", "netd-ro.sock"] {
+            let listener = std::os::unix::net::UnixListener::bind(run_dir.join(name)).unwrap();
+            let (requests, dpu) = (requests.clone(), dpu.clone());
+            std::thread::spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let (requests, dpu) = (requests.clone(), dpu.clone());
+                    std::thread::spawn(move || {
+                        let mut w = stream.try_clone().unwrap();
+                        for line in BufReader::new(stream).lines().map_while(Result::ok) {
+                            requests.lock().unwrap().push(line.clone());
+                            let Ok(req) = serde_json::from_str::<Request>(&line) else {
+                                return;
+                            };
+                            let status = |chassis: &str| {
+                                json!({ "chassis": chassis, "controller_running": true, "sb_remotes": [],
+                                        "br_int": true, "datapath": "system", "ports": [] })
+                            };
+                            let ok: Result<Value, glidex_ovs::OvsError> = match &req.op {
+                                Op::Hello { .. } => {
+                                    Ok(json!({ "protocol": 1, "netd_version": "test" }))
+                                }
+                                Op::EnsureOvnChassis(a) => Ok(status(&a.spec.chassis)),
+                                Op::DpuChassisCsr { id, chassis } => {
+                                    dpu.csr(id, chassis).map(|csr| json!({ "csr": csr }))
+                                }
+                                Op::EnsureDpuChassis(a) => dpu
+                                    .ensure(&a.id, &a.chassis, &a.sb_remotes, &a.certs)
+                                    .map(|s| serde_json::to_value(s).unwrap()),
+                                Op::DpuOvnStatus { id } => {
+                                    dpu.status(id).map(|s| serde_json::to_value(s).unwrap())
+                                }
+                                Op::ForgetOvnMember(_) => Ok(Value::Null),
+                                // Probe, the central: nothing to say.
+                                _ => Ok(json!({})),
+                            };
+                            let resp = match ok {
+                                Ok(v) => Response::ok(req.id, v),
+                                Err(e) => Response::err(req.id, ErrorBody::from(&e)),
+                            };
+                            let mut out = serde_json::to_vec(&resp).unwrap();
+                            out.push(b'\n');
+                            if w.write_all(&out).is_err() {
+                                return;
+                            }
+                        }
+                    });
+                }
+            });
+        }
+        DpuNetd {
+            run_dir,
+            requests,
+            dpu,
+            dpu_key_pem: key.key_pem().to_string(),
+            _dir: dir,
+        }
+    }
+
+    fn cp(&self) -> Cp {
+        hypervisors_on_path();
+        let dir = tempfile::tempdir().unwrap();
+        let manager = VmManager::with_db_path_and_netd(
+            dir.path().join("glidex.db"),
+            glidex_control_plane::network::Netd::new(&self.run_dir),
+        )
+        .unwrap();
+        let router = create_router(manager.clone());
+        manager.set_api_router(router.clone());
+        Cp {
+            manager,
+            router,
+            addr: format!("127.0.0.1:{}", free_port()).parse().unwrap(),
+            secrets: None,
+            _dir: dir,
+        }
+    }
+
+    /// The requests with op `op`.
+    fn ops(&self, op: &str) -> Vec<Value> {
+        self.requests
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+            .filter(|v| v["op"] == op)
+            .collect()
+    }
+}
+
+/// The CN of a PEM certificate.
+fn cert_cn(pem: &str) -> String {
+    let der = glidex_control_plane::cluster::pki::pem_bundle_ders(pem).unwrap();
+    let (_, cert) = x509_parser::parse_x509_certificate(&der[0]).unwrap();
+    cert.subject()
+        .iter_common_name()
+        .next()
+        .and_then(|cn| cn.as_str().ok())
+        .unwrap()
+        .to_string()
+}
+
+/// spec/31-dpu.md D2: an agent that reports a prepared DPU gets its chassis
+/// enrolled, `node:<id>-dpu`, with a certificate the cluster CA signed for
+/// that node and no other; the DPU's key never leaves its netd; removing
+/// the node takes both of its chassis out of OVN.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_prepared_dpu_becomes_a_chassis_and_leaves_with_its_node() {
+    use glidex_control_plane::node::{DpuState, DpuStatus};
+    let _one = serial().await;
+    let mut cfg = test_config();
+    cfg.reconcile.resync_secs = 5;
+    cfg.cluster.ovn.enabled = true;
+    let (server_netd, agent_netd) = (DpuNetd::start(), DpuNetd::start());
+
+    let server = server_netd.cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    server.manager.start_controllers();
+    let agent = agent_netd.cp();
+    agent.manager.configure(&cfg);
+    let token = manage::join_token(&cluster(&server), NodeRole::Agent, 600, false, "test")
+        .await
+        .unwrap();
+    manage::join(
+        &agent.manager,
+        &cfg,
+        JoinOptions {
+            server: server.addr,
+            token,
+            role: NodeRole::Agent,
+            advertise: Some(agent.addr),
+            tunnel_ip: None,
+            name: Some("agent1".into()),
+            listen: Some(agent.addr),
+        },
+    )
+    .await
+    .unwrap();
+    assert!(
+        agent
+            .manager
+            .node_link()
+            .unwrap()
+            .wait_ready(Duration::from_secs(20))
+            .await
+    );
+    agent.manager.initialize().await.unwrap();
+    let (server_id, agent_id) = (
+        server.manager.local_node_id(),
+        agent.manager.local_node_id(),
+    );
+
+    // No DPU reported: nothing is enrolled.
+    agent.manager.ensure_ovn_node().await;
+    assert!(
+        !agent_netd.ops("ensure_ovn_chassis").is_empty(),
+        "the node's own chassis"
+    );
+    assert!(agent_netd.ops("dpu_chassis_csr").is_empty());
+
+    // The agent reports a prepared DPU (netd's probe doesn't fill
+    // `status.dpus` yet, so the test writes it as the node would).
+    let prepared = DpuStatus {
+        id: "dpu0".into(),
+        state: DpuState::Prepared,
+        vfs_total: 16,
+        vfs_free: 16,
+        chassis: None,
+        sb_connected: false,
+        ovn_version: None,
+    };
+    let mut n = server.manager.nodes().get(&agent_id).unwrap().unwrap();
+    n.status.dpus = vec![prepared];
+    n.meta.resource_version += 1;
+    server.manager.nodes().put(&n).unwrap();
+    wait_for("the agent to see its DPU", || async {
+        agent
+            .manager
+            .nodes()
+            .get(&agent_id)
+            .ok()
+            .flatten()
+            .is_some_and(|n| !n.status.dpus.is_empty())
+    })
+    .await;
+    wait_for("the DPU's chassis to be enrolled", || async {
+        agent.manager.ensure_ovn_node().await;
+        !agent_netd.dpu.ensured.lock().unwrap().is_empty()
+    })
+    .await;
+
+    let ensured = agent_netd.dpu.ensured.lock().unwrap()[0].clone();
+    let chassis = format!("node:{agent_id}-dpu");
+    assert_eq!(
+        (ensured.id.as_str(), ensured.chassis.as_str()),
+        ("dpu0", chassis.as_str())
+    );
+    assert_eq!(
+        ensured.sb_remotes,
+        [format!("ssl:{}:6642", server.addr.ip())],
+        "the same SB as the node's own chassis"
+    );
+    // Signed by the cluster CA, for this node's DPU: the CSR's subject
+    // ("glidex node (CSR)") is not what names it.
+    assert_eq!(cert_cn(&ensured.certs.cert_pem), chassis);
+    let leaf =
+        glidex_control_plane::cluster::pki::pem_bundle_ders(&ensured.certs.cert_pem).unwrap();
+    let trust = std::fs::read_to_string(cluster(&server).files.trust()).unwrap();
+    assert!(
+        glidex_control_plane::cluster::pki::issuer_of(&leaf[0], &trust).is_some(),
+        "issued by the cluster CA"
+    );
+    assert!(
+        glidex_control_plane::cluster::pki::issuer_of(&leaf[0], &ensured.certs.ca_pem).is_some(),
+        "the DPU is handed the CA it is checked against"
+    );
+
+    // The DPU's key never left its netd: no request to either netd carries
+    // it, and the DPU's requests carry no private key at all.
+    for netd in [&server_netd, &agent_netd] {
+        for line in netd.requests.lock().unwrap().iter() {
+            assert!(!line.contains(agent_netd.dpu_key_pem.trim()), "{line}");
+        }
+    }
+    for op in ["dpu_chassis_csr", "ensure_dpu_chassis"] {
+        let reqs = agent_netd.ops(op);
+        assert!(!reqs.is_empty(), "{op}");
+        for r in reqs {
+            assert!(!r.to_string().contains("PRIVATE KEY"), "{op}: {r}");
+        }
+    }
+    // The server's netd has no DPU: it was never asked about one.
+    assert!(server_netd.ops("dpu_chassis_csr").is_empty());
+
+    // A node can only have its own DPU's certificate: the server asking
+    // gets `node:<server>-dpu`, whatever CSR it sends.
+    let csr = agent_netd.dpu.csr_pem.lock().unwrap().clone();
+    let (cert, _) = cluster(&server).dpu_chassis_cert(&csr).await.unwrap();
+    assert_eq!(cert_cn(&cert), format!("node:{server_id}-dpu"));
+
+    // Removing the agent takes both its chassis out of OVN, through the
+    // leader's netd.
+    let (s, r) = call(
+        &server,
+        "POST",
+        "/nodes/agent1/remove",
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+    let forgotten: Vec<String> = server_netd
+        .ops("forget_ovn_member")
+        .iter()
+        .filter_map(|r| r["args"]["chassis"].as_str().map(str::to_string))
+        .collect();
+    assert!(
+        forgotten.contains(&format!("node:{agent_id}")),
+        "{forgotten:?}"
+    );
+    assert!(forgotten.contains(&chassis), "{forgotten:?}");
+    // And a removed node gets no more certificates.
+    assert!(cluster(&agent).dpu_chassis_cert(&csr).await.is_err());
 }

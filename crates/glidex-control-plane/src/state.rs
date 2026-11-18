@@ -2941,6 +2941,7 @@ impl VmManager {
                 numa: Vec::new(),
                 cpus: Vec::new(),
                 pool_devices: Vec::new(),
+                dpu_nics: Vec::new(),
             });
             let fit = self.standalone_fit(&vms, &vm, &disks)?;
             self.apply_fit(&mut vm, fit);
@@ -2956,6 +2957,7 @@ impl VmManager {
                         numa: choice.numa,
                         cpus: choice.cpus,
                         pool_devices: choice.pool_devices,
+                        dpu_nics: Vec::new(),
                     });
                     let policy =
                         !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();
@@ -6517,6 +6519,7 @@ mod tests {
             numa: Vec::new(),
             cpus: Vec::new(),
             pool_devices: Vec::new(),
+            dpu_nics: Vec::new(),
         };
         {
             let mut vms = manager.vms.blocking_write();

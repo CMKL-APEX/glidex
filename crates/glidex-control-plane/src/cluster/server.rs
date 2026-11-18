@@ -36,6 +36,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route("/cluster/v1/join/ready", post(join_ready))
         .route("/cluster/v1/rejoin", post(rejoin))
         .route("/cluster/v1/renew", post(renew))
+        .route("/cluster/v1/dpu-chassis-cert", post(dpu_chassis_cert))
         .route("/cluster/v1/import", post(import_create))
         .route("/cluster/v1/import/{plan}", get(import_poll))
         .route("/cluster/v1/import/{plan}/cancel", post(import_cancel))
@@ -401,6 +402,72 @@ async fn renew(
     })
     .await;
     // The bundle to install comes with the certificate, so a node that missed the replicated row can still verify it.
+    let trust = c
+        .ca_state()
+        .map(|s| s.trust_pem)
+        .or_else(|| c.files.read(c.files.trust()).ok())
+        .unwrap_or_default();
+    match r {
+        Ok(Ok(())) => Json(json!({ "cert_pem": cert_pem, "trust_pem": trust })).into_response(),
+        Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
+        Err(e) => fail(StatusCode::INTERNAL_SERVER_ERROR, "internal", e.to_string()),
+    }
+}
+
+/// spec/31-dpu.md §8.3: a member node gets its DPU's chassis certificate
+/// (`node:<its id>-dpu`) from the signing CA. The CSR comes from the DPU,
+/// which keeps the key; a node can only ask for its own DPU's chassis.
+async fn dpu_chassis_cert(
+    State(c): Ctx,
+    p: Option<Extension<PeerCert>>,
+    Json(req): Json<RenewRequest>,
+) -> Response {
+    let peer = match peer(&c, p, false) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let Some(node) = &c.node else {
+        return fail(
+            StatusCode::CONFLICT,
+            "not_a_server",
+            "this node does not sign certificates",
+        );
+    };
+    if !node.is_leader() {
+        return not_leader(&c);
+    }
+    let Some(ca) = c.signing_ca() else {
+        return fail(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "this server holds no CA key",
+        );
+    };
+    match crate::node::NodeStore::new(c.db.clone()).get(&peer.node_id) {
+        Ok(Some(n)) if !n.status.phase.is_tombstone() => {}
+        _ => {
+            return fail(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "this node is not a member",
+            );
+        }
+    }
+    let (cert_pem, info) =
+        match ca.sign_dpu_chassis(&req.csr, &peer.node_id, super::pki::NODE_VALIDITY_DAYS) {
+            Ok(v) => v,
+            Err(e) => return fail(StatusCode::BAD_REQUEST, "invalid_csr", e.to_string()),
+        };
+    let db = c.db.clone();
+    let r = tokio::task::spawn_blocking(move || {
+        db.write(Origin::Api, |tx| -> Result<(), JoinWriteError> {
+            tx.open_table(TableId::IssuedCerts.definition())?
+                .insert(&info.serial, serde_json::to_vec(&json!({ "node": peer.node_id, "kind": "dpu-chassis", "issuer": info.issuer_fingerprint, "not_after": info.not_after }))?.as_slice())?;
+            Ok(())
+        })
+        .map_err(|e| e.0)
+    })
+    .await;
     let trust = c
         .ca_state()
         .map(|s| s.trust_pem)

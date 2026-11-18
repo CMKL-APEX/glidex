@@ -122,6 +122,26 @@ pub enum Op {
     LeaveOvn {
         confirm: bool,
     },
+    /// Make the host's DPU a chassis of the cluster's OVN, next to the
+    /// host's own (spec/31-dpu.md §8.3). Ops of their own rather than a
+    /// target on the host's: an older netd refuses an op it doesn't know,
+    /// where it would ignore an unknown field and act on the host.
+    EnsureDpuChassis(EnsureDpuChassisArgs),
+    /// Read-only: the DPU chassis's state, as `ovn_status` for the host.
+    DpuOvnStatus {
+        id: String,
+    },
+    /// The DPU stops being a chassis.
+    LeaveDpuOvn {
+        id: String,
+        confirm: bool,
+    },
+    /// A CSR for the DPU's chassis certificate, from the key the DPU holds
+    /// (made there on first use; it never leaves the DPU).
+    DpuChassisCsr {
+        id: String,
+        chassis: String,
+    },
     /// Run this server's part of OVN's databases (`ovn-central`).
     EnsureOvnCentral(EnsureOvnCentralArgs),
     /// Take a departed member out of OVN (kick it from the NB/SB clusters,
@@ -211,6 +231,7 @@ impl Op {
                 | Op::CtExternalCounters
                 | Op::ListSourceRoutes
                 | Op::OvnStatus
+                | Op::DpuOvnStatus { .. }
                 | Op::ListPreparedDevices
                 | Op::DeviceHolders { .. }
                 | Op::DpuProbe { .. }
@@ -248,6 +269,10 @@ impl Op {
             Op::EnsureOvnChassis(_) => "ensure_ovn_chassis",
             Op::OvnStatus => "ovn_status",
             Op::LeaveOvn { .. } => "leave_ovn",
+            Op::EnsureDpuChassis(_) => "ensure_dpu_chassis",
+            Op::DpuOvnStatus { .. } => "dpu_ovn_status",
+            Op::LeaveDpuOvn { .. } => "leave_dpu_ovn",
+            Op::DpuChassisCsr { .. } => "dpu_chassis_csr",
             Op::EnsureOvnCentral(_) => "ensure_ovn_central",
             Op::ForgetOvnMember(_) => "forget_ovn_member",
             Op::PrepareDevice { .. } => "prepare_device",
@@ -411,6 +436,18 @@ pub struct EnsureUplinkArgs {
 pub struct EnsureOvnChassisArgs {
     pub spec: glidex_ovs::ovn::ChassisSpec,
     pub certs: glidex_ovs::ovn::ChassisCerts,
+}
+
+/// `ensure_dpu_chassis`: the DPU `id` of `dpu.json` becomes `chassis`
+/// (`node:<node id>-dpu`). The encapsulation address is the DPU's own,
+/// from `dpu.json`; the certificate is the leader's signature of the
+/// DPU's CSR. No private key: it stays on the DPU.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnsureDpuChassisArgs {
+    pub id: String,
+    pub chassis: String,
+    pub sb_remotes: Vec<String>,
+    pub certs: crate::dpu_chassis::DpuChassisCerts,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -2506,3 +2506,156 @@ fn a_priority_the_host_uses_stops_netd() {
     let dir = TempDir::new().unwrap();
     assert!(netd_managing(exec, &dir, &[]).check_source_routes().is_ok());
 }
+
+// ---- the DPU chassis (spec/31-dpu.md §8.3) ---------------------------------
+
+const CERT: &str = "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n";
+
+fn dpu_args(chassis: &str, cert_pem: &str) -> EnsureDpuChassisArgs {
+    EnsureDpuChassisArgs {
+        id: "dpu0".into(),
+        chassis: chassis.into(),
+        sb_remotes: vec!["ssl:192.0.2.11:6642".into()],
+        certs: glidex_netd::dpu_chassis::DpuChassisCerts {
+            cert_pem: cert_pem.into(),
+            ca_pem: CERT.into(),
+        },
+    }
+}
+
+#[test]
+fn dpu_chassis_ops_need_a_dpu() {
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec(), &dir);
+    for op in [
+        Op::EnsureDpuChassis(dpu_args("node:n1-dpu", CERT)),
+        Op::DpuOvnStatus { id: "dpu0".into() },
+        Op::DpuChassisCsr {
+            id: "dpu0".into(),
+            chassis: "node:n1-dpu".into(),
+        },
+    ] {
+        let err = netd.handle(op, &root_peer()).unwrap_err();
+        assert_eq!(
+            err,
+            glidex_ovs::OvsError::Unsupported {
+                missing: vec!["dpu.json".into()]
+            }
+        );
+    }
+}
+
+#[test]
+fn dpu_chassis_ops_are_relayed_without_a_private_key() {
+    let dir = TempDir::new().unwrap();
+    let fake = Arc::new(glidex_netd::dpu_chassis::RecordingDpuChassis::new(&[
+        "dpu0",
+    ]));
+    *fake.csr_pem.lock().unwrap() =
+        "-----BEGIN CERTIFICATE REQUEST-----\nMIIB\n-----END CERTIFICATE REQUEST-----\n".into();
+    let (netd, _) = netd(exec(), &dir);
+    let netd = netd.with_dpu_chassis(fake.clone());
+
+    let v = netd
+        .handle(
+            Op::DpuChassisCsr {
+                id: "dpu0".into(),
+                chassis: "node:n1-dpu".into(),
+            },
+            &root_peer(),
+        )
+        .unwrap();
+    assert!(v["csr"].as_str().unwrap().contains("CERTIFICATE REQUEST"));
+
+    let st = netd
+        .handle(
+            Op::EnsureDpuChassis(dpu_args("node:n1-dpu", CERT)),
+            &root_peer(),
+        )
+        .unwrap();
+    assert_eq!(st["chassis"], "node:n1-dpu");
+    let ensured = fake.ensured.lock().unwrap().clone();
+    assert_eq!(ensured.len(), 1);
+    assert_eq!(ensured[0].chassis, "node:n1-dpu");
+    assert_eq!(ensured[0].sb_remotes, ["ssl:192.0.2.11:6642"]);
+
+    // A key in place of the certificate, the host's chassis name, a bad
+    // remote or an unknown DPU: refused, nothing relayed.
+    let key = "-----BEGIN PRIVATE KEY-----\nMIIB\n-----END PRIVATE KEY-----\n";
+    for (args, code) in [
+        (dpu_args("node:n1-dpu", key), "invalid_argument"),
+        (dpu_args("node:n1", CERT), "invalid_argument"),
+        (
+            EnsureDpuChassisArgs {
+                sb_remotes: vec!["tcp:192.0.2.11:6642".into()],
+                ..dpu_args("node:n1-dpu", CERT)
+            },
+            "invalid_argument",
+        ),
+        (
+            EnsureDpuChassisArgs {
+                id: "dpu9".into(),
+                ..dpu_args("node:n1-dpu", CERT)
+            },
+            "not_found",
+        ),
+    ] {
+        let err = netd
+            .handle(Op::EnsureDpuChassis(args), &root_peer())
+            .unwrap_err();
+        assert_eq!(err.code(), code, "{err}");
+    }
+    assert_eq!(fake.ensured.lock().unwrap().len(), 1);
+
+    // A DPU answering with a key instead of a CSR is not passed on.
+    *fake.csr_pem.lock().unwrap() = key.into();
+    let err = netd
+        .handle(
+            Op::DpuChassisCsr {
+                id: "dpu0".into(),
+                chassis: "node:n1-dpu".into(),
+            },
+            &root_peer(),
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), "internal");
+
+    // Leaving needs confirmation.
+    let err = netd
+        .handle(
+            Op::LeaveDpuOvn {
+                id: "dpu0".into(),
+                confirm: false,
+            },
+            &root_peer(),
+        )
+        .unwrap_err();
+    assert_eq!(err.code(), "confirmation_required");
+    netd.handle(
+        Op::LeaveDpuOvn {
+            id: "dpu0".into(),
+            confirm: true,
+        },
+        &root_peer(),
+    )
+    .unwrap();
+    let st = netd
+        .handle(Op::DpuOvnStatus { id: "dpu0".into() }, &root_peer())
+        .unwrap();
+    assert_eq!(st["chassis"], serde_json::Value::Null);
+}
+
+#[test]
+fn dpu_chassis_ops_have_their_own_names() {
+    let op = Op::EnsureDpuChassis(dpu_args("node:n1-dpu", CERT));
+    assert_eq!(op.name(), "ensure_dpu_chassis");
+    assert!(op.is_mutating() && !op.is_status());
+    // The certificate isn't secret, but `_pem` fields never reach the log.
+    assert!(!op.log_args().contains("MIIB"));
+    let op = Op::DpuOvnStatus { id: "dpu0".into() };
+    assert_eq!(op.name(), "dpu_ovn_status");
+    assert!(!op.is_mutating() && !op.is_status());
+    // The host's ops keep their wire form.
+    let v: Op = serde_json::from_str(r#"{"op":"ovn_status"}"#).unwrap();
+    assert_eq!(v, Op::OvnStatus);
+}

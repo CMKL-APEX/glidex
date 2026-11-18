@@ -253,6 +253,49 @@ pub struct Versions {
     pub ovn: Option<String>,
 }
 
+/// Where a node's DPU stands (spec/31-dpu.md §9, §12.3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DpuState {
+    /// Reachable, but `dpu_prepare` hasn't run (or the probe has gaps).
+    Unprepared,
+    /// Prepared: its chassis can be enrolled (§8.3).
+    Prepared,
+    /// A `dpu_reinit` job holds it (§9.4.3).
+    Reinitializing,
+    Unreachable,
+}
+
+/// One DPU of a node, as the node reports it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DpuStatus {
+    /// Its id in the node's `dpu.json`.
+    pub id: String,
+    pub state: DpuState,
+    #[serde(default)]
+    pub vfs_total: u32,
+    #[serde(default)]
+    pub vfs_free: u32,
+    /// The chassis it is (`node:<id>-dpu`), once enrolled.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chassis: Option<String>,
+    #[serde(default)]
+    pub sb_connected: bool,
+    /// Its `ovn-controller`'s version, for the version rule (§8.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ovn_version: Option<String>,
+}
+
+/// Why a DPU whose `ovn-controller` is `dpu_ovn` can't be a chassis of a
+/// cluster whose ovn-northd is `northd`: the rule [`ovn_outdated`] applies
+/// to every chassis (an older controller lacks northd's pipeline). The
+/// answer is the `missing` item of `unsupported` (spec/31-dpu.md §8.3);
+/// `None` when it can, or when either version is unknown.
+pub fn dpu_ovn_outdated(dpu_ovn: Option<&str>, northd: Option<&str>) -> Option<String> {
+    let (want, have) = (northd.and_then(ovn_series)?, dpu_ovn.and_then(ovn_series)?);
+    (have < want).then(|| format!("ovn>={}.{}", want.0, want.1))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NodeStatus {
     pub phase: NodePhase,
@@ -304,6 +347,10 @@ pub struct NodeStatus {
     /// of an older version.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub topology: Option<crate::topology::TopologySummary>,
+    /// The node's DPUs (spec/31-dpu.md §12.3). Reported by the node from
+    /// netd's DPU probe (D3); empty on a node without one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dpus: Vec<DpuStatus>,
     /// Last `Ready` transition write only (D7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<u64>,
@@ -353,6 +400,7 @@ impl Node {
                 pci_devices: Vec::new(),
                 pci_groups: BTreeMap::new(),
                 topology: None,
+                dpus: Vec::new(),
                 heartbeat: None,
             },
         }
@@ -704,6 +752,45 @@ impl SelfProbe {
             api_pin: None,
             api_pin_pending: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod dpu_tests {
+    use super::*;
+
+    #[test]
+    fn a_dpu_older_than_northd_is_not_enrolled() {
+        assert_eq!(dpu_ovn_outdated(Some("24.03.8"), Some("24.03.8")), None);
+        assert_eq!(dpu_ovn_outdated(Some("24.09.1"), Some("24.03.8")), None);
+        assert_eq!(
+            dpu_ovn_outdated(Some("23.09.4"), Some("24.03.8")).as_deref(),
+            Some("ovn>=24.3")
+        );
+        // Unknown on either side: nothing to refuse on.
+        assert_eq!(dpu_ovn_outdated(None, Some("24.03.8")), None);
+        assert_eq!(dpu_ovn_outdated(Some("23.09.4"), None), None);
+    }
+
+    #[test]
+    fn node_status_without_dpus_is_unchanged() {
+        let n = Node::new(
+            "n1",
+            NodeSpec {
+                name: "node-a".into(),
+                role: NodeRole::Agent,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
+            },
+        );
+        let v = serde_json::to_value(&n.status).unwrap();
+        assert!(v.get("dpus").is_none());
+        let back: NodeStatus = serde_json::from_value(v).unwrap();
+        assert!(back.dpus.is_empty());
     }
 }
 

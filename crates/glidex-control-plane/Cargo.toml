@@ -16,6 +16,7 @@ aws-lc-rs = "1.19"
 ed25519-dalek = "3"
 glidex-ovs = { path = "../glidex-ovs" }
 glidex-ovn = { path = "../glidex-ovn" }
+glidex-dpu = { path = "../glidex-dpu" }
 glidex-netd = { path = "../glidex-netd" }
 glidex-stord = { path = "../glidex-stord" }
 glidex-hv-client = { path = "../glidex-hv-client" }

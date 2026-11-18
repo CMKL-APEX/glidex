@@ -135,7 +135,15 @@ impl VmManager {
                     ip,
                     vm_id: vm.id.clone(),
                     nic: i,
-                    chassis: Some(glidex_ovs::ovn::chassis_name(&p.node)),
+                    chassis: Some(requested_chassis(
+                        p,
+                        i,
+                        vm.status
+                            .nics
+                            .iter()
+                            .find(|n| n.nic_index == i)
+                            .and_then(|n| n.backend),
+                    )),
                 });
             }
         }
@@ -478,6 +486,7 @@ impl VmManager {
             .find(|n| n.meta.id == me)
             .map(|n| n.spec.br_int_datapath)
             .unwrap_or_default();
+        let dpu_remotes = sb_remotes.clone();
         let res = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
             use glidex_netd::proto::{EnsureOvnCentralArgs, EnsureOvnChassisArgs, Op};
             if is_server {
@@ -511,12 +520,126 @@ impl VmManager {
                     n.meta.resource_version += 1;
                     let _ = self.nodes().put(&n);
                 }
+                self.ensure_dpu_chassis(&cluster, &nodes, dpu_remotes).await;
             }
             // A node that can't become a chassis can't run VMs on cluster networks.
             Ok(Err(e)) => tracing::warn!("making this node an OVN chassis: {}", e),
             Err(e) => tracing::warn!("OVN node task: {}", e),
         }
     }
+}
+
+impl VmManager {
+    /// spec/31-dpu.md §8.3: this node's prepared DPUs become chassis of the
+    /// cluster's OVN, next to the node's own. The node drives it, as it
+    /// does its own chassis: netd asks the DPU for a CSR, the leader signs
+    /// it with the cluster CA, and netd hands the certificate to the DPU.
+    /// The key stays on the DPU. Idempotent; a DPU that is already an
+    /// enrolled, connected chassis is left alone.
+    async fn ensure_dpu_chassis(
+        &self,
+        cluster: &std::sync::Arc<crate::cluster::Cluster>,
+        nodes: &[crate::node::Node],
+        sb_remotes: Vec<String>,
+    ) {
+        let me = self.local_node_id();
+        let Some(node) = nodes.iter().find(|n| n.meta.id == me) else {
+            return;
+        };
+        let northd = crate::node::cluster_northd_ovn(nodes);
+        for step in dpu_enrolment(node, northd.as_deref()) {
+            let (id, chassis) = match step {
+                DpuEnrolment::Refused { id, missing } => {
+                    tracing::warn!(dpu = %id, missing = ?missing, "not enrolling the DPU's chassis");
+                    continue;
+                }
+                DpuEnrolment::Enrol { id, chassis } => (id, chassis),
+            };
+            let netd = self.netd.clone();
+            let (i, c) = (id.clone(), chassis.clone());
+            let csr = tokio::task::spawn_blocking(move || {
+                netd.call::<serde_json::Value>(glidex_netd::proto::Op::DpuChassisCsr {
+                    id: i,
+                    chassis: c,
+                })
+            })
+            .await;
+            let csr = match csr {
+                Ok(Ok(v)) => match v["csr"].as_str() {
+                    Some(c) => c.to_string(),
+                    None => continue,
+                },
+                Ok(Err(e)) => {
+                    tracing::warn!(dpu = %id, "the DPU's CSR: {e}");
+                    continue;
+                }
+                Err(_) => continue,
+            };
+            let (cert_pem, ca_pem) = match cluster.dpu_chassis_cert(&csr).await {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(dpu = %id, "signing the DPU's chassis certificate: {e}");
+                    continue;
+                }
+            };
+            let netd = self.netd.clone();
+            let args = glidex_netd::proto::EnsureDpuChassisArgs {
+                id: id.clone(),
+                chassis: chassis.clone(),
+                sb_remotes: sb_remotes.clone(),
+                certs: glidex_netd::dpu_chassis::DpuChassisCerts { cert_pem, ca_pem },
+            };
+            match tokio::task::spawn_blocking(move || {
+                netd.call::<serde_json::Value>(glidex_netd::proto::Op::EnsureDpuChassis(args))
+            })
+            .await
+            {
+                Ok(Ok(_)) => tracing::info!(dpu = %id, chassis, "DPU chassis enrolled"),
+                Ok(Err(e)) => tracing::warn!(dpu = %id, "making the DPU a chassis: {e}"),
+                Err(e) => tracing::warn!("DPU chassis task: {e}"),
+            }
+        }
+    }
+}
+
+/// What [`dpu_enrolment`] decides for one DPU.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum DpuEnrolment {
+    Enrol {
+        id: String,
+        chassis: String,
+    },
+    /// Not enrolled; `missing` as `unsupported` says it.
+    Refused {
+        id: String,
+        missing: Vec<String>,
+    },
+}
+
+/// Which of `node`'s DPUs to enrol now: the prepared ones that aren't yet
+/// a connected chassis under their name, unless their `ovn-controller`
+/// breaks the cluster's version rule (spec/31-dpu.md §8.3). A DPU that
+/// isn't prepared, or is being reinitialized, waits.
+pub(crate) fn dpu_enrolment(node: &crate::node::Node, northd: Option<&str>) -> Vec<DpuEnrolment> {
+    let chassis = glidex_dpu::types::chassis_name(&node.meta.id);
+    node.status
+        .dpus
+        .iter()
+        .filter(|d| d.state == crate::node::DpuState::Prepared)
+        .filter(|d| !(d.sb_connected && d.chassis.as_deref() == Some(chassis.as_str())))
+        .map(
+            |d| match crate::node::dpu_ovn_outdated(d.ovn_version.as_deref(), northd) {
+                Some(m) => DpuEnrolment::Refused {
+                    id: d.id.clone(),
+                    missing: vec![m],
+                },
+                None => DpuEnrolment::Enrol {
+                    id: d.id.clone(),
+                    chassis: chassis.clone(),
+                },
+            },
+        )
+        .collect()
 }
 
 /// This server's address among the servers': the one that is its own tunnel
@@ -852,9 +975,25 @@ impl VmManager {
     }
 }
 
-/// The glidex chassis (`node:<id>`) whose node is a tombstone (removed,
-/// forgotten, departed), with the node's name. A chassis of a node the
-/// cluster doesn't know is left alone (one joining, say).
+/// The chassis a NIC's logical port binds to (spec/31-dpu.md decision 16):
+/// the DPU's `node:<id>-dpu` for a NIC on the DPU, else the node's own. The
+/// backend the node reports wins over the one placed: a NIC that fell back
+/// to the host at launch moves its port there (§8.4).
+pub(crate) fn requested_chassis(
+    p: &crate::models::Placement,
+    nic: u8,
+    reported: Option<glidex_dpu::Backend>,
+) -> String {
+    match reported.unwrap_or_else(|| p.backend_of(nic)) {
+        glidex_dpu::Backend::Dpu => glidex_dpu::types::chassis_name(&p.node),
+        glidex_dpu::Backend::Host => glidex_ovs::ovn::chassis_name(&p.node),
+    }
+}
+
+/// The glidex chassis (`node:<id>`, and its DPU's `node:<id>-dpu`,
+/// spec/31-dpu.md §8.3) whose node is a tombstone (removed, forgotten,
+/// departed), with the node's name. A chassis of a node the cluster doesn't
+/// know is left alone (one joining, say).
 pub(crate) fn stale_chassis(
     chassis: &[String],
     nodes: &[crate::node::Node],
@@ -863,13 +1002,126 @@ pub(crate) fn stale_chassis(
         .iter()
         .filter_map(|c| {
             let id = c.strip_prefix("node:")?;
-            let n = nodes.iter().find(|n| n.meta.id == id)?;
+            let n = nodes.iter().find(|n| n.meta.id == id).or_else(|| {
+                let id = id.strip_suffix("-dpu")?;
+                nodes.iter().find(|n| n.meta.id == id)
+            })?;
             n.status
                 .phase
                 .is_tombstone()
                 .then(|| (c.clone(), n.spec.name.clone()))
         })
         .collect()
+}
+
+#[cfg(test)]
+mod requested_chassis_tests {
+    use super::requested_chassis;
+    use crate::models::Placement;
+    use glidex_dpu::Backend;
+
+    #[test]
+    fn the_backend_picks_the_chassis_and_a_fallback_moves_it() {
+        let p: Placement =
+            serde_json::from_value(serde_json::json!({ "node": "n1", "at": 1, "dpu_nics": [1] }))
+                .unwrap();
+        // Placed on the host, or on the DPU.
+        assert_eq!(requested_chassis(&p, 0, None), "node:n1");
+        assert_eq!(requested_chassis(&p, 1, None), "node:n1-dpu");
+        // The node attached NIC 1 on the host instead (`auto`, DPU away).
+        assert_eq!(requested_chassis(&p, 1, Some(Backend::Host)), "node:n1");
+        assert_eq!(requested_chassis(&p, 1, Some(Backend::Dpu)), "node:n1-dpu");
+        // A placement from before the DPU existed: everything on the host.
+        let old: Placement =
+            serde_json::from_value(serde_json::json!({ "node": "n1", "at": 1 })).unwrap();
+        assert_eq!(requested_chassis(&old, 1, None), "node:n1");
+        assert!(
+            serde_json::to_value(&old)
+                .unwrap()
+                .get("dpu_nics")
+                .is_none()
+        );
+    }
+}
+
+#[cfg(test)]
+mod dpu_enrolment_tests {
+    use super::{DpuEnrolment, dpu_enrolment};
+    use crate::node::{DpuState, DpuStatus, Node, NodeRole, NodeSpec};
+
+    fn dpu(
+        id: &str,
+        state: DpuState,
+        chassis: Option<&str>,
+        connected: bool,
+        ovn: &str,
+    ) -> DpuStatus {
+        DpuStatus {
+            id: id.into(),
+            state,
+            vfs_total: 16,
+            vfs_free: 16,
+            chassis: chassis.map(String::from),
+            sb_connected: connected,
+            ovn_version: Some(ovn.into()),
+        }
+    }
+
+    #[test]
+    fn prepared_dpus_are_enrolled_once_and_old_ones_refused() {
+        let mut n = Node::new(
+            "n1",
+            NodeSpec {
+                name: "node-a".into(),
+                role: NodeRole::Agent,
+                unschedulable: false,
+                labels: Default::default(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
+            },
+        );
+        assert!(dpu_enrolment(&n, Some("24.03.8")).is_empty());
+        n.status.dpus = vec![
+            dpu("dpu0", DpuState::Prepared, None, false, "24.03.8"),
+            dpu("dpu1", DpuState::Unprepared, None, false, "24.03.8"),
+            dpu("dpu2", DpuState::Reinitializing, None, false, "24.03.8"),
+            dpu(
+                "dpu3",
+                DpuState::Prepared,
+                Some("node:n1-dpu"),
+                true,
+                "24.03.8",
+            ),
+            // Enrolled once, but no longer connected: again.
+            dpu(
+                "dpu4",
+                DpuState::Prepared,
+                Some("node:n1-dpu"),
+                false,
+                "24.03.8",
+            ),
+            dpu("dpu5", DpuState::Prepared, None, false, "23.09.4"),
+        ];
+        assert_eq!(
+            dpu_enrolment(&n, Some("24.03.8")),
+            vec![
+                DpuEnrolment::Enrol {
+                    id: "dpu0".into(),
+                    chassis: "node:n1-dpu".into()
+                },
+                DpuEnrolment::Enrol {
+                    id: "dpu4".into(),
+                    chassis: "node:n1-dpu".into()
+                },
+                DpuEnrolment::Refused {
+                    id: "dpu5".into(),
+                    missing: vec!["ovn>=24.3".into()]
+                },
+            ]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -905,10 +1157,14 @@ mod stale_chassis_tests {
         ];
         let chassis = [
             "node:a",
+            "node:a-dpu",
             "node:b",
+            "node:b-dpu",
             "node:c",
             "node:d",
+            "node:d-dpu",
             "node:unknown",
+            "node:unknown-dpu",
             "not-glidex",
         ]
         .map(String::from);
@@ -916,6 +1172,7 @@ mod stale_chassis_tests {
             stale_chassis(&chassis, &nodes),
             vec![
                 ("node:b".to_string(), "removed".to_string()),
+                ("node:b-dpu".to_string(), "removed".to_string()),
                 ("node:c".to_string(), "forgotten".to_string())
             ]
         );

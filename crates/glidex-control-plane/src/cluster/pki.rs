@@ -18,6 +18,9 @@ pub const NODE_VALIDITY_DAYS: i64 = 365;
 /// Organisational unit of node certificates: what the node may do (§12.3).
 pub const OU_SERVER: &str = "glidex-server";
 pub const OU_AGENT: &str = "glidex-agent";
+/// A DPU's OVN chassis (spec/31-dpu.md §8.3): an OVN client only, never a
+/// node of the cluster.
+pub const OU_DPU_CHASSIS: &str = "glidex-dpu-chassis";
 
 #[derive(Debug, Error)]
 pub enum PkiError {
@@ -189,6 +192,49 @@ impl Ca {
     }
 }
 
+impl Ca {
+    /// Sign a DPU chassis's CSR (spec/31-dpu.md §8.3, decision 12): the
+    /// subject is `CN=node:<node id>-dpu, OU=glidex-dpu-chassis`, the
+    /// chassis name SB RBAC matches (O19), for client authentication only.
+    /// Only the CSR's public key is taken: it names no address, and the
+    /// key stays on the DPU. [`inspect_node_cert`] refuses the result, so
+    /// it can never act as a node of the cluster.
+    pub fn sign_dpu_chassis(
+        &self,
+        csr_pem: &str,
+        node_id: &str,
+        validity_days: i64,
+    ) -> Result<(String, NodeCert), PkiError> {
+        let mut csr = CertificateSigningRequestParams::from_pem(csr_pem)?;
+        let mut p = CertificateParams::default();
+        let mut dn = DistinguishedName::new();
+        let chassis = glidex_dpu::types::chassis_name(node_id);
+        dn.push(DnType::CommonName, chassis.clone());
+        dn.push(DnType::OrganizationalUnitName, OU_DPU_CHASSIS);
+        p.distinguished_name = dn;
+        p.is_ca = IsCa::NoCa;
+        p.key_usages = vec![KeyUsagePurpose::DigitalSignature];
+        p.extended_key_usages = vec![ExtendedKeyUsagePurpose::ClientAuth];
+        p.not_before = now() - ::time::Duration::minutes(5);
+        p.not_after = now() + ::time::Duration::days(validity_days);
+        let serial = random_serial();
+        let serial_hex = hex(serial.as_ref());
+        p.serial_number = Some(serial);
+        csr.params = p;
+        let key = KeyPair::from_pem(&self.key_pem)?;
+        let issuer = Issuer::from_ca_cert_pem(&self.cert_pem, key)?;
+        let pem = csr.signed_by(&issuer)?.pem();
+        let info = NodeCert {
+            node_id: chassis.trim_start_matches("node:").to_string(),
+            server: false,
+            serial: serial_hex,
+            not_after: (now() + ::time::Duration::days(validity_days)).unix_timestamp(),
+            issuer_fingerprint: self.public_key_fingerprint()?,
+        };
+        Ok((pem, info))
+    }
+}
+
 /// A node's own key pair and its CSR.
 pub struct NodeKey {
     key: KeyPair,
@@ -312,6 +358,11 @@ pub fn inspect_node_cert(der: &[u8]) -> Result<NodeCert, PkiError> {
         .next()
         .and_then(|a| a.as_str().ok())
         .unwrap_or("");
+    if ou == OU_DPU_CHASSIS {
+        return Err(PkiError::Invalid(format!(
+            "{cn:?} is a DPU chassis certificate, not a node's"
+        )));
+    }
     let serial = c
         .tbs_certificate
         .raw_serial()
@@ -376,6 +427,46 @@ mod tests {
         let (pem, _) = ca.sign_node(&csr, "other", false, 30, &[ip]).unwrap();
         let seen = inspect_node_cert(&pem_bundle_ders(&pem).unwrap()[0]).unwrap();
         assert_eq!((seen.node_id.as_str(), seen.server), ("other", false));
+    }
+
+    #[test]
+    fn a_dpu_chassis_cert_is_the_chassis_and_never_a_node() {
+        let ca = Ca::generate("c1").unwrap();
+        // The DPU's key: generated there; only the CSR comes here.
+        let key = NodeKey::generate().unwrap();
+        let ip: IpAddr = "192.0.2.31".parse().unwrap();
+        let csr = key.csr(&[ip], &["dpu.example.com".into()]).unwrap();
+        assert!(!csr.contains("PRIVATE KEY"));
+        let (pem, info) = ca.sign_dpu_chassis(&csr, "n1", NODE_VALIDITY_DAYS).unwrap();
+        assert_eq!(info.node_id, "n1-dpu");
+        let der = &pem_bundle_ders(&pem).unwrap()[0];
+        let (_, cert) = x509_parser::parse_x509_certificate(der).unwrap();
+        let cn = cert
+            .subject()
+            .iter_common_name()
+            .next()
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(cn, "node:n1-dpu");
+        let ou = cert
+            .subject()
+            .iter_organizational_unit()
+            .next()
+            .unwrap()
+            .as_str()
+            .unwrap();
+        assert_eq!(ou, OU_DPU_CHASSIS);
+        // Issued by the cluster CA, for client auth only, naming nothing.
+        assert_eq!(
+            issuer_of(der, &ca.cert_pem).unwrap(),
+            ca.public_key_fingerprint().unwrap()
+        );
+        let eku = cert.extended_key_usage().unwrap().unwrap().value;
+        assert!(eku.client_auth && !eku.server_auth);
+        assert!(cert.subject_alternative_name().unwrap().is_none());
+        // It never passes as a node of the cluster.
+        assert!(inspect_node_cert(der).is_err());
     }
 
     #[test]
