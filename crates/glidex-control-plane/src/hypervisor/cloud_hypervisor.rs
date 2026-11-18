@@ -16,6 +16,7 @@ use crate::images::qemu_img::ImageType;
 use crate::models::VmConfig;
 use glidex_hv_client::{Observed, ch::ChClient};
 use glidex_ovs::vm_port::VmPortBinding;
+use std::path::Path;
 
 /// Where `glidex-install` puts Cloud-Hypervisor's EDK2 UEFI firmware:
 /// `~/.glidex/CLOUDHV.fd` on x86_64, `~/.glidex/CLOUDHV_EFI.fd` on aarch64.
@@ -109,6 +110,30 @@ fn net_args(config: &VmConfig) -> Vec<String> {
             v
         })
         .collect()
+}
+
+/// Whether a `sched_ext` scheduler (such as `scx_pylon`) is attached,
+/// per `sched_ext` (`/sys/kernel/sched_ext`).
+fn sched_ext_enabled(sched_ext: &Path) -> bool {
+    std::fs::read_to_string(sched_ext.join("state")).is_ok_and(|s| s.trim() == "enabled")
+}
+
+/// Turns off Cloud Hypervisor's kernel core scheduling (on by default,
+/// `vm`) while a `sched_ext` scheduler is attached (spec/30-pylon.md P20).
+/// On kernels without the `sched_ext` core-scheduling fixes a cookie next
+/// to `sched_ext` can hang the host (CMKL-APEX/pylon#15), so `pylond`'s
+/// guard refuses one with `EPERM`, and Cloud Hypervisor then won't start
+/// the VM (glidex#547). Pylon's VMM runs without on that refusal, so Pylon
+/// VMs keep their own driver's arguments.
+fn core_scheduling_off(sched_ext: &Path, argv: &mut [String]) {
+    if !sched_ext_enabled(sched_ext) {
+        return;
+    }
+    if let Some(i) = argv.iter().position(|a| a == "--cpus")
+        && let Some(cpus) = argv.get_mut(i + 1)
+    {
+        cpus.push_str(",core_scheduling=off");
+    }
 }
 
 /// The command line after the binary: everything `vm.create` used to get.
@@ -423,6 +448,7 @@ impl HypervisorDriver for CloudHypervisorDriver {
         check_mmio64_here(config)?;
         let mut argv = vec![bin.to_string_lossy().into_owned()];
         argv.extend(args(config, api_socket));
+        core_scheduling_off(Path::new("/sys/kernel/sched_ext"), &mut argv);
         Ok(LaunchArgs {
             argv,
             fallback: None,
@@ -485,6 +511,33 @@ mod tests {
             .take_while(|a| !a.starts_with("--"))
             .map(String::as_str)
             .collect()
+    }
+
+    #[test]
+    fn core_scheduling_is_off_only_under_sched_ext() {
+        let dir = tempfile::tempdir().unwrap();
+        let cpus = |state: Option<&str>| {
+            if let Some(st) = state {
+                std::fs::write(dir.path().join("state"), st).unwrap();
+            }
+            let mut a = args(&config(serde_json::json!({})), "/s");
+            core_scheduling_off(dir.path(), &mut a);
+            values(&a, "--cpus")
+                .into_iter()
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        };
+        // No sched_ext at all, or none attached: Cloud Hypervisor's default.
+        assert_eq!(cpus(None), ["boot=2,max=2"]);
+        assert_eq!(cpus(Some("disabled\n")), ["boot=2,max=2"]);
+        assert_eq!(
+            cpus(Some("enabled\n")),
+            ["boot=2,max=2,core_scheduling=off"]
+        );
+        // Nothing to change without `--cpus`.
+        let mut none = vec!["--memory".to_string(), "size=1M".to_string()];
+        core_scheduling_off(dir.path(), &mut none);
+        assert_eq!(none, ["--memory", "size=1M"]);
     }
 
     #[test]
