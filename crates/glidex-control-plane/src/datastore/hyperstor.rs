@@ -76,31 +76,21 @@ fn project_of(disk: &Disk) -> Option<&str> {
     Some(disk.project.as_str()).filter(|p| !p.is_empty())
 }
 
-/// Hyperstor's refusal of a disk's project when none of its projects is
-/// linked to it (S33, hyperstor D311): `not_found`, "no project linked to
-/// directory project …". A tenant that hasn't opted in to the cluster has
-/// no linked projects there.
-fn is_unlinked_project(e: &ImageError) -> bool {
-    matches!(e, ImageError::Io(m) if m.contains("no project linked to directory project"))
-}
-
-/// Make a disk's volume with `f` in its glidex project; when hyperstor has
-/// no project linked to it, again with none, so the volume lands in
-/// hyperstor's `default` as before S33 (S34). The stopgap until tenants are
-/// admitted to the cluster (19-tenancy.md T11).
-fn in_project<T>(
-    project: Option<&str>,
-    f: impl Fn(Option<&str>) -> Result<T, ImageError>,
-) -> Result<T, ImageError> {
-    match f(project) {
-        Err(e) if project.is_some() && is_unlinked_project(&e) => {
-            tracing::warn!(
-                project = project.unwrap_or_default(),
-                "hyperstor has no project linked to this one; making the volume in its default project (S34)"
-            );
-            f(None)
+/// A disk whose project hyperstor hasn't linked waits (S34). Hyperstor
+/// refuses it with `not_found`, "no project linked to directory project …"
+/// (S33, hyperstor D311): the disk's tenant isn't admitted to the cluster
+/// yet, or the directory's feed hasn't brought a new project yet, which
+/// takes a minute or so. `NotReady` keeps the disk pending and retried
+/// until it is linked, rather than making the volume in hyperstor's
+/// `default` as S34's stopgap did (glidex#543).
+fn unlinked_waits(e: ImageError) -> ImageError {
+    match e {
+        ImageError::Io(m) if m.contains("no project linked to directory project") => {
+            ImageError::NotReady(format!(
+                "{m}: waiting for hyperstor to link the disk's project (its tenant admitted to the hyperstor cluster, the project brought by the directory's feed)"
+            ))
         }
-        r => r,
+        e => e,
     }
 }
 
@@ -623,13 +613,12 @@ impl HyperstorDriver {
         size: u64,
         project: Option<&str>,
     ) -> Result<(), ImageError> {
-        in_project(project, |project| {
-            let req = create_request(self.pool, id, name, size, project);
-            self.call(|c| {
-                let req = req.clone();
-                async move { c.create_volume(req).await.map(|_| ()) }
-            })
+        let req = create_request(self.pool, id, name, size, project);
+        self.call(|c| {
+            let req = req.clone();
+            async move { c.create_volume(req).await.map(|_| ()) }
         })
+        .map_err(unlinked_waits)
     }
 
     fn delete(&self, id: &str) -> Result<(), ImageError> {
@@ -1125,13 +1114,12 @@ impl StorageDriver for HyperstorDriver {
                     return Err(ImageError::invalid_disk("a linked disk names its image"));
                 };
                 let (origin, epoch) = self.image_volume(image_id, path, size_bytes)?;
-                in_project(project_of(disk), |project| {
-                    let req = clone_request(&origin, epoch, &disk.name, &id, project);
-                    self.call(|c| {
-                        let req = req.clone();
-                        async move { c.clone_volume(req).await.map(|_| ()) }
-                    })
+                let req = clone_request(&origin, epoch, &disk.name, &id, project_of(disk));
+                self.call(|c| {
+                    let req = req.clone();
+                    async move { c.clone_volume(req).await.map(|_| ()) }
                 })
+                .map_err(unlinked_waits)
                 .and_then(|()| {
                     if size > size_bytes {
                         self.expand(&id, size)
@@ -1796,36 +1784,31 @@ mod tests {
         assert!(lines[2].ends_with("--sparse"), "{}", lines[2]);
     }
 
-    /// S34: a disk's volume is made again with no project when hyperstor
-    /// has none linked to its project; other refusals stand.
+    /// S34: a disk of a project hyperstor hasn't linked waits (`NotReady`,
+    /// so its controller retries), never lands in hyperstor's `default`;
+    /// other refusals stand.
     #[test]
-    fn a_disk_of_an_unlinked_project_falls_back_to_hyperstors_default() {
-        let unlinked = || {
-            ImageError::Io(
-                "hyperstor: no project linked to directory project \"p-web\" that this call reaches"
-                    .into(),
-            )
-        };
-        let asked = std::cell::RefCell::new(Vec::new());
-        let r = in_project(Some("p-web"), |p| {
-            asked.borrow_mut().push(p.map(String::from));
-            if p.is_some() { Err(unlinked()) } else { Ok(7) }
-        });
-        assert_eq!(r.unwrap(), 7);
-        assert_eq!(*asked.borrow(), vec![Some("p-web".into()), None]);
-        asked.borrow_mut().clear();
-        let r = in_project(Some("p-web"), |p| {
-            asked.borrow_mut().push(p.map(String::from));
-            Err::<(), _>(ImageError::Io("hyperstor: outside_realm".into()))
-        });
-        assert!(r.is_err());
-        assert_eq!(asked.borrow().len(), 1);
-        asked.borrow_mut().clear();
-        let r = in_project(None, |p| {
-            asked.borrow_mut().push(p.map(String::from));
-            Err::<(), _>(unlinked())
-        });
-        assert!(r.is_err());
-        assert_eq!(asked.borrow().len(), 1);
+    fn a_disk_of_an_unlinked_project_waits_for_it_to_be_linked() {
+        let unlinked = ImageError::Io(
+            "hyperstor: no project linked to directory project \"p-web\" that this call reaches"
+                .into(),
+        );
+        match unlinked_waits(unlinked) {
+            ImageError::NotReady(m) => {
+                assert!(
+                    m.contains("no project linked") && m.contains("waiting"),
+                    "{m}"
+                )
+            }
+            e => panic!("not waiting: {e:?}"),
+        }
+        assert!(matches!(
+            unlinked_waits(ImageError::Io("hyperstor: outside_realm".into())),
+            ImageError::Io(_)
+        ));
+        assert!(matches!(
+            unlinked_waits(ImageError::NotFound("v".into())),
+            ImageError::NotFound(_)
+        ));
     }
 }
