@@ -208,10 +208,34 @@ paths, on a cluster running a build with both.
 5. Google Directory sync's service-account assertion (RS256 signing):
    only with a test directory (T4 is deferred by the operator).
 
+## Trusting a directory as a whole (T11)
+
+On the three-server test cluster, which hosts a directory, as its owner,
+and with a hyperstor cluster and one more glidex host:
+
+1. hyperstor offers trust to the whole directory (`hyperstorctl
+   admission offer --directory … --admit open`); the owner redeems it
+   with automatic opt-in (`gxctl directory trust-cluster --offer-file F
+   --auto-opt-in`).
+2. The directory's tenants are admitted there, the feed brings their
+   projects, and a disk created in a glidex project of one of them on
+   the hyperstor datastore lands in the linked hyperstor project.
+3. A standalone glidex host offers trust to the same directory under
+   `approval` (`gxctl admission offer --directory ISSUER --admit
+   approval`); the owner redeems it without automatic opt-in.
+4. A tenant opts in (`gxctl tenant opt-in T --cluster C`): pending at
+   the directory and at the host. The host's operator approves it
+   (`gxctl admission approve`): admitted, the feed pulled, the host's
+   report seen at the directory.
+5. The host ends the trust as a whole (`gxctl admission untrust`):
+   neither side lists the other.
+
 ## Results
 
 | Date | Build | Check | Result |
 |---|---|---|---|
+| 2026-11-18 | glidex `3c86dd7` at the directory, `2d50a128` (T11 task 4) on the standalone host | Trusting a directory as a whole, steps 3–5 above, with a host taken out of the test cluster for the check | pass: pending on both sides after the opt-in, admitted at approval with the feed pulled within a minute and the host's report (one project) at the directory; after `untrust` neither side listed the other. Rejoining the host afterwards met an installer race (#567) |
+| 2026-11-18 | glidex `8b9f8ab`, then `d0ef1bc`; hyperstor `775c8a6` | Trusting a directory as a whole, steps 1–2 above, with the test cluster's hyperstor | pass at `d0ef1bc`: twelve tenants admitted, the feed pulled, eight glidex projects linked, a blank disk and a VM's root clone created in a linked project. Found by it and fixed first: the pin given with the API address was the leader's certificate, not the address's (D100, #555), and a follower forwarding the feed pull dropped its assertion (#557) |
 | 2026-11-10 | `b7c3d7a` | Security's real-host list (spec/11-security.md §17) on the three-server test cluster, with the operator's go-ahead for the parts that change a host | pass, except VFIO and hugepages: **not run yet**, moved to v0.0.9 by the operator (#454). **Sandboxing (§9):** the units have §9's settings; netd's unit has no capability bounding set on purpose, and §9 is corrected to say so. **nftables (§8.4)** on the single-A100 host, with throwaway networks: a NAT guest reached only its own gateway, and a guest on an isolated network reached nothing on the host. **PAM (§5.3)** on the single-A100 host, with a throwaway account: the right password was accepted; a wrong password and an expired, must-change or locked account were refused |
 | 2026-11-10 | not recorded | OIDC presets Google Workspace and JumpCloud, and verified addresses and pre-added users (T8) | pass, as reported by the operator; when and on which build weren't recorded |
 | 2026-11-10 | `9b69618` | Token paths on aws-lc-rs, step 2 (the cluster's own tokens) | pass. gxctl: a directory login completed at one server listed projects at another, both ways. Browser: a passkey sign-in on a server's own web UI, not through the cluster's public name (a Cloudflare tunnel), worked, as reported by the operator. Step 3 not run: no second organization is admitted. Step 5 not run: T4 deferred by the operator |
