@@ -953,6 +953,7 @@ pub async fn create_vm(call: &Call, mut req: pb::CreateVmRequest) -> ServiceResu
         host_numa_node: None,
         host_numa: Vec::new(),
         vcpu_pins: Vec::new(),
+        vfio_switch_groups: Vec::new(),
         firmware_image: None,
         kernel_image: None,
         generate_seed: req.generate_seed,

@@ -206,6 +206,10 @@ pub struct VmConfig {
     pub host_numa: Vec<NumaShare>,
     #[serde(skip)]
     pub vcpu_pins: Vec<u32>,
+    /// At launch: the VFIO devices that share a switch on the host, a
+    /// group each (spec/27-gpu-vms.md G21). Never persisted.
+    #[serde(skip)]
+    pub vfio_switch_groups: Vec<Vec<String>>,
     /// Host-side NIC bindings from glidex-netd, filled in by `start_vm`
     /// for the hypervisor; never persisted.
     #[serde(skip)]

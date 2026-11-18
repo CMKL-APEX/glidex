@@ -849,9 +849,22 @@ node, in the order of `numa`:
   node. Shared vCPUs float over the host, as for one node.
 
 The distances between guest NUMA nodes are the hypervisor's defaults,
-not the host's, and a GPU and a NIC that share a PCIe switch on the
-host don't share one in the guest. Both hypervisors lay the guest out
-this way.
+not the host's. Both hypervisors lay the guest out this way.
+
+Devices that share a PCIe switch on the host, such as a GPU and the
+ConnectX NIC next to it, stay together in the guest, whatever the VM's
+NUMA policy:
+
+- on QEMU, under one root port with an emulated switch, so
+  `nvidia-smi topo -m` shows them `PIX`;
+- on Cloud Hypervisor and Pylon, which can't emulate a switch, on a PCI
+  root of their own, so they show `PHB` to each other and are a PCI root
+  apart from the VM's other devices.
+
+When a VM gets a GPU and a NIC from pools, the scheduler picks the pair
+that shares the deepest switch on the host. Whether peer-to-peer traffic
+between them (GPUDirect RDMA) works depends on the host as well: see
+[PCI passthrough](../operator-guide/pci-passthrough.md).
 
 <!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) across several PCI roots. G13's per-segment check refuses what Cloud Hypervisor can't place; confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
 

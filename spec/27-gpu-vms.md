@@ -672,8 +672,16 @@ cluster.
     - Shared vCPUs still float on the shared pool, as for one node (H15).
   - **Not done:**
     - guest NUMA distances (QEMU `-numa dist`; CH the same, verify);
-    - the root port per host PCIe switch, so a GPU and its NIC share one
-      in the guest;
+    - *done since (G21, 2026-11-18)*: devices under one host switch
+      share a guest root port tree. `hypervisor::switch_groups` groups
+      the VM's VFIO devices by their deepest shared bridge below the root
+      port, from their sysfs paths at launch (`VmConfig.vfio_switch_groups`).
+      QEMU: `pcie-root-port` `rps<k>`, `x3130-upstream` `swu<k>`, an
+      `xio3130-downstream` per device (chassis from 20), on `pcie.0` or
+      the guest node's `pxb-pcie`. Cloud Hypervisor and Pylon: a segment
+      per group after the guest nodes' segments, listed in its guest
+      node's `pci_segments`; G13's check counts it. Not run on a host
+      yet;
     - the MMIO aperture sizing for large BARs;
     - the run on the HGX host (§12).
 
