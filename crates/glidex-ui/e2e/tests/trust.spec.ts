@@ -16,7 +16,7 @@ test("the Admissions page lists trusted directories and makes offers", async ({ 
   await page.getByRole("button", { name: "Make offer" }).click();
   // The scratch control plane serves its API without TLS: an offer needs a
   // certificate the other organization can pin, so it is refused, and says why.
-  await expect(page.getByText("this cluster's API has no TLS certificate to pin")).toBeVisible();
+  await expect(page.getByText("this host's API has no TLS certificate to pin")).toBeVisible();
   await expect(page.getByTestId("offer-token")).toHaveCount(0);
   await expect(page.getByText("No offers.")).toBeVisible();
 });
@@ -128,11 +128,12 @@ test("the directory's Clusters tab trusts a cluster as a whole", async ({ page }
   const row = page.getByTestId("directory-clusters").getByRole("row").filter({ hasText: "store-north" });
   await expect(row.getByText("As a whole; tenants admitted at once")).toBeVisible();
   await expect(row.getByText("lab-a")).toBeVisible();
-  await expect(row.getByText("pending")).toBeVisible();
+  await expect(row.getByText("pending", { exact: true })).toBeVisible();
   const toggle = row.getByLabel("Automatic opt-in for store-north");
   await expect(toggle).toBeChecked();
   const update = waitForRpc(page, "glidex.directory.v1.ClusterTrustService/UpdateDirectoryCluster");
-  await toggle.uncheck();
+  // The switch follows the server: it changes once the update is answered.
+  await toggle.click();
   expect(await update).toEqual({ cluster: "c-store", auto_opt_in: false });
   await expect(toggle).not.toBeChecked();
 
@@ -168,12 +169,12 @@ test("the tenant page opts in to a cluster its directory trusts", async ({ page 
 
   const table = page.getByTestId("tenant-clusters");
   const pending = table.getByRole("row").filter({ hasText: "store-north" });
-  await expect(pending.getByText("pending")).toBeVisible();
+  await expect(pending.getByText("pending", { exact: true })).toBeVisible();
   await expect(pending.getByText("Waiting for the cluster's operator to approve")).toBeVisible();
   await expect(available).toHaveCount(0);
 
   const no = table.getByRole("row").filter({ hasText: "vms-north" });
-  await expect(no.getByText("refused")).toBeVisible();
+  await expect(no.getByText("refused", { exact: true })).toBeVisible();
   const again = waitForRpc(page, "glidex.tenancy.v1.TenantService/OptInCluster");
   await no.getByRole("button", { name: "Ask again" }).click();
   expect(await again).toMatchObject({ cluster: "c-vms" });
