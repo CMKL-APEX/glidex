@@ -7952,3 +7952,37 @@ async fn a_prepared_dpu_becomes_a_chassis_and_leaves_with_its_node() {
     // And a removed node gets no more certificates.
     assert!(cluster(&agent).dpu_chassis_cert(&csr).await.is_err());
 }
+
+/// A peer's request (another organization's directory or cluster, signed
+/// with an assertion in `Authorization: GlidexPeer …`) taken by a follower
+/// reaches the leader with its assertion. The leader's refusal (audited)
+/// then says the cluster isn't trusted, not that no assertion came.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_peer_request_on_a_follower_reaches_the_leader_with_its_assertion() {
+    let _one = serial().await;
+    let cps = form(2).await;
+    let leader = leader_index(&cps, &[0, 1]).await;
+    let follower = 1 - leader;
+    let (s, _) = call(
+        &cps[follower],
+        "POST",
+        "/d/local/feed/v1",
+        Some(json!({"cluster_id": "storage-1", "revision": ""})),
+        &[("authorization", "GlidexPeer not-a-real-assertion")],
+    )
+    .await;
+    assert_eq!(s, StatusCode::FORBIDDEN);
+    let (_, v) = call(&cps[leader], "GET", "/audit?limit=20", None, &[]).await;
+    let seen: Vec<&str> = v["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|e| e["action"] == "readFeed")
+        .filter_map(|e| e["details"]["why"].as_str())
+        .collect();
+    assert!(
+        seen.contains(&"not a trusted cluster"),
+        "the leader met the assertion: {seen:?}"
+    );
+    assert!(!seen.contains(&"no assertion"), "{seen:?} {v}");
+}
