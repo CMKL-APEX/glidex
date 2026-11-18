@@ -17,38 +17,31 @@ pub async fn dpu(client: &ApiClient, args: &[&str]) {
 }
 
 async fn status(client: &ApiClient, node: Option<&str>) {
-    let nodes: Vec<String> = match node {
-        Some(n) => vec![n.to_string()],
+    let nodes: Vec<(String, String)> = match node {
+        Some(n) => vec![(n.to_string(), n.to_string())],
         None => match client
             .request_json::<Value>(Method::GET, "/nodes", None)
             .await
         {
-            Ok(v) => v["nodes"]
-                .as_array()
-                .map(|a| {
-                    a.iter()
-                        .filter_map(|n| n["id"].as_str().map(String::from))
-                        .collect()
-                })
-                .unwrap_or_default(),
+            Ok(v) => listed_nodes(&v),
             Err(e) => return err(e),
         },
     };
     let mut shown = 0;
-    for id in &nodes {
+    for (id, name) in &nodes {
         let v: Value = match client
             .request_json(Method::GET, &format!("/nodes/{id}/dpus"), None)
             .await
         {
             Ok(v) => v,
             Err(e) => {
-                err(format!("node {id}: {e}"));
+                err(format!("node {name}: {e}"));
                 continue;
             }
         };
         for d in v["dpus"].as_array().into_iter().flatten() {
             shown += 1;
-            for l in lines(id, d) {
+            for l in lines(name, d) {
                 println!("{l}");
             }
         }
@@ -56,6 +49,21 @@ async fn status(client: &ApiClient, node: Option<&str>) {
     if shown == 0 {
         println!("{}", "No DPUs reported".yellow());
     }
+}
+
+/// Each node's id and name from `GET /nodes`: a `Node` keeps both under
+/// `meta`.
+fn listed_nodes(v: &Value) -> Vec<(String, String)> {
+    v["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|n| {
+            let id = n["meta"]["id"].as_str()?;
+            let name = n["meta"]["name"].as_str().filter(|s| !s.is_empty());
+            Some((id.to_string(), name.unwrap_or(id).to_string()))
+        })
+        .collect()
 }
 
 /// One DPU's block: its reported state, VFs, chassis, and the probe's gaps.
@@ -127,6 +135,22 @@ mod tests {
             }
         }
         out
+    }
+
+    #[test]
+    fn nodes_are_read_from_their_meta() {
+        let v = serde_json::json!({ "nodes": [
+            { "meta": { "id": "n1", "name": "node-a" }, "status": {} },
+            { "meta": { "id": "n2", "name": "" } },
+            { "status": {} },
+        ]});
+        assert_eq!(
+            listed_nodes(&v),
+            vec![
+                ("n1".to_string(), "node-a".to_string()),
+                ("n2".to_string(), "n2".to_string()),
+            ]
+        );
     }
 
     #[test]
