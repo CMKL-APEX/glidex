@@ -271,6 +271,17 @@ async fn forward(
             headers.push(("cookie", cookies.join("; ")));
         }
     }
+    // Another organization's peer (a directory, a cluster) signs each
+    // request with an assertion the handler verifies, not a login this
+    // server could pass on as a principal: the leader needs it as sent.
+    if let Some(v) = parts
+        .headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| v.starts_with(glidex_trust::peer::SCHEME))
+    {
+        headers.push(("authorization", v.to_string()));
+    }
     if let Some(p) = parts
         .extensions
         .get::<Principal>()
