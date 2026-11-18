@@ -7963,14 +7963,24 @@ async fn a_peer_request_on_a_follower_reaches_the_leader_with_its_assertion() {
     let cps = form(2).await;
     let leader = leader_index(&cps, &[0, 1]).await;
     let follower = 1 - leader;
-    let (s, _) = call(
-        &cps[follower],
-        "POST",
-        "/d/local/feed/v1",
-        Some(json!({"cluster_id": "storage-1", "revision": ""})),
-        &[("authorization", "GlidexPeer not-a-real-assertion")],
-    )
-    .await;
+    // A write right after an election can answer 503 while the new leader
+    // settles (as create_project knows); retry those.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let s = loop {
+        let (s, _) = call(
+            &cps[follower],
+            "POST",
+            "/d/local/feed/v1",
+            Some(json!({"cluster_id": "storage-1", "revision": ""})),
+            &[("authorization", "GlidexPeer not-a-real-assertion")],
+        )
+        .await;
+        if s == StatusCode::SERVICE_UNAVAILABLE && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        break s;
+    };
     assert_eq!(s, StatusCode::FORBIDDEN);
     let (_, v) = call(&cps[leader], "GET", "/audit?limit=20", None, &[]).await;
     let seen: Vec<&str> = v["entries"]
