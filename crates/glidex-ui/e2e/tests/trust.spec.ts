@@ -3,7 +3,7 @@
 // for offers; the tenant page offers to accept one and refuses a token that
 // isn't one. The two-organization flow runs in the control
 // plane's trust tests and on real hosts (spec/20-idp-checks.md).
-import { expect, rpcRoute, test } from "../fixtures";
+import { expect, rpcRoute, test, waitForRpc } from "../fixtures";
 
 test.use({ ignoredConsoleErrors: /status of (400|403)/ });
 
@@ -76,4 +76,105 @@ test("the tenant page shows a storage cluster's report", async ({ page }) => {
   await expect(store.getByText("3 S3 keys")).toBeVisible();
   const vms = table.getByRole("row").filter({ hasText: "vms-north" });
   await expect(vms.getByTestId("tenant-cluster-storage")).toHaveText("—");
+});
+
+// T11 (D92, D93, D99): the directory's Clusters tab lists the clusters it
+// trusts, takes a directory offer with automatic opt-in, toggles it and
+// untrusts. The calls are mocked: one host has no other organization's
+// cluster to trust; the trust tests and the real check cover the rest.
+test("the directory's Clusters tab trusts a cluster as a whole", async ({ page }) => {
+  let auto = false;
+  const cluster = () => ({
+    id: "c-store",
+    name: "store-north",
+    api: "https://store.example:8443",
+    whole: true,
+    admit: "ADMIT_SETTING_OPEN",
+    auto_opt_in: auto,
+    tenants: [
+      { id: "t1", slug: "lab-a", status: "CLUSTER_ADMISSION_ADMITTED" },
+      { id: "t2", slug: "lab-b", status: "CLUSTER_ADMISSION_PENDING" },
+    ],
+  });
+  let trusted = false;
+  await rpcRoute(page, "glidex.directory.v1.ClusterTrustService/ListDirectoryClusters", () => ({
+    message: { clusters: trusted ? [cluster()] : [] },
+  }));
+  await rpcRoute(page, "glidex.directory.v1.ClusterTrustService/TrustCluster", (req) => {
+    trusted = true;
+    auto = !!req.auto_opt_in;
+    return { message: { cluster: cluster() } };
+  });
+  await rpcRoute(page, "glidex.directory.v1.ClusterTrustService/UpdateDirectoryCluster", (req) => {
+    auto = !!req.auto_opt_in;
+    return { message: { cluster: cluster() } };
+  });
+  await rpcRoute(page, "glidex.directory.v1.ClusterTrustService/UntrustCluster", () => {
+    trusted = false;
+    return { message: {} };
+  });
+
+  await page.goto("/directory/clusters");
+  await expect(page.getByText("None yet.")).toBeVisible();
+  const offer = page.getByLabel("The directory offer its operator sent you");
+  await expect(offer).toHaveAttribute("type", "password");
+  await offer.fill("gxo_test-offer");
+  await page.locator("#trust-auto-opt-in").check();
+  const trust = waitForRpc(page, "glidex.directory.v1.ClusterTrustService/TrustCluster");
+  await page.getByRole("button", { name: "Trust cluster" }).click();
+  expect(await trust).toEqual({ offer: "gxo_test-offer", auto_opt_in: true });
+  await expect(offer).toHaveValue("");
+
+  const row = page.getByTestId("directory-clusters").getByRole("row").filter({ hasText: "store-north" });
+  await expect(row.getByText("As a whole; tenants admitted at once")).toBeVisible();
+  await expect(row.getByText("lab-a")).toBeVisible();
+  await expect(row.getByText("pending")).toBeVisible();
+  const toggle = row.getByLabel("Automatic opt-in for store-north");
+  await expect(toggle).toBeChecked();
+  const update = waitForRpc(page, "glidex.directory.v1.ClusterTrustService/UpdateDirectoryCluster");
+  await toggle.uncheck();
+  expect(await update).toEqual({ cluster: "c-store", auto_opt_in: false });
+  await expect(toggle).not.toBeChecked();
+
+  await row.getByRole("button", { name: "Untrust" }).click();
+  const untrust = waitForRpc(page, "glidex.directory.v1.ClusterTrustService/UntrustCluster");
+  await page.getByRole("dialog").getByRole("button", { name: "Untrust" }).click();
+  expect(await untrust).toEqual({ cluster: "c-store" });
+  await expect(page.getByText("None yet.")).toBeVisible();
+});
+
+// D93, D97: the tenant page offers the clusters its directory trusts as a
+// whole, opts in with no offer, and shows a pending and a refused opt-in,
+// which may ask again.
+test("the tenant page opts in to a cluster its directory trusts", async ({ page }) => {
+  let status = "TENANT_CLUSTER_STATUS_AVAILABLE";
+  const store = () => ({ cluster_id: "c-store", name: "store-north", api: "https://store.example:8443", whole: true, status });
+  const refused = { cluster_id: "c-vms", name: "vms-north", api: "https://vms.example:8841", whole: true, status: "TENANT_CLUSTER_STATUS_REFUSED" };
+  await rpcRoute(page, "glidex.tenancy.v1.TenantService/ListTenantClusters", (req) => {
+    expect(req.available).toBe(true);
+    return { message: { clusters: [store(), refused] } };
+  });
+  await rpcRoute(page, "glidex.tenancy.v1.TenantService/OptInCluster", (req) => {
+    if (req.cluster === "c-store") status = "TENANT_CLUSTER_STATUS_PENDING";
+    return { message: { cluster: req.cluster === "c-store" ? store() : refused } };
+  });
+
+  await page.goto("/tenants/default");
+  const available = page.getByTestId("tenant-clusters-available");
+  await expect(available.getByText("store-north")).toBeVisible();
+  const optIn = waitForRpc(page, "glidex.tenancy.v1.TenantService/OptInCluster");
+  await available.getByRole("button", { name: "Opt in" }).click();
+  expect(await optIn).toMatchObject({ cluster: "c-store" });
+
+  const table = page.getByTestId("tenant-clusters");
+  const pending = table.getByRole("row").filter({ hasText: "store-north" });
+  await expect(pending.getByText("pending")).toBeVisible();
+  await expect(pending.getByText("Waiting for the cluster's operator to approve")).toBeVisible();
+  await expect(available).toHaveCount(0);
+
+  const no = table.getByRole("row").filter({ hasText: "vms-north" });
+  await expect(no.getByText("refused")).toBeVisible();
+  const again = waitForRpc(page, "glidex.tenancy.v1.TenantService/OptInCluster");
+  await no.getByRole("button", { name: "Ask again" }).click();
+  expect(await again).toMatchObject({ cluster: "c-vms" });
 });

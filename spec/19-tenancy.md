@@ -2130,8 +2130,14 @@ Tested between two control planes
 (`trust_tests::a_glidex_cluster_takes_a_directory_offer`: both settings,
 asking again after a refusal, a cap change for later admissions only,
 ending as a whole). Not yet: the Admissions page's offer form makes
-tenant offers only (gxctl makes directory offers); its UI e2e. The web
-UI's part of task 5 and task 6 are not started.
+tenant offers only (gxctl makes directory offers); its UI e2e. Task 5's
+web UI is built: the directory's **Clusters** tab (`DirectoryClusters.tsx`:
+the trusted clusters with how each admits, the automatic opt-in switch and
+each tenant's status; trusting with a directory offer in a write-only
+field; untrusting) and, on a tenant's page, the clusters its directory
+trusts as a whole with **Opt in**, a pending or refused opt-in's status
+and **Ask again**; tested in the UI e2e (`trust.spec.ts`, the cluster
+calls mocked). Task 6 is not started.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,

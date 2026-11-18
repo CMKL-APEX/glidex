@@ -28,6 +28,7 @@ import { useCan, useTenantLabel } from "../session";
 import { useConnectorNames, useDirectory, useNodeNames } from "../hooks";
 import { AdmissionBadge, TenantFlags } from "./Tenants";
 import StorageView from "../components/StorageView";
+import { AdmissionStatus } from "./DirectoryClusters";
 
 /** What the page offers, each checked on the tenant. */
 const CAPS = [
@@ -75,10 +76,16 @@ function StorageCell({ s }: { s: NonNullable<NonNullable<api.TenantCluster["repo
   );
 }
 
+const AVAILABLE = "TENANT_CLUSTER_STATUS_AVAILABLE";
+const isAdmitted = (c: api.TenantCluster) => !c.status || c.status === "TENANT_CLUSTER_STATUS_UNSPECIFIED" || c.status === "TENANT_CLUSTER_STATUS_ADMITTED";
+
 /** The clusters of other organizations the tenant uses, and what each last
- *  reported of it (spec/19-tenancy.md D70). */
+ *  reported of it (spec/19-tenancy.md D70); with them, the clusters its
+ *  directory trusts as a whole that it may opt in to (D93). */
 function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolean }) {
-  const [clusters, setClusters] = useState<api.TenantCluster[] | null>(null);
+  const [all, setAll] = useState<api.TenantCluster[] | null>(null);
+  const clusters = all ? all.filter((c) => c.status !== AVAILABLE) : null;
+  const available = (all ?? []).filter((c) => c.status === AVAILABLE);
   const [error, setError] = useState<string | null>(null);
   const [offer, setOffer] = useState("");
   const [busy, setBusy] = useState(false);
@@ -89,11 +96,25 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
   const anyStorage = (clusters ?? []).some((c) => c.report?.storage);
   const refresh = useCallback(() => {
     api
-      .listTenantClusters(tenant.id)
-      .then(setClusters)
+      .listTenantClusters(tenant.id, true)
+      .then(setAll)
       .catch((e) => setError(errorMessage(e)));
   }, [tenant.id]);
   useEffect(() => refresh(), [refresh]);
+  // A cluster the directory trusts as a whole, with no offer (D93); a
+  // refused or pending tenant may ask again (D97).
+  const optInTrusted = async (cluster: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await api.optInTrustedCluster(tenant.id, cluster);
+      refresh();
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setBusy(false);
+    }
+  };
   // An offer from another organization's operator (D65).
   const optIn = async (e: FormEvent) => {
     e.preventDefault();
@@ -109,7 +130,7 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
       setBusy(false);
     }
   };
-  if (clusters !== null && clusters.length === 0 && !error && !canManage) return null;
+  if (clusters !== null && clusters.length === 0 && available.length === 0 && !error && !canManage) return null;
   return (
     <Card title="Clusters of other organizations">
       <ErrorBanner error={error} onDismiss={() => setError(null)} />
@@ -133,6 +154,26 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
           </button>
         </form>
       )}
+      {available.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-sm font-medium text-gray-700 mb-1">Trusted by your directory</h3>
+          <ul className="divide-y divide-gray-100 text-sm" data-testid="tenant-clusters-available">
+            {available.map((c) => (
+              <li key={c.cluster_id} className="flex items-center justify-between gap-2 py-1.5">
+                <div>
+                  <div className="text-gray-800">{c.name || c.cluster_id}</div>
+                  <div className="text-xs text-gray-500 font-mono">{c.api}</div>
+                </div>
+                {canManage && (
+                  <button type="button" className={secondaryButton} disabled={busy} onClick={() => optInTrusted(c.cluster_id ?? "")}>
+                    Opt in
+                  </button>
+                )}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {clusters !== null && clusters.length === 0 && <p className="text-sm text-gray-500">This tenant uses no cluster of another organization.</p>}
       {clusters === null ? (
         <p className="text-sm text-gray-500">Loading…</p>
@@ -154,14 +195,33 @@ function ClustersCard({ tenant, canManage }: { tenant: Tenant; canManage: boolea
             </thead>
             <tbody className="divide-y divide-gray-100">
               {clusters.map((c) => {
-                const r = c.report;
+                const r = isAdmitted(c) ? c.report : undefined;
                 return (
                   <tr key={c.cluster_id}>
                     <td className="py-1.5 pr-3">
                       <div className="text-gray-800">{c.name || c.cluster_id}</div>
                       <div className="text-xs text-gray-500 font-mono">{c.api}</div>
                     </td>
-                    {r ? (
+                    {!isAdmitted(c) ? (
+                      <>
+                        <td className="py-1.5 pr-3">
+                          <AdmissionStatus status={c.status} />
+                          {c.status === "TENANT_CLUSTER_STATUS_REFUSED" && canManage && (
+                            <button
+                              type="button"
+                              className="ml-2 text-xs text-blue-600 hover:underline"
+                              disabled={busy}
+                              onClick={() => optInTrusted(c.cluster_id ?? "")}
+                            >
+                              Ask again
+                            </button>
+                          )}
+                        </td>
+                        <td colSpan={anyStorage ? 6 : 5} className="py-1.5 text-xs text-gray-500">
+                          {c.status === "TENANT_CLUSTER_STATUS_PENDING" ? "Waiting for the cluster's operator to approve" : "The cluster's operator refused"}
+                        </td>
+                      </>
+                    ) : r ? (
                       <>
                         <td className="py-1.5 pr-3">{r.status === "ADMISSION_STATUS_SUSPENDED" ? <span className="text-amber-700">suspended</span> : "admitted"}</td>
                         <td className="py-1.5 pr-3">{r.projects ?? 0}</td>

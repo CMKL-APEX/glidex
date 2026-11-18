@@ -270,3 +270,29 @@ A new tenant can hold projects; its VMs need the cluster to admit it.
 Where the operator turned on automatic admission, that happens when it
 is created (or approved), with the cluster's default cap; otherwise ask
 the operator ([Automatic admission](../operator-guide/access-control.md#automatic-admission)).
+
+## Clusters of other organizations
+
+A tenant can use a cluster another organization runs (a storage
+cluster, say). Its page's **Clusters of other organizations** card lists
+the ones it uses, with what each last reported of it, and how it got
+there:
+
+- **With an offer**: that cluster's operator sends the tenant's
+  administrator an offer token; paste it in **Use a cluster** and
+  **Accept offer**.
+- **With none**, for a cluster your directory trusts as a whole: it is
+  listed under **Trusted by your directory**, with **Opt in**. The
+  cluster admits the tenant at once, or marks it *pending* until its
+  operator approves; a *refused* tenant may **Ask again**. Your
+  directory may also opt every tenant in by itself.
+
+**Opt out** leaves a cluster, or withdraws a pending opt-in; what the
+tenant has there stays until that cluster's operator removes it. Opting
+in and out takes the tenant's administrator and a recent login. Or:
+
+```bash
+gxctl tenant clusters ml-lab --available
+gxctl tenant opt-in ml-lab --cluster <id>
+gxctl tenant opt-out ml-lab --cluster <id>
+```

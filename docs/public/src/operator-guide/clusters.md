@@ -621,6 +621,13 @@ gxctl directory cluster-set <id> --auto-opt-in on|off
 gxctl directory untrust-cluster <id>                  # ends it for every tenant
 ```
 
+In the web UI, the directory's **Clusters** tab does the same: paste the
+offer (the field never shows it back), choose **Opt every tenant in by
+itself**, then **Trust cluster**; the list shows each cluster, how it
+admits, its **Automatic opt-in** switch, each tenant's status
+(*admitted*, *pending*, *refused*) and **Untrust**. A tenant's page lists
+the clusters it may opt in to ([Projects](../user-guide/projects.md#clusters-of-other-organizations)).
+
 Only admitted tenants are sent to the cluster: their members, projects
 and roles. Turn on `--auto-opt-in` only for a cluster your organization
 runs or has agreed to share every tenant with, since each tenant's

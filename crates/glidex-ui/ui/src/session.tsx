@@ -81,6 +81,10 @@ const HOST_ACTION_RESOURCE = {
   // Self-service tenants and the tenant label (spec/19-tenancy.md §11.1).
   readDirectorySettings: "Directory",
   updateDirectorySettings: "Directory",
+  // Clusters the directory trusts as a whole (spec/19-tenancy.md §12.6).
+  readDirectoryClusters: "Directory",
+  trustCluster: "Directory",
+  untrustCluster: "Directory",
   listAdmissions: "Cluster",
   manageAdmissions: "Cluster",
   listConnectors: "Directory",
