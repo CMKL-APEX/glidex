@@ -138,6 +138,7 @@ import { FederationService, type FederationJson } from "./gen/glidex/directory/v
 import type { InspectInvitationResponseJson } from "./gen/glidex/auth/v1/login_pb";
 import { ConnectorService, type ConnectorJson } from "./gen/glidex/directory/v1/connectors_pb";
 import { DirectorySettingsService, type DirectorySettingsJson } from "./gen/glidex/directory/v1/settings_pb";
+import { ClusterTrustService, type DirectoryClusterJson } from "./gen/glidex/directory/v1/clusters_pb";
 import {
   MetricsService,
   UsageService,
@@ -1535,12 +1536,18 @@ export type StorageCall =
  *  the signed-in person (D86): the browser never talks to the cluster. */
 export const storageCall = <T>(tenant: string, cluster: string, call: StorageCall, body: unknown = {}) =>
   request<T>("POST", `/tenants/${encodeURIComponent(tenant)}/clusters/${encodeURIComponent(cluster)}/storage/${call}`, body);
-export const listTenantClusters = (id: string) =>
-  rpc(TenantService.method.listTenantClusters, { id }).then((r) => (r.clusters ?? []) as TenantCluster[]);
+/** With `available`, also the clusters the directory trusts as a whole that
+ *  the tenant hasn't opted in to (D93). */
+export const listTenantClusters = (id: string, available = false) =>
+  rpc(TenantService.method.listTenantClusters, { id, available }).then((r) => (r.clusters ?? []) as TenantCluster[]);
 /** Opt the tenant in to another organization's cluster with the offer its
  *  operator sent (D65); needs a recent login. */
 export const optInCluster = (id: string, offer: string) =>
   rpc(TenantService.method.optInCluster, { id, offer }).then((r) => r.cluster as TenantCluster);
+/** Opt the tenant in, with no offer, to a cluster its directory trusts as a
+ *  whole (D93); the cluster admits it or holds it pending. */
+export const optInTrustedCluster = (id: string, cluster: string) =>
+  rpc(TenantService.method.optInCluster, { id, cluster }).then((r) => r.cluster as TenantCluster);
 export const optOutCluster = (id: string, cluster: string) => rpc(TenantService.method.optOutCluster, { id, cluster }).then(none);
 
 // ---- trust: offers and trusted directories (D64–D66, D13) ----------------------
@@ -1629,6 +1636,17 @@ export const getDirectorySettings = () =>
 /** Replaces them; answers them as stored (team names as ids). */
 export const updateDirectorySettings = (settings: DirectorySettings) =>
   rpc(DirectorySettingsService.method.updateDirectorySettings, { settings }).then((r) => (r.settings ?? {}) as DirectorySettings);
+/** A cluster the directory trusts, with its tenants (spec/19-tenancy.md §12.6). */
+export type DirectoryCluster = DirectoryClusterJson;
+export const listDirectoryClusters = () =>
+  rpc(ClusterTrustService.method.listDirectoryClusters).then((r) => (r.clusters ?? []) as DirectoryCluster[]);
+/** Redeem a directory offer (D92); needs a recent login. */
+export const trustCluster = (offer: string, auto_opt_in: boolean) =>
+  rpc(ClusterTrustService.method.trustCluster, { offer, auto_opt_in }).then((r) => r.cluster as DirectoryCluster);
+/** Turn the directory's automatic opt-in on or off (D99). */
+export const setClusterAutoOptIn = (cluster: string, auto_opt_in: boolean) =>
+  rpc(ClusterTrustService.method.updateDirectoryCluster, { cluster, auto_opt_in }).then((r) => r.cluster as DirectoryCluster);
+export const untrustCluster = (cluster: string) => rpc(ClusterTrustService.method.untrustCluster, { cluster }).then(none);
 export const listConnectors = () => rpc(ConnectorService.method.listConnectors).then((r) => (r.connectors ?? []) as Connector[]);
 export const getConnector = (id: string) => rpc(ConnectorService.method.getConnector, { id }).then((r) => r.connector as Connector);
 export const createConnector = (connector: ConnectorInput) =>

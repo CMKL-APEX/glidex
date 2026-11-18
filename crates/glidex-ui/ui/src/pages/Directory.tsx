@@ -11,6 +11,7 @@ const Access = lazy(() => import("./Access"));
 const Connectors = lazy(() => import("./Connectors"));
 const Policies = lazy(() => import("./Policies"));
 const DirectorySettings = lazy(() => import("./DirectorySettings"));
+const DirectoryClusters = lazy(() => import("./DirectoryClusters"));
 
 /** What the directory page's tabs are, and who sees each. */
 export function directoryTabs(host: Record<string, boolean>, readsATenant: boolean, tenants = "Tenants") {
@@ -20,6 +21,7 @@ export function directoryTabs(host: Record<string, boolean>, readsATenant: boole
     { id: "access", label: "Users & roles", show: host.listUsers || host.listTeams || host.readSystemBindings },
     { id: "connectors", label: "Connectors", show: host.listConnectors },
     { id: "policies", label: "Policies", show: host.readPolicy },
+    { id: "clusters", label: "Clusters", show: host.readDirectoryClusters },
     { id: "settings", label: "Settings", show: host.readDirectorySettings },
   ].filter((t) => t.show);
 }
@@ -56,6 +58,7 @@ export default function Directory() {
         {tab === "access" && <Access />}
         {tab === "connectors" && <Connectors />}
         {tab === "policies" && <Policies />}
+        {tab === "clusters" && <DirectoryClusters />}
         {tab === "settings" && <DirectorySettings />}
       </Suspense>
     </div>
@@ -124,7 +127,10 @@ function Overview() {
               Local accounts belong to one host: in a cluster, <em>alice</em> on one host isn't <em>alice</em> on another
               unless the site shares its accounts.
             </li>
-            <li>A control plane hosts one directory today; hosting several, and clusters that trust a directory elsewhere, come later.</li>
+            <li>
+              <strong>Clusters of other organizations</strong> take this directory's tenants once they opt in: with an offer each, or
+              with none for a cluster the directory trusts as a whole (the Clusters tab).
+            </li>
           </ul>
         </Card>
       </div>
