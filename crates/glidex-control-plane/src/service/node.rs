@@ -243,6 +243,46 @@ fn device_target(call: &Call, id: String, address: &str) -> ServiceResult<(Strin
     Ok((id, addr))
 }
 
+/// `GET /nodes/{id}/dpus` (spec/31-dpu.md §12.4): each DPU the node
+/// reports, with netd's live probe of it (or why there is none).
+pub async fn node_dpus(call: &Call, id: String) -> ServiceResult<Value> {
+    let id = node_key(call, id)?;
+    let mut es = EntitySet::new();
+    es.host(&id);
+    call.require(Ent::host_of(&id), es)?;
+    let m = call.manager();
+    let node = m
+        .nodes()
+        .get(&id)
+        .ok()
+        .flatten()
+        .ok_or_else(|| err(StatusCode::NOT_FOUND, "not_found", format!("node {id}")))?;
+    let mut out = Vec::new();
+    for d in &node.status.dpus {
+        let probe = m.node_device_op(&id, &d.id, "dpu-probe").await;
+        out.push(json!({
+            "status": d,
+            "healthy": d.healthy(),
+            "probe": probe.as_ref().ok(),
+            "probe_error": probe.as_ref().err().map(|e| e.to_string()),
+        }));
+    }
+    Ok(json!({ "node": id, "dpus": out }))
+}
+
+/// `GET /nodes/{id}/dpus/{dpu}/ports` (spec/31-dpu.md §12.4): the VM ports
+/// on the DPU, tagged rows with netd's records beside them.
+pub async fn node_dpu_ports(call: &Call, id: String, dpu: String) -> ServiceResult<Value> {
+    let id = node_key(call, id)?;
+    let mut es = EntitySet::new();
+    es.host(&id);
+    call.require(Ent::host_of(&id), es)?;
+    call.manager()
+        .node_device_op(&id, &dpu, "dpu-ports")
+        .await
+        .map_err(crate::service::host::manager_err)
+}
+
 /// `POST /nodes/{id}/devices/{address}/prepare` (spec/22-host-topology.md
 /// §5.3): its IOMMU group bound to vfio-pci on that node.
 pub async fn prepare_device(

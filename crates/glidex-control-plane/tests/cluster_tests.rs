@@ -3666,6 +3666,201 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
     );
 }
 
+/// spec/31-dpu.md D6: a cluster network's `backend`, refused where no DPU
+/// can serve it; a VM on a `dpu` network waits for a node whose DPU is
+/// ready, and its placement names the NICs that go there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn dpu_backed_networks_place_their_nics_on_a_ready_dpu() {
+    use glidex_control_plane::cluster::config::EdgeConfig;
+    use glidex_control_plane::node::{DpuState, DpuStatus};
+    let _one = serial().await;
+    let mut cfg = test_config();
+    cfg.cluster.ovn.enabled = true;
+    cfg.cluster.ovn.edge = Some(EdgeConfig {
+        physnet: "uplink".into(),
+        external_cidr: "192.0.2.0/24".into(),
+        gateway: "192.0.2.1".parse().unwrap(),
+        external_ip: "192.0.2.50".parse().unwrap(),
+        external_pool: None,
+        gateway_nodes: vec!["cp1".into()],
+    });
+    let server = new_cp();
+    server.manager.configure(&cfg);
+    manage::init(
+        &server.manager,
+        &cfg,
+        InitOptions {
+            advertise: Some(server.addr),
+            tunnel_ip: None,
+            listen: Some(server.addr),
+        },
+    )
+    .await
+    .unwrap();
+    server.manager.initialize().await.unwrap();
+    let net = |name: &str, extra: Value| {
+        let mut b =
+            json!({ "name": name, "mode": "NETWORK_MODE_ISOLATED", "port_type": "PORT_TYPE_TAP" });
+        b.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        b
+    };
+
+    // Refused: a node network, and a provider network (O18).
+    let (s, e) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(net(
+            "n1",
+            json!({ "scope": "NETWORK_SCOPE_NODE", "backend": "NETWORK_BACKEND_DPU" }),
+        )),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert_eq!(e["error"], "invalid_network");
+    assert!(
+        e["message"].as_str().unwrap().contains("missing: cluster"),
+        "{e}"
+    );
+    let (s, e) = call(&server, "POST", "/networks", Some(json!({ "name": "lan", "mode": "NETWORK_MODE_BRIDGED", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER", "physnet": "uplink", "backend": "NETWORK_BACKEND_AUTO" })), &[]).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+
+    // A cluster network on the DPU; its backend shows and can change.
+    let (s, n) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(net(
+            "fast",
+            json!({ "scope": "NETWORK_SCOPE_CLUSTER", "backend": "NETWORK_BACKEND_DPU" }),
+        )),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{n}");
+    assert_eq!(n["network"]["backend"], "NETWORK_BACKEND_DPU");
+    let (s, n) = call(
+        &server,
+        "PUT",
+        "/networks/fast/backend",
+        Some(json!({ "backend": "NETWORK_BACKEND_AUTO" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{n}");
+    assert_eq!(n["network"]["backend"], "NETWORK_BACKEND_AUTO");
+    let (s, n) = call(&server, "GET", "/networks/fast", None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{n}");
+    assert_eq!(n["network"]["backend"], "NETWORK_BACKEND_AUTO");
+    assert!(n["network"]["host_backend_nics"].is_null(), "{n}");
+    let (s, _) = call(
+        &server,
+        "PUT",
+        "/networks/fast/backend",
+        Some(json!({ "backend": "NETWORK_BACKEND_DPU" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK);
+    // A cluster network on the host's chassis, and a provider network,
+    // which can't move to the DPU.
+    let (s, _) = call(
+        &server,
+        "POST",
+        "/networks",
+        Some(net("plain", json!({ "scope": "NETWORK_SCOPE_CLUSTER" }))),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED);
+    let (s, lan) = call(&server, "POST", "/networks", Some(json!({ "name": "lan", "mode": "NETWORK_MODE_BRIDGED", "port_type": "PORT_TYPE_TAP", "scope": "NETWORK_SCOPE_CLUSTER", "physnet": "uplink" })), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{lan}");
+    let (s, e) = call(
+        &server,
+        "PUT",
+        "/networks/lan/backend",
+        Some(json!({ "backend": "NETWORK_BACKEND_AUTO" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+
+    // No DPU: a VM on the `dpu` network waits, and says why.
+    let mut body = vm_unpinned("v1");
+    body["networks"] = json!([{ "network": "plain" }, { "network": "fast" }]);
+    let (s, vm) = call(&server, "POST", "/vms", Some(body.clone()), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let vm = vm_of(&vm).clone();
+    assert!(vm["node"].is_null(), "{vm}");
+    let waiting = vm["conditions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["kind"] == "Scheduled")
+        .cloned()
+        .unwrap();
+    assert_eq!(waiting["reason"], "Unschedulable");
+    assert!(
+        waiting["message"].as_str().unwrap().contains("no DPU"),
+        "{waiting}"
+    );
+
+    // The node reports a ready DPU: the next VM goes there, NIC 1 on it.
+    let id = server.manager.local_node_id();
+    let mut node = server.manager.nodes().get(&id).unwrap().unwrap();
+    node.status.dpus = vec![DpuStatus {
+        id: "dpu0".into(),
+        state: DpuState::Prepared,
+        vfs_total: 1,
+        vfs_free: 1,
+        chassis: Some(format!("node:{id}-dpu")),
+        sb_connected: true,
+        ovn_version: None,
+    }];
+    node.meta.resource_version += 1;
+    server.manager.nodes().put(&node).unwrap();
+    body["name"] = json!("v2");
+    body["networks"] = json!([{ "network": "fast" }]);
+    let (s, v2) = call(&server, "POST", "/vms", Some(body.clone()), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{v2}");
+    let v2_id = vm_of(&v2)["id"].as_str().unwrap().to_string();
+    let placed = server.manager.get_vm(&v2_id).await.unwrap();
+    let p = placed.status.placement.expect("placed");
+    assert_eq!(p.node, id);
+    assert_eq!(p.dpu_nics, [0]);
+    // Its logical port is bound to the DPU's chassis.
+    let d = server.manager.__desired_ovn_for_tests().await.unwrap();
+    let port = d
+        .ports
+        .iter()
+        .find(|p| p.vm_id == v2_id)
+        .expect("v2's port");
+    assert_eq!(
+        port.chassis.as_deref(),
+        Some(format!("node:{id}-dpu").as_str())
+    );
+
+    // Its VF is claimed: the only one, so a third VM waits.
+    body["name"] = json!("v3");
+    let (s, v3) = call(&server, "POST", "/vms", Some(body), &[]).await;
+    assert_eq!(s, StatusCode::CREATED, "{v3}");
+    assert!(vm_of(&v3)["node"].is_null(), "{v3}");
+    let msg = vm_of(&v3)["conditions"].to_string();
+    assert!(msg.contains("0 VFs free (1 of 1 claimed)"), "{msg}");
+
+    // The node's DPU over the API: what it reported, and netd's probe
+    // (none here: no netd).
+    let (s, d) = call(&server, "GET", &format!("/nodes/{id}/dpus"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{d}");
+    let dpu = &d["dpus"][0];
+    assert_eq!(dpu["status"]["id"], "dpu0");
+    assert_eq!(dpu["healthy"], true);
+    assert!(dpu["probe_error"].is_string(), "{d}");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn provider_networks_and_vpc_routers() {
     use glidex_control_plane::cluster::config::EdgeConfig;

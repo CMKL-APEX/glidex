@@ -61,6 +61,9 @@ pub(crate) fn netd_error_response(body: &ErrorBody) -> (StatusCode, Json<ApiErro
         "migration_rolled_back" => (StatusCode::CONFLICT, "migration_rolled_back"),
         "unsupported" => (StatusCode::UNPROCESSABLE_ENTITY, "unsupported_on_host"),
         "permission_denied" => (StatusCode::SERVICE_UNAVAILABLE, "netd_permission_denied"),
+        // spec/31-dpu.md §12.4.
+        "dpu_unavailable" => (StatusCode::SERVICE_UNAVAILABLE, "dpu_unavailable"),
+        "dpu_capacity" => (StatusCode::CONFLICT, "dpu_capacity"),
         _ => (StatusCode::BAD_GATEWAY, "netd_error"),
     };
     (

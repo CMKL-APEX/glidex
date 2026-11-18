@@ -82,6 +82,16 @@ service NetworkService {
       rest: "PUT /networks/{id}/host_api"
     };
   }
+  // Where a cluster network's NICs are switched: the node's own chassis,
+  // its DPU, or the DPU when it is healthy (spec/31-dpu.md §12.1). Applies
+  // to NICs placed from now on.
+  rpc SetNetworkBackend(SetNetworkBackendRequest) returns (SetNetworkBackendResponse) {
+    option (glidex.api.v1.op) = {
+      action: "setNetworkBackend"
+      kind: KIND_WRITE
+      rest: "PUT /networks/{id}/backend"
+    };
+  }
   // A network private to a project: NAT or isolated, counted against its
   // `networks` quota.
   rpc CreateProjectNetwork(CreateProjectNetworkRequest) returns (CreateProjectNetworkResponse) {
@@ -118,6 +128,18 @@ enum NetworkScope {
   NETWORK_SCOPE_NODE = 1;
   // Across the cluster, on OVN.
   NETWORK_SCOPE_CLUSTER = 2;
+}
+
+// Where a cluster network's NICs are switched (spec/31-dpu.md §12.1).
+enum NetworkBackend {
+  // As HOST.
+  NETWORK_BACKEND_UNSPECIFIED = 0;
+  // The node's own chassis (a tap or vhost-user port on its br-int).
+  NETWORK_BACKEND_HOST = 1;
+  // The node's DPU (a virtio-net VF); a node without a healthy DPU is refused.
+  NETWORK_BACKEND_DPU = 2;
+  // The DPU when it is healthy, else the node's own chassis.
+  NETWORK_BACKEND_AUTO = 3;
 }
 
 enum PortType {
@@ -175,6 +197,11 @@ message Network {
   // Node NAT networks: its guests reach this host's API
   // (spec/29-workload-identity.md §15).
   optional bool host_api = 24 [json_name = "host_api"];
+  // Cluster networks: where its NICs are switched.
+  NetworkBackend backend = 25;
+  // `auto` networks, on GetNetwork: the NICs (`<vm id>/<nic>`) on a node's
+  // own chassis rather than its DPU (spec/31-dpu.md §11).
+  repeated string host_backend_nics = 26 [json_name = "host_backend_nics"];
 }
 
 message ShareOffer {
@@ -212,6 +239,8 @@ message CreateNetworkRequest {
   // makes the bridge and its NAT, and the network is `PENDING` until it
   // has; `subnet` and bridged networks aren't supported there.
   optional string node = 15;
+  // Cluster networks: where its NICs are switched (default: HOST).
+  NetworkBackend backend = 16;
 }
 message CreateNetworkResponse {
   Network network = 1;
@@ -304,6 +333,14 @@ message SetNetworkHostApiRequest {
   bool host_api = 2 [json_name = "host_api"];
 }
 message SetNetworkHostApiResponse {
+  Network network = 1;
+}
+
+message SetNetworkBackendRequest {
+  string id = 1;
+  NetworkBackend backend = 2;
+}
+message SetNetworkBackendResponse {
   Network network = 1;
 }
 

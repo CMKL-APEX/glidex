@@ -1059,6 +1059,7 @@ impl VmManager {
                     numa_node: p.numa_node,
                     cpus: p.cpus.clone(),
                     numa: p.numa.clone(),
+                    dpu_vfs: p.dpu_nics.len() as u32,
                 })
         }));
         nodes
@@ -1184,6 +1185,17 @@ impl VmManager {
                 .vm_arch(c, disks)
                 .map(|a| a.as_str().to_string())
                 .unwrap_or_default(),
+            dpu_nics: c
+                .networks
+                .iter()
+                .enumerate()
+                .filter_map(|(i, a)| {
+                    let n = nets.iter().find(|n| n.id == a.network)?;
+                    (n.scope == crate::network::NetworkScope::Cluster
+                        && n.backend != crate::network::BackendPolicy::Host)
+                        .then_some((i as u8, n.backend))
+                })
+                .collect(),
         }
     }
 
@@ -1486,6 +1498,45 @@ impl VmManager {
 
     /// Refresh this node's own record with what the host has now. Writes
     /// nothing when nothing changed.
+    /// The node's DPU as netd sees it (spec/31-dpu.md §12.3): `Some(empty)`
+    /// when netd has none (`dpu.json` missing), `None` when netd didn't
+    /// answer (or predates DPUs), so the last report stands.
+    fn probe_dpus(&self) -> Option<Vec<crate::node::DpuStatus>> {
+        match self
+            .netd
+            .call::<serde_json::Value>(Op::DpuProbe { id: None })
+        {
+            Ok(p) => {
+                let id = p.get("id").and_then(|v| v.as_str()).map(String::from);
+                let ovn = id.as_ref().and_then(|id| {
+                    self.netd
+                        .call::<serde_json::Value>(Op::DpuOvnStatus { id: id.clone() })
+                        .ok()
+                });
+                let chassis = ovn
+                    .as_ref()
+                    .and_then(|o| o.get("chassis"))
+                    .and_then(|c| c.as_str())
+                    .map(String::from);
+                // A running controller with a chassis is what the DPU's OVN
+                // status says; its SB connection is the controller's to keep.
+                let connected = chassis.is_some()
+                    && ovn
+                        .as_ref()
+                        .and_then(|o| o.get("controller_running"))
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
+                Some(
+                    crate::node::DpuStatus::from_probe(&p, chassis, connected)
+                        .into_iter()
+                        .collect(),
+                )
+            }
+            Err(NetError::Netd(b)) if b.code == "unsupported" => Some(Vec::new()),
+            Err(_) => None,
+        }
+    }
+
     pub fn report_self(&self) -> Result<(), VmManagerError> {
         let reserved = {
             let c = &self.reserved.load();
@@ -1571,6 +1622,7 @@ impl VmManager {
                 d.excluded = file.excludes(d);
             }
         }
+        probe.dpus = self.probe_dpus();
         // The address each migrated uplink carries on its bridge.
         if let Ok(ups) = self
             .netd
@@ -2957,7 +3009,7 @@ impl VmManager {
                         numa: choice.numa,
                         cpus: choice.cpus,
                         pool_devices: choice.pool_devices,
-                        dpu_nics: Vec::new(),
+                        dpu_nics: choice.dpu_nics,
                     });
                     let policy =
                         !vm.config().numa_policy.is_none() || !vm.config().cpu_policy.is_shared();
@@ -4112,6 +4164,29 @@ impl VmManager {
             .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))
     }
 
+    /// The NICs (`<vm id>/<nic>`) on `network` that a node attached on its
+    /// own chassis (spec/31-dpu.md §11), so an operator finds them.
+    pub async fn host_backend_nics(&self, network: &str) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .vms
+            .read()
+            .await
+            .values()
+            .flat_map(|vm| {
+                vm.status
+                    .nics
+                    .iter()
+                    .filter(|n| {
+                        n.network == network && n.backend == Some(glidex_dpu::Backend::Host)
+                    })
+                    .map(|n| format!("{}/{}", vm.id, n.nic_index))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        out.sort();
+        out
+    }
+
     pub async fn list_vms(&self) -> Vec<Vm> {
         self.vms.read().await.values().cloned().collect()
     }
@@ -4973,6 +5048,10 @@ impl VmManager {
     /// Readiness changed: pools see it at once (§9). New VFs of a
     /// `prepare: true` pool are bound first (§10.1).
     fn after_device_op(&self, op: &str) {
+        // Reading the DPU changes nothing to report.
+        if op.starts_with("dpu-") {
+            return;
+        }
         if op.starts_with("sriov-") {
             self.prepare_pools();
         }
@@ -5216,6 +5295,13 @@ impl VmManager {
             )
             .into());
         }
+        if provider && req.backend != crate::network::BackendPolicy::Host {
+            // A localnet port needs bridge mappings on the DPU (O18).
+            return Err(NetError::Invalid(
+                "a provider network's NICs are on the host's chassis: backend dpu and auto are for NAT and isolated networks (spec/31-dpu.md O18)".into(),
+            )
+            .into());
+        }
         if req.router.is_some() && req.mode == NetworkMode::Bridged {
             return Err(NetError::Invalid(
                 "only a NAT or isolated network attaches to a VPC router".into(),
@@ -5348,6 +5434,15 @@ impl VmManager {
             return Err(NetError::Invalid(
                 "a cluster network spans every node: `node` is for a node network".into(),
             )
+            .into());
+        }
+        if req.backend != crate::network::BackendPolicy::Host {
+            // A DPU is a chassis of the cluster's OVN: node networks have
+            // none (spec/31-dpu.md decision 6, §12.1).
+            return Err(NetError::Invalid(format!(
+                "backend {:?} needs a cluster network (scope cluster, on a cluster with OVN); missing: cluster",
+                req.backend
+            ).to_lowercase())
             .into());
         }
         let mut net = req.to_network()?;
@@ -5744,6 +5839,38 @@ impl VmManager {
         self.networks.put(&net)?;
         self.queue
             .add(crate::controller::queue::Key::Network(net.id.clone()));
+        Ok(net)
+    }
+
+    /// Change where a cluster network's NICs are switched. NICs placed
+    /// before keep their backend until their VM's next placement
+    /// (spec/31-dpu.md decision 8).
+    pub fn set_network_backend(
+        &self,
+        id: &str,
+        backend: crate::network::BackendPolicy,
+    ) -> Result<Network, VmManagerError> {
+        let mut net = self.get_network(id)?;
+        if backend != crate::network::BackendPolicy::Host {
+            if net.scope != crate::network::NetworkScope::Cluster {
+                return Err(NetError::Invalid(
+                    format!("backend {backend:?} needs a cluster network; missing: cluster")
+                        .to_lowercase(),
+                )
+                .into());
+            }
+            if net.mode == NetworkMode::Bridged {
+                return Err(NetError::Invalid(
+                    "a provider network's NICs are on the host's chassis: backend dpu and auto are for NAT and isolated networks (spec/31-dpu.md O18)".into(),
+                )
+                .into());
+            }
+        }
+        if net.backend != backend {
+            tracing::info!(network = %net.id, from = ?net.backend, to = ?backend, "network backend changes");
+            net.backend = backend;
+            self.networks.put(&net)?;
+        }
         Ok(net)
     }
 
@@ -6388,6 +6515,10 @@ fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Valu
             bar_mib: None,
         }),
         "release" => netd.call(Op::ReleaseDevice { address }),
+        // The node's DPU, by its `dpu.json` id (spec/31-dpu.md §12.4):
+        // read-only, through the same node API as its other devices.
+        "dpu-probe" => netd.call(Op::DpuProbe { id: Some(address) }),
+        "dpu-ports" => netd.call(Op::DpuListPorts),
         _ if let Some(vfs) = op.strip_prefix("sriov-").and_then(|n| n.parse().ok()) => {
             netd.call(Op::SetSriovVfs { address, vfs })
         }

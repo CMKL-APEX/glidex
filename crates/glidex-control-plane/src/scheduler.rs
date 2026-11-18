@@ -49,6 +49,9 @@ pub struct Request {
     /// The VM's architecture (its image's, else its firmware's); empty:
     /// none (spec/14-clustering.md §9.2.1).
     pub arch: String,
+    /// NICs (by index) on cluster networks whose backend is `dpu` or `auto`
+    /// (spec/31-dpu.md §12.3).
+    pub dpu_nics: Vec<(u8, crate::network::BackendPolicy)>,
 }
 
 /// What a node already carries: every VM placed on it, running or not.
@@ -71,6 +74,9 @@ pub struct Load {
     /// hugepages by page size (spec/22-host-topology.md §8.1).
     pub numa_mem_mib: BTreeMap<u32, u64>,
     pub numa_hugepage_mib: BTreeMap<u32, BTreeMap<u64, u64>>,
+    /// VFs of the node's DPU its VMs' placements claim (spec/31-dpu.md
+    /// §12.3).
+    pub dpu_vfs: u32,
 }
 
 impl Load {
@@ -97,6 +103,8 @@ pub struct Placed {
     pub cpus: Vec<u32>,
     /// `aligned` over several NUMA nodes: its share of each.
     pub numa: Vec<crate::models::NumaShare>,
+    /// NICs its placement put on the node's DPU: a VF each.
+    pub dpu_vfs: u32,
 }
 
 /// A device's PCI address, from a sysfs path or an address: what nodes
@@ -308,6 +316,67 @@ pub struct Fit {
     /// `aligned` over several NUMA nodes: each node's share, in guest NUMA
     /// node order (spec/27-gpu-vms.md §4).
     pub numa: Vec<crate::models::NumaShare>,
+    /// The NICs (by index) that go on the node's DPU (spec/31-dpu.md §8.4).
+    pub dpu_nics: Vec<u8>,
+}
+
+/// The NICs of `req` that go on `n`'s DPU, or why none can
+/// (spec/31-dpu.md §6, §12.3): every `dpu` NIC needs a healthy DPU with a
+/// VF free of the claims of the VMs placed there; `auto` NICs take what is
+/// left and go on the host's chassis otherwise.
+pub fn dpu_fit(n: &Node, load: &Load, req: &Request) -> Result<Vec<u8>, String> {
+    use crate::network::BackendPolicy;
+    if req.dpu_nics.is_empty() {
+        return Ok(Vec::new());
+    }
+    let must = req
+        .dpu_nics
+        .iter()
+        .filter(|(_, b)| *b == BackendPolicy::Dpu)
+        .count() as u32;
+    let dpu = n.status.dpus.first();
+    let ready = dpu.filter(|d| d.state == crate::node::DpuState::Prepared && d.sb_connected);
+    let free = ready
+        .map(|d| d.vfs_total.saturating_sub(load.dpu_vfs))
+        .unwrap_or(0);
+    if must > 0 {
+        let Some(d) = dpu else {
+            return Err("it has no DPU (a NIC's network has backend dpu)".into());
+        };
+        if ready.is_none() {
+            return Err(format!(
+                "its DPU {} is not ready ({}{})",
+                d.id,
+                format!("{:?}", d.state).to_lowercase(),
+                if d.sb_connected {
+                    ""
+                } else {
+                    ", chassis not connected"
+                }
+            ));
+        }
+        if free < must {
+            return Err(format!(
+                "its DPU {} has {free} VF{} free ({} of {} claimed); {must} needed",
+                d.id,
+                if free == 1 { "" } else { "s" },
+                load.dpu_vfs,
+                d.vfs_total
+            ));
+        }
+    }
+    let mut left = free;
+    let mut out = Vec::new();
+    for (nic, b) in &req.dpu_nics {
+        if *b == BackendPolicy::Dpu || left > must {
+            out.push(*nic);
+            if *b == BackendPolicy::Auto {
+                left -= 1;
+            }
+        }
+    }
+    out.sort_unstable();
+    Ok(out)
 }
 
 /// The NUMA policy that applies: dedicated CPUs imply `preferred`.
@@ -666,6 +735,7 @@ pub fn numa_fit(
     }
     if let Some((_, _, k, p, cpus)) = best {
         return Ok(Fit {
+            dpu_nics: Vec::new(),
             page_kib: p,
             numa_node: Some(k),
             cpus,
@@ -693,6 +763,7 @@ pub fn numa_fit(
         Vec::new()
     };
     Ok(Fit {
+        dpu_nics: Vec::new(),
         page_kib: page,
         numa_node: None,
         cpus,
@@ -846,7 +917,9 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
             return Err("a network exists on another node".into());
         }
     }
-    let fit = place_on(n, load, req, cfg, page)?;
+    let dpu_nics = dpu_fit(n, load, req)?;
+    let mut fit = place_on(n, load, req, cfg, page)?;
+    fit.dpu_nics = dpu_nics;
     // Implicit hugepages the NUMA node lacked: ordinary memory after all.
     if fit.page_kib == SMALL_PAGE_KIB
         && page != SMALL_PAGE_KIB
@@ -899,6 +972,8 @@ pub struct NodeFit {
     pub numa_aligned: bool,
     pub pool_devices: Vec<crate::models::PoolDevice>,
     pub numa: Vec<crate::models::NumaShare>,
+    /// The NICs that would go on its DPU (spec/31-dpu.md §12.3).
+    pub dpu_nics: Vec<u8>,
     /// `max(cpu share, memory share, hugepage share)` after placing: lower
     /// is preferred.
     #[serde(skip)]
@@ -949,6 +1024,7 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
                 numa_aligned: fit.numa_aligned,
                 pool_devices: fit.pool_devices,
                 numa: fit.numa,
+                dpu_nics: fit.dpu_nics,
                 vcpus_capacity: (n.status.allocatable.cpus as f64 * cfg.cpu_overcommit) as u64,
                 mem_mib_taken: load.mem_mib,
                 mem_mib_capacity: (n.status.allocatable.memory_mib as f64 * cfg.memory_overcommit)
@@ -965,6 +1041,8 @@ pub fn evaluate(req: &Request, nodes: &[(Node, Load)], cfg: &SchedulerConfig) ->
         a.refused
             .is_some()
             .cmp(&b.refused.is_some())
+            // `auto` NICs prefer a node whose DPU takes them.
+            .then(b.dpu_nics.len().cmp(&a.dpu_nics.len()))
             .then(if a.refused.is_none() {
                 a.score
                     .partial_cmp(&b.score)
@@ -988,6 +1066,7 @@ pub struct Choice {
     pub numa_aligned: bool,
     pub pool_devices: Vec<crate::models::PoolDevice>,
     pub numa: Vec<crate::models::NumaShare>,
+    pub dpu_nics: Vec<u8>,
 }
 
 /// The node a VM goes to, or why each node refused it (the first of
@@ -1007,6 +1086,7 @@ pub fn schedule(
             numa_aligned: f.numa_aligned,
             pool_devices: f.pool_devices.clone(),
             numa: f.numa.clone(),
+            dpu_nics: f.dpu_nics.clone(),
         }),
         _ => {
             let mut refused: Vec<(String, String)> = all
@@ -1067,6 +1147,7 @@ pub fn loads(placed: impl IntoIterator<Item = Placed>) -> HashMap<String, Load> 
             l.dedicated.extend(p.cpus.iter().copied());
         }
         l.vms += 1;
+        l.dpu_vfs += p.dpu_vfs;
         for d in &p.devices {
             l.devices.insert(pci_address(d), p.name.clone());
         }
@@ -1117,6 +1198,99 @@ mod tests {
             memory_overcommit: 1.0,
             dedicated_whole_cores: true,
         }
+    }
+
+    fn with_dpu(id: &str, state: crate::node::DpuState, connected: bool, vfs: u32) -> Node {
+        let mut n = node(id, 8, 16384);
+        n.status.dpus = vec![crate::node::DpuStatus {
+            id: "dpu0".into(),
+            state,
+            vfs_total: vfs,
+            vfs_free: vfs,
+            chassis: Some(format!("node:{id}-dpu")),
+            sb_connected: connected,
+            ovn_version: None,
+        }];
+        n
+    }
+
+    #[test]
+    fn dpu_nics_need_a_healthy_dpu_with_a_free_vf() {
+        use crate::node::DpuState;
+        use glidex_ovs::vm_port::PortBackend::{Auto, Dpu};
+        let mut r = req(1, 512);
+        r.dpu_nics = vec![(0, Dpu), (2, Dpu)];
+        let nodes = vec![
+            (node("plain", 8, 16384), Load::default()),
+            (
+                with_dpu("unprepared", DpuState::Unprepared, true, 4),
+                Load::default(),
+            ),
+            (
+                with_dpu("offline", DpuState::Prepared, false, 4),
+                Load::default(),
+            ),
+            (
+                with_dpu("full", DpuState::Prepared, true, 4),
+                Load {
+                    dpu_vfs: 3,
+                    ..Default::default()
+                },
+            ),
+            (with_dpu("ok", DpuState::Prepared, true, 4), Load::default()),
+        ];
+        let c = schedule(&r, &nodes, &cfg()).unwrap();
+        assert_eq!(c.node, "ok");
+        assert_eq!(c.dpu_nics, [0, 2]);
+        let refused = schedule(&r, &nodes[..4], &cfg()).unwrap_err();
+        let why: BTreeMap<_, _> = refused.into_iter().collect();
+        assert_eq!(
+            why["plain"],
+            "it has no DPU (a NIC's network has backend dpu)"
+        );
+        assert_eq!(why["unprepared"], "its DPU dpu0 is not ready (unprepared)");
+        assert_eq!(
+            why["offline"],
+            "its DPU dpu0 is not ready (prepared, chassis not connected)"
+        );
+        assert_eq!(
+            why["full"],
+            "its DPU dpu0 has 1 VF free (3 of 4 claimed); 2 needed"
+        );
+
+        // `auto` takes any node, prefers one whose DPU takes it, and puts
+        // only as many NICs there as VFs are free.
+        let mut r = req(1, 512);
+        r.dpu_nics = vec![(0, Auto), (1, Auto)];
+        let c = schedule(&r, &nodes[..1], &cfg()).unwrap();
+        assert_eq!((c.node.as_str(), c.dpu_nics.len()), ("plain", 0));
+        let c = schedule(&r, &nodes, &cfg()).unwrap();
+        assert_eq!((c.node.as_str(), c.dpu_nics.clone()), ("ok", vec![0, 1]));
+        let c = schedule(&r, &[nodes[0].clone(), nodes[3].clone()], &cfg()).unwrap();
+        assert_eq!((c.node.as_str(), c.dpu_nics.clone()), ("full", vec![0]));
+
+        // A `dpu` NIC keeps its VF before an `auto` one takes one.
+        let mut r = req(1, 512);
+        r.dpu_nics = vec![(0, Auto), (1, Dpu)];
+        let c = schedule(&r, &[nodes[3].clone()], &cfg()).unwrap();
+        assert_eq!(c.dpu_nics, [1]);
+    }
+
+    #[test]
+    fn dpu_claims_come_from_placements_and_go_with_them() {
+        let placed = |vfs| Placed {
+            node: "n1".into(),
+            vcpus: 1,
+            mem_mib: 512,
+            page_kib: SMALL_PAGE_KIB,
+            dpu_vfs: vfs,
+            ..Default::default()
+        };
+        let l = loads([placed(2), placed(1)]);
+        assert_eq!(l["n1"].dpu_vfs, 3);
+        // The VM that held two is gone: its VFs are free again.
+        let l = loads([placed(1)]);
+        assert_eq!(l["n1"].dpu_vfs, 1);
     }
 
     #[test]
