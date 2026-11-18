@@ -729,6 +729,29 @@ fn rejoin_offline_args(j: &JoinOptions) -> Vec<&str> {
     mode
 }
 
+/// Waits up to `limit` for the control plane to accept on `socket`. The
+/// file alone isn't enough: right after a restart it is the previous
+/// process's, refusing connections until the new one binds (glidex#567).
+/// Any answer other than refused or missing (a permission error, say) ends
+/// the wait too, for the caller to report.
+fn wait_until_listening(socket: &Path, limit: std::time::Duration) -> bool {
+    let start = std::time::Instant::now();
+    loop {
+        match std::os::unix::net::UnixStream::connect(socket) {
+            Ok(_) => return true,
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+                ) && start.elapsed() < limit =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+            Err(_) => return false,
+        }
+    }
+}
+
 fn join_cluster(j: &JoinOptions) -> Result<()> {
     use std::io::Write;
     section("Joining the cluster");
@@ -742,12 +765,7 @@ fn join_cluster(j: &JoinOptions) -> Result<()> {
             "the rejoin failed (see above); the host is unchanged",
         );
     }
-    for _ in 0..30 {
-        if Path::new(API_SOCKET).exists() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_secs(1));
-    }
+    wait_until_listening(Path::new(API_SOCKET), std::time::Duration::from_secs(60));
     let mut args = if j.rejoin {
         vec![
             "cluster".to_string(),
@@ -4340,6 +4358,29 @@ fn print_usage(opts: &Options, tailscale: Option<&Option<String>>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_join_waits_for_the_socket_to_accept_not_to_exist() {
+        use std::os::unix::net::UnixListener;
+        use std::time::Duration;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("api.sock");
+        // A socket file nobody listens on: what a restart leaves behind.
+        drop(UnixListener::bind(&path).unwrap());
+        assert!(path.exists());
+        assert!(!super::wait_until_listening(
+            &path,
+            Duration::from_millis(300)
+        ));
+        let bind = path.clone();
+        let late = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(500));
+            std::fs::remove_file(&bind).unwrap();
+            UnixListener::bind(&bind).unwrap()
+        });
+        assert!(super::wait_until_listening(&path, Duration::from_secs(10)));
+        drop(late.join().unwrap());
+    }
+
     use super::*;
 
     fn args(v: &[&str]) -> Vec<String> {
