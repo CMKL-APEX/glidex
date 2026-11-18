@@ -1,0 +1,17 @@
+{
+  "dpus": [
+    {
+      "id": "dpu0",
+      "agent": "tcp://192.0.2.2:7443",
+      "link": { "iface": "tmfifo_net0", "address": "192.0.2.1/30" },
+      "tls": {
+        "ca": "/etc/glidex/dpu/ca.pem",
+        "cert": "/etc/glidex/dpu/client.pem",
+        "key": "/etc/glidex/dpu/client.key"
+      },
+      "mode": "vfio",
+      "bridges": { "int": "br-int", "representor_bridge": "br-int" },
+      "port_timeout_secs": 30
+    }
+  ]
+}

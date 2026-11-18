@@ -1519,6 +1519,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "glidex-dpu-agent"
+version = "0.0.9-dev"
+dependencies = [
+ "glidex-dpu",
+ "rcgen",
+ "rustls",
+ "rustls-pki-types",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tracing",
+ "tracing-subscriber",
+ "x509-parser",
+]
+
+[[package]]
 name = "glidex-e2e"
 version = "0.0.9-dev"
 dependencies = [
@@ -1575,6 +1591,8 @@ dependencies = [
 name = "glidex-netd"
 version = "0.0.9-dev"
 dependencies = [
+ "glidex-dpu",
+ "glidex-dpu-agent",
  "glidex-ovs",
  "nix",
  "redb",

@@ -1,11 +1,15 @@
 //! Request handling and socket serving for glidex-netd.
 
 use crate::auth::{self, Peer};
+use crate::dpu::{self, DpuBackend};
 use crate::proto::*;
 use crate::store::{
     self, ARP_SAVED, BRIDGES, DEVICES, META, NAT, SOURCE_TABLES, Store, UPLINKS, VM_PORTS,
 };
 use crate::supervisor::Supervisor;
+use glidex_dpu::{Backend, DpuPortSpec, VfAllocator};
+use glidex_dpu_agent::AgentOp;
+use glidex_dpu_agent::proto::AttachRepResult;
 use glidex_ovs::bridge::{self, BridgeSpec};
 use glidex_ovs::host::{self, ProbeOptions};
 use glidex_ovs::install;
@@ -78,6 +82,9 @@ pub struct Netd {
     ct: Mutex<Option<Arc<glidex_ovs::ct_meter::CtMeter>>>,
     /// Whether the collector follows conntrack events itself (the daemon: yes, tests: no).
     ct_events: std::sync::atomic::AtomicBool,
+    /// The node's DPU, from `dpu.json` (spec/31-dpu.md §10.1); none: the
+    /// DPU backend is unavailable.
+    dpu: Option<Arc<DpuBackend>>,
 }
 
 fn to_value<T: serde::Serialize>(v: T) -> Result<Value, OvsError> {
@@ -113,7 +120,14 @@ impl Netd {
             mutate: Mutex::new(()),
             ct: Mutex::new(None),
             ct_events: false.into(),
+            dpu: None,
         })
+    }
+
+    /// Use the node's DPU (`dpu.json`).
+    pub fn with_dpu(mut self, dpu: Arc<DpuBackend>) -> Self {
+        self.dpu = Some(dpu);
+        self
     }
 
     /// The conntrack collector; the first call turns accounting on.
@@ -260,6 +274,8 @@ impl Netd {
             Op::DeviceHolders { groups } => {
                 to_value(glidex_ovs::vfio::group_holders(self.ex(), &groups))
             }
+            Op::DpuProbe { id } => to_value(self.dpu_probe(id.as_deref())?),
+            Op::DpuListPorts => to_value(self.dpu_list_ports()?),
             Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
             Op::ListPreparedDevices => to_value(
                 self.store
@@ -1005,6 +1021,18 @@ impl Netd {
 
     fn attach(&self, spec: VmPortSpec, owner_uid: u32) -> Result<AttachResult, OvsError> {
         spec.validate()?;
+        // A port keeps the backend of its first attach while it exists
+        // (spec/31-dpu.md §6 invariant): the hypervisor holds the device.
+        let recorded = self
+            .store
+            .get::<VmPortRecord>(VM_PORTS, &store::vm_port_key(&spec.vm_id, spec.nic_index))?;
+        let backend = match &recorded {
+            Some(r) => r.backend,
+            None => self.choose_backend(&spec)?,
+        };
+        if backend == Backend::Dpu {
+            return self.attach_dpu(spec, owner_uid, recorded);
+        }
         // br-int is OVN's, not a glidex bridge record (§11.3).
         if spec.ovn_lport.is_none() {
             self.require_bridge(&spec.bridge)?;
@@ -1126,6 +1154,8 @@ impl Netd {
             ipv4,
             owner_uid,
             metadata_index,
+            backend: Backend::Host,
+            dpu_vf: None,
         };
         self.install_rules(&record)?;
         self.store.put(VM_PORTS, &key, &record)?;
@@ -1139,6 +1169,7 @@ impl Netd {
             binding,
             ipv4,
             metadata_index,
+            backend: Backend::Host,
         })
     }
 
@@ -1193,6 +1224,9 @@ impl Netd {
     fn remove_port(&self, vm_id: &str, nic_index: u8) -> Result<(), OvsError> {
         let key = store::vm_port_key(vm_id, nic_index);
         let old = self.store.get::<VmPortRecord>(VM_PORTS, &key)?;
+        if let Some(r) = old.as_ref().filter(|r| r.backend == Backend::Dpu) {
+            return self.remove_dpu_port(r);
+        }
         vm_port::detach(self.ex(), vm_id, nic_index)?;
         // The NAT reservation is kept: the VM gets the same address next start.
         self.store.delete(VM_PORTS, &key)?;
@@ -1390,6 +1424,8 @@ impl Netd {
         report
             .errors
             .extend(pass.errors.iter().map(|e| format!("source routes: {e}")));
+        // The DPU's ports: on the DPU, not this host's OVS (spec/31-dpu.md §7.4).
+        self.reconcile_dpu(&mut report);
         let caps = host::probe(ex, &self.config.probe);
         if !caps.ovs_running {
             if !self
@@ -1886,4 +1922,303 @@ pub fn serve(netd: Arc<Netd>, listener: UnixListener, access: Access, group_gid:
 
 pub fn status_json(report: &ReconcileReport) -> Value {
     json!(report)
+}
+
+// ---- the DPU backend (spec/31-dpu.md §6, §7) ------------------------------
+
+fn dpu_err(e: glidex_dpu::DpuError) -> OvsError {
+    match e {
+        glidex_dpu::DpuError::DpuCapacity { total } => OvsError::DpuCapacity {
+            message: format!("all {total} VFs of the DPU are in use"),
+        },
+        glidex_dpu::DpuError::InvalidArgument { message } => OvsError::invalid(message),
+        other => OvsError::Io(other.to_string()),
+    }
+}
+
+/// What the DPU is told about a NIC (§7.1 steps 4–5).
+fn dpu_port_spec(spec: &VmPortSpec, lsp: String) -> DpuPortSpec {
+    DpuPortSpec {
+        vm_id: spec.vm_id.clone(),
+        nic: spec.nic_index,
+        lsp,
+        mac: spec.mac.clone(),
+        mtu: spec.mtu.unwrap_or(1500),
+        queue_pairs: spec.queue_pairs,
+    }
+}
+
+impl Netd {
+    /// §7.4 at start: a recorded DPU port the DPU lacks is re-created on
+    /// the DPU (steps 4–6; the host keeps its VF and `vfio-pci` binding),
+    /// event `PortRestored`; a tagged DPU port with no record is reported,
+    /// never deleted. An unreachable agent is an error in the report.
+    fn reconcile_dpu(&self, report: &mut ReconcileReport) {
+        let Some(d) = &self.dpu else { return };
+        let rows: Vec<glidex_dpu::ovs::DpuPortRow> = match d.call(AgentOp::ListPorts) {
+            Ok(r) => r,
+            Err(e) => {
+                report.errors.push(format!("DPU ports not reconciled: {e}"));
+                return;
+            }
+        };
+        let records: Vec<VmPortRecord> = self
+            .vm_ports()
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| r.backend == Backend::Dpu)
+            .collect();
+        for r in &records {
+            if rows
+                .iter()
+                .any(|p| p.vm_id == r.spec.vm_id && p.nic == r.spec.nic_index)
+            {
+                continue;
+            }
+            let (Some(vf), Some(lsp)) = (r.dpu_vf, r.spec.ovn_lport.clone()) else {
+                report.errors.push(format!(
+                    "{}: a DPU record without its VF or logical port",
+                    r.port
+                ));
+                continue;
+            };
+            match d.call::<AttachRepResult>(AgentOp::AttachRep {
+                vf,
+                spec: dpu_port_spec(&r.spec, lsp),
+                bridge: d.config.bridges.representor_bridge.clone(),
+                timeout_secs: d.config.port_timeout_secs,
+            }) {
+                Ok(rep) => {
+                    tracing::info!(vm = %r.spec.vm_id, nic = r.spec.nic_index, port = %rep.representor, "PortRestored");
+                    report
+                        .repaired
+                        .push(format!("PortRestored {}", rep.representor));
+                }
+                Err(e) => report.errors.push(format!("DPU port {}: {e}", r.port)),
+            }
+        }
+        for p in rows {
+            if !records
+                .iter()
+                .any(|r| r.spec.vm_id == p.vm_id && r.spec.nic_index == p.nic)
+            {
+                report.orphans.push(format!("DPU port {}", p.name));
+            }
+        }
+    }
+
+    fn dpu(&self) -> Result<&Arc<DpuBackend>, OvsError> {
+        self.dpu.as_ref().ok_or_else(|| OvsError::DpuUnavailable {
+            reason: format!("no DPU configured ({})", dpu::DPU_CONFIG),
+        })
+    }
+
+    /// The VFs of the DPU's PF and who holds them, from the records. The
+    /// PF's count is read, not changed.
+    fn vf_allocator(&self, pf: &str) -> Result<VfAllocator, OvsError> {
+        let total: u16 = self
+            .ex()
+            .read_file(&Path::new(dpu::PCI_DEVICES).join(pf).join("sriov_totalvfs"))?
+            .trim()
+            .parse()
+            .map_err(|_| OvsError::Io(format!("{pf}: unreadable sriov_totalvfs")))?;
+        let held: Vec<(glidex_dpu::VfId, String)> = self
+            .vm_ports()?
+            .into_iter()
+            .filter_map(|r| {
+                r.dpu_vf
+                    .map(|v| (v, store::vm_port_key(&r.spec.vm_id, r.spec.nic_index)))
+            })
+            .collect();
+        VfAllocator::from_records(0, total, held.iter().map(|(v, k)| (*v, k.as_str())))
+            .map_err(dpu_err)
+    }
+
+    /// §6: the backend a new port gets, from what it asks for and the
+    /// DPU's health.
+    fn choose_backend(&self, spec: &VmPortSpec) -> Result<Backend, OvsError> {
+        use glidex_ovs::vm_port::PortBackend;
+        if spec.backend == PortBackend::Host {
+            return Ok(Backend::Host);
+        }
+        let (health, free) = match self.dpu() {
+            Err(e) => (Err(e.to_string()), 0),
+            Ok(d) => match d.health() {
+                Err(e) => (Err(e), 0),
+                Ok(_) => {
+                    let free = d
+                        .host_pf(self.ex())
+                        .and_then(|pf| self.vf_allocator(&pf))
+                        .map(|a| a.free_count());
+                    match free {
+                        Ok(n) => (Ok(()), n),
+                        Err(e) => (Err(e.to_string()), 0),
+                    }
+                }
+            },
+        };
+        let backend = dpu::choose(spec.backend, &health, free)?;
+        if spec.backend == PortBackend::Auto && backend == Backend::Host {
+            tracing::warn!(
+                vm = %spec.vm_id,
+                nic = spec.nic_index,
+                reason = %health.err().unwrap_or_else(|| "no free VF".into()),
+                "BackendFallback: the port goes on the host's chassis"
+            );
+        }
+        Ok(backend)
+    }
+
+    /// §7.1 steps 2–7 for a port on the DPU.
+    fn attach_dpu(
+        &self,
+        spec: VmPortSpec,
+        owner_uid: u32,
+        recorded: Option<VmPortRecord>,
+    ) -> Result<AttachResult, OvsError> {
+        let d = self.dpu()?.clone();
+        let lsp = spec
+            .ovn_lport
+            .clone()
+            .ok_or_else(|| OvsError::invalid("a DPU port needs ovn_lport"))?;
+        let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
+        let pf = d.host_pf(self.ex())?;
+        dpu::ensure_vfs(self.ex(), &pf)?;
+        let vf = match recorded.as_ref().and_then(|r| r.dpu_vf) {
+            Some(vf) => vf,
+            None => self.vf_allocator(&pf)?.allocate(&key).map_err(dpu_err)?,
+        };
+        let rep: AttachRepResult = d
+            .call(AgentOp::AttachRep {
+                vf,
+                spec: dpu_port_spec(&spec, lsp),
+                bridge: d.config.bridges.representor_bridge.clone(),
+                timeout_secs: d.config.port_timeout_secs,
+            })
+            .inspect_err(|e| {
+                if e.code() == "dpu_unavailable" {
+                    d.forget_health();
+                }
+            })?;
+        // Step 7; on failure the DPU side is undone (§7.3).
+        let bound = dpu::vf_bdf(self.ex(), &pf, vf.vf)
+            .and_then(|bdf| dpu::bind_vfio(self.ex(), &bdf).map(|_| bdf));
+        let bdf = match bound {
+            Ok(b) => b,
+            Err(e) => {
+                if let Err(u) = d.call::<serde_json::Value>(AgentOp::DetachRep {
+                    vm_id: spec.vm_id.clone(),
+                    nic: spec.nic_index,
+                }) {
+                    tracing::warn!(error = %u, "undoing the DPU port");
+                }
+                return Err(e);
+            }
+        };
+        let binding = glidex_ovs::vm_port::VmPortBinding::Vfio { bdf };
+        let record = VmPortRecord {
+            spec,
+            port: rep.representor.clone(),
+            binding: binding.clone(),
+            ipv4: None,
+            owner_uid,
+            metadata_index: None,
+            backend: Backend::Dpu,
+            dpu_vf: Some(vf),
+        };
+        self.store.put(VM_PORTS, &key, &record)?;
+        tracing::info!(port = %rep.representor, vm = %record.spec.vm_id, vf = vf.vf, "DPU port attached");
+        Ok(AttachResult {
+            port: rep.representor,
+            binding,
+            ipv4: None,
+            metadata_index: None,
+            backend: Backend::Dpu,
+        })
+    }
+
+    /// §7.2: the VF off `vfio-pci`, the representor off the DPU, the VF
+    /// freed with the record. An unreachable DPU leaves a tagged port
+    /// behind, which `dpu_list_ports` shows unrecorded (§7.3, §7.4).
+    fn remove_dpu_port(&self, r: &VmPortRecord) -> Result<(), OvsError> {
+        if let glidex_ovs::vm_port::VmPortBinding::Vfio { bdf } = &r.binding {
+            dpu::unbind_vf(self.ex(), bdf)?;
+        }
+        match self.dpu().and_then(|d| {
+            d.call::<serde_json::Value>(AgentOp::DetachRep {
+                vm_id: r.spec.vm_id.clone(),
+                nic: r.spec.nic_index,
+            })
+        }) {
+            Ok(_) => {}
+            Err(e) => tracing::warn!(port = %r.port, error = %e, "DPU port left on the DPU"),
+        }
+        self.store.delete(
+            VM_PORTS,
+            &store::vm_port_key(&r.spec.vm_id, r.spec.nic_index),
+        )?;
+        tracing::info!(vm = %r.spec.vm_id, nic = r.spec.nic_index, "DPU port detached");
+        Ok(())
+    }
+
+    /// `dpu_probe` (§9.2, §10.1).
+    fn dpu_probe(&self, id: Option<&str>) -> Result<dpu::DpuProbe, OvsError> {
+        let d = self.dpu.as_ref().ok_or_else(|| OvsError::Unsupported {
+            missing: vec!["dpu.json".into()],
+        })?;
+        if let Some(id) = id
+            && id != d.config.id
+        {
+            return Err(OvsError::not_found(format!("DPU {id}")));
+        }
+        let caps = d.call::<glidex_dpu::DpuCapabilities>(AgentOp::Probe);
+        let mut missing = match &caps {
+            Ok(c) => c.missing.clone(),
+            Err(_) => vec!["agent".to_string()],
+        };
+        if let Some(l) = &d.config.link
+            && !dpu::link_has_address(self.ex(), l)
+        {
+            missing.push("link_address".into());
+        }
+        let alloc = d.host_pf(self.ex()).and_then(|pf| self.vf_allocator(&pf));
+        Ok(dpu::DpuProbe {
+            id: d.config.id.clone(),
+            reachable: caps.is_ok(),
+            error: caps.as_ref().err().map(|e| e.to_string()),
+            capabilities: caps.ok(),
+            link: d.config.link.clone(),
+            vfs_total: alloc.as_ref().map_or(0, |a| a.total()),
+            vfs_free: alloc.as_ref().map_or(0, |a| a.free_count()),
+            missing,
+        })
+    }
+
+    fn dpu_list_ports(&self) -> Result<Vec<DpuPortInfo>, OvsError> {
+        let rows: Vec<glidex_dpu::ovs::DpuPortRow> = self.dpu()?.call(AgentOp::ListPorts)?;
+        let records = self.vm_ports()?;
+        Ok(rows
+            .into_iter()
+            .map(|port| DpuPortInfo {
+                recorded: records.iter().any(|r| {
+                    r.backend == Backend::Dpu
+                        && r.spec.vm_id == port.vm_id
+                        && r.spec.nic_index == port.nic
+                }),
+                port,
+            })
+            .collect())
+    }
+
+    /// The management link's host address (§10.1): at start, and again
+    /// whenever the interface is recreated. `None` without a DPU or link.
+    pub fn ensure_dpu_link(&self) -> Option<Result<dpu::LinkState, OvsError>> {
+        let link = self.dpu.as_ref()?.config.link.as_ref()?;
+        Some(dpu::ensure_link(self.ex(), link))
+    }
+
+    /// The interface [`Netd::ensure_dpu_link`] watches.
+    pub fn dpu_link_iface(&self) -> Option<String> {
+        Some(self.dpu.as_ref()?.config.link.as_ref()?.iface.clone())
+    }
 }

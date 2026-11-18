@@ -250,6 +250,8 @@ fn port_spec(
         ovn_lport: cluster.then(|| glidex_ovs::names::port_name(vm_id, nic).unwrap_or_default()),
         port_security: att.port_security,
         allowed_addresses: att.allowed_addresses.clone(),
+        // The DPU backend is chosen at placement (spec/31-dpu.md D6).
+        backend: glidex_ovs::vm_port::PortBackend::Host,
     }
 }
 

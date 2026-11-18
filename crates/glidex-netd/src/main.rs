@@ -88,6 +88,89 @@ fn watch_source_routes(netd: Arc<Netd>) {
     });
 }
 
+/// The DPU backend for `dpu.json`'s entry. Unreadable agent certificates
+/// leave the DPU unavailable (`auto` networks use the host) rather than
+/// stopping netd: they are fixed without a netd restart.
+fn dpu_backend(d: glidex_netd::dpu::DpuConfig) -> glidex_netd::dpu::DpuBackend {
+    use glidex_dpu_agent::{AgentApi, AgentClient, AgentError, AgentOp, tls};
+    struct Unavailable(String);
+    impl AgentApi for Unavailable {
+        fn call(&self, _: AgentOp) -> Result<serde_json::Value, AgentError> {
+            Err(AgentError::Unavailable(self.0.clone()))
+        }
+    }
+    let agent: Arc<dyn AgentApi> = match tls::TlsPem::load(&d.tls.ca, &d.tls.cert, &d.tls.key)
+        .and_then(|pem| tls::client_config(&pem))
+        .and_then(|c| AgentClient::new(&d.agent, c))
+    {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            tracing::warn!(dpu = %d.id, error = %e, "DPU agent credentials; the DPU is unavailable");
+            Arc::new(Unavailable(e))
+        }
+    };
+    glidex_netd::dpu::DpuBackend::new(d, agent)
+}
+
+/// The management link's host address (spec/31-dpu.md §10.1, finding 32):
+/// applied at start, again when `ip monitor link` shows the interface
+/// (an rshim restart recreates it), and every 60 s for anything missed.
+fn watch_dpu_link(netd: Arc<Netd>) {
+    use std::io::BufRead;
+    use std::sync::mpsc::{RecvTimeoutError, channel};
+    use std::time::Duration;
+    let Some(iface) = netd.dpu_link_iface() else {
+        return;
+    };
+    let (tx, rx) = channel::<()>();
+    std::thread::spawn(move || {
+        loop {
+            match std::process::Command::new("ip")
+                .args(["-o", "monitor", "link"])
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+            {
+                Ok(mut child) => {
+                    if let Some(out) = child.stdout.take() {
+                        for line in std::io::BufReader::new(out).lines().map_while(Result::ok) {
+                            if glidex_netd::dpu::is_link_event(&line, &iface)
+                                && tx.send(()).is_err()
+                            {
+                                return;
+                            }
+                        }
+                    }
+                    let _ = child.wait();
+                    tracing::warn!("ip monitor link ended; restarting it");
+                }
+                Err(e) => tracing::warn!(error = %e, "cannot run ip monitor link"),
+            }
+            std::thread::sleep(Duration::from_secs(5));
+        }
+    });
+    std::thread::spawn(move || {
+        loop {
+            match netd.ensure_dpu_link() {
+                Some(Ok(glidex_netd::dpu::LinkState::Applied)) => {
+                    tracing::info!("DPU management link address applied")
+                }
+                Some(Err(e)) => tracing::warn!(error = %e, "DPU management link"),
+                _ => {}
+            }
+            match rx.recv_timeout(Duration::from_secs(60)) {
+                Ok(()) => {
+                    // The interface comes up a moment after it appears.
+                    std::thread::sleep(Duration::from_secs(1));
+                    while rx.try_recv().is_ok() {}
+                }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+    });
+}
+
 /// Give the boot devices with no driver yet a `driver_override` of
 /// `vfio-pci`; what it did goes to stderr (the journal, through udev).
 fn claim_boot_devices() {
@@ -241,8 +324,25 @@ fn main() {
         return;
     }
 
+    // The node's DPU (spec/31-dpu.md §10.1): a missing file is no DPU, an
+    // invalid one is fatal, as for netd.json.
+    let dpu_path = std::env::args()
+        .skip_while(|a| a != "--dpu-config")
+        .nth(1)
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(glidex_netd::dpu::DPU_CONFIG));
+    let dpu = match glidex_netd::dpu::load(&dpu_path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("glidex-netd: {e}");
+            std::process::exit(1);
+        }
+    };
     let netd = match Netd::new(exec, Arc::new(DnsmasqSupervisor::new()), config.clone()) {
-        Ok(n) => Arc::new(n),
+        Ok(n) => match dpu {
+            Some(d) => Arc::new(n.with_dpu(Arc::new(dpu_backend(d)))),
+            None => Arc::new(n),
+        },
         Err(e) => {
             eprintln!("glidex-netd: {}", e);
             std::process::exit(1);
@@ -314,6 +414,9 @@ fn main() {
     });
     if !config.source_routes.subnets.is_empty() {
         watch_source_routes(netd.clone());
+    }
+    if netd.dpu_link_iface().is_some() {
+        watch_dpu_link(netd.clone());
     }
     // OVS keeps no OpenFlow rules across a restart of ovs-vswitchd: put
     // the VM ports' rules back (spec/09-networking.md §9.1).

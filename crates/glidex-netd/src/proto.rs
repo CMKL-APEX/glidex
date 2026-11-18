@@ -4,6 +4,7 @@
 //! response per line, one request in flight per connection. The first
 //! request on a connection must be `hello`.
 
+use glidex_dpu::{Backend, VfId};
 use glidex_ovs::OvsError;
 use glidex_ovs::bridge::{BridgeInfo, BridgeSpec};
 use glidex_ovs::install::InstallRequest;
@@ -150,6 +151,15 @@ pub enum Op {
         address: String,
         vfs: u32,
     },
+    /// The node's DPU, its gaps and the management link's (spec/31-dpu.md
+    /// §9.2, §10.1). Read-only, but full socket only: it shows
+    /// tenant-adjacent state.
+    DpuProbe {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+    },
+    /// The glidex ports on the DPU, with netd's records (§13).
+    DpuListPorts,
 }
 
 /// Fields whose values never go to the log: private keys and PEM
@@ -203,6 +213,8 @@ impl Op {
                 | Op::OvnStatus
                 | Op::ListPreparedDevices
                 | Op::DeviceHolders { .. }
+                | Op::DpuProbe { .. }
+                | Op::DpuListPorts
         )
     }
 
@@ -242,6 +254,8 @@ impl Op {
             Op::ReleaseDevice { .. } => "release_device",
             Op::ListPreparedDevices => "list_prepared_devices",
             Op::DeviceHolders { .. } => "device_holders",
+            Op::DpuProbe { .. } => "dpu_probe",
+            Op::DpuListPorts => "dpu_list_ports",
             Op::SetSriovVfs { .. } => "set_sriov_vfs",
         }
     }
@@ -332,6 +346,13 @@ pub struct AttachResult {
     /// `glidex_ovs::metadata::peer_address(index)`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_index: Option<u16>,
+    /// The backend the port is on (spec/31-dpu.md §5.1).
+    #[serde(default, skip_serializing_if = "is_host")]
+    pub backend: Backend,
+}
+
+fn is_host(b: &Backend) -> bool {
+    *b == Backend::Host
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -344,6 +365,20 @@ pub struct VmPortRecord {
     pub owner_uid: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub metadata_index: Option<u16>,
+    /// The backend chosen at the first attach; a re-attach keeps it
+    /// (spec/31-dpu.md §6 invariant).
+    #[serde(default, skip_serializing_if = "is_host")]
+    pub backend: Backend,
+    /// The DPU VF the port holds (§5.3).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dpu_vf: Option<VfId>,
+}
+
+/// One port of `dpu_list_ports`: what the DPU has, and netd's record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DpuPortInfo {
+    pub port: glidex_dpu::ovs::DpuPortRow,
+    pub recorded: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
