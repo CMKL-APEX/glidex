@@ -589,11 +589,13 @@ it, nothing is announced, and renewals wait for the 7-day fallback.
 
 ## Trusting a storage cluster for the whole directory
 
-A cluster of another organization (a hyperstor storage cluster, say)
-can trust your whole directory once, rather than one tenant at a time.
-Its operator makes a **directory offer** (on hyperstor: `hyperstorctl
-admission offer --directory <issuer> --admit open|approval …`, no
-tenant) and sends you the token. As the directory's owner, redeem it:
+A cluster of another organization (a hyperstor storage cluster, or
+another Glidex cluster) can trust your whole directory once, rather than
+one tenant at a time. Its operator makes a **directory offer** (on
+hyperstor: `hyperstorctl admission offer --directory <issuer> --admit
+open|approval …`; on Glidex: `gxctl admission offer --directory
+<issuer> …`, as [below](#offering-trust-to-a-whole-directory); no tenant)
+and sends you the token. As the directory's owner, redeem it:
 
 ```bash
 # Paste the token at the hidden prompt, or keep it in a 0600 file
@@ -625,6 +627,45 @@ runs or has agreed to share every tenant with, since each tenant's
 consent is then the directory owner's. Treat the offer token as a
 password: it is single use, but it lets whoever holds it make this
 cluster trust a directory until it expires.
+
+## Offering trust to a whole directory
+
+The other way round: this cluster trusts another organization's whole
+directory, and its tenants opt in by themselves, with no offer each.
+Make a directory offer: the directory's issuer and no tenant.
+
+```bash
+# --admit open (the default): each tenant that opts in is admitted at once
+# --admit approval: it waits until you approve it
+gxctl admission offer --directory https://id.acme.example/d/acme --admit approval --cap vms=10,vcpus=40
+```
+
+Send the token to the directory's owner, who redeems it with `gxctl
+directory trust-cluster` (above). `--cap` is the **default cap**: each
+tenant admitted gets a copy, which you can change for that tenant later
+(`gxctl admission set <tenant> …`); without it, admissions are
+unlimited.
+
+```bash
+gxctl admission directories                     # each one's setting, default cap, pending and refused tenants
+gxctl admission approve <directory> <tenant>    # a pending opt-in: admitted with the default cap
+gxctl admission reject <directory> <tenant>
+gxctl admission directory <directory> --admit open|approval --cap vms=20
+gxctl admission untrust <directory>             # every tenant of it leaves; the directory is told
+```
+
+`<directory>` is its `trusted-…` id or its issuer; `<tenant>` its slug
+or id. A new default cap applies to tenants admitted from then on; those
+admitted already keep theirs. A tenant whose opt-in was refused, or is
+still pending, may opt in again at any time: you see one request per
+tenant, and a refusal isn't held against a later one. The directory
+learns of each decision at once (and with every report). On the
+**Admissions** page, *Directories of other organizations* shows the
+pending opt-ins with **Approve** and **Refuse**, and **End trust**.
+
+Removing one tenant's admission (`gxctl admission remove <tenant>`)
+ends only that tenant's; the directory stays trusted, and the tenant may
+opt in again.
 
 ## The web UI's address
 

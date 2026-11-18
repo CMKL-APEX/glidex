@@ -2101,8 +2101,37 @@ at trust, a later one at the next round, off and on again). Of task 5,
 gxctl is built: `directory clusters | trust-cluster [--offer-file]
 [--auto-opt-in] | cluster-set | untrust-cluster` (the offer read from a
 file or a hidden prompt), `tenant opt-in --cluster`, `tenant clusters
---available`; the operator guide's clusters page. The web UI's part of
-task 5, task 4 (glidex's cluster side) and task 6 are not started.
+--available`; the operator guide's clusters page. Task 4 is built: a glidex
+cluster takes directory offers (D96). `OfferAdmission` with no tenant
+makes one (`Offer.scope`, `admit`, its `cap` the default cap; gxctl
+`admission offer --directory ISSUER [--admit open|approval] [--cap …]`);
+`POST /trust/v1/redeem` checks an offer by its scope and, for a directory
+offer, keeps its cap as the directory's default (table
+`trusted_directory_caps`, `trust::DirectoryCap`) and answers `admit`;
+`POST /trust/v1/admit` (`api::trust::admit`, action `admitTenant` in the
+audit) admits under `open` with a copy of the default cap
+(`admit_by_default`) or records the tenant pending, one entry per tenant
+(D97); the reports carry pending and refused tenants with their
+`admission`. `AdmissionService` gains `SetDirectoryAdmission` (`PUT
+/admissions/directories/{id}/admission`: the setting and the default
+cap, later admissions only), `ApproveOptIn` and `RejectOptIn` (`POST
+/admissions/directories/{id}/approve|reject`, a report sent at once) and
+`UntrustDirectory` (`DELETE /admissions/directories/{id}`: every tenant
+leaves, the directory told with no tenant), all `manageAdmissions`
+(step-up); `TrustedDirectory` shows `whole`, `admit`, `default_cap`,
+`pending` and `refused`. gxctl: `admission directories | directory <dir>
+[--admit] [--cap] | approve|reject <dir> <tenant> | untrust <dir>`; the
+Admissions page's *Directories of other organizations* shows pending
+opt-ins with **Approve** and **Refuse**, and **End trust**. Decided while
+building: a directory or tenant is named by its `trusted-…` id or issuer,
+and a tenant by its id or slug; a tenant offer with a setting is
+refused; an admit for a tenant admitted here from elsewhere is refused.
+Tested between two control planes
+(`trust_tests::a_glidex_cluster_takes_a_directory_offer`: both settings,
+asking again after a refusal, a cap change for later admissions only,
+ending as a whole). Not yet: the Admissions page's offer form makes
+tenant offers only (gxctl makes directory offers); its UI e2e. The web
+UI's part of task 5 and task 6 are not started.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,

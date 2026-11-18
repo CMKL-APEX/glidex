@@ -1230,7 +1230,21 @@ fn offer_pb(o: &tenants::Offer) -> pb::Offer {
         created_at: ts(o.created_at).into(),
         expires_at: ts(o.expires_at).into(),
         redeemed_at: o.redeemed_at.map(ts).into(),
+        whole: !o.scope.is_tenant(),
+        admit: if o.scope.is_tenant() {
+            pb::AdmitSetting::ADMIT_SETTING_UNSPECIFIED
+        } else {
+            admit_pb(o.admit)
+        }
+        .into(),
         ..Default::default()
+    }
+}
+
+fn admit_pb(a: crate::trust::AdmitSetting) -> pb::AdmitSetting {
+    match a {
+        crate::trust::AdmitSetting::Open => pb::AdmitSetting::ADMIT_SETTING_OPEN,
+        crate::trust::AdmitSetting::Approval => pb::AdmitSetting::ADMIT_SETTING_APPROVAL,
     }
 }
 
@@ -1262,7 +1276,22 @@ pub async fn offer_admission(
     call.require(Ent::Cluster, EntitySet::new())?;
     let bad = |m: &str| ServiceError::new(StatusCode::BAD_REQUEST, "invalid", m);
     let tenant = req.tenant.trim().to_ascii_lowercase();
-    tenants::validate_slug(&tenant).map_err(tenant_error)?;
+    // No tenant: a directory offer, its tenants opting in by themselves (D96).
+    let scope = if tenant.is_empty() {
+        crate::trust::OfferScope::Directory
+    } else {
+        tenants::validate_slug(&tenant).map_err(tenant_error)?;
+        crate::trust::OfferScope::Tenant
+    };
+    let admit = match req.admit.as_known() {
+        Some(pb::AdmitSetting::ADMIT_SETTING_APPROVAL) => crate::trust::AdmitSetting::Approval,
+        _ => crate::trust::AdmitSetting::Open,
+    };
+    if scope.is_tenant() && admit != crate::trust::AdmitSetting::Open {
+        return Err(bad(
+            "a tenant offer admits its tenant: --admit is a directory offer's",
+        ));
+    }
     let directory = crate::trust::normalize_issuer(&req.directory)
         .ok_or_else(|| bad("directory is its issuer URL, https://…/d/<id>"))?;
     let days = req.days.map(u64::from).unwrap_or(crate::trust::OFFER_DAYS);
@@ -1290,10 +1319,16 @@ pub async fn offer_admission(
         created_at: now,
         expires_at: now + days * 86_400,
         redeemed_at: None,
+        scope,
+        admit,
     };
     call.auth().tenants.put_offer(&o).map_err(tenant_error)?;
     call.set_target(format!("offer:{}", o.id));
-    call.detail("tenant", serde_json::json!(tenant));
+    if scope.is_tenant() {
+        call.detail("tenant", serde_json::json!(tenant));
+    } else {
+        call.detail("admit", serde_json::json!(admit));
+    }
     call.detail("directory", serde_json::json!(directory));
     let cluster_name = call
         .auth()
@@ -1307,7 +1342,7 @@ pub async fn offer_admission(
         cluster_name,
         api,
         tls_sha256: fp,
-        scope: crate::trust::OfferScope::Tenant,
+        scope,
         tenant,
         directory,
         offer: o.id.clone(),
@@ -1832,8 +1867,188 @@ fn trusted_directory_pb(call: &Call, d: &crate::trust::TrustedDirectory) -> pb::
         },
         lag_seconds: lag,
         stale: lag > max * 60,
+        whole: d.whole.is_some(),
+        admit: d
+            .whole
+            .as_ref()
+            .map_or(pb::AdmitSetting::ADMIT_SETTING_UNSPECIFIED, |w| {
+                admit_pb(w.admit)
+            })
+            .into(),
+        default_cap: d
+            .whole
+            .as_ref()
+            .and_then(|_| call.auth().trust.directory_cap(&d.id).ok().flatten())
+            .map(|c| quotas_to_pb(&c.cap))
+            .into(),
+        pending: d
+            .whole
+            .iter()
+            .flat_map(|w| &w.pending)
+            .map(remote_tenant_pb)
+            .collect(),
+        refused: d
+            .whole
+            .iter()
+            .flat_map(|w| &w.refused)
+            .map(remote_tenant_pb)
+            .collect(),
         ..Default::default()
     }
+}
+
+fn remote_tenant_pb(t: &crate::trust::RemoteTenant) -> pb::RemoteTenant {
+    pb::RemoteTenant {
+        id: t.id.clone(),
+        slug: t.slug.clone(),
+        display_name: t.display_name.clone(),
+        ..Default::default()
+    }
+}
+
+/// The trusted directory `id` names: its `trusted-…` id or its issuer.
+fn trusted_directory(call: &Call, id: &str) -> ServiceResult<crate::trust::TrustedDirectory> {
+    let issuer = crate::trust::normalize_issuer(id);
+    call.auth()
+        .trust
+        .directories()
+        .map_err(trust_err)?
+        .into_iter()
+        .find(|d| d.id == id || issuer.as_deref() == Some(d.issuer.as_str()))
+        .ok_or_else(|| {
+            ServiceError::new(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "no such trusted directory",
+            )
+        })
+}
+
+/// [`trusted_directory`], which must be trusted as a whole (D92).
+fn whole_directory(call: &Call, id: &str) -> ServiceResult<crate::trust::TrustedDirectory> {
+    let d = trusted_directory(call, id)?;
+    if d.whole.is_none() {
+        return Err(ServiceError::new(
+            StatusCode::CONFLICT,
+            "not_whole",
+            "this directory is trusted for the tenants it was offered only, not as a whole",
+        ));
+    }
+    Ok(d)
+}
+
+pub fn set_directory_admission(
+    call: &Call,
+    req: pb::SetDirectoryAdmissionRequest,
+) -> ServiceResult<pb::SetDirectoryAdmissionResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    let mut d = whole_directory(call, &req.id)?;
+    call.set_target(format!("directory:{}", d.issuer));
+    let admit = match req.admit.as_known() {
+        Some(pb::AdmitSetting::ADMIT_SETTING_OPEN) => Some(crate::trust::AdmitSetting::Open),
+        Some(pb::AdmitSetting::ADMIT_SETTING_APPROVAL) => {
+            Some(crate::trust::AdmitSetting::Approval)
+        }
+        _ => None,
+    };
+    if let (Some(a), Some(w)) = (admit, d.whole.as_mut()) {
+        w.admit = a;
+        call.auth().trust.put_directory(&d).map_err(trust_err)?;
+        call.detail("admit", serde_json::json!(a));
+    }
+    // A copy goes into each admission: those made already keep theirs.
+    if let Some(q) = req.cap.as_option() {
+        let c = crate::trust::DirectoryCap {
+            cap: quotas_from_pb(q),
+            by: call.p.user_id().unwrap_or("-").to_string(),
+            at: crate::tenancy::now(),
+        };
+        call.auth()
+            .trust
+            .put_directory_cap(&d.id, &c)
+            .map_err(trust_err)?;
+        call.detail("cap", serde_json::json!(c.cap));
+    }
+    Ok(pb::SetDirectoryAdmissionResponse {
+        directory: trusted_directory_pb(call, &d).into(),
+        ..Default::default()
+    })
+}
+
+/// The operator decides tenant `tenant`'s pending opt-in to directory
+/// `id` (D96): admitted with the directory's default cap, or refused;
+/// the directory hears at the next report, sent now.
+fn decide_opt_in(
+    call: &Call,
+    id: &str,
+    tenant: &str,
+    approve: bool,
+) -> ServiceResult<crate::trust::TrustedDirectory> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    let mut d = whole_directory(call, id)?;
+    let t = d
+        .whole
+        .iter()
+        .flat_map(|w| &w.pending)
+        .find(|t| t.id == tenant || t.slug == tenant)
+        .cloned()
+        .ok_or_else(|| {
+            ServiceError::new(StatusCode::NOT_FOUND, "not_found", "no such pending opt-in")
+        })?;
+    call.set_target(format!("tenant:{}", t.id));
+    call.detail("directory", serde_json::json!(d.issuer));
+    glidex_trust::cluster::decide(&mut d, &t.id, approve);
+    if approve {
+        let by = call.p.user_id().unwrap_or("-").to_string();
+        crate::api::trust::admit_by_default(&call.app, &d, &t, &by)
+            .map_err(|e| ServiceError::new(StatusCode::INTERNAL_SERVER_ERROR, "internal", e))?;
+    }
+    call.auth().trust.put_directory(&d).map_err(trust_err)?;
+    let (app, sent) = (call.app.clone(), d.clone());
+    tokio::spawn(async move {
+        if let Err(e) = crate::api::trust::push_report(&app, &sent).await {
+            tracing::warn!(directory = %sent.issuer, "reporting an opt-in decided: {}", e);
+        }
+    });
+    Ok(d)
+}
+
+pub fn approve_opt_in(
+    call: &Call,
+    req: pb::ApproveOptInRequest,
+) -> ServiceResult<pb::ApproveOptInResponse> {
+    let d = decide_opt_in(call, &req.id, &req.tenant, true)?;
+    Ok(pb::ApproveOptInResponse {
+        directory: trusted_directory_pb(call, &d).into(),
+        ..Default::default()
+    })
+}
+
+pub fn reject_opt_in(
+    call: &Call,
+    req: pb::RejectOptInRequest,
+) -> ServiceResult<pb::RejectOptInResponse> {
+    let d = decide_opt_in(call, &req.id, &req.tenant, false)?;
+    Ok(pb::RejectOptInResponse {
+        directory: trusted_directory_pb(call, &d).into(),
+        ..Default::default()
+    })
+}
+
+/// Ends directory `id`'s trust here as a whole (D94), however it was
+/// trusted: every tenant of it leaves, and the directory is told.
+pub fn untrust_directory(
+    call: &Call,
+    req: pb::UntrustDirectoryRequest,
+) -> ServiceResult<pb::UntrustDirectoryResponse> {
+    call.require(Ent::Cluster, EntitySet::new())?;
+    let mut d = trusted_directory(call, &req.id)?;
+    call.set_target(format!("directory:{}", d.issuer));
+    let told = d.clone();
+    crate::api::trust::forget_tenant_here(&call.app, &mut d, "");
+    let app = call.app.clone();
+    tokio::spawn(async move { crate::api::trust::tell_directory_ended(&app, &told, "").await });
+    Ok(pb::UntrustDirectoryResponse::default())
 }
 
 pub fn set_trusted_directory(

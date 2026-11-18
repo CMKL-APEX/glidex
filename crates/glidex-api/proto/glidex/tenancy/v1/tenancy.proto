@@ -251,6 +251,41 @@ service AdmissionService {
       rest: "PATCH /admissions/directories/{id}"
     };
   }
+  // How a directory trusted as a whole has its tenants' opt-ins treated,
+  // and the cap they get (spec/19-tenancy.md D96): a new cap applies to
+  // later admissions only.
+  rpc SetDirectoryAdmission(SetDirectoryAdmissionRequest) returns (SetDirectoryAdmissionResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "PUT /admissions/directories/{id}/admission"
+    };
+  }
+  // A pending opt-in of a tenant of a directory trusted as a whole,
+  // admitted with the directory's default cap, or refused (D96, D97).
+  rpc ApproveOptIn(ApproveOptInRequest) returns (ApproveOptInResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "POST /admissions/directories/{id}/approve"
+    };
+  }
+  rpc RejectOptIn(RejectOptInRequest) returns (RejectOptInResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "POST /admissions/directories/{id}/reject"
+    };
+  }
+  // Ends a directory's trust as a whole (D94): every tenant of it leaves,
+  // and the directory is told.
+  rpc UntrustDirectory(UntrustDirectoryRequest) returns (UntrustDirectoryResponse) {
+    option (glidex.api.v1.op) = {
+      action: "manageAdmissions"
+      kind: KIND_WRITE
+      rest: "DELETE /admissions/directories/{id}"
+    };
+  }
 }
 
 // Directories this host serves (spec/19-tenancy.md D27, D59): the host's
@@ -657,9 +692,25 @@ message Offer {
   google.protobuf.Timestamp created_at = 6 [json_name = "created_at"];
   google.protobuf.Timestamp expires_at = 7 [json_name = "expires_at"];
   google.protobuf.Timestamp redeemed_at = 8 [json_name = "redeemed_at"];
+  // A directory offer (spec/19-tenancy.md D91, D96): no tenant; `cap` is
+  // the default cap of the directory's tenants' admissions.
+  bool whole = 9;
+  // A directory offer's: how its tenants' opt-ins are treated.
+  AdmitSetting admit = 10;
+}
+
+// How a cluster treats the opt-ins of a directory it trusts as a whole
+// (spec/19-tenancy.md D93, D96).
+enum AdmitSetting {
+  ADMIT_SETTING_UNSPECIFIED = 0;
+  // Admitted at once, with the directory's default cap.
+  ADMIT_SETTING_OPEN = 1;
+  // Pending until the operator approves or refuses.
+  ADMIT_SETTING_APPROVAL = 2;
 }
 
 message OfferAdmissionRequest {
+  // The tenant's slug; empty for a directory offer (D96).
   string tenant = 1;
   // The directory's issuer URL, `https://…/d/<id>`.
   string directory = 2;
@@ -667,6 +718,8 @@ message OfferAdmissionRequest {
   Quotas cap = 3;
   // Default 7, at most 30.
   optional uint32 days = 4;
+  // A directory offer's setting; unspecified: open.
+  AdmitSetting admit = 5;
 }
 message OfferAdmissionResponse {
   Offer offer = 1;
@@ -787,7 +840,51 @@ message TrustedDirectory {
   uint64 lag_seconds = 8 [json_name = "lag_seconds"];
   // Past its limit: its credentials are refused here.
   bool stale = 9;
+  // Trusted as a whole (D92, D96): its tenants opt in by themselves.
+  bool whole = 10;
+  // Then: how their opt-ins are treated,
+  AdmitSetting admit = 11;
+  // the cap an admission gets,
+  Quotas default_cap = 12 [json_name = "default_cap"];
+  // and the opt-ins waiting for the operator, and those refused.
+  repeated RemoteTenant pending = 13;
+  repeated RemoteTenant refused = 14;
 }
+
+message SetDirectoryAdmissionRequest {
+  // Its `trusted-…` id, or its issuer.
+  string id = 1;
+  // Unspecified: unchanged.
+  AdmitSetting admit = 2;
+  // Absent: unchanged. Later admissions only (hyperstor's D347).
+  Quotas cap = 3;
+}
+message SetDirectoryAdmissionResponse {
+  TrustedDirectory directory = 1;
+}
+
+message ApproveOptInRequest {
+  // The directory's `trusted-…` id, or its issuer.
+  string id = 1;
+  // The pending tenant's id or slug.
+  string tenant = 2;
+}
+message ApproveOptInResponse {
+  TrustedDirectory directory = 1;
+}
+
+message RejectOptInRequest {
+  string id = 1;
+  string tenant = 2;
+}
+message RejectOptInResponse {
+  TrustedDirectory directory = 1;
+}
+
+message UntrustDirectoryRequest {
+  string id = 1;
+}
+message UntrustDirectoryResponse {}
 
 message SetTrustedDirectoryRequest {
   // Its `trusted-…` id.

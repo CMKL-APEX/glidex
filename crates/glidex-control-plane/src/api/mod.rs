@@ -905,6 +905,7 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     .add("POST", "/d/{dir}/revoke", PUBLIC, post(op::revoke))
     // Trust between organizations (D63–D66): peer assertions, not users.
     .add("POST", "/trust/v1/redeem", PUBLIC, post(trust::redeem))
+    .add("POST", "/trust/v1/admit", PUBLIC, post(trust::admit))
     .add("POST", "/trust/v1/end", PUBLIC, post(trust::end_at_cluster))
     .add(
         "POST",
@@ -1540,6 +1541,31 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "/admissions/directories/{id}",
         "manageAdmissions",
         patch(tenants::set_trusted_directory),
+    )
+    // A directory trusted as a whole (spec/19-tenancy.md D96)
+    .add(
+        "DELETE",
+        "/admissions/directories/{id}",
+        "manageAdmissions",
+        delete(tenants::untrust_directory),
+    )
+    .add(
+        "PUT",
+        "/admissions/directories/{id}/admission",
+        "manageAdmissions",
+        put(tenants::set_directory_admission),
+    )
+    .add(
+        "POST",
+        "/admissions/directories/{id}/approve",
+        "manageAdmissions",
+        post(tenants::approve_opt_in),
+    )
+    .add(
+        "POST",
+        "/admissions/directories/{id}/reject",
+        "manageAdmissions",
+        post(tenants::reject_opt_in),
     )
     // Automatic admission (spec/19-tenancy.md D79)
     .add(
@@ -2827,6 +2853,7 @@ mod tests {
                 "/d/{dir}/token",
                 "/d/{dir}/revoke",
                 "/trust/v1/redeem",
+                "/trust/v1/admit",
                 "/trust/v1/end",
                 "/d/{dir}/trust/v1/end",
                 "/d/{dir}/trust/v1/logout",

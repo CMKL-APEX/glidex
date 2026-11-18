@@ -2535,3 +2535,253 @@ async fn a_redeem_pins_the_certificate_at_the_api_address() {
         "the certificate at the API address, not the caller's own"
     );
 }
+
+/// D96, D97 between two control planes: a glidex cluster offers trust in
+/// a whole directory, with a setting and a default cap; its owner
+/// redeems it; tenants opt in, pending under `approval` until the
+/// operator decides, admitted at once under `open`; a new default cap
+/// applies to later admissions only; asking again after a refusal; and
+/// the operator ending the directory's trust as a whole.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_glidex_cluster_takes_a_directory_offer() {
+    let north = cp().await; // the cluster
+    let acme = cp().await; // the directory
+    let op = north.admin();
+    let admin = acme.admin();
+    let issuer = format!("{}/d/local", acme.base);
+    let root = acme
+        .app
+        .auth
+        .store
+        .user_for_identity("pam", "root", "root", None, false)
+        .unwrap()
+        .unwrap()
+        .id;
+    let mut ids = std::collections::HashMap::new();
+    for slug in ["physics", "chem", "bio"] {
+        let (s, v) = acme
+            .rest(
+                "POST",
+                "/tenants",
+                Some(json!({"slug": slug, "display_name": slug})),
+                &admin,
+            )
+            .await;
+        assert!(s.is_success(), "{v}");
+        let id = v["tenant"]["id"].as_str().unwrap().to_string();
+        acme.app
+            .auth
+            .add_link(
+                "role.tenant-admin",
+                Ent::User(root.clone()),
+                Ent::Tenant(id.clone()),
+                "test",
+            )
+            .unwrap();
+        ids.insert(slug, id);
+    }
+    let cluster = glidex_control_plane::api::op::cluster_id(&north.app);
+
+    // A tenant offer can't carry a setting; a directory offer has none.
+    let (s, v) = north
+        .rest(
+            "POST",
+            "/admissions/offers",
+            Some(json!({"tenant": "physics", "directory": issuer, "admit": "ADMIT_SETTING_APPROVAL"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    let (s, v) = north
+        .rest(
+            "POST",
+            "/admissions/offers",
+            Some(json!({
+                "directory": issuer,
+                "admit": "ADMIT_SETTING_APPROVAL",
+                "cap": {"vms": 2}
+            })),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["offer"]["whole"], true, "{v}");
+    let token = v["token"].as_str().unwrap().to_string();
+    let t = glidex_control_plane::trust::OfferToken::decode(&token).unwrap();
+    assert_eq!(t.scope, glidex_control_plane::trust::OfferScope::Directory);
+    // Not a tenant's to redeem: its directory's owner's.
+    let (s, _) = acme
+        .rest(
+            "POST",
+            "/tenants/physics/clusters",
+            Some(json!({"offer": token})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST);
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/directory/clusters",
+            Some(json!({"offer": token})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    assert_eq!(v["cluster"]["whole"], true, "{v}");
+    assert_eq!(v["cluster"]["admit"], "ADMIT_SETTING_APPROVAL", "{v}");
+
+    // The cluster's side: trusted as a whole, its setting and cap, no
+    // tenant admitted.
+    let directory = || async {
+        let (_, v) = north
+            .rest("GET", "/admissions/directories", None, &op)
+            .await;
+        v["directories"][0].clone()
+    };
+    let d = directory().await;
+    assert_eq!(d["whole"], true, "{d}");
+    assert_eq!(d["admit"], "ADMIT_SETTING_APPROVAL", "{d}");
+    assert_eq!(d["default_cap"]["vms"], 2, "{d}");
+    assert!(d["tenants"].as_array().is_none_or(|a| a.is_empty()), "{d}");
+    let did = d["id"].as_str().unwrap().to_string();
+    let cap_of = |tenant: &str| {
+        north
+            .app
+            .auth
+            .tenants
+            .admission(tenant)
+            .unwrap()
+            .map(|a| a.cap.vms)
+    };
+    let opt_in = |slug: &'static str| {
+        let (acme, admin, cluster) = (&acme, admin.clone(), cluster.clone());
+        async move {
+            let (s, v) = acme
+                .rest(
+                    "POST",
+                    &format!("/tenants/{slug}/clusters"),
+                    Some(json!({"cluster": cluster})),
+                    &admin,
+                )
+                .await;
+            assert_eq!(s, StatusCode::CREATED, "{v}");
+            v["cluster"]["status"].as_str().unwrap_or("").to_string()
+        }
+    };
+    let status_at_directory = |slug: &'static str| {
+        let (acme, ids) = (&acme, &ids);
+        let cluster = cluster.clone();
+        move || {
+            acme.app
+                .auth
+                .trust
+                .cluster("local", &cluster)
+                .ok()
+                .flatten()
+                .and_then(|c| c.status_of(&ids[slug]))
+        }
+    };
+
+    // Approval: pending, once however often it asks (D97).
+    assert_eq!(opt_in("physics").await, "TENANT_CLUSTER_STATUS_PENDING");
+    assert_eq!(opt_in("physics").await, "TENANT_CLUSTER_STATUS_PENDING");
+    let d = directory().await;
+    assert_eq!(d["pending"].as_array().unwrap().len(), 1, "{d}");
+    assert_eq!(d["pending"][0]["slug"], "physics", "{d}");
+    assert_eq!(cap_of(&ids["physics"]), None);
+    // A tenant not pending can't be approved.
+    let (s, _) = north
+        .rest(
+            "POST",
+            &format!("/admissions/directories/{did}/approve"),
+            Some(json!({"tenant": "chem"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NOT_FOUND);
+    // Approved, by the directory's issuer this time: admitted with the
+    // default cap; the directory hears it from the report sent at once.
+    let (s, v) = north
+        .rest(
+            "POST",
+            &format!("/admissions/directories/{did}/approve"),
+            Some(json!({"tenant": "physics"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["directory"]["tenants"][0]["slug"], "physics", "{v}");
+    assert_eq!(cap_of(&ids["physics"]), Some(Some(2)));
+    let physics = status_at_directory("physics");
+    wait_for(|| physics() == Some(glidex_trust::AdmissionStatus::Admitted)).await;
+
+    // Open, with a new default cap: later admissions take it, physics
+    // keeps its own.
+    let (s, v) = north
+        .rest(
+            "PUT",
+            &format!("/admissions/directories/{did}/admission"),
+            Some(json!({"admit": "ADMIT_SETTING_OPEN", "cap": {"vms": 5}})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["directory"]["default_cap"]["vms"], 5, "{v}");
+    assert_eq!(opt_in("chem").await, "TENANT_CLUSTER_STATUS_ADMITTED");
+    assert_eq!(cap_of(&ids["chem"]), Some(Some(5)));
+    assert_eq!(cap_of(&ids["physics"]), Some(Some(2)));
+
+    // Refused, then asking again: pending again, the refusal forgotten.
+    let (s, _) = north
+        .rest(
+            "PUT",
+            &format!("/admissions/directories/{did}/admission"),
+            Some(json!({"admit": "ADMIT_SETTING_APPROVAL"})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(opt_in("bio").await, "TENANT_CLUSTER_STATUS_PENDING");
+    let (s, v) = north
+        .rest(
+            "POST",
+            &format!("/admissions/directories/{did}/reject"),
+            Some(json!({"tenant": ids["bio"]})),
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["directory"]["refused"][0]["slug"], "bio", "{v}");
+    assert_eq!(cap_of(&ids["bio"]), None);
+    let bio = status_at_directory("bio");
+    wait_for(|| bio() == Some(glidex_trust::AdmissionStatus::Refused)).await;
+    assert_eq!(opt_in("bio").await, "TENANT_CLUSTER_STATUS_PENDING");
+    let d = directory().await;
+    assert!(d["refused"].as_array().is_none_or(|a| a.is_empty()), "{d}");
+
+    // Ended as a whole by the operator: every tenant leaves, the
+    // directory is told and forgets the cluster.
+    let (s, v) = north
+        .rest(
+            "DELETE",
+            &format!("/admissions/directories/{did}"),
+            None,
+            &op,
+        )
+        .await;
+    assert_eq!(s, StatusCode::NO_CONTENT, "{v}");
+    assert!(north.app.auth.trust.directories().unwrap().is_empty());
+    assert_eq!(cap_of(&ids["physics"]), None);
+    assert_eq!(cap_of(&ids["chem"]), None);
+    let gone = || {
+        acme.app
+            .auth
+            .trust
+            .cluster("local", &cluster)
+            .ok()
+            .flatten()
+            .is_none()
+    };
+    wait_for(gone).await;
+}

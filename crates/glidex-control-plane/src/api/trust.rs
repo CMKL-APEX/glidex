@@ -1,8 +1,10 @@
 //! The handshake's HTTP side (spec/19-tenancy.md D63–D66), public and
 //! authenticated by peer assertions instead of a user:
 //!
-//! - at a cluster: `POST /trust/v1/redeem` (a directory redeems an offer)
-//!   and `POST /trust/v1/end` (a trusted directory ends a tenant's trust);
+//! - at a cluster: `POST /trust/v1/redeem` (a directory redeems an offer),
+//!   `POST /trust/v1/admit` (a directory trusted as a whole opts a tenant
+//!   in) and `POST /trust/v1/end` (a trusted directory ends a tenant's
+//!   trust);
 //! - at a directory: `POST /d/{dir}/trust/v1/end` (a trusted cluster ends
 //!   it) and `POST /d/{dir}/trust/v1/logout` (a session there ended, D72).
 //!
@@ -64,21 +66,18 @@ pub async fn redeem(
             open: o.is_open(t),
             secret_hash: &o.secret_hash,
             directory: &o.directory,
-            // This cluster makes tenant offers only (19-tenancy.md T11
-            // task 4 adds directory offers).
-            scope: glidex_trust::OfferScope::Tenant,
+            scope: o.scope,
             tenant: &o.tenant,
-            admit: glidex_trust::AdmitSetting::Open,
+            admit: o.admit,
         }),
         &cluster,
         &app.auth.peer_replays,
         t,
     );
-    let (r, mut offer, tenant) = match (checked, offer.take(), b.tenant.clone()) {
-        (Ok(r), Some(o), Some(tenant)) => (r, o, tenant),
-        (Err(why), _, _) => return refused(&app, ACTION, &why),
-        (Ok(_), None, _) => return refused(&app, ACTION, "no such offer"),
-        (Ok(_), _, None) => return refused(&app, ACTION, "no tenant for a tenant offer"),
+    let (r, mut offer) = match (checked, offer.take()) {
+        (Ok(r), Some(o)) => (r, o),
+        (Err(why), _) => return refused(&app, ACTION, &why),
+        (Ok(_), None) => return refused(&app, ACTION, "no such offer"),
     };
     let issuer = r.issuer.clone();
     // Once: the offer is spent before anything else is written.
@@ -94,11 +93,28 @@ pub async fn redeem(
         .trust
         .put_directory(&d)
         .map_err(|e| e.to_string())
-        .and_then(|_| {
-            app.auth
+        .and_then(|_| match &b.tenant {
+            // A tenant offer admits its tenant (D65).
+            Some(tenant) => app
+                .auth
                 .tenants
                 .admit_remote(&tenant.id, &d.id, offer.cap.clone(), &by)
-                .map_err(|e| e.to_string())
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+            // A directory offer: its cap is the default of the directory's
+            // tenants' admissions to come (D96).
+            None => app
+                .auth
+                .trust
+                .put_directory_cap(
+                    &d.id,
+                    &trust::DirectoryCap {
+                        cap: offer.cap.clone(),
+                        by: by.clone(),
+                        at: t,
+                    },
+                )
+                .map_err(|e| e.to_string()),
         })
         .and_then(|_| {
             app.auth
@@ -116,19 +132,113 @@ pub async fn redeem(
         Ok(k) => k,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e).into_response(),
     };
+    let target = b.tenant.as_ref().map(|t| format!("tenant:{}", t.id));
     app.auth.audit_system(
         &format!("directory:{issuer}"),
         "",
         ACTION,
-        Some(&format!("tenant:{}", tenant.id)),
+        target.as_deref(),
         "allowed",
         None,
-        json!({ "offer": offer.id, "tenant": tenant.slug }),
+        match &b.tenant {
+            Some(tenant) => json!({ "offer": offer.id, "tenant": tenant.slug }),
+            None => json!({ "offer": offer.id, "admit": r.whole }),
+        },
     );
     // Where the directory sends this cluster's browser logins back (D69).
     let ui_callback = super::trusted_login::callback_url(&app, &d.id);
-    Json(json!({ "cluster_id": cluster, "cluster_key": cluster_key, "ui_callback": ui_callback }))
-        .into_response()
+    Json(glidex_trust::RedeemAnswer {
+        cluster_id: cluster,
+        cluster_key,
+        ui_callback,
+        admit: r.whole,
+    })
+    .into_response()
+}
+
+/// `POST /trust/v1/admit`, at the cluster: a directory it trusts as a
+/// whole opts one of its tenants in (D93, D96). Under `open` the tenant
+/// is admitted with the directory's default cap; under `approval` it
+/// waits for the operator, one request per tenant (D97).
+pub async fn admit(
+    State(app): State<AppState>,
+    headers: HeaderMap,
+    Json(b): Json<glidex_trust::AdmitRequest>,
+) -> Response {
+    const ACTION: &str = "admitTenant";
+    let Some(assertion) = peer::from_headers(&headers) else {
+        return refused(&app, ACTION, "no assertion");
+    };
+    let cluster = super::op::cluster_id(&app);
+    let mut d = match glidex_trust::cluster::check_admit(
+        &assertion,
+        &b,
+        |iss| app.auth.trust.directory_by_issuer(iss).ok().flatten(),
+        &cluster,
+        &app.auth.peer_replays,
+        now(),
+    ) {
+        Ok(d) => d,
+        Err(why) => return refused(&app, ACTION, &why),
+    };
+    // A tenant of this host's own, or of another trusted directory, by
+    // the same id: not this directory's to admit.
+    if let Ok(Some(a)) = app.auth.tenants.admission(&b.tenant.id)
+        && a.directory_id != d.id
+    {
+        return refused(&app, ACTION, "a tenant admitted from elsewhere");
+    }
+    let status = glidex_trust::cluster::admit(&mut d, &b.tenant);
+    let by = format!("directory:{}", d.issuer);
+    let done = if status.is_admitted() {
+        admit_by_default(&app, &d, &b.tenant, &by)
+    } else {
+        Ok(())
+    }
+    .and_then(|_| app.auth.trust.put_directory(&d).map_err(|e| e.to_string()));
+    if let Err(e) = done {
+        return err(StatusCode::INTERNAL_SERVER_ERROR, "internal", e).into_response();
+    }
+    app.auth.audit_system(
+        &by,
+        "",
+        ACTION,
+        Some(&format!("tenant:{}", b.tenant.id)),
+        "allowed",
+        None,
+        json!({ "tenant": b.tenant.slug, "status": status }),
+    );
+    Json(glidex_trust::AdmitAnswer { status }).into_response()
+}
+
+/// Admit tenant `t` of directory `d`, trusted as a whole, with a copy of
+/// its default cap (D96); one admitted already keeps its admission.
+pub fn admit_by_default(
+    app: &AppState,
+    d: &TrustedDirectory,
+    t: &glidex_trust::RemoteTenant,
+    by: &str,
+) -> Result<(), String> {
+    if app
+        .auth
+        .tenants
+        .admission(&t.id)
+        .map_err(|e| e.to_string())?
+        .is_some_and(|a| a.directory_id == d.id)
+    {
+        return Ok(());
+    }
+    let cap = app
+        .auth
+        .trust
+        .directory_cap(&d.id)
+        .map_err(|e| e.to_string())?
+        .map_or_else(crate::tenants::unlimited, |c| c.cap);
+    app.auth
+        .tenants
+        .admit_remote(&t.id, &d.id, cap, by)
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 /// `POST /trust/v1/end`, at the cluster: a trusted directory ends a
@@ -646,6 +756,26 @@ pub async fn report_for(
             r.disks += disks.iter().filter(|x| x.project == p.id).count() as u64;
         }
         tenants.push(r);
+    }
+    // Opt-ins not admitted (D93): the directory learns where they stand.
+    for (rt, st) in d.admissions() {
+        if st.is_admitted() {
+            continue;
+        }
+        tenants.push(trust::TenantReport {
+            tenant: rt.id.clone(),
+            suspended: false,
+            admission: st,
+            cap: crate::tenants::unlimited(),
+            projects: 0,
+            vms: 0,
+            running_vms: 0,
+            disks: 0,
+            disk_gib: 0,
+            networks: 0,
+            storage: None,
+            project_storage: Vec::new(),
+        });
     }
     Ok(trust::ClusterReport { at: now(), tenants })
 }

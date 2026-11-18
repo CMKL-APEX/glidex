@@ -257,6 +257,38 @@ impl AdmissionService for Svc {
         op!(self, ctx, req, tenancy::set_trusted_directory)
     }
 
+    async fn set_directory_admission(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, SetDirectoryAdmissionRequest>,
+    ) -> ServiceResult<SetDirectoryAdmissionResponse> {
+        op!(self, ctx, req, tenancy::set_directory_admission)
+    }
+
+    async fn approve_opt_in(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, ApproveOptInRequest>,
+    ) -> ServiceResult<ApproveOptInResponse> {
+        op!(self, ctx, req, tenancy::approve_opt_in)
+    }
+
+    async fn reject_opt_in(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, RejectOptInRequest>,
+    ) -> ServiceResult<RejectOptInResponse> {
+        op!(self, ctx, req, tenancy::reject_opt_in)
+    }
+
+    async fn untrust_directory(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, UntrustDirectoryRequest>,
+    ) -> ServiceResult<UntrustDirectoryResponse> {
+        op!(self, ctx, req, tenancy::untrust_directory)
+    }
+
     async fn list_auto_admissions(
         &self,
         ctx: RequestContext,

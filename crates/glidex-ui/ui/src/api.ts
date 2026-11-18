@@ -1579,6 +1579,15 @@ export const setTrustedDirectory = (id: string, minutes?: number) =>
   rpc(AdmissionService.method.setTrustedDirectory, { id, max_staleness_minutes: minutes === undefined ? undefined : String(minutes) }).then(
     (r) => r.directory as TrustedDirectory,
   );
+/** A pending opt-in of a tenant of a directory trusted as a whole
+ *  (spec/19-tenancy.md D96): admitted with the directory's default cap, or
+ *  refused. */
+export const approveOptIn = (id: string, tenant: string) =>
+  rpc(AdmissionService.method.approveOptIn, { id, tenant }).then((r) => r.directory as TrustedDirectory);
+export const rejectOptIn = (id: string, tenant: string) =>
+  rpc(AdmissionService.method.rejectOptIn, { id, tenant }).then((r) => r.directory as TrustedDirectory);
+/** Ends a directory's trust as a whole (D94): every tenant of it leaves. */
+export const untrustDirectory = (id: string) => rpc(AdmissionService.method.untrustDirectory, { id }).then(none);
 export const listTenantDevicePools = (id: string) =>
   rpc(TenantService.method.listDevicePools, { id }).then((r) => (r.pools ?? []) as TenantDevicePool[]);
 /** Replaces the tenant's pools; only `name`, `from`, `max` and `projects` are read. */
