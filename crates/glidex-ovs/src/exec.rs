@@ -177,6 +177,10 @@ pub trait Exec: Send + Sync {
     /// [`Exec::check`] to turn it into an error.
     fn run(&self, cmd: &Cmd) -> Result<Output, OvsError>;
     fn read_file(&self, path: &Path) -> Result<String, OvsError>;
+    /// A binary file (a PCI device's `config`).
+    fn read_bytes(&self, path: &Path) -> Result<Vec<u8>, OvsError> {
+        self.read_file(path).map(String::into_bytes)
+    }
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), OvsError>;
     fn remove_file(&self, path: &Path) -> Result<(), OvsError>;
     /// Create a directory (and parents) and set its mode.
@@ -384,6 +388,10 @@ impl Exec for SystemExec {
             .map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
     }
 
+    fn read_bytes(&self, path: &Path) -> Result<Vec<u8>, OvsError> {
+        std::fs::read(path).map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
+    }
+
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), OvsError> {
         if self.sudo {
             return Err(OvsError::Io(format!(
@@ -483,6 +491,7 @@ pub struct RecordingExec {
     responses: Mutex<Vec<(String, VecDeque<Output>)>>,
     files: Mutex<Vec<(PathBuf, String)>>,
     links: Mutex<Vec<(PathBuf, String)>>,
+    binaries: Mutex<Vec<(PathBuf, Vec<u8>)>>,
     calls: Mutex<Vec<String>>,
     writes: Mutex<Vec<(PathBuf, Vec<u8>)>>,
 }
@@ -525,6 +534,15 @@ impl RecordingExec {
             .lock()
             .unwrap()
             .push((PathBuf::from(path), contents.to_string()));
+        self
+    }
+
+    /// A binary file, for [`Exec::read_bytes`].
+    pub fn bytes(&self, path: &str, contents: &[u8]) -> &Self {
+        self.binaries
+            .lock()
+            .unwrap()
+            .push((PathBuf::from(path), contents.to_vec()));
         self
     }
 
@@ -575,6 +593,21 @@ impl Exec for RecordingExec {
             .find(|(p, _)| p == path)
             .map(|(_, c)| c.clone())
             .ok_or_else(|| OvsError::Io(format!("{}: not found", path.display())))
+    }
+
+    fn read_bytes(&self, path: &Path) -> Result<Vec<u8>, OvsError> {
+        let binary = self
+            .binaries
+            .lock()
+            .unwrap()
+            .iter()
+            .rev()
+            .find(|(p, _)| p == path)
+            .map(|(_, c)| c.clone());
+        match binary {
+            Some(b) => Ok(b),
+            None => self.read_file(path).map(String::into_bytes),
+        }
     }
 
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), OvsError> {

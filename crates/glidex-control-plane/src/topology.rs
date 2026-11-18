@@ -157,6 +157,57 @@ impl TopologyTree {
         }
     }
 
+    /// The functions bound to `vfio-pci`, whose ports' ACS matters (H30).
+    pub fn on_vfio(&self) -> Vec<String> {
+        self.devices
+            .iter()
+            .filter(|d| d.driver.as_deref() == Some("vfio-pci"))
+            .map(|d| d.address.clone())
+            .collect()
+    }
+
+    /// Warn `acs_off` (§5.2, H30) for each function on `vfio-pci` below
+    /// one of `ports`, the ports netd found with ACS off: once per device
+    /// and port, from the nearest port up.
+    pub fn warn_acs(&mut self, ports: &[glidex_ovs::acs::PortAcs]) {
+        if ports.is_empty() {
+            return;
+        }
+        let by_address: BTreeMap<&str, &PciFunction> = self
+            .devices
+            .iter()
+            .map(|d| (d.address.as_str(), d))
+            .collect();
+        let mut warnings = Vec::new();
+        for d in self
+            .devices
+            .iter()
+            .filter(|d| d.driver.as_deref() == Some("vfio-pci"))
+        {
+            let mut seen = BTreeSet::new();
+            let mut above = by_address.get(d.parent.as_str());
+            while let Some(b) = above {
+                if !seen.insert(b.address.as_str()) {
+                    break;
+                }
+                if let Some(p) = ports.iter().find(|p| p.address == b.address) {
+                    let off: Vec<_> = p.off.iter().map(|b| b.words()).collect();
+                    warnings.push(TopologyWarning {
+                        kind: "acs_off".into(),
+                        detail: format!(
+                            "{} is on vfio-pci below {}, whose ACS is off ({}): devices under it reach each other without the IOMMU",
+                            d.address,
+                            p.address,
+                            off.join(", ")
+                        ),
+                    });
+                }
+                above = by_address.get(b.parent.as_str());
+            }
+        }
+        self.warnings.extend(warnings);
+    }
+
     /// `d` as the summary has it.
     fn summary_of(&self, d: &PciFunction) -> SummaryDevice {
         SummaryDevice {
@@ -486,7 +537,7 @@ pub struct PciFunction {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopologyWarning {
     /// `iommu_off`, `numa_unknown`, `group_shared`, `link_degraded`,
-    /// `hugepages_unbalanced`, `power_save_on`.
+    /// `hugepages_unbalanced`, `power_save_on`, `acs_off`.
     pub kind: String,
     pub detail: String,
 }
@@ -1124,6 +1175,49 @@ mod tests {
             t.warnings[0].detail.contains("is in D3cold"),
             "{:?}",
             t.warnings
+        );
+    }
+
+    #[test]
+    fn devices_on_vfio_below_a_port_with_acs_off_are_warned() {
+        use glidex_ovs::acs::{AcsBit, PortAcs};
+        let mut t = power_tree(&[], "D0");
+        // Only the GPU on vfio-pci is asked about, not the one on nvidia.
+        assert_eq!(t.on_vfio(), ["0000:87:00.0"]);
+        t.warn_acs(&[]);
+        assert!(t.warnings.is_empty());
+        t.warn_acs(&[
+            PortAcs {
+                address: "0000:82:00.0".into(),
+                off: vec![AcsBit::RequestRedirect, AcsBit::CompletionRedirect],
+            },
+            PortAcs {
+                address: "0000:80:01.1".into(),
+                off: vec![AcsBit::SourceValidation],
+            },
+            // A port above no device on vfio-pci.
+            PortAcs {
+                address: "0000:00:03.1".into(),
+                off: vec![AcsBit::UpstreamForwarding],
+            },
+        ]);
+        let got: Vec<_> = t
+            .warnings
+            .iter()
+            .map(|w| (w.kind.as_str(), w.detail.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "acs_off",
+                    "0000:87:00.0 is on vfio-pci below 0000:82:00.0, whose ACS is off (request redirect, completion redirect): devices under it reach each other without the IOMMU"
+                ),
+                (
+                    "acs_off",
+                    "0000:87:00.0 is on vfio-pci below 0000:80:01.1, whose ACS is off (source validation): devices under it reach each other without the IOMMU"
+                ),
+            ]
         );
     }
 

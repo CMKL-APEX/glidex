@@ -32,6 +32,30 @@ ls /sys/kernel/iommu_groups/
 A device can only be passed through with every other device in its
 IOMMU group (except PCI bridges). `gxctl pci` shows each device's group.
 
+### Keep ACS on
+
+Access Control Services (ACS) on a root port or a PCIe switch's
+downstream port make a device's requests go up to the IOMMU instead of
+straight to its neighbours. The kernel forms the IOMMU groups at boot
+from the ACS it turns on then. A tool that turns ACS off later leaves
+the groups as they were: a passed-through device then reaches the
+devices next to it without the IOMMU, at addresses that are the guest's,
+and a VM's devices are no longer kept apart from the host's or another
+VM's.
+
+Some GPU host software turns ACS off for peer-to-peer on bare metal,
+for example NVIDIA's `nvidia-acs-disable` service. Don't run it, or
+anything like it, on a host that passes devices to VMs. Disable the
+service and reboot: the firmware and the kernel turn ACS on again at
+boot.
+
+The node warns `acs_off` for each device on `vfio-pci` below a port
+that supports ACS but has Source Validation, Request Redirect,
+Completion Redirect or Upstream Forwarding off, naming the device and
+the port (`gxctl node topology <node>`, the host page). `glidex-netd`
+reads the ports' ACS, so the warning needs it running. Glidex never
+changes ACS itself.
+
 ### Host kernel
 
 Before a VM starts, the hypervisor maps each passed-through device's

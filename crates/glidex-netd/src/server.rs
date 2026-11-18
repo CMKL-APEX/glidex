@@ -299,6 +299,10 @@ impl Netd {
             Op::DpuListPorts => to_value(self.dpu_list_ports()?),
             Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
             Op::KeepDevicesOn { addresses } => to_value(self.keep_devices_on(&addresses)?),
+            Op::AcsAbove { addresses } => to_value(glidex_ovs::acs::ports_off(
+                self.ex(),
+                &glidex_ovs::power::checked(&addresses)?,
+            )),
             Op::ListPreparedDevices => to_value(
                 self.store
                     .list::<glidex_ovs::vfio::Prepared>(DEVICES)?

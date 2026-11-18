@@ -92,6 +92,7 @@ The topology reports what it notices. Glidex never acts on these.
 | `link_degraded` | A device's PCIe link runs slower or narrower than it can. GPUs aren't flagged: they slow their link when idle. | Reseat the card, or check the slot. |
 | `hugepages_unbalanced` | A device sits on a NUMA node with no hugepages while other NUMA nodes have some. | Reserve hugepages on that NUMA node too (see [Hugepages](#hugepages)). |
 | `power_save_on` | A device of a pool with `power_save: false` still allows power saving, or is in D3cold. | Check glidex-netd's log (`journalctl -u glidex-netd`) for why the settings didn't take; the node sets them again within two minutes (see [Keep devices out of power saving](pci-passthrough.md#keep-devices-out-of-power-saving)). |
+| `acs_off` | A device on `vfio-pci` is below a root port or switch port whose ACS (Source Validation, Request Redirect, Completion Redirect or Upstream Forwarding) is off: the devices under that port reach each other without the IOMMU. | Stop whatever turned ACS off, such as NVIDIA's `nvidia-acs-disable` service, and reboot the host; ACS is on again after the reboot (see [Keep ACS on](pci-passthrough.md#keep-acs-on)). |
 
 ## NUMA nodes
 

@@ -4987,7 +4987,32 @@ impl VmManager {
             crate::topology::read_tree(summary, self.dpdk_uplink_bdfs(), |g| self.held_groups(g));
         let keep = self.devices_to_keep_on(&tree);
         tree.warn_power_save(&keep);
+        let ports = self.acs_off_above(&tree.on_vfio());
+        tree.warn_acs(&ports);
         tree
+    }
+
+    /// The ports above `addresses` whose ACS is off (H30), from netd: only
+    /// root reads a port's extended configuration. Without netd, or with
+    /// one older than the op, none known.
+    fn acs_off_above(&self, addresses: &[String]) -> Vec<glidex_ovs::acs::PortAcs> {
+        if addresses.is_empty() {
+            return Vec::new();
+        }
+        match self.netd.call::<glidex_ovs::acs::AcsReport>(Op::AcsAbove {
+            addresses: addresses.to_vec(),
+        }) {
+            Ok(r) => {
+                for (port, why) in &r.failed {
+                    tracing::debug!("reading the ACS of {port}: {why}");
+                }
+                r.off
+            }
+            Err(e) => {
+                tracing::debug!("reading ACS above the devices on vfio-pci: {e}");
+                Vec::new()
+            }
+        }
     }
 
     /// IOMMU groups among `groups` that a process other than this host's

@@ -172,6 +172,11 @@ pub enum Op {
     KeepDevicesOn {
         addresses: Vec<String>,
     },
+    /// Read-only: the root ports and switch downstream ports above these
+    /// devices whose ACS is off (spec/22-host-topology.md H30).
+    AcsAbove {
+        addresses: Vec<String>,
+    },
     /// Give a physical function `vfs` SR-IOV virtual functions
     /// (spec/22-host-topology.md §10.1); 0 removes them.
     SetSriovVfs {
@@ -241,6 +246,7 @@ impl Op {
                 | Op::DpuOvnStatus { .. }
                 | Op::ListPreparedDevices
                 | Op::DeviceHolders { .. }
+                | Op::AcsAbove { .. }
                 | Op::DpuProbe { .. }
                 | Op::DpuListPorts
         )
@@ -290,6 +296,7 @@ impl Op {
             Op::DpuListPorts => "dpu_list_ports",
             Op::SetSriovVfs { .. } => "set_sriov_vfs",
             Op::KeepDevicesOn { .. } => "keep_devices_on",
+            Op::AcsAbove { .. } => "acs_above",
         }
     }
 }
