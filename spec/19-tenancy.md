@@ -2137,7 +2137,9 @@ each tenant's status; trusting with a directory offer in a write-only
 field; untrusting) and, on a tenant's page, the clusters its directory
 trusts as a whole with **Opt in**, a pending or refused opt-in's status
 and **Ask again**; tested in the UI e2e (`trust.spec.ts`, the cluster
-calls mocked). Task 6 is not started.
+calls mocked). Task 6, the real check, passed on 2026-11-18 (both halves;
+spec/20-idp-checks.md, *Trusting a directory as a whole (T11)*). T11 is
+implemented.
 What follows is per milestone.
 
 T0 is implemented on one host: a cluster that hosts directory `local`,
