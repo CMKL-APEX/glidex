@@ -190,10 +190,25 @@ pub struct PoolRequest {
     pub same_switch: bool,
 }
 
+/// How many switches two devices share: the more, the deeper the switch
+/// they meet at (spec/22-host-topology.md H29). A node of an older version
+/// reports only the nearest switch, which counts as one.
+fn shared_switches(
+    a: &crate::topology::SummaryDevice,
+    b: &crate::topology::SummaryDevice,
+) -> usize {
+    if a.switches.is_empty() || b.switches.is_empty() {
+        return usize::from(a.switch.is_some() && a.switch == b.switch);
+    }
+    a.switches.iter().filter(|s| b.switches.contains(s)).count()
+}
+
 /// The devices `req`'s pool requests get on `n` (spec/22-host-topology.md
 /// §8.2 4, §8.3): of each pool's devices there that are ready, not
 /// cordoned, and not claimed (with their IOMMU groups), those on the NUMA
-/// node of the VM's other devices first, then by address; with
+/// node of the VM's other devices first; then those sharing the deepest
+/// switch with the VM's devices picked so far, then those with the closest
+/// free device in each later pool request (H29); then by address. With
 /// `same_switch`, all under one switch, the one shared with the VM's other
 /// devices first.
 pub fn pick_pool_devices(
@@ -217,23 +232,64 @@ pub fn pick_pool_devices(
         .filter(|d| taken.contains(&d.address))
         .filter_map(|d| d.switch.clone())
         .collect();
+    let usable = |d: &crate::topology::SummaryDevice| {
+        d.ready
+            && !n.spec.cordoned_devices.contains(&d.address)
+            && device_taken(&n.status.pci_groups, &load.devices, &d.address).is_none()
+    };
+    // Each request's candidates, before any pick: what a device of an
+    // earlier request can count on finding close to it.
+    let candidates: Vec<Vec<&crate::topology::SummaryDevice>> = req
+        .pools
+        .iter()
+        .map(|r| {
+            t.devices
+                .iter()
+                .filter(|d| !d.excluded && r.pool.matches.matches_device(d))
+                .filter(|d| usable(d) && !taken.contains(&d.address))
+                .collect()
+        })
+        .collect();
     let mut out = Vec::new();
-    for r in &req.pools {
+    for (i, r) in req.pools.iter().enumerate() {
         let p = &r.pool;
         if !(p.nodes.is_empty() || p.nodes.iter().any(|x| *x == n.meta.id || *x == n.spec.name)) {
             return Err(format!("pool {} is not on this node", p.name));
         }
-        let mut free: Vec<&crate::topology::SummaryDevice> = t
+        let mut free: Vec<&crate::topology::SummaryDevice> = candidates[i]
+            .iter()
+            .copied()
+            .filter(|d| !taken.contains(&d.address))
+            .collect();
+        let held: Vec<&crate::topology::SummaryDevice> = t
             .devices
             .iter()
-            .filter(|d| !d.excluded && p.matches.matches_device(d))
-            .filter(|d| {
-                d.ready
-                    && !n.spec.cordoned_devices.contains(&d.address)
-                    && !taken.contains(&d.address)
-                    && device_taken(&n.status.pci_groups, &load.devices, &d.address).is_none()
-            })
+            .filter(|d| taken.contains(&d.address))
             .collect();
+        let near_held = |d: &crate::topology::SummaryDevice| {
+            held.iter()
+                .map(|h| shared_switches(d, h))
+                .max()
+                .unwrap_or(0)
+        };
+        let near_later = |d: &crate::topology::SummaryDevice| -> usize {
+            candidates[i + 1..]
+                .iter()
+                .map(|c| {
+                    c.iter()
+                        .filter(|e| e.address != d.address)
+                        .map(|e| shared_switches(d, e))
+                        .max()
+                        .unwrap_or(0)
+                })
+                .sum()
+        };
+        let close = |d: &crate::topology::SummaryDevice| {
+            (
+                std::cmp::Reverse(near_held(d)),
+                std::cmp::Reverse(near_later(d)),
+            )
+        };
         if effective_numa(req) == NumaPolicy::Aligned {
             // As few NUMA nodes as can hold them: the node of devices it
             // has first, then those with the most free (spec/27-gpu-vms.md §4).
@@ -246,11 +302,18 @@ pub fn pick_pool_devices(
                     numa.is_some() && d.numa_node != numa,
                     std::cmp::Reverse(per_node.get(&d.numa_node).copied().unwrap_or(0)),
                     d.numa_node,
+                    close(d),
                     d.address.clone(),
                 )
             });
         } else {
-            free.sort_by_key(|d| (numa.is_some() && d.numa_node != numa, d.address.clone()));
+            free.sort_by_key(|d| {
+                (
+                    numa.is_some() && d.numa_node != numa,
+                    close(d),
+                    d.address.clone(),
+                )
+            });
         }
         let need = r.count as usize;
         if free.len() < need {
@@ -1993,6 +2056,61 @@ mod tests {
 
     fn picked(c: &Choice) -> Vec<&str> {
         c.pool_devices.iter().map(|d| d.address.as_str()).collect()
+    }
+
+    /// spec/22-host-topology.md H29: on an HGX board every device under a
+    /// root port shares its top switch; a GPU gets the NIC under its own
+    /// switch, whichever request comes first.
+    #[test]
+    fn a_gpu_and_a_nic_meet_at_their_deepest_switch() {
+        let mut n = numa_node();
+        let dev = |a: &str, nic: bool, sw: &[&str]| crate::topology::SummaryDevice {
+            address: a.into(),
+            vendor_id: if nic { "0x15b3" } else { "0x10de" }.into(),
+            device_id: if nic { "0x101b" } else { "0x20b0" }.into(),
+            class_id: if nic { "0x020700" } else { "0x030200" }.into(),
+            numa_node: Some(1),
+            switch: Some(sw[0].into()),
+            switches: sw.iter().map(|x| x.to_string()).collect(),
+            ready: true,
+            ..Default::default()
+        };
+        let t = n.status.topology.as_mut().unwrap();
+        // One root port's board: GPU 47 alone two levels down, NIC 4b and
+        // GPU 4e under switch 49, NIC 54 under switch 50; all under 41.
+        t.devices = vec![
+            dev(
+                "0000:47:00.0",
+                false,
+                &["0000:45:00.0", "0000:43:00.0", "0000:41:00.0"],
+            ),
+            dev("0000:4b:00.0", true, &["0000:49:00.0", "0000:41:00.0"]),
+            dev(
+                "0000:4e:00.0",
+                false,
+                &["0000:4c:00.0", "0000:49:00.0", "0000:41:00.0"],
+            ),
+            dev("0000:54:00.0", true, &["0000:50:00.0", "0000:41:00.0"]),
+        ];
+        for d in t.devices.clone() {
+            t.device_numa.insert(d.address.clone(), 1);
+        }
+        let mut nics = gpus(1, false);
+        nics.pool.name = "cx6".into();
+        nics.pool.class = Some("nic".into());
+        nics.pool.matches.vendor_id = Some("0x15b3".into());
+        nics.pool.matches.device_id = Some("0x101b".into());
+        for pools in [
+            vec![gpus(1, false), nics.clone()],
+            vec![nics, gpus(1, false)],
+        ] {
+            let mut r = req(2, 1024);
+            r.pools = pools;
+            let c = schedule(&r, &[(n.clone(), Load::default())], &cfg()).unwrap();
+            let mut got = picked(&c);
+            got.sort();
+            assert_eq!(got, ["0000:4b:00.0", "0000:4e:00.0"]);
+        }
     }
 
     /// spec/22-host-topology.md H23: a device its host keeps is in no pool

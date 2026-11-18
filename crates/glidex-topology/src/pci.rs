@@ -281,6 +281,10 @@ pub struct Place {
     /// switch can talk peer to peer without the root complex (§3.2).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch: Option<String>,
+    /// The upstream port of every switch above it, nearest first: two
+    /// devices are closer the more of these they share.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub switches: Vec<String>,
 }
 
 /// Each function's place, by address (pure, for tests).
@@ -320,11 +324,17 @@ pub fn places(raw: &[RawPci]) -> BTreeMap<String, Place> {
                     .iter()
                     .find(|a| kinds.get(**a) == Some(&PciKind::RootPort))
                     .map(|a| a.to_string()),
-                switch: above
+                switch: None,
+                switches: above
                     .iter()
                     .rev()
-                    .find(|a| kinds.get(**a) == Some(&PciKind::SwitchUpstream))
-                    .map(|a| a.to_string()),
+                    .filter(|a| kinds.get(**a) == Some(&PciKind::SwitchUpstream))
+                    .map(|a| a.to_string())
+                    .collect(),
+            };
+            let place = Place {
+                switch: place.switches.first().cloned(),
+                ..place
             };
             (r.address.clone(), place)
         })
