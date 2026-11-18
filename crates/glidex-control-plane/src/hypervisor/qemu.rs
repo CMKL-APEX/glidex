@@ -384,6 +384,52 @@ impl LaunchSpec<'_> {
             }
         }
 
+        // Devices that share a switch on the host: a root port with an
+        // emulated switch under it, a downstream port each
+        // (spec/27-gpu-vms.md G21).
+        let groups: Vec<Vec<&String>> = config
+            .vfio_switch_groups
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .filter(|p| config.vfio_devices.contains(p))
+                    .collect::<Vec<_>>()
+            })
+            .filter(|g| g.len() > 1)
+            .collect();
+        let grouped = |p: &String| groups.iter().any(|g| g.contains(&p));
+        let mut chassis = SWITCH_CHASSIS_BASE;
+        let mut tree = |args: &mut Vec<String>, k: usize, bus: &str, members: &[&String]| {
+            push(
+                args,
+                "-device",
+                format!("pcie-root-port,id=rps{k},bus={bus},chassis={chassis},slot=0"),
+            );
+            chassis += 1;
+            push(
+                args,
+                "-device",
+                format!("x3130-upstream,id=swu{k},bus=rps{k}"),
+            );
+            for (j, d) in members.iter().enumerate() {
+                push(
+                    args,
+                    "-device",
+                    format!("xio3130-downstream,id=swd{k}_{j},bus=swu{k},chassis={chassis},slot=0"),
+                );
+                chassis += 1;
+                push(
+                    args,
+                    "-device",
+                    format!(
+                        "vfio-pci,host={},id={},bus=swd{k}_{j}",
+                        vfio_bdf(d),
+                        vfio_device_id(d)
+                    ),
+                );
+            }
+        };
+
         // `aligned`: a PCIe expander per guest NUMA node, a root port per
         // device under it (spec/27-gpu-vms.md §5).
         if multi {
@@ -396,7 +442,7 @@ impl LaunchSpec<'_> {
                         PXB_BUS_BASE + i as u32 * PXB_BUS_STRIDE
                     ),
                 );
-                for (j, d) in devices.iter().enumerate() {
+                for (j, d) in devices.iter().filter(|d| !grouped(d)).enumerate() {
                     push(
                         &mut args,
                         "-device",
@@ -417,8 +463,16 @@ impl LaunchSpec<'_> {
                 }
             }
         }
+        for (k, g) in groups.iter().enumerate() {
+            let node = layout
+                .iter()
+                .position(|(_, _, ds)| ds.contains(g[0]))
+                .filter(|_| multi);
+            let bus = node.map_or("pcie.0".to_string(), |i| format!("pxb{i}"));
+            tree(&mut args, k, &bus, g);
+        }
         for device in &config.vfio_devices {
-            if multi && layout.iter().any(|(_, _, ds)| ds.contains(device)) {
+            if grouped(device) || multi && layout.iter().any(|(_, _, ds)| ds.contains(device)) {
                 continue;
             }
             push(
@@ -487,6 +541,9 @@ const PXB_BUS_BASE: u32 = 0x40;
 const PXB_BUS_STRIDE: u32 = 0x18;
 /// Root port chassis numbers under them, clear of the root complex's.
 const PXB_CHASSIS_BASE: u32 = 100;
+/// Chassis numbers of the switch groups' root and downstream ports, below
+/// the expanders' (spec/27-gpu-vms.md G21).
+const SWITCH_CHASSIS_BASE: u32 = 20;
 
 /// `-netdev` / `-device` pairs for one NIC. vhost-user sockets are served
 /// by QEMU (OVS's `dpdkvhostuserclient` connects); `wait=off` so QEMU starts
@@ -1173,6 +1230,39 @@ mod tests {
         assert!(values(&args, "-object").contains(
             &"memory-backend-memfd,id=mem,size=1024M,share=on,hugetlb=on,host-nodes=5,policy=bind"
         ));
+    }
+
+    /// spec/27-gpu-vms.md G21: devices under one host switch sit under one
+    /// emulated switch, so the guest sees them as `PIX`.
+    #[test]
+    fn a_switch_group_gets_a_root_port_and_a_switch() {
+        let dev = |a: &str| format!("/sys/bus/pci/devices/0000:{a}");
+        let mut config = config(serde_json::json!({}));
+        config.vfio_devices = vec![dev("47:00.0"), dev("4b:00.0"), dev("4e:00.0")];
+        config.vfio_switch_groups = vec![vec![dev("4b:00.0"), dev("4e:00.0")]];
+        let devices: Vec<String> = values(&spec(&config).args(), "-device")
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let tree = [
+            "pcie-root-port,id=rps0,bus=pcie.0,chassis=20,slot=0",
+            "x3130-upstream,id=swu0,bus=rps0",
+            "xio3130-downstream,id=swd0_0,bus=swu0,chassis=21,slot=0",
+            "vfio-pci,host=0000:4b:00.0,id=vfio_0000_4b_00_0,bus=swd0_0",
+            "xio3130-downstream,id=swd0_1,bus=swu0,chassis=22,slot=0",
+            "vfio-pci,host=0000:4e:00.0,id=vfio_0000_4e_00_0,bus=swd0_1",
+        ];
+        let at = devices
+            .iter()
+            .position(|d| d == tree[0])
+            .expect("root port");
+        assert_eq!(devices[at..at + tree.len()], tree, "{devices:?}");
+        assert!(devices.contains(&"vfio-pci,host=0000:47:00.0,id=vfio_0000_47_00_0".to_string()));
+        assert_eq!(
+            devices.iter().filter(|d| d.starts_with("vfio-pci")).count(),
+            3,
+            "each device once: {devices:?}"
+        );
     }
 
     #[test]

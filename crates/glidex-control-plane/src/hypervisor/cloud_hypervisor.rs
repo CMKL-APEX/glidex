@@ -136,6 +136,62 @@ fn core_scheduling_off(sched_ext: &Path, argv: &mut [String]) {
     }
 }
 
+/// Where a VM's VFIO devices go (spec/27-gpu-vms.md G3, G21): segment 0
+/// holds the virtio devices and, unless the VM is `aligned` over several
+/// host nodes, the VFIO devices that share no switch; `aligned` gives guest
+/// node *i* segment *i+1*; then each switch group gets a segment of its own
+/// on its guest node.
+struct Segments {
+    count: usize,
+    /// Each VFIO device's segment.
+    of: std::collections::BTreeMap<String, usize>,
+    /// Each guest NUMA node's segments.
+    per_node: Vec<Vec<usize>>,
+}
+
+fn segments(config: &VmConfig) -> Segments {
+    let layout = super::guest_numa_layout(config);
+    let multi = config.host_numa_node.is_none() && !layout.is_empty();
+    let node_of = |p: &String| {
+        layout
+            .iter()
+            .position(|(_, _, ds)| ds.contains(p))
+            .filter(|_| multi)
+    };
+    let mut per_node: Vec<Vec<usize>> = if multi {
+        (0..layout.len())
+            .map(|i| if i == 0 { vec![0, 1] } else { vec![i + 1] })
+            .collect()
+    } else {
+        vec![vec![0]]
+    };
+    let mut count = per_node.len() + usize::from(multi);
+    let mut of: std::collections::BTreeMap<String, usize> = config
+        .vfio_devices
+        .iter()
+        .map(|p| (p.clone(), node_of(p).map_or(0, |i| i + 1)))
+        .collect();
+    for g in &config.vfio_switch_groups {
+        let members: Vec<&String> = g
+            .iter()
+            .filter(|p| config.vfio_devices.contains(p))
+            .collect();
+        if members.len() < 2 {
+            continue;
+        }
+        per_node[node_of(members[0]).unwrap_or(0)].push(count);
+        for p in members {
+            of.insert(p.clone(), count);
+        }
+        count += 1;
+    }
+    Segments {
+        count,
+        of,
+        per_node,
+    }
+}
+
 /// The command line after the binary: everything `vm.create` used to get.
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a: Vec<String> = vec!["--api-socket".into(), format!("path={}", q(api_socket))];
@@ -167,6 +223,13 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
         }
     }
     let layout = super::guest_numa_layout(config);
+    let segs = segments(config);
+    let list = |v: &[usize]| {
+        v.iter()
+            .map(|s| s.to_string())
+            .collect::<Vec<_>>()
+            .join(",")
+    };
     match config.host_numa_node {
         // `aligned` over several host NUMA nodes (spec/27-gpu-vms.md §5): a
         // zone, a guest NUMA node and a PCI segment for its devices per
@@ -182,16 +245,12 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
                 )
             }));
             a.push("--platform".into());
-            a.push(format!("num_pci_segments={}", layout.len() + 1));
+            a.push(format!("num_pci_segments={}", segs.count));
             a.push("--numa".into());
             a.extend(layout.iter().enumerate().map(|(i, (first, last, _))| {
-                let segments = if i == 0 {
-                    "0,1".to_string()
-                } else {
-                    (i + 1).to_string()
-                };
                 format!(
-                    "guest_numa_id={i},cpus=[{first}-{last}],memory_zones=mem{i},pci_segments=[{segments}]"
+                    "guest_numa_id={i},cpus=[{first}-{last}],memory_zones=mem{i},pci_segments=[{}]",
+                    list(&segs.per_node[i])
                 )
             }));
         }
@@ -205,15 +264,26 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
                 "id=mem0,size={}M{mem},host_numa_node={node}",
                 config.mem_size_mib
             ));
+            let segments = if segs.count > 1 {
+                a.push("--platform".into());
+                a.push(format!("num_pci_segments={}", segs.count));
+                format!(",pci_segments=[{}]", list(&segs.per_node[0]))
+            } else {
+                String::new()
+            };
             a.push("--numa".into());
             a.push(format!(
-                "guest_numa_id=0,cpus=[0-{}],memory_zones=mem0",
+                "guest_numa_id=0,cpus=[0-{}],memory_zones=mem0{segments}",
                 config.vcpu_count.saturating_sub(1)
             ));
         }
         None => {
             a.push("--memory".into());
             a.push(format!("size={}M{mem}", config.mem_size_mib));
+            if segs.count > 1 {
+                a.push("--platform".into());
+                a.push(format!("num_pci_segments={}", segs.count));
+            }
         }
     }
 
@@ -255,12 +325,12 @@ pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     if !config.vfio_devices.is_empty() || !nic_devices.is_empty() {
         a.push("--device".into());
         a.extend(config.vfio_devices.iter().map(|p| {
-            // `aligned`: on its guest NUMA node's segment.
-            let segment = layout
-                .iter()
-                .position(|(_, _, ds)| ds.contains(p))
-                .map(|i| format!(",pci_segment={}", i + 1))
-                .unwrap_or_default();
+            // `aligned`: on its guest NUMA node's segment; a switch group on
+            // its own.
+            let segment = match segs.of.get(p) {
+                Some(&s) if s > 0 => format!(",pci_segment={s}"),
+                _ => String::new(),
+            };
             format!("path={},id={}{segment}", q(p), vfio_device_id(p))
         }));
         // DPU VFs, with the NIC's id (`net<i>`), so the device controller
@@ -352,7 +422,8 @@ pub(crate) fn check_mmio64(
     } << 20;
     let end = (1u64 << phys_bits.min(46)) - (1 << 16) - (1 << 20);
     let start = if ram <= 3 * GIB { 4 * GIB } else { ram + GIB };
-    let segments = if multi { layout.len() as u64 + 1 } else { 1 };
+    let segs = segments(config);
+    let segments = segs.count as u64;
     let unit = end.saturating_sub(start) / (4 * GIB * segments) * 4 * GIB;
     if unit == 0 {
         return Err(format!(
@@ -366,14 +437,10 @@ pub(crate) fn check_mmio64(
         let hi = if seg + 1 == segments { end } else { lo + unit };
         // Free ranges [from, to), highest last.
         let mut free = vec![(lo, hi)];
-        let on_seg = config.vfio_devices.iter().filter(|p| {
-            let s = layout
-                .iter()
-                .position(|(_, _, ds)| ds.contains(p))
-                .filter(|_| multi)
-                .map_or(0, |i| i as u64 + 1);
-            s == seg
-        });
+        let on_seg = config
+            .vfio_devices
+            .iter()
+            .filter(|p| segs.of.get(*p).copied().unwrap_or(0) as u64 == seg);
         for p in on_seg {
             for size in bars(p) {
                 let align = size.max(4096);
@@ -774,6 +841,48 @@ mod tests {
         );
     }
 
+    /// spec/27-gpu-vms.md G21: a NIC and a GPU under one host switch get a
+    /// segment of their own; a device alone stays on segment 0.
+    #[test]
+    fn a_switch_group_gets_its_own_segment() {
+        let dev = |a: &str| format!("/sys/bus/pci/devices/0000:{a}");
+        let mut c = config(serde_json::json!({"vcpu_count": 2}));
+        c.vfio_devices = vec![dev("47:00.0"), dev("4b:00.0"), dev("4e:00.0")];
+        c.vfio_switch_groups = vec![vec![dev("4b:00.0"), dev("4e:00.0")]];
+        let segment = |a: &[String], addr: &str| {
+            values(a, "--device")
+                .iter()
+                .find(|d| d.contains(addr))
+                .map(|d| d.split(",pci_segment=").nth(1).unwrap_or("0").to_string())
+                .unwrap()
+        };
+        let a = args(&c, "/s");
+        assert_eq!(values(&a, "--platform"), ["num_pci_segments=2"]);
+        assert_eq!(
+            [
+                segment(&a, "47:00.0"),
+                segment(&a, "4b:00.0"),
+                segment(&a, "4e:00.0")
+            ],
+            ["0", "1", "1"]
+        );
+        // On one host NUMA node: the guest's node holds both segments.
+        c.host_numa_node = Some(1);
+        let a = args(&c, "/s");
+        assert_eq!(
+            values(&a, "--numa"),
+            ["guest_numa_id=0,cpus=[0-1],memory_zones=mem0,pci_segments=[0,1]"]
+        );
+        // Without a group, nothing changes.
+        c.vfio_switch_groups.clear();
+        let a = args(&c, "/s");
+        assert!(values(&a, "--platform").is_empty());
+        assert_eq!(
+            values(&a, "--numa"),
+            ["guest_numa_id=0,cpus=[0-1],memory_zones=mem0"]
+        );
+    }
+
     #[test]
     fn aligned_gets_a_zone_a_guest_node_and_a_segment_per_host_node() {
         let mut c = config(serde_json::json!({"vcpu_count": 4, "mem_size_mib": 4096}));
@@ -829,6 +938,28 @@ mod tests {
                 seg("41:00.0")
             ),
             ("1".into(), "1".into(), "2".into(), "2".into(), "0".into()),
+            "{devices:?}"
+        );
+        // G21: two of node 0's devices under one switch move to a segment
+        // of their own, still on guest node 0.
+        c.vfio_switch_groups = vec![vec![
+            "/sys/bus/pci/devices/0000:b7:00.0".into(),
+            "/sys/bus/pci/devices/0000:bd:00.0".into(),
+        ]];
+        let a = args(&c, "/s");
+        assert_eq!(values(&a, "--platform"), ["num_pci_segments=4"]);
+        assert_eq!(
+            values(&a, "--numa"),
+            [
+                "guest_numa_id=0,cpus=[0-1],memory_zones=mem0,pci_segments=[0,1,3]",
+                "guest_numa_id=1,cpus=[2-3],memory_zones=mem1,pci_segments=[2]",
+            ]
+        );
+        let devices = values(&a, "--device");
+        assert!(
+            devices
+                .iter()
+                .any(|d| d.contains("b7:00.0") && d.ends_with(",pci_segment=3")),
             "{devices:?}"
         );
     }

@@ -464,6 +464,62 @@ pub fn check_kernel_args(args: &str) -> Result<(), HypervisorError> {
     Ok(())
 }
 
+/// VFIO devices that share a switch on the host (spec/27-gpu-vms.md G21).
+/// `devices` gives each device (as `vfio_devices` names it) with the
+/// bridges above it below its root port, top first. Each device joins the
+/// devices it shares its deepest switch with; one that shares none is left
+/// out. Groups come in the order of their first device.
+pub(crate) fn switch_groups(devices: &[(String, Vec<String>)]) -> Vec<Vec<String>> {
+    let shared = |a: &[String], b: &[String]| a.iter().zip(b).take_while(|(x, y)| x == y).count();
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for (i, (d, above)) in devices.iter().enumerate() {
+        let deepest = devices
+            .iter()
+            .enumerate()
+            .filter(|(j, _)| *j != i)
+            .map(|(_, (_, other))| shared(above, other))
+            .max()
+            .unwrap_or(0);
+        if deepest == 0 {
+            continue;
+        }
+        let key = above[deepest - 1].clone();
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, g)) => g.push(d.clone()),
+            None => groups.push((key, vec![d.clone()])),
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(_, g)| g)
+        .filter(|g| g.len() > 1)
+        .collect()
+}
+
+/// [`switch_groups`] of this host's devices, from their sysfs paths
+/// (`/sys/devices/pci0000:40/0000:40:01.1/0000:41:00.0/…/0000:4b:00.0`).
+pub(crate) fn switch_groups_here(vfio_devices: &[String]) -> Vec<Vec<String>> {
+    let devices: Vec<(String, Vec<String>)> = vfio_devices
+        .iter()
+        .filter_map(|p| {
+            let real = std::fs::canonicalize(
+                std::path::Path::new("/sys/bus/pci/devices").join(vfio_bdf(p)),
+            )
+            .ok()?;
+            let parts: Vec<String> = real
+                .iter()
+                .filter_map(|c| c.to_str())
+                .filter(|c| c.len() == 12 && c.as_bytes()[4] == b':')
+                .map(String::from)
+                .collect();
+            // Below the root port, above the device itself.
+            let above = parts.get(1..parts.len().saturating_sub(1))?.to_vec();
+            Some((p.clone(), above))
+        })
+        .collect();
+    switch_groups(&devices)
+}
+
 /// An `aligned` VM's guest NUMA nodes (spec/27-gpu-vms.md §5): for each share
 /// of `config.host_numa`, its vCPU range (first, last) and the VFIO devices
 /// (as `config.vfio_devices` names them) on that host node.
@@ -503,6 +559,49 @@ mod tests {
         );
         assert_eq!(HypervisorType::Qemu.binary_name(), "qemu-system-x86_64");
         assert_eq!(HypervisorType::Pylon.binary_name(), "pylon");
+    }
+
+    /// spec/27-gpu-vms.md G21, on the HGX board's layout: the NIC and the
+    /// GPU under switch 49 form a group; the GPU that shares only the top
+    /// switch with them, and the device under another root port, don't.
+    #[test]
+    fn devices_group_by_their_deepest_shared_switch() {
+        let d = |a: &str, above: &[&str]| {
+            (
+                format!("/sys/bus/pci/devices/0000:{a}"),
+                above
+                    .iter()
+                    .map(|x| format!("0000:{x}"))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let gpu47 = d(
+            "47:00.0",
+            &[
+                "41:00.0", "42:00.0", "43:00.0", "44:00.0", "45:00.0", "46:00.0",
+            ],
+        );
+        let nic4b = d("4b:00.0", &["41:00.0", "42:04.0", "49:00.0", "4a:00.0"]);
+        let gpu4e = d(
+            "4e:00.0",
+            &[
+                "41:00.0", "42:04.0", "49:00.0", "4a:10.0", "4c:00.0", "4d:00.0",
+            ],
+        );
+        let gpu0f = d(
+            "0f:00.0",
+            &[
+                "01:00.0", "02:04.0", "0a:00.0", "0b:10.0", "0d:00.0", "0e:00.0",
+            ],
+        );
+        let groups = switch_groups(&[gpu47.clone(), nic4b.clone(), gpu4e.clone(), gpu0f]);
+        assert_eq!(groups, [vec![nic4b.0.clone(), gpu4e.0.clone()]]);
+        // Two devices that share only the top switch still group.
+        assert_eq!(
+            switch_groups(&[gpu47.clone(), nic4b.clone()]),
+            [vec![gpu47.0, nic4b.0]]
+        );
+        assert!(switch_groups(&[gpu4e]).is_empty());
     }
 
     #[test]

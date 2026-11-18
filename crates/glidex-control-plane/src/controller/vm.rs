@@ -1370,6 +1370,9 @@ impl VmManager {
                 config.vfio_devices.push(path);
             }
         }
+        // Devices close on the host stay close in the guest
+        // (spec/27-gpu-vms.md G21).
+        config.vfio_switch_groups = crate::hypervisor::switch_groups_here(&config.vfio_devices);
         let (cpu_affinity, launch_pins) = if held.is_empty() {
             (self.local_shared_pool().await, Vec::new())
         } else {
