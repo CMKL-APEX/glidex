@@ -2727,3 +2727,56 @@ fn devices_are_kept_at_d0_and_given_back_their_values() {
         "1"
     );
 }
+
+/// spec/22-host-topology.md H30: the root port above a device, with
+/// Request and Completion Redirect supported and off, is reported; the op
+/// is read-only and takes only PCI addresses.
+#[test]
+fn ports_above_a_device_with_acs_off_are_reported() {
+    let exec = exec();
+    let gpu = "0000:4e:00.0";
+    // A root port: PCI Express capability at 0x40 (type 4), ACS at 0x100
+    // supporting SV, RR, CR and UF with only SV and UF on.
+    let mut root = vec![0u8; 4096];
+    root[0x06] = 1 << 4;
+    root[0x34] = 0x40;
+    root[0x40] = 0x10;
+    root[0x42] = 0x42;
+    root[0x100..0x104].copy_from_slice(&0x0001_000du32.to_le_bytes());
+    root[0x104..0x106].copy_from_slice(&0x1du16.to_le_bytes());
+    root[0x106..0x108].copy_from_slice(&0x11u16.to_le_bytes());
+    for (bdf, link) in [
+        (gpu, "../../../devices/pci0000:4a/0000:4a:00.0/0000:4e:00.0"),
+        ("0000:4a:00.0", "../../../devices/pci0000:4a/0000:4a:00.0"),
+    ] {
+        let d = format!("/sys/bus/pci/devices/{bdf}");
+        exec.file(&d, "");
+        exec.link(&d, link);
+    }
+    exec.bytes("/sys/bus/pci/devices/0000:4a:00.0/config", &root);
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec.clone(), &dir);
+    let op = Op::AcsAbove {
+        addresses: vec![gpu.to_uppercase()],
+    };
+    assert_eq!(op.name(), "acs_above");
+    assert!(!op.is_mutating());
+    let r = netd.handle(op, &peer()).unwrap();
+    assert_eq!(
+        r,
+        serde_json::json!({"off": [{
+            "address": "0000:4a:00.0",
+            "off": ["request_redirect", "completion_redirect"],
+        }]})
+    );
+    assert!(exec.writes().is_empty());
+    let err = netd
+        .handle(
+            Op::AcsAbove {
+                addresses: vec!["../../config".into()],
+            },
+            &peer(),
+        )
+        .unwrap_err();
+    assert!(err.to_string().contains("not a PCI address"), "{err}");
+}

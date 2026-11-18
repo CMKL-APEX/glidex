@@ -3089,7 +3089,7 @@ export const AerCountsSchema: GenMessage<AerCounts, {jsonType: AerCountsJson}> =
 export type TopologyWarning = Message<"glidex.host.v1.TopologyWarning"> & {
   /**
    * iommu_off, numa_unknown, group_shared, link_degraded,
-   * hugepages_unbalanced, power_save_on.
+   * hugepages_unbalanced, power_save_on, acs_off.
    *
    * @generated from field: string kind = 1;
    */
@@ -3107,7 +3107,7 @@ export type TopologyWarning = Message<"glidex.host.v1.TopologyWarning"> & {
 export type TopologyWarningJson = {
   /**
    * iommu_off, numa_unknown, group_shared, link_degraded,
-   * hugepages_unbalanced, power_save_on.
+   * hugepages_unbalanced, power_save_on, acs_off.
    *
    * @generated from field: string kind = 1;
    */

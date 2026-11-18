@@ -1039,6 +1039,7 @@ is a device of class `dpu`:
 | **HT5** SR-IOV VFs | §10.1 VF enumeration, `sriov_numvfs` through netd, VF pools | Host test with an SR-IOV NIC: enable VFs, a pool of VFs, two VMs each with one, NUMA-aligned. |
 | **HT6** Replicated and discovered pools | H20–H23: `pci_settings` with its API, gxctl and Cluster page card; the file's migration; discovered pools; `exclude` and `overrides` and their summary fields; the installer's `--vfio-devices` through the setting | Unit tests: the migration writes once and a differing file is ignored; every server resolves the same pools from the same summaries; a defined pool, an exclude and a slug clash each remove a device from discovery; a tenant can't see or request a discovered pool, a host role can; a rename with VMs requesting the pool is refused. Cluster test: a pool set on the leader is requested through a follower and after a leader change. On the R9700 host in the three-server test cluster: `amd-7551` discovered with both R9700s, adopted as `r9700`, a 1-GPU VM created while the single-A100 host leads. |
 | **HT7** Devices kept at D0 | H28, §5.3a: `power_save` on pools, in `pci.overrides` and in the boot selectors; netd's `keep_devices_on` with its `power` table; the control plane's set at start and after each read; `power` in the full tree, `kept_on` in the summary, the `power_save_on` warning; the pool form, gxctl and docs | netd tests with a fake sysfs: the device and its bridges up to the root port are written, a device leaving the set and a bridge with no kept device below get their values back, a second call writes nothing. Unit tests: overrides and a device in two pools; the set leaves out excluded devices and devices not on `vfio-pci`; the warning. On the HGX host: a pool with `power_save: false` keeps the idle A100s at D0 across a control-plane restart and a reboot. |
+| **HT9** ACS above a VFIO device | H30, §5.2: netd's read-only `acs_above` (the ports above given devices, read from their configuration space); the `acs_off` warning in the full tree, `GetNodeTopology`, `gxctl node topology` and the node page; docs | Unit tests: the ACS parser on byte fixtures (controls supported and off, a control the port lacks, no ACS, a short read, a looping capability list), root and downstream ports read and upstream ports skipped, the warning per device and port. netd test: the op reports the port, writes nothing and refuses anything but a PCI address. On a host with devices on `vfio-pci`: the warnings match the `ACSCtl` that `lspci -vvv` shows for the ports above them. |
 
 HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
@@ -1056,6 +1057,14 @@ with its `power` table; the set sent with each report of the node; the
 `power` and `kept_on` fields (full tree, summary, `GetNodeTopology`,
 `gxctl node topology --devices`, the node page) and the `power_save_on`
 warning; docs. Its host check on the HGX host is not run yet.
+
+**HT9** is built and unit-tested: netd's `acs_above`, and the `acs_off`
+warning in the full tree for each device on `vfio-pci` below a root
+port or switch downstream port that supports and has off Source
+Validation, Request Redirect, Completion Redirect or Upstream
+Forwarding. The control plane asks netd each time it reads the full
+tree; without netd, or with an older one, the warning is left out. Its
+host check is not run yet.
 
 HT6's acceptance run on the R9700 host, in the three-server test
 cluster with the single-A100 host leading (term 1052), main at `5b56b25` on the three servers:
