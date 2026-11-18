@@ -1,0 +1,13 @@
+[package]
+name = "glidex-dpu"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "BlueField DPU management for glidex: OVS-DOCA ports, virtio-net VFs, probing"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
