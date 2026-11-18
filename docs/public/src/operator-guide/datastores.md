@@ -688,11 +688,14 @@ count the same free space.
   of a disk operation is waited for.
 - **Metering** reports the disks' size, not the space they use.
 - **Projects.** Each disk's volume names its glidex project, and
-  hyperstor puts it in the project linked to it, when the project's
-  tenant has opted in to the hyperstor cluster. A disk of a tenant that
-  hasn't lands in hyperstor's `default` project instead (a warning is
-  logged), so glidex's identity there must be bound to `default`, as its
-  image volumes already need.
+  hyperstor puts it in the project linked to it. A project is linked
+  once its tenant is admitted to the hyperstor cluster and the
+  directory's feed brings the project there, within a minute or so of its
+  creation. Trusting the hyperstor cluster for the whole directory with
+  automatic opt-in admits every tenant ([clusters](clusters.md#trusting-a-storage-cluster-for-the-whole-directory)). Until a
+  disk's project is linked, the disk stays pending and says why, and is
+  made once it is. Image volumes name no project and live in hyperstor's
+  `default`, so glidex's identity there must be bound to `default` too.
 
 ### Deleting
 
