@@ -100,30 +100,56 @@ pub struct Announcement {
 /// presents, and the renewal it holds. `None`, logged, when the address
 /// can't be reached or no node serves what it presents.
 pub async fn announcement(app: &App) -> Option<Announcement> {
-    let api = crate::service::tenancy::api_endpoint(&app.auth.config, &app.manager)?;
-    let nodes = app.manager.nodes().list().ok()?;
+    served_at_api(app)
+        .await
+        .inspect_err(|e| tracing::info!("no renewal announced: {}", e))
+        .ok()
+}
+
+/// The pin an offer or a redeem gives with this cluster's API address
+/// (#554). Servers forward those calls to the leader, which needn't be the
+/// node behind the address, so the pin is the certificate the address
+/// presents, provided a node of this cluster serves it. A standalone host
+/// that can't reach its own address, or meets a certificate it doesn't
+/// serve (a proxy's), pins its own, as before.
+pub async fn pin_at_api(app: &App) -> Result<String, String> {
+    match served_at_api(app).await {
+        Ok(a) => Ok(a.seen),
+        Err(e) if app.manager.cluster().is_some() => Err(e),
+        Err(_) => crate::service::system::api_fingerprint(app)
+            .and_then(|f| glidex_tls::Trust::normalize_pin(&f))
+            .ok_or_else(|| "this host's API has no TLS certificate to pin".into()),
+    }
+}
+
+/// The certificate this cluster's API address presents, if a node serves
+/// it (its record's `api_pin`), with that node's pending renewal.
+async fn served_at_api(app: &App) -> Result<Announcement, String> {
+    let api = crate::service::tenancy::api_endpoint(&app.auth.config, &app.manager)
+        .ok_or("this cluster has no public API address: set cluster.api_url")?;
+    let nodes = app.manager.nodes().list().map_err(|e| e.to_string())?;
     let pins: Vec<&str> = nodes
         .iter()
         .filter_map(|n| n.status.api_pin.as_deref())
         .collect();
     if pins.is_empty() {
-        return None;
+        return Err("no node has published its API certificate yet".into());
     }
+    // Pinned to the nodes' certificates: any other fails to connect.
     let seen = match glidex_trust::peer::presented(&api, &pins).await {
-        Ok(p) => glidex_tls::Trust::normalize_pin(&p)?,
+        Ok(p) => glidex_tls::Trust::normalize_pin(&p).ok_or("a malformed pin")?,
         Err(e) => {
-            tracing::info!(%api, "the API address's certificate: {}", e);
-            return None;
+            return Err(format!(
+                "{api} doesn't present the API certificate of a node of this cluster \
+                 ({e}): set cluster.api_url to a server's own address"
+            ));
         }
     };
-    let Some(node) = nodes
+    let node = nodes
         .iter()
         .find(|n| n.status.api_pin.as_deref() == Some(seen.as_str()))
-    else {
-        tracing::info!(%api, %seen, "no node serves the certificate the API address presents: no renewal announced");
-        return None;
-    };
-    Some(Announcement {
+        .ok_or_else(|| format!("no node serves the certificate {api} presents"))?;
+    Ok(Announcement {
         seen,
         next: node.status.api_pin_pending.clone(),
     })

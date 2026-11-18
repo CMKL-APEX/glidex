@@ -1255,7 +1255,7 @@ pub fn api_endpoint(
     Some(format!("https://{host}:{port}"))
 }
 
-pub fn offer_admission(
+pub async fn offer_admission(
     call: &Call,
     req: pb::OfferAdmissionRequest,
 ) -> ServiceResult<pb::OfferAdmissionResponse> {
@@ -1271,9 +1271,9 @@ pub fn offer_admission(
     }
     let api = offer_api(call)
         .ok_or_else(|| bad("this cluster has no public API address: set cluster.api_url"))?;
-    let fp = crate::service::system::api_fingerprint(&call.app)
-        .and_then(|f| glidex_tls::Trust::normalize_pin(&f))
-        .ok_or_else(|| bad("this cluster's API has no TLS certificate to pin"))?;
+    let fp = crate::api_cert::pin_at_api(&call.app)
+        .await
+        .map_err(|e| bad(&e))?;
     let now = crate::tenancy::now();
     let secret = crate::auth::random_token(32);
     let o = tenants::Offer {
@@ -1643,9 +1643,7 @@ pub(crate) async fn redeem_offer(
     let jwks = keys.jwks(dir, now).map_err(|e| internal(e.to_string()))?;
     let api = offer_api(call)
         .ok_or_else(|| bad("this host has no public API address: set cluster.api_url".into()))?;
-    let fp = crate::service::system::api_fingerprint(&call.app)
-        .and_then(|f| glidex_tls::Trust::normalize_pin(&f))
-        .ok_or_else(|| bad("this host's API has no TLS certificate to pin".into()))?;
+    let fp = crate::api_cert::pin_at_api(&call.app).await.map_err(bad)?;
     let assertion =
         crate::directory::peer::assertion(keys, dir, &iss, &token.cluster_id, REDEEM, now)
             .map_err(|e| internal(e.to_string()))?;
