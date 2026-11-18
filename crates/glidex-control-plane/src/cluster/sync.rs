@@ -439,6 +439,15 @@ pub fn check_status_write(
                 let cur = get(TableId::Disks, key)?
                     .ok_or_else(|| format!("disk {key} does not exist"))?;
                 if !disk_is_nodes(&cur, node) {
+                    // Its VM's node releases it as the instance ends (D11), and
+                    // a hyperstor disk's worker may be another server (S22).
+                    if let Op::Put { value, .. } = op {
+                        let new: Value =
+                            serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                        if releases_vms_disk(&get, &cur, &new, node)? {
+                            continue;
+                        }
+                    }
                     return Err(format!("disk {key} is not bound to this node"));
                 }
                 if let Op::Put { value, .. } = op {
@@ -475,7 +484,27 @@ pub fn check_status_write(
                     }
                 }
                 Some(("disk", id)) => {
-                    if !get(TableId::Disks, id)?.is_some_and(|d| disk_is_nodes(&d, node)) {
+                    let Some(d) = get(TableId::Disks, id)? else {
+                        return Err(format!("disk {id} is not bound to this node"));
+                    };
+                    // The event of a release this write makes (above).
+                    let released_here = || -> Result<bool, String> {
+                        for o in &ws.ops {
+                            if let Op::Put {
+                                table: TableId::Disks,
+                                key,
+                                value,
+                            } = o
+                                && key == id.as_bytes()
+                            {
+                                let new: Value =
+                                    serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                                return releases_vms_disk(&get, &d, &new, node);
+                            }
+                        }
+                        Ok(false)
+                    };
+                    if !disk_is_nodes(&d, node) && !released_here()? {
                         return Err(format!("disk {id} is not bound to this node"));
                     }
                 }
@@ -693,6 +722,24 @@ fn check_move_write(cur: &Value, new: &Value, node: &str) -> Result<(), String> 
         return Err("only a move onto block volumes makes a disk raw".into());
     }
     Ok(())
+}
+
+/// Whether `new` only releases disk `cur` from the VM that holds it, and
+/// that VM is placed on `node` (spec/24-storage.md S22, D11): the node that
+/// sees the instance end, which isn't always the disk's worker.
+fn releases_vms_disk(
+    get: &impl Fn(TableId, &str) -> Result<Option<Value>, String>,
+    cur: &Value,
+    new: &Value,
+    node: &str,
+) -> Result<bool, String> {
+    let Some(vm) = cur["attached_to"].as_str() else {
+        return Ok(false);
+    };
+    if !new["attached_to"].is_null() || same_except(cur, new, &["attached_to"]).is_err() {
+        return Ok(false);
+    }
+    Ok(get(TableId::Vms, vm)?.is_some_and(|v| placed_on(&v, node)))
 }
 
 fn check_disk_status_only(cur: &Value, new: &Value, node: &str) -> Result<(), String> {
@@ -1055,6 +1102,77 @@ mod tests {
             }])
             .is_err()
         );
+    }
+
+    /// A hyperstor disk's worker is a server (S22), maybe not its VM's node;
+    /// that node releases it as the instance ends (D11), and may do nothing
+    /// else to it.
+    #[test]
+    fn a_vms_node_releases_a_disk_another_node_works_on() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = Db::create(dir.path().join("db")).unwrap();
+        let disk = serde_json::json!({
+            "id": "d1", "node": null, "worker": "n2", "attached_to": "vm1", "phase": "ready",
+        });
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            let mut vms = tx.open_table(TableId::Vms.definition())?;
+            for (id, n) in [("vm1", "n1"), ("vm2", "n3")] {
+                let v = serde_json::json!({ "status": { "placement": { "node": n } } });
+                vms.insert(id, v.to_string().as_bytes())?;
+            }
+            tx.open_table(TableId::Disks.definition())?
+                .insert("d1", disk.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+        let check = |n: &str, ops: Vec<Op>| {
+            let ws = WriteSet {
+                format: WRITE_SET_FORMAT,
+                origin: Origin::Controller,
+                ops,
+            };
+            db.write(
+                Origin::Controller,
+                |tx| -> Result<Result<(), String>, StoreError> {
+                    Ok(check_status_write(tx, n, &ws))
+                },
+            )
+            .unwrap()
+        };
+        let event = put(TableId::Events, "disk/d1", &serde_json::json!([]));
+        let mut released = disk.clone();
+        released["attached_to"] = Value::Null;
+        assert_eq!(
+            check(
+                "n1",
+                vec![put(TableId::Disks, "d1", &released), event.clone()]
+            ),
+            Ok(())
+        );
+        // The worker still may; a node whose VM doesn't hold it may not.
+        assert!(check("n2", vec![put(TableId::Disks, "d1", &released)]).is_ok());
+        assert!(check("n3", vec![put(TableId::Disks, "d1", &released)]).is_err());
+        let mut more = released.clone();
+        more["phase"] = "deleting".into();
+        let mut moved = disk.clone();
+        moved["attached_to"] = "vm2".into();
+        for (what, ops) in [
+            (
+                "more than the release",
+                vec![put(TableId::Disks, "d1", &more)],
+            ),
+            ("another claim", vec![put(TableId::Disks, "d1", &moved)]),
+            ("an event alone", vec![event.clone()]),
+            (
+                "a delete",
+                vec![Op::Delete {
+                    table: TableId::Disks,
+                    key: b"d1".to_vec(),
+                }],
+            ),
+        ] {
+            assert!(check("n1", ops).is_err(), "{what}");
+        }
     }
 
     /// A snapshot (or a lagged receiver) resets the log to a revision: older
