@@ -358,6 +358,30 @@ pub(crate) fn needs_shared_memory(config: &VmConfig) -> bool {
             .any(|b| matches!(b, VolumeBinding::VhostUserBlk { .. }))
 }
 
+/// The NICs passed through as VFIO devices: a DPU's virtio-net VFs
+/// (spec/31-dpu.md §12.2), each with its NIC id and the VF's full PCI
+/// address. They need no shared memory: the VF does its own DMA through
+/// the IOMMU, unlike a vhost-user backend that maps guest RAM.
+pub(crate) fn vfio_nics(config: &VmConfig) -> Vec<(&str, String)> {
+    config
+        .nic_bindings
+        .iter()
+        .filter_map(|n| match &n.binding {
+            VmPortBinding::Vfio { bdf } => Some((n.id.as_str(), full_bdf(bdf))),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `61:02.3` → `0000:61:02.3`; a full address stays as it is.
+pub(crate) fn full_bdf(bdf: &str) -> String {
+    if bdf.matches(':').count() >= 2 {
+        bdf.to_string()
+    } else {
+        format!("0000:{bdf}")
+    }
+}
+
 /// Extract the BDF (e.g. "0000:41:00.0") from a sysfs device path.
 /// The sizes in bytes of the 64-bit memory BARs in a sysfs `resource`
 /// file: its first six lines (the ROM follows), flag `IORESOURCE_MEM_64`.

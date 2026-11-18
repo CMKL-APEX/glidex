@@ -1617,6 +1617,7 @@ impl VmManager {
                     port_ok: false,
                     metadata_index: None,
                     backend: None,
+                    vfio: None,
                 });
                 if let Some(stored) = self
                     .write_status(&vm.id, vm.generation, st.clone(), vec![])
@@ -1644,6 +1645,12 @@ impl VmManager {
                 // match a fallback (spec/31-dpu.md §8.4).
                 n.backend =
                     (net.backend != glidex_ovs::vm_port::PortBackend::Host).then_some(res.backend);
+                n.vfio = match &res.binding {
+                    glidex_ovs::vm_port::VmPortBinding::Vfio { bdf } => {
+                        Some(crate::hypervisor::full_bdf(bdf))
+                    }
+                    _ => None,
+                };
             }
             if on_dpu && res.backend == glidex_dpu::Backend::Host {
                 fell_back.push(i);

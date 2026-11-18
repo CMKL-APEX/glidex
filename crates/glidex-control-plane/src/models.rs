@@ -690,6 +690,10 @@ pub struct NicStatus {
     /// the DPU that fell back reports `host`, and its logical port follows.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub backend: Option<glidex_dpu::Backend>,
+    /// The DPU VF the NIC is passed through as (`0000:61:02.3`), held by
+    /// the VM like a VFIO device (spec/31-dpu.md §12.2).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vfio: Option<String>,
 }
 
 impl Vm {

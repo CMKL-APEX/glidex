@@ -400,6 +400,6 @@ pub async fn host_topology(c: Caller) -> Result<impl IntoResponse, ApiErr> {
 pub async fn list_pci_devices(c: Caller) -> Result<impl IntoResponse, ApiErr> {
     Ok(Proto(
         StatusCode::OK,
-        host::list_pci_devices(&c, Default::default())?,
+        host::list_pci_devices(&c, Default::default()).await?,
     ))
 }

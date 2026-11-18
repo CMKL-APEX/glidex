@@ -652,23 +652,31 @@ pub async fn delete_uplink(
 
 // ---- PCI devices ----------------------------------------------------------
 
-pub fn list_pci_devices(
+pub async fn list_pci_devices(
     call: &Call,
     _req: pb::ListPciDevicesRequest,
 ) -> ServiceResult<pb::ListPciDevicesResponse> {
     host(call)?;
     // Readiness from the tree (spec/22-host-topology.md §5.1).
     let tree = call.manager().local_topology();
+    // A device a VM holds isn't ready for another (a DPU NIC's VF among
+    // them, spec/31-dpu.md §12.2).
+    let claims = call.manager().local_device_claims().await;
     let ready = |a: &str| tree.devices.iter().find(|d| d.address == a && d.assignable);
     Ok(pb::ListPciDevicesResponse {
         devices: crate::pci::scan_pci_devices()
             .into_iter()
             .map(|d| {
                 let r = ready(&d.address);
+                let held = claims.get(&d.address.to_ascii_lowercase());
+                let mut not_ready = r.map(|f| f.not_ready.clone()).unwrap_or_default();
+                if let Some(by) = held {
+                    not_ready.push(format!("in use by {by}"));
+                }
                 pb::PciDevice {
                     numa_node: d.numa_node,
-                    ready: r.map(|f| f.ready),
-                    not_ready: r.map(|f| f.not_ready.clone()).unwrap_or_default(),
+                    ready: r.map(|f| f.ready && held.is_none()),
+                    not_ready,
                     address: d.address,
                     vendor_id: d.vendor_id,
                     device_id: d.device_id,

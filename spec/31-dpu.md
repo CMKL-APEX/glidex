@@ -887,13 +887,23 @@ Validation: setting `backend: dpu` or `auto` on a node network, a
 ### 12.2 Hypervisors
 
 - `Vfio { bdf }` uses the existing VFIO device launch path in both
-  Cloud Hypervisor and QEMU (04-hypervisors.md). The guest's MAC is the
-  one the DPU programmed, so `network-config` matching by MAC
-  ([09-networking.md §11.5](09-networking.md#115-guest-network-config)) is
-  unchanged.
-- The control plane's existing "VFIO conflict" list gains the VF's `bdf`
-  (`GET /pci-devices` shows `in_use: "dpu port <vm>/<nic>"`), so a user
-  cannot also hand it to a VM with `attach_device`.
+  Cloud Hypervisor (`--device path=/sys/bus/pci/devices/<bdf>,id=net<i>`,
+  no `--net`) and QEMU (`-device vfio-pci,host=<bdf>,id=dev-net<i>`, no
+  `-netdev`) (04-hypervisors.md). The device takes the NIC's id, not a
+  `vfio_…` one, so the device controller never takes it for a user's
+  device. It forces no shared guest memory: the VF does its own DMA
+  through the IOMMU. netd gives the VF's IOMMU group device to the VMs'
+  group, as for a passed-through device (22-host-topology.md §5.3). The
+  guest's MAC is the one the DPU programmed, so `network-config` matching
+  by MAC ([09-networking.md §11.5](09-networking.md#115-guest-network-config))
+  is unchanged.
+- The VM's `status.nics[].vfio` records the VF's address, and the control
+  plane counts it among the devices the VM holds (spec/22-host-topology.md
+  §8.4): `attach_device` of it, or of a function in its IOMMU group, is
+  refused ("used by VM `<vm>` (dpu port `<vm>/<nic>`)"), and `GET
+  /pci-devices` lists it with `ready: false` and `not_ready: ["in use by
+  <vm> (dpu port <vm>/<nic>)"]`. (No `in_use` field: that would be a proto
+  change for one reason string.)
 
 ### 12.3 Network controller and scheduler
 
@@ -999,7 +1009,7 @@ D0's findings are in §0.**
 | **D4** DPU attach (hardware; needs D0) | §7.1 end to end on one DPU, `dpu_probe`, the DPU chassis enrolled on real hardware | Ignored e2e (`GLIDEX_TEST_DPU`, a one-server cluster): a VM gets a virtio NIC, a DHCP address from the cluster's OVN, pings a host-backed VM on the same logical switch and, through `gx-edge`, an address outside; detach leaves no tagged rows; the DPU's private key never appears on the host. **Also settles O1–O3** and trims §9.1. |
 | **D5** `dpu_prepare` (needs D0) | §9.3 incl. hugepage persistence, `stop_local_central` | Unit tests per step; e2e: from a stock DPU (firmware already set, local central running) to a probe with no gaps; restart interruption reported; underlay re-applied; DPU-local central stopped only with the flag. |
 | **D5b** `dpu_reinit` (needs D0) | §9.4: device identity checks, BFB checksum, `bf.cfg` generation, `bfb-install` under a transient unit, the eight phases, jobs table, admin-only policy, `gxctl dpu reinit` | Unit tests with `RecordingExec`: exact `bfb-install` arguments; refusal on rshim mismatch, bad checksum, running tenant, concurrent job, default route through the DPU; `bf.cfg` contains a public key and the CA certificate and **no** password or private key; each phase's failure rule; a netd restart mid-install reattaches instead of starting a second install. Ignored e2e (`GLIDEX_TEST_DPU_REINIT=1` **and** an explicit DPU id; never in CI): from a running DPU to a verified `release`, with the timing recorded for O15. |
-| **D6** control plane + UI (**control plane built**: `Network.backend` (`host`/`dpu`/`auto`, refused on node, provider and standalone networks) on create and `PUT /networks/{id}/backend`, with `gxctl network-add --backend` and `network backend`; `status.dpus` from netd's `dpu_probe` and `dpu_ovn_status` in the node's report (kept when netd doesn't answer); the scheduler's DPU filter (a healthy DPU with a VF free of placements' claims for `dpu` NICs; `auto` prefers it), VF claims per node from `placement.dpu_nics`, which `requested-chassis` follows; the attach spec's `backend` from placement, `status.nics[].backend`, and `NetworkDegraded=True/HostBackend` on a fallback; `GET /networks/{id}` listing `host_backend_nics`; `GET /nodes/{id}/dpus` and `…/dpus/{dpu}/ports` (REST, through the node API for another node) and `gxctl dpu status`; error codes `dpu_unavailable` → 503 and `dpu_capacity` → 409. Tests: scheduler unit tests for `dpu` and `auto`, the probe-to-status unit test, and the cluster test `dpu_backed_networks_place_their_nics_on_a_ready_dpu`. **Not yet:** the hypervisors' `Vfio` NIC (another PR), the UI, node conditions `DpuReady`/`DpuChassisRegistered`, the `BackendFallback` event (D7), `prepare`/`reinit`/`jobs` routes (D5, D5b), and `dpus` in the node's protobuf (the REST route answers JSON)) | `backend` on cluster networks, the DPU in node status and the scheduler, VF claims, `Vfio` bindings in both hypervisors, conditions, REST/CLI/UI | API tests against a fake netd+agent; scheduler tests for `dpu` and `auto`; hypervisor argument tests (VFIO NIC) for CH and QEMU. |
+| **D6** control plane + UI (**control plane and hypervisors built**: `Vfio` NICs in CH and QEMU, the VF held by its VM (§12.2); `Network.backend` (`host`/`dpu`/`auto`, refused on node, provider and standalone networks) on create and `PUT /networks/{id}/backend`, with `gxctl network-add --backend` and `network backend`; `status.dpus` from netd's `dpu_probe` and `dpu_ovn_status` in the node's report (kept when netd doesn't answer); the scheduler's DPU filter (a healthy DPU with a VF free of placements' claims for `dpu` NICs; `auto` prefers it), VF claims per node from `placement.dpu_nics`, which `requested-chassis` follows; the attach spec's `backend` from placement, `status.nics[].backend`, and `NetworkDegraded=True/HostBackend` on a fallback; `GET /networks/{id}` listing `host_backend_nics`; `GET /nodes/{id}/dpus` and `…/dpus/{dpu}/ports` (REST, through the node API for another node) and `gxctl dpu status`; error codes `dpu_unavailable` → 503 and `dpu_capacity` → 409. Tests: scheduler unit tests for `dpu` and `auto`, the probe-to-status unit test, and the cluster test `dpu_backed_networks_place_their_nics_on_a_ready_dpu`. **Not yet:** the hypervisors' `Vfio` NIC (another PR), the UI, node conditions `DpuReady`/`DpuChassisRegistered`, the `BackendFallback` event (D7), `prepare`/`reinit`/`jobs` routes (D5, D5b), and `dpus` in the node's protobuf (the REST route answers JSON)) | `backend` on cluster networks, the DPU in node status and the scheduler, VF claims, `Vfio` bindings in both hypervisors, conditions, REST/CLI/UI | API tests against a fake netd+agent; scheduler tests for `dpu` and `auto`; hypervisor argument tests (VFIO NIC) for CH and QEMU. |
 | **D7** fallback integration | `BackendFallback`, `NetworkDegraded`, mixed VMs, rollback on recovery | e2e: stop the agent, launch a VM on an `auto` network, it binds to the host's chassis and pings a DPU-backed VM on the same switch; a `dpu` network refuses. |
 | **D8** (later) vhost-user via `vfe` | §5.2 | after O4 is answered. |
 

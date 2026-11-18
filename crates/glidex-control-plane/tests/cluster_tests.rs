@@ -3590,6 +3590,7 @@ async fn cluster_networks_get_a_subnet_and_vms_get_addresses_that_go_when_they_d
                 port_ok: true,
                 metadata_index: None,
                 backend: None,
+                vfio: None,
             },
         )
         .collect();
@@ -7066,6 +7067,7 @@ async fn an_agents_metadata_tokens_come_from_the_leader() {
         port_ok: true,
         metadata_index: Some(3),
         backend: None,
+        vfio: None,
     }];
     let ws = glidex_control_plane::store::WriteSet {
         format: 1,
