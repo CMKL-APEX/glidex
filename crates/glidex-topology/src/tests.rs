@@ -178,6 +178,26 @@ fn closeness_meets_at_any_switch_level() {
     assert!(Closeness::Switch < Closeness::Numa && Closeness::Socket < Closeness::Far);
 }
 
+/// Each device's switches, nearest first: the GPU and the NIC share two,
+/// the NVMe drive only the top one (spec/22-host-topology.md H29).
+#[test]
+fn places_list_every_switch_above_nearest_first() {
+    let s = Sys::hgx();
+    let host = Host::read_in(&s.root, &[]);
+    let sw = |a: &str| host.places[a].switches.clone();
+    assert_eq!(
+        sw("0000:0f:00.0"),
+        ["0000:0d:00.0", "0000:0a:00.0", "0000:01:00.0"]
+    );
+    assert_eq!(sw("0000:0c:00.0"), ["0000:0a:00.0", "0000:01:00.0"]);
+    assert_eq!(sw("0000:09:00.0"), ["0000:01:00.0"]);
+    assert_eq!(
+        host.places["0000:0f:00.0"].switch.as_deref(),
+        Some("0000:0d:00.0")
+    );
+    assert!(sw("0000:e1:00.0").is_empty());
+}
+
 #[test]
 fn closeness_by_numa_node_and_socket() {
     let s = Sys::new();

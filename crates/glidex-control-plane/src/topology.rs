@@ -47,6 +47,10 @@ pub struct SummaryDevice {
     pub numa_node: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch: Option<String>,
+    /// Every switch above it, nearest first; empty from an older node
+    /// (spec/22-host-topology.md H29).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub switches: Vec<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub ready: bool,
     /// A virtual function: its physical function (§10.1).
@@ -166,6 +170,7 @@ impl TopologyTree {
             class_id: d.class_id.clone(),
             numa_node: d.numa_node,
             switch: d.switch.clone(),
+            switches: d.switches.clone(),
             ready: d.ready,
             physfn: d.physfn.as_ref().map(|pf| {
                 let f = self.devices.iter().find(|x| x.address == *pf);
@@ -453,6 +458,9 @@ pub struct PciFunction {
     pub root_port: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub switch: Option<String>,
+    /// Every switch above it, nearest first (spec/22-host-topology.md H29).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub switches: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<PcieLink>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -564,7 +572,8 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
     let mut devices = Vec::new();
     for r in raw {
         let place = places.get(&r.address).cloned().unwrap_or_default();
-        let (kind, root_port, switch) = (place.kind, place.root_port, place.switch);
+        let (kind, root_port, switch, switches) =
+            (place.kind, place.root_port, place.switch, place.switches);
         let assignable = kind == PciKind::Endpoint
             && (assignable_class(&r.class_id) || r.driver.as_deref() == Some("vfio-pci"));
         let mut not_ready = Vec::new();
@@ -661,6 +670,7 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             kind,
             root_port,
             switch,
+            switches,
             link: r.link.clone(),
             sriov: r.sriov.clone(),
             physfn: r.physfn.clone(),

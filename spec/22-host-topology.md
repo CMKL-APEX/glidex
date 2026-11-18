@@ -1107,6 +1107,14 @@ Where HT2 differs from the design above, and why:
   `reserved_by_config`, and `device_numa` (address → NUMA node) in
   place of `devices`, `distance` and `warnings`. The rest of §3–§5 is
   HT1 and HT3.
+- **Closest devices** (H29, 2026-11-18): each device in the summary and
+  the tree has `switches`, from `glidex_topology::pci::Place`.
+  `pick_pool_devices` sorts each request's candidates by NUMA as before,
+  then by the most switches shared with the devices already picked, then
+  by the sum over the later requests of the most switches shared with
+  one of their candidates, then by address. Tested on the HGX layout of
+  one root port, both request orders. `same_switch` is unchanged. Not run
+  on a host yet.
 - **Score**: the node is still chosen by its node-wide shares; within it,
   the NUMA node by most devices, then least memory share, then id.
 - **Changes to a placed VM** (§6): its CPUs and NUMA node are picked again
