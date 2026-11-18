@@ -2,6 +2,7 @@
 //! (spec/31-dpu.md §10.2). It keeps no state of its own: the tagged OVSDB
 //! rows are the record, so it restarts freely.
 
+use crate::chassis::{Chassis, DEFAULT_OVN_DIR};
 use crate::proto::*;
 use crate::tls;
 use glidex_dpu::exec::Exec;
@@ -18,6 +19,8 @@ pub struct Agent {
     pub mst_device: String,
     /// How often `attach_rep` looks for the representor.
     pub poll: Duration,
+    /// The DPU's chassis: its key, certificates and settings (§8.3).
+    pub chassis: Chassis,
 }
 
 fn to_value<T: serde::Serialize>(v: T) -> Result<Value, DpuError> {
@@ -30,6 +33,7 @@ impl Agent {
             exec,
             mst_device: probe::DEFAULT_MST_DEVICE.to_string(),
             poll: Duration::from_millis(250),
+            chassis: Chassis::new(DEFAULT_OVN_DIR),
         }
     }
 
@@ -55,6 +59,16 @@ impl Agent {
             }
             AgentOp::DetachRep { vm_id, nic } => {
                 Ok(json!({ "removed": self.detach_rep(&vm_id, nic)? }))
+            }
+            AgentOp::Csr { chassis } => Ok(json!({ "csr": self.chassis.csr(&chassis)? })),
+            AgentOp::InstallCert { cert_pem, ca_pem } => Ok(json!({
+                "changed": self.chassis.install_cert(self.ex(), &cert_pem, &ca_pem)?
+            })),
+            AgentOp::Chassis(args) => to_value(self.chassis.ensure(self.ex(), &args)?),
+            AgentOp::OvnStatus { br_int } => to_value(self.chassis.status(self.ex(), &br_int)?),
+            AgentOp::LeaveOvn => {
+                self.chassis.leave(self.ex())?;
+                Ok(json!({}))
             }
         }
     }

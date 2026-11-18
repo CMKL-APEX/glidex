@@ -11,6 +11,7 @@
       },
       "mode": "vfio",
       "bridges": { "int": "br-int", "representor_bridge": "br-int" },
+      "ovn": { "encap_ip": "192.0.2.10" },
       "port_timeout_secs": 30
     }
   ]
