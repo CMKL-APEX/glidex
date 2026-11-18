@@ -502,7 +502,11 @@ to serve TLS: the directory pins its certificate.
 Their directory calls this cluster's API (the address in the token:
 `cluster.api_url`, else the web UI's host on port 8841), pinning its
 certificate; both sides keep the other's keys and certificate from then
-on. `gxctl admission directories` lists the directories this cluster
+on. The pin is the certificate that address presents, which must be one
+a node of this cluster serves: in a cluster, where each server has its
+own certificate, set `cluster.api_url` to a server's address. An offer
+is refused, saying so, when the address can't be reached or presents
+another certificate (a proxy's, say). `gxctl admission directories` lists the directories this cluster
 trusts; `gxctl admission remove <tenant>` ends a tenant's admission and
 tells its directory; the tenant can opt out from its side too
 (`gxctl tenant opt-out acme --cluster <id>`). An offer works once and
@@ -596,6 +600,11 @@ tenant) and sends you the token. As the directory's owner, redeem it:
 gxctl directory trust-cluster --auto-opt-in
 gxctl directory trust-cluster --offer-file ./offer.txt --auto-opt-in
 ```
+
+The cluster then calls the directory at its `cluster.api_url`
+([configuration](configuration.md)), pinning the certificate that address
+presents; in a cluster, set it to a server's own address on a network
+the storage cluster reaches.
 
 Each tenant then opts in with no offer of its own, and the cluster
 admits it at once (`open`) or after its operator approves (`approval`).

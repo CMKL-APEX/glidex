@@ -296,7 +296,10 @@ pub async fn offer_admission(
     c: Caller,
     Json(req): Json<pb::OfferAdmissionRequest>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    Ok((StatusCode::CREATED, Json(svc::offer_admission(&c, req)?)))
+    Ok((
+        StatusCode::CREATED,
+        Json(svc::offer_admission(&c, req).await?),
+    ))
 }
 
 pub async fn list_offers(c: Caller) -> Result<Json<pb::ListOffersResponse>, ApiErr> {

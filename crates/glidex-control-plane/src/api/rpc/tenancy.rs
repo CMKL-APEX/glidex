@@ -222,7 +222,7 @@ impl AdmissionService for Svc {
         ctx: RequestContext,
         req: ServiceRequest<'_, OfferAdmissionRequest>,
     ) -> ServiceResult<OfferAdmissionResponse> {
-        op!(self, ctx, req, tenancy::offer_admission)
+        op_async!(self, ctx, req, tenancy::offer_admission)
     }
 
     async fn list_offers(

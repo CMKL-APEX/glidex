@@ -35,17 +35,18 @@ struct Cp {
 /// A control plane serving its API on `https://127.0.0.1:<port>`, with a
 /// certificate of its own; `issuer_base` and `cluster.api_url` are that.
 async fn cp() -> Cp {
+    cp_with(|_| {}).await
+}
+
+/// [`cp`], its configuration changed by `tweak` first.
+async fn cp_with(tweak: impl FnOnce(&mut Config)) -> Cp {
     let dir = TempDir::new().unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!(
         "https://127.0.0.1:{}",
         listener.local_addr().unwrap().port()
     );
-    let (cert, key) = glidex_tls::generate(&glidex_tls::LocalNames::default()).unwrap();
-    let cert_path = dir.path().join("api.crt");
-    let key_path = dir.path().join("api.key");
-    std::fs::write(&cert_path, &cert).unwrap();
-    std::fs::write(&key_path, &key).unwrap();
+    let (cert_path, key_path) = cert_files(dir.path(), "api");
     let manager = common::with_db_path(dir.path().join("t.db")).unwrap();
     let mut cfg = Config::default();
     cfg.authz.policy_files_dir = dir.path().join("policies");
@@ -57,6 +58,7 @@ async fn cp() -> Cp {
         cert: cert_path.clone(),
         key: None,
     });
+    tweak(&mut cfg);
     let auth = AuthService::new(manager.database(), cfg).unwrap();
     let app = Arc::new(App { manager, auth });
     let router = api::router(app.clone());
@@ -64,13 +66,35 @@ async fn cp() -> Cp {
     // control plane serves it.
     let files = glidex_tls::FileCert::load(&cert_path, &key_path).unwrap();
     glidex_control_plane::api_cert::serving(&app, &files.slot.get());
+    serve_https(listener, router.clone(), &files);
+    Cp {
+        router,
+        app,
+        base,
+        cert: std::sync::Mutex::new(files),
+        _dir: dir,
+    }
+}
+
+/// A new certificate and key in `dir`, as `<name>.crt` and `<name>.key`.
+fn cert_files(dir: &std::path::Path, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let (cert, key) = glidex_tls::generate(&glidex_tls::LocalNames::default()).unwrap();
+    let cert_path = dir.join(format!("{name}.crt"));
+    let key_path = dir.join(format!("{name}.key"));
+    std::fs::write(&cert_path, &cert).unwrap();
+    std::fs::write(&key_path, &key).unwrap();
+    (cert_path, key_path)
+}
+
+/// Serve `router` over HTTPS on `listener` with `files`' certificate.
+fn serve_https(listener: tokio::net::TcpListener, router: Router, files: &glidex_tls::FileCert) {
     let tls = glidex_tls::resolver_config(
         glidex_tls::Resolver::new(files.slot.clone()),
         &[b"http/1.1"],
     )
     .unwrap();
     let acceptor = tokio_rustls::TlsAcceptor::from(tls);
-    let served = router.clone();
+    let served = router;
     tokio::spawn(async move {
         loop {
             let Ok((tcp, _)) = listener.accept().await else {
@@ -92,13 +116,6 @@ async fn cp() -> Cp {
             });
         }
     });
-    Cp {
-        router,
-        app,
-        base,
-        cert: std::sync::Mutex::new(files),
-        _dir: dir,
-    }
 }
 
 impl Cp {
@@ -2432,5 +2449,89 @@ async fn a_directory_opts_its_tenants_in_by_itself() {
     assert_eq!(
         admitted(&bio),
         Some(glidex_trust::AdmissionStatus::Admitted)
+    );
+}
+
+/// #554: a redeem gives the directory's API address with the certificate
+/// that address presents, which a node of its cluster serves. Not the
+/// certificate of the node running the call: servers forward writes to
+/// the leader, which needn't be the node behind the address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_redeem_pins_the_certificate_at_the_api_address() {
+    use glidex_control_plane::api_cert::pin_of;
+    use glidex_control_plane::node::Node;
+    // Another server's API, where cluster.api_url points, with its own
+    // certificate.
+    let other = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let at = format!("https://127.0.0.1:{}", other.local_addr().unwrap().port());
+    let acme = cp_with(|cfg| cfg.cluster.api_url = Some(at.clone())).await;
+    let certs = TempDir::new().unwrap();
+    let (cert, key) = cert_files(certs.path(), "other");
+    let files = glidex_tls::FileCert::load(&cert, &key).unwrap();
+    let theirs = pin_of(&files.slot.get());
+    serve_https(other, acme.router.clone(), &files);
+    let own = pin_of(&acme.cert.lock().unwrap().slot.get());
+    assert_ne!(own, theirs);
+    let published = |pin: &str| {
+        acme.app
+            .manager
+            .nodes()
+            .list()
+            .unwrap()
+            .iter()
+            .any(|n| n.status.api_pin.as_deref() == Some(pin))
+    };
+    wait_for(|| published(&own)).await;
+    // The other server publishes its certificate's pin, as each node does.
+    let spec = serde_json::from_value(json!({"name": "other", "role": "server"})).unwrap();
+    let mut node = Node::new("00000000-0000-4000-8000-0000000000aa", spec);
+    node.status.api_pin = Some(theirs.clone());
+    acme.app.manager.nodes().put(&node).unwrap();
+    assert!(published(&theirs));
+
+    let admin = acme.admin();
+    let issuer = format!("{}/d/local", acme.base);
+    let c = Arc::new(WholeCluster {
+        key: glidex_trust::key::ClusterKey::generate("storage-1:1").unwrap(),
+        open: std::sync::Mutex::new(true),
+        replays: glidex_trust::Replays::default(),
+        trusted: std::sync::Mutex::new(None),
+        ends: std::sync::Mutex::new(Vec::new()),
+        admit: glidex_trust::AdmitSetting::Open,
+    });
+    let (c2, iss) = (c.clone(), issuer.clone());
+    let handler: glidex_trust::fake::Handler = Arc::new(move |req| {
+        let (c, iss) = (c2.clone(), iss.clone());
+        Box::pin(async move { c.handle(req, &iss) })
+    });
+    let https = glidex_trust::fake::serve_https(handler).await.unwrap();
+    let offer = glidex_control_plane::trust::OfferToken {
+        cluster_id: WholeCluster::ID.into(),
+        cluster_name: "storage".into(),
+        api: https.base.clone(),
+        tls_sha256: https.pin.clone(),
+        scope: glidex_control_plane::trust::OfferScope::Directory,
+        tenant: String::new(),
+        directory: issuer.clone(),
+        offer: "o1".into(),
+        secret: "s".into(),
+        expires_at: u64::MAX,
+    }
+    .encode();
+    let (s, v) = acme
+        .rest(
+            "POST",
+            "/directory/clusters",
+            Some(json!({"offer": offer})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let d = c.trusted.lock().unwrap().clone().unwrap();
+    assert_eq!(d.api, at);
+    assert_eq!(
+        glidex_tls::Trust::normalize_pin(&d.tls_sha256),
+        Some(theirs),
+        "the certificate at the API address, not the caller's own"
     );
 }
