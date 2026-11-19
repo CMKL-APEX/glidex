@@ -783,7 +783,7 @@ over the cluster port.
   - It moves each shared disk's `worker` to the new node and re-binds the VM's node-scoped resources (node networks are refused; OVN ports move, as at start).
   - Needs `placeVm` (operators, §13).
 - **`Lost` VM** (after `node forget --fenced`, 14-clustering.md §5.6): the same call is allowed, which is what that section anticipated.
-- **Running VM:** refused with `409 invalid_state`. Live migration is out of scope.
+- **Running VM:** refused with `409 invalid_state`. Moving a running VM is live migration ([32-live-migration.md](32-live-migration.md)); starting a stopped one on another node in one step is its LM0.
 
 **As built (S4)** (`VmManager::place_vm`, `controller/placement.rs`):
 - **Which VMs:**
