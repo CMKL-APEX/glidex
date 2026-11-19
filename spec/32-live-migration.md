@@ -333,6 +333,16 @@ issues. LM4 needs LM2 and LM3. LM5 and LM6 need LM4.
 - **O4 Drain and evacuation.** Should `node drain` migrate running VMs
   that can migrate, and stop the rest?
 - **O5 Nested virtualization.** v54 turned it off by default for a smaller attack surface. glidex keeps it on (decision 10). Should it be off by default, and on per VM or per project?
+- **O6 Who reads KVM's CPUID (LM2).** `KVM_GET_SUPPORTED_CPUID` needs
+  `/dev/kvm`. The control plane runs as `glidex`, which isn't in the
+  `kvm` group, and giving it `/dev/kvm` widens what an unprivileged
+  service can do. The choices:
+  - a root step at boot (with `glidex-vfio-boot.service`) that writes
+    `/run/glidex/kvm-cpuid.json`, read at each node report (recommended:
+    the CPUID only changes with the kernel, which needs a reboot);
+  - a netd op, though netd is about networking;
+  - the shim, which already runs the hypervisor, reporting the CPUID of
+    each VM it starts.
 
 ## 14. Status
 
