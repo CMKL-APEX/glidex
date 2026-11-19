@@ -120,12 +120,18 @@ pub(crate) fn graceful_stop_secs(args: &[&str]) -> Result<Option<u32>, String> {
 }
 
 /// The VM a lifecycle write answered with; `None` once it is gone.
-async fn start_vm(client: &ApiClient, id: &str, wait: Option<u32>) -> Result<Option<Vm>, String> {
+async fn start_vm(
+    client: &ApiClient,
+    id: &str,
+    wait: Option<u32>,
+    node: Option<&str>,
+) -> Result<Option<Vm>, String> {
     rpc(client)
         .await?
         .start_vm(StartVmRequest {
             id: id.to_string(),
             wait_secs: wait,
+            node: node.map(String::from),
             ..Default::default()
         })
         .await
@@ -453,12 +459,24 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
     }
 }
 
-/// `start <name|id> [--no-wait]`
+/// `start <name|id> [--node N] [--no-wait]`: with `--node`, a stopped VM
+/// placed elsewhere is placed again there first
+/// (spec/32-live-migration.md LM0).
 pub async fn start(client: &ApiClient, args: &[&str]) {
-    let Some(vm_id) = resolve(client, args, "Usage: start <name|id> [--no-wait]").await else {
+    let Some(vm_id) = resolve(
+        client,
+        args,
+        "Usage: start <name|id> [--node N] [--no-wait]",
+    )
+    .await
+    else {
         return;
     };
-    match start_vm(client, &vm_id, wait_secs(&args[1..])).await {
+    let node = crate::flag_value(args, "--node");
+    if node.is_some_and(|n| n.starts_with("--")) || (node.is_none() && has_flag(args, "--node")) {
+        return usage("Usage: start <name|id> [--node N] [--no-wait]");
+    }
+    match start_vm(client, &vm_id, wait_secs(&args[1..]), node).await {
         Ok(vm) => print_lifecycle_result(vm.as_ref(), args[0]),
         Err(e) => err(e),
     }

@@ -3124,3 +3124,33 @@ async fn gpu_requests_expand_from_the_pool() {
         assert!(v.to_string().contains(why), "{gpus}: {v}");
     }
 }
+
+/// spec/32-live-migration.md LM0: starting a VM on a named node is
+/// `placeVm`'s, as placing it is. A project owner, who may start the VM,
+/// is refused, and the VM stays stopped; the plain start still works.
+#[tokio::test]
+async fn starting_on_a_node_takes_place_vm() {
+    let h = harness();
+    let pa = h.project("pa");
+    let owner = h.user("owner");
+    h.link("role.owner", Ent::User(owner.clone()), Ent::Project(pa));
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
+    let o = As::Bearer(h.token(&owner));
+    let (s, vm, _) = h.call("POST", "/vms", Some(vm_body("v1", "pa")), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    for node in ["local", "elsewhere"] {
+        let (s, v, _) = h
+            .call(
+                "POST",
+                &format!("/vms/{id}/start?node={node}&wait=0"),
+                None,
+                &o,
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{node}: {v}");
+    }
+    let (_, v, _) = h.call("GET", &format!("/vms/{id}"), None, &o).await;
+    let desired = vm_of(&v)["desired_state"].as_str().unwrap_or_default();
+    assert!(desired.to_ascii_lowercase().ends_with("stopped"), "{v}");
+}

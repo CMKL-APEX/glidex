@@ -2678,18 +2678,78 @@ async fn a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost() {
     .await;
     assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
     assert!(e["message"].as_str().unwrap().contains("stuck"), "{e}");
-
-    // Back to the agent, then the agent is lost: forgotten, its VM Lost,
-    // and placed again on the server.
-    let (s, v) = call(
+    // Starting it on the server is refused the same way, and it stays
+    // stopped on the agent (spec/32-live-migration.md LM0).
+    let (s, e) = call(
         &server,
         "POST",
-        &format!("/vms/{id}/place"),
-        Some(json!({ "node": "agent1" })),
+        &format!("/vms/{stuck}/start?node={server_name}&wait=0"),
+        None,
         &[],
     )
     .await;
-    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{e}");
+    assert!(e["message"].as_str().unwrap().contains("stuck"), "{e}");
+    let vm = server.manager.get_vm(&stuck).await.unwrap();
+    assert_eq!(
+        vm.spec.power,
+        glidex_control_plane::models::PowerState::Stopped
+    );
+    assert_eq!(
+        vm.status.placement.map(|p| p.node),
+        Some(agent.manager.local_node_id())
+    );
+
+    // Started back on the agent in one step: placed there, then started
+    // (spec/32-live-migration.md LM0). The test's hypervisor isn't real,
+    // so only the placement and the desired power are checked.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/start?node=agent1&wait=0"),
+        None,
+        &[],
+    )
+    .await;
+    assert!(s.is_success(), "{s}: {v}");
+    let vm = server.manager.get_vm(&id).await.unwrap();
+    assert_eq!(
+        vm.spec.power,
+        glidex_control_plane::models::PowerState::Running
+    );
+    assert_eq!(
+        vm.status.placement.as_ref().map(|p| p.node.clone()),
+        Some(agent.manager.local_node_id())
+    );
+    let d = server.manager.images().get_disk(&disk_id).unwrap();
+    assert_eq!(
+        d.worker.as_deref(),
+        Some(agent.manager.local_node_id().as_str()),
+        "{d:?}"
+    );
+    // Stopped again for what follows.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/stop?wait=0"),
+        None,
+        &[],
+    )
+    .await;
+    assert!(s.is_success(), "{s}: {v}");
+    wait_for("the VM to stop", || async {
+        let vm = server.manager.get_vm(&id).await.unwrap();
+        vm.status.instance.is_none()
+            && matches!(
+                vm.status.phase,
+                glidex_control_plane::models::VmPhase::Stopped
+                    | glidex_control_plane::models::VmPhase::Failed
+            )
+    })
+    .await;
+
+    // The agent is lost: forgotten, its VM Lost, and placed again on the
+    // server.
     let (s, e) = call(&server, "DELETE", &format!("/vms/{stuck}"), None, &[]).await;
     assert!(s.is_success(), "{e}");
     cluster(&agent).stop().await;

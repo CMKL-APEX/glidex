@@ -1003,6 +1003,9 @@ async fn set_power(
 }
 
 pub async fn start_vm(call: &Call, req: pb::StartVmRequest) -> ServiceResult<VmReply> {
+    if let Some(node) = req.node.as_deref().filter(|n| !n.is_empty()) {
+        return start_on(call, &req, node).await;
+    }
     set_power(
         call,
         &req.id,
@@ -1012,6 +1015,30 @@ pub async fn start_vm(call: &Call, req: pb::StartVmRequest) -> ServiceResult<VmR
         req.expected_resource_version,
     )
     .await
+}
+
+/// `POST /vms/{id}/start?node=N` (spec/32-live-migration.md LM0): a VM
+/// placed elsewhere is placed again on `node` first. Naming a node at all
+/// is `placeVm`'s to allow, as `POST /vms/{id}/place` is, so a caller
+/// without it learns nothing about the nodes.
+async fn start_on(call: &Call, req: &pb::StartVmRequest, node: &str) -> ServiceResult<VmReply> {
+    let (vm, e, es) = visible_vm(call, &req.id).await?;
+    call.require_action("placeVm", e, es, &[])?;
+    call.require_admitted(&vm.project)?;
+    let quota = call.quota_mode(&vm.project);
+    let (vm, over) = call
+        .manager()
+        .start_on(
+            &vm.id,
+            node,
+            quota,
+            &call.actor(),
+            req.expected_resource_version,
+        )
+        .await
+        .map_err(manager_err)?;
+    call.note_overruns(&over);
+    respond(call, vm, req.wait_secs, Vec::new()).await
 }
 
 /// `POST /vms/{id}/place` (spec/24-storage.md S10).
