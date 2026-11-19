@@ -849,6 +849,9 @@ message DatastoreNode {
   // `lvm`: images whose volume (`gx-i-<id>`) the node keeps in it; the
   // datastore can't be deleted while any remain.
   repeated string image_volumes = 11 [json_name = "image_volumes"];
+  // `hyperstor`: the node's hyperstor-vhost can take part in a live
+  // migration, as source or target (spec/32-live-migration.md §7).
+  bool live_migration = 12 [json_name = "live_migration"];
 }
 
 message Datastore {

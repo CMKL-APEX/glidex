@@ -1325,7 +1325,8 @@ impl VmManager {
         let Some(disks) = self.hold_nodes(ds) else {
             return;
         };
-        let Ok(attached) = driver.attached_volumes() else {
+        // A migration's target standing by isn't a hold (spec/32 §7).
+        let Ok(attached) = driver.held_volumes() else {
             return;
         };
         if attached.is_empty() {

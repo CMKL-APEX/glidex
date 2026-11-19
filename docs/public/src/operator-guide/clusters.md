@@ -291,8 +291,12 @@ first. See
 Live migration of a running VM isn't built yet. `gxctl migrate <vm>
 --check [--node N]` says what would stop it, without moving anything:
 the VM's own reasons (not running, not on Cloud Hypervisor, PCI devices,
-DPU or vhost-user NICs, a node network, disks not on hyperstor), then
-each node's (no room, CPU features it lacks, a DPDK `br-int`). It needs
+DPU or vhost-user NICs, a node network, disks not on hyperstor, a
+`hyperstor-vhost` on its node too old to hand a disk over), then each
+node's (no room, CPU features it lacks, a DPDK `br-int`, an older
+`hyperstor-vhost`). Moving a running VM's hyperstor disks needs
+hyperstor's `hyperstor-vhost` protocol 3 (its `live_migration` feature)
+on both nodes: the datastore's page shows it per node. It needs
 `migrateVm`, a cluster operator's permission, as placing does.
 
 ## Node lifecycle

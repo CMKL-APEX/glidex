@@ -272,6 +272,10 @@ pub struct NodeRow {
     /// them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub image_volumes: Vec<String>,
+    /// `hyperstor`: this node's `hyperstor-vhost` can take part in a live
+    /// migration, as source or target (spec/32-live-migration.md §7).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub live_migration: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

@@ -206,6 +206,14 @@ pub fn stale_here(
         .collect()
 }
 
+/// Whether a `hello` answer offers live migration (protocol 3's
+/// `live_migration` feature).
+fn has_live_migration(hello: &serde_json::Value) -> bool {
+    hello["features"]
+        .as_array()
+        .is_some_and(|f| f.iter().any(|f| f == "live_migration"))
+}
+
 /// An image's volume id, derived from the image's (one per datastore: the
 /// datastore is another cluster, or another pool).
 pub fn image_volume_id(image_id: &str, datastore: &str) -> String {
@@ -1002,15 +1010,130 @@ impl HyperstorDriver {
 
     /// The volumes attached to this node's `hyperstor-vhost`.
     pub fn attached_volumes(&self) -> Result<Vec<String>, ImageError> {
+        self.listed(|_| true)
+    }
+
+    /// The volumes this node's `hyperstor-vhost` holds the lease of: those
+    /// attached here but a migration's target standing by as a delegate
+    /// (`"role": "delegate"`, spec/32-live-migration.md §7), whose VM is
+    /// still placed on the source. Older services list no role: all holds.
+    pub fn held_volumes(&self) -> Result<Vec<String>, ImageError> {
+        self.listed(|d| d["role"] != "delegate")
+    }
+
+    fn listed(&self, keep: impl Fn(&serde_json::Value) -> bool) -> Result<Vec<String>, ImageError> {
         let ok = self.vhost(serde_json::json!({"id": 1, "op": "list"}))?;
         Ok(ok["disks"]
             .as_array()
             .map(|a| {
                 a.iter()
+                    .filter(|d| keep(d))
                     .filter_map(|d| d["volume"].as_str().map(str::to_string))
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// Whether this node's `hyperstor-vhost` can take part in a live
+    /// migration (`live_migration` in `hello`'s features, protocol 3): the
+    /// dirty log, the drain and the delegate (spec/32-live-migration.md
+    /// §7). Whether the storage nodes can hand a lease over is checked by
+    /// the target's [`Self::attach_delegate`], before any memory is copied.
+    pub fn live_migration(&self) -> Result<bool, ImageError> {
+        let ok = self.vhost(serde_json::json!({"id": 1, "op": "hello"}))?;
+        Ok(has_live_migration(&ok))
+    }
+
+    /// On a migration's source: adds a delegate to the lease of `disk`'s
+    /// volume, attached here, and returns its identity for the target.
+    pub fn delegate(&self, disk: &Disk) -> Result<String, ImageError> {
+        let ok = self.vhost(serde_json::json!({
+            "id": 1,
+            "op": "delegate",
+            "args": { "volume": volume_id(disk) },
+        }))?;
+        ok["delegate"]
+            .as_str()
+            .filter(|d| !d.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| ImageError::Io("hyperstor-vhost gave no delegate".into()))
+    }
+
+    /// On a migration's target: attaches `disk`'s volume as the source's
+    /// delegate `delegate`, standing by. The receiving hypervisor connects
+    /// to the socket and reads; writes are refused until
+    /// [`Self::promote`]. A cluster whose storage nodes can't hand the
+    /// lease over refuses it (`invalid`).
+    pub fn attach_delegate(
+        &self,
+        disk: &Disk,
+        delegate: &str,
+    ) -> Result<VolumeBinding, ImageError> {
+        let volume = volume_id(disk);
+        let mut args = serde_json::json!({
+            "volume": volume,
+            "serial": serial(disk),
+            "delegate": delegate,
+        });
+        if !self.node.is_empty() {
+            args["holder"] = self.node.clone().into();
+        }
+        let ok = self.vhost(serde_json::json!({"id": 1, "op": "attach", "args": args}))?;
+        let socket = ok["socket"]
+            .as_str()
+            .ok_or_else(|| ImageError::Io("hyperstor-vhost gave no socket".into()))?;
+        Ok(VolumeBinding::VhostUserBlk {
+            socket: socket.to_string(),
+            volume,
+            map: self.map.clone(),
+        })
+    }
+
+    /// On a migration's target, at the switch: makes the delegate attached
+    /// here the holder of `disk`'s volume. Returns the leases being fenced
+    /// (the source's), which happens in the background. Sending it again
+    /// after a lost answer succeeds.
+    pub fn promote(&self, disk: &Disk) -> Result<Vec<String>, ImageError> {
+        let ok = self.vhost(serde_json::json!({
+            "id": 1,
+            "op": "promote",
+            "args": { "volume": volume_id(disk) },
+        }))?;
+        Ok(ok["fencing"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|f| f.as_str().map_or_else(|| f.to_string(), str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default())
+    }
+
+    /// On the source of a cancelled migration: removes delegate `delegate`
+    /// from `disk`'s lease and fences it. Detach the target first
+    /// ([`Self::detach_forced`]).
+    pub fn release_delegate(&self, disk: &Disk, delegate: &str) -> Result<(), ImageError> {
+        self.vhost(serde_json::json!({
+            "id": 1,
+            "op": "undelegate",
+            "args": { "volume": volume_id(disk), "delegate": delegate },
+        }))
+        .map(|_| ())
+    }
+
+    /// Detaches `disk`'s volume though a hypervisor is connected: a
+    /// cancelled migration's target, whose receiving hypervisor holds the
+    /// socket. One not attached here is fine.
+    pub fn detach_forced(&self, disk: &Disk) -> Result<(), ImageError> {
+        match self.vhost(serde_json::json!({
+            "id": 1,
+            "op": "detach",
+            "args": { "volume": volume_id(disk), "force": true },
+        })) {
+            Ok(_) => Ok(()),
+            Err(ImageError::Io(m)) if m.contains("isn't attached") => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 
     /// Detaches volume `volume` from this node; one not attached here is
@@ -1382,11 +1505,14 @@ pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::No
         checked_at: now,
         ..Default::default()
     };
-    if let Err(e) = driver.vhost_answers() {
-        row.reachable = false;
-        row.reason = "VhostUnavailable".into();
-        row.message = e.to_string();
-        return row;
+    match driver.live_migration() {
+        Ok(lm) => row.live_migration = lm,
+        Err(e) => {
+            row.reachable = false;
+            row.reason = "VhostUnavailable".into();
+            row.message = e.to_string();
+            return row;
+        }
     }
     if driver.has_identity()
         && let Err(e) = driver.api_answers()
@@ -1708,6 +1834,88 @@ mod tests {
         // be told, which isn't "missing" (S32).
         assert!(matches!(none.api_answers(), Err(ImageError::NotReady(_))));
         assert!(none.exists(&d).is_err());
+    }
+
+    /// A live migration's disk handover through hyperstor-vhost's control
+    /// socket (spec/32-live-migration.md §7): the source's delegate, the
+    /// target's standby attach, the promotion and a cancel; the target's
+    /// standby isn't a hold, and `hello` says whether it can take part.
+    #[test]
+    fn a_migrations_disk_is_handed_over_through_hyperstor_vhost() {
+        let tmp = tempfile::tempdir().unwrap();
+        let vol = "6f1c0d2e9a4b4c1d8e2f0123456789ab";
+        let seen = fake_vhost(tmp.path(), move |r| match r["op"].as_str().unwrap() {
+            "hello" => {
+                serde_json::json!({"id": 1, "ok": {"protocol": 3, "features": ["live_migration"]}})
+            }
+            "delegate" => serde_json::json!({"id": 1, "ok": {"delegate": "00000000000000a1"}}),
+            "attach" => serde_json::json!({"id": 1, "ok": {
+                "socket": format!("/run/hyperstor/vhost/{vol}.sock"), "size": 1}}),
+            "promote" => serde_json::json!({"id": 1, "ok": {"fencing": ["vhost:node-a"]}}),
+            "undelegate" | "detach" => serde_json::json!({"id": 1, "ok": {}}),
+            "list" => serde_json::json!({"id": 1, "ok": {"disks": [
+                {"volume": "v1", "role": "holder"},
+                {"volume": "v2", "role": "delegate"},
+                {"volume": "v3"},
+            ]}}),
+            _ => serde_json::json!({"id": 1, "error": {"code": "invalid", "message": "?"}}),
+        });
+        let drv = HyperstorDriver::new(
+            vec!["127.0.0.1:1".into()],
+            "m:1".into(),
+            1,
+            "ds".into(),
+            None,
+        )
+        .with_paths(tmp.path().to_path_buf(), PathBuf::from("/nonexistent"))
+        .on_node("node-b");
+        let d = disk("6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab");
+        assert!(drv.live_migration().unwrap());
+        let row = probe(&drv, "m:1", 7);
+        assert!(row.reachable && row.live_migration, "{row:?}");
+
+        let delegate = drv.delegate(&d).unwrap();
+        assert_eq!(delegate, "00000000000000a1");
+        let b = drv.attach_delegate(&d, &delegate).unwrap();
+        assert_eq!(
+            b.vhost_socket(),
+            Some("/run/hyperstor/vhost/6f1c0d2e9a4b4c1d8e2f0123456789ab.sock")
+        );
+        assert_eq!(drv.promote(&d).unwrap(), ["vhost:node-a"]);
+        drv.detach_forced(&d).unwrap();
+        drv.release_delegate(&d, &delegate).unwrap();
+        // The target standing by is attached, but not a hold (S26).
+        assert_eq!(drv.attached_volumes().unwrap(), ["v1", "v2", "v3"]);
+        assert_eq!(drv.held_volumes().unwrap(), ["v1", "v3"]);
+
+        let reqs = seen.lock().unwrap();
+        let by = |op: &str| reqs.iter().find(|r| r["op"] == op).unwrap().clone();
+        assert_eq!(by("delegate")["args"], serde_json::json!({"volume": vol}));
+        assert_eq!(
+            by("attach")["args"],
+            serde_json::json!({"volume": vol, "serial": "6f1c0d2e9a4b4c1d8e2f",
+                               "delegate": "00000000000000a1", "holder": "node-b"})
+        );
+        assert_eq!(by("promote")["args"], serde_json::json!({"volume": vol}));
+        assert_eq!(
+            by("detach")["args"],
+            serde_json::json!({"volume": vol, "force": true})
+        );
+        assert_eq!(
+            by("undelegate")["args"],
+            serde_json::json!({"volume": vol, "delegate": "00000000000000a1"})
+        );
+    }
+
+    /// An older hyperstor-vhost (protocol 1 or 2) offers no live migration.
+    #[test]
+    fn only_a_hello_with_the_feature_offers_live_migration() {
+        use serde_json::json;
+        assert!(has_live_migration(
+            &json!({"protocol": 3, "features": ["live_migration"]})
+        ));
+        assert!(!has_live_migration(&json!({"protocol": 3, "features": []})));
+        assert!(!has_live_migration(&json!({"protocol": 2})));
     }
 
     /// Which holds are stale (S26, S31): another node's hyperstor-vhost's

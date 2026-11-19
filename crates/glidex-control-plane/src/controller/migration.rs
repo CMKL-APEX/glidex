@@ -1,5 +1,8 @@
 //! Live migration (spec/32-live-migration.md): what may move where (§5).
 
+use std::collections::BTreeMap;
+
+use crate::datastore::record::NodeRow;
 use crate::hypervisor::HypervisorType;
 use crate::models::{PowerState, VmPhase};
 use crate::state::{VmManager, VmManagerError};
@@ -86,27 +89,43 @@ impl VmManager {
                 no(format!("network {} exists on its node only", n.name));
             }
         }
+        let db = self.store.database();
+        let store_name = |id: &str| {
+            crate::datastore::record::find(&db, id)
+                .ok()
+                .flatten()
+                .map(|r| r.name)
+                .unwrap_or_else(|| id.to_string())
+        };
+        // §7: each end's hyperstor-vhost must offer the dirty log, the
+        // drain and the delegate, as its node last reported.
+        let mut hyperstor: Vec<(String, BTreeMap<String, NodeRow>)> = Vec::new();
         let mut disks = Vec::new();
         for id in c.root_disk.iter().chain(c.data_disks.iter()) {
             let d = self.images.get_disk(id)?;
             if !self.images.is_hyperstor(&d) {
-                let store = crate::datastore::record::find(&self.store.database(), &d.datastore)
-                    .ok()
-                    .flatten()
-                    .map(|r| r.name)
-                    .unwrap_or_else(|| d.datastore.clone());
                 no(format!(
-                    "disk {} is on datastore {store}; only hyperstor disks migrate",
-                    d.name
+                    "disk {} is on datastore {}; only hyperstor disks migrate",
+                    d.name,
+                    store_name(&d.datastore)
                 ));
-            } else {
-                // §7: the delegate and the dirty log are hyperstor's to add.
-                no(format!(
-                    "disk {} is on hyperstor, which can't hand a running VM's disk over yet",
-                    d.name
-                ));
+            } else if !hyperstor.iter().any(|(ds, _)| *ds == d.datastore) {
+                let rows = crate::datastore::record::rows(&db, &d.datastore).unwrap_or_default();
+                hyperstor.push((d.datastore.clone(), rows));
             }
             disks.push(d);
+        }
+        let migrates = |rows: &BTreeMap<String, NodeRow>, node: &str| {
+            rows.get(node)
+                .is_some_and(|r| r.reachable && r.live_migration)
+        };
+        for (ds, rows) in &hyperstor {
+            if source.as_deref().is_some_and(|n| !migrates(rows, n)) {
+                no(format!(
+                    "hyperstor-vhost on its node can't hand datastore {}'s disks over; upgrade hyperstor there",
+                    store_name(ds)
+                ));
+            }
         }
         let datapath = |id: &str| {
             self.nodes()
@@ -131,6 +150,14 @@ impl VmManager {
             } else {
                 if let Some(r) = fit.refused {
                     reasons.push(r);
+                }
+                for (ds, rows) in &hyperstor {
+                    if !migrates(rows, &fit.id) {
+                        reasons.push(format!(
+                            "hyperstor-vhost there can't take datastore {}'s disks over",
+                            store_name(ds)
+                        ));
+                    }
                 }
                 match self.nodes().get(&fit.id).ok().flatten() {
                     Some(n) => {
