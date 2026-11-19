@@ -15,7 +15,7 @@ mod uninstall;
 
 /// Cloud Hypervisor release, verified against `cloud_hypervisor_asset`
 /// (the digests GitHub lists for the release's assets). Bump together.
-const CLOUD_HYPERVISOR_VERSION: &str = "v53.0";
+const CLOUD_HYPERVISOR_VERSION: &str = "v54.1";
 /// Release tag of <https://github.com/cloud-hypervisor/edk2/releases> to fetch
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.
@@ -2096,12 +2096,12 @@ fn cloud_hypervisor_asset(platform: &Platform) -> (&'static str, &'static str) {
     if platform.arch == "x86_64" {
         (
             "cloud-hypervisor-static",
-            "448af3d4e59b22c2987f7df94c213ad40fb53a10d437e42b5ee6c4fce7c29ecc",
+            "f9ffb9646783233d1f0fb09e77db1fca66499d1041e63bc011b90683c0d49933",
         )
     } else {
         (
             "cloud-hypervisor-static-aarch64",
-            "f192b510eea1c710cbc439d716bb0573c223fc463dbe3e6523788a2b7ef62850",
+            "96ef17679a4a75be8eefa1956dd645a57f7974ec50565090ea9298f9bbb761ad",
         )
     }
 }
