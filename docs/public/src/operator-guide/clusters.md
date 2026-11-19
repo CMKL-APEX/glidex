@@ -288,6 +288,13 @@ node-local one) keeps its VM on that node; move it to a shared datastore
 first. See
 [Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again).
 
+Live migration of a running VM isn't built yet. `gxctl migrate <vm>
+--check [--node N]` says what would stop it, without moving anything:
+the VM's own reasons (not running, not on Cloud Hypervisor, PCI devices,
+DPU or vhost-user NICs, a node network, disks not on hyperstor), then
+each node's (no room, CPU features it lacks, a DPDK `br-int`). It needs
+`migrateVm`, a cluster operator's permission, as placing does.
+
 ## Node lifecycle
 
 Each node has a phase: `Active`, `Draining`, `Departing` (a detach in

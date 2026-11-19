@@ -10,6 +10,7 @@ pub mod disk;
 pub mod extract;
 pub mod image;
 pub mod image_cache;
+pub mod migration;
 pub mod network;
 pub mod ovn;
 pub mod placement;

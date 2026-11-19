@@ -605,6 +605,10 @@ fn help_text() -> String {
         "place <name|id> [--node N]".cyan()
     );
     line!(
+        "  {} - Say whether a running VM can live-migrate, and where",
+        "migrate <name|id> --check [--node N]".cyan()
+    );
+    line!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
         "stop <name|id> --graceful [secs]".cyan()
     );
@@ -1141,6 +1145,7 @@ const COMMANDS: &[&str] = &[
     "create",
     "start",
     "place",
+    "migrate",
     "stop",
     "pause",
     "kernel",
@@ -1602,6 +1607,7 @@ async fn handle_words(words: &[String], client: &CliClient) -> bool {
         "start" => vm::start(client, &parts[1..]).await,
         "stop" => vm::stop(client, &parts[1..]).await,
         "place" => vm::place(client, &parts[1..]).await,
+        "migrate" => vm::migrate(client, &parts[1..]).await,
         "pause" => vm::pause(client, &parts[1..]).await,
         "kernel" => vm::kernel(client, &parts[1..]).await,
         "service-account" => vm::service_account(client, &parts[1..]).await,
