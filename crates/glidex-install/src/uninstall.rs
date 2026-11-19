@@ -29,6 +29,7 @@ pub const UNITS: &[&str] = &[
     "glidex-authd.socket",
     "glidex-stord.service",
     "glidex-netd.service",
+    "glidex-kvm-cpuid.service",
     // Stopping it unbinds nothing: devices stay on vfio-pci until reboot.
     "glidex-vfio-boot.service",
 ];

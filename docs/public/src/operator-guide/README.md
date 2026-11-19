@@ -21,6 +21,7 @@ On every host, the installer sets up these systemd units:
 | `glidex-vm@<id>.service` | `glidex` | One per running VM, in `glidex-vms.slice`: a small supervisor and the VM's hypervisor (Cloud Hypervisor or QEMU), in their own sandbox. Started and stopped by the control plane, never enabled. |
 | `glidex-pylond.service` | root (group `glidex`) | Pylon's core arbiter, on hosts with [Pylon](installation.md#pylon). Starts before the control plane. |
 | `glidex-vfio-boot.service` | root | A one-shot unit that sets SR-IOV VF counts and binds devices to `vfio-pci` at boot, before the other services. There only with the installer's `--vfio-devices` or `--sriov` (see [Keep it across reboots](pci-passthrough.md#keep-it-across-reboots)). |
+| `glidex-kvm-cpuid.service` | root | A one-shot unit that runs before the control plane at each boot, and again at each install. It writes the host's CPU, kernel and the CPU features its KVM offers guests to `/run/glidex/kvm-cpuid.json`; the control plane, which can't open `/dev/kvm`, reports that file in the node's status. A live migration needs it on the target. |
 
 Open vSwitch runs under its own units, and on cluster members so does
 OVN. The control plane needs `glidex-netd` only for VM networking and

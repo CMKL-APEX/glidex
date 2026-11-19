@@ -1595,6 +1595,8 @@ export interface NodeRecord {
     };
     pci_devices?: string[];
     /** When Ready last changed (RFC 3339). */
+    /** The host's CPU and kernel, and what its KVM offers (spec/32 §9). */
+    cpu?: { vendor: string; family: number; model: number; stepping: number; model_name?: string; microcode?: string; kernel: string };
     heartbeat?: string;
     departed_ids?: string[];
   };

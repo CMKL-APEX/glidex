@@ -36,7 +36,7 @@ Every crate is in `crates/` and listed in the workspace
 | `gxctl` | bin | The CLI: VMs, networks, storage, directory, tenancy and clusters over the control plane's RPC API, as an interactive shell or one command at a time. Published to crates.io. | `main.rs`, `client.rs`, one file per area | The user, on a host or any other machine |
 | `glidex-api` | lib | The RPC API: protos, generated messages, services and clients, and the operation table. | `build.rs`, `proto/` | Control plane (server), `gxctl` (client); the UI through generated TypeScript |
 | `glidex-vm-shim` | lib + bin | Per-VM supervisor: parent of the hypervisor, owner of its console (PTY, console socket, log) and exit record. The library half holds the file formats (`launch.json`, `instance.json`) and the `shim.sock` client. | `supervisor.rs`, `proxy.rs` (console), `replay.rs`, `launch.rs`, `state.rs`, `client.rs` | Started by the control plane, one per VM |
-| `glidex-hv-client` | lib | Blocking clients for Cloud Hypervisor's HTTP API and QEMU's QMP. | `ch.rs`, `qmp.rs`, `stats.rs` | Shim and control plane |
+| `glidex-hv-client` | lib | Blocking clients for Cloud Hypervisor's HTTP API and QEMU's QMP, and KVM's CPUID with the migration fit check. | `ch.rs`, `qmp.rs`, `stats.rs`, `cpuid.rs` | Shim and control plane |
 | `glidex-ovs` | lib | Everything Glidex does to the host network: OVS install, bridges, uplinks, NAT, VM ports, VFIO and SR-IOV, meters, the metadata endpoint's datapath. Depends on no other Glidex crate. | `bridge.rs`, `uplink.rs`, `nat.rs`, `vm_port.rs`, `vfio.rs`, `sriov.rs`, `metadata.rs`, `install.rs` | `glidex-netd`, `glidex-ovn`, `glidex-metad`, `glidex-install`, control plane |
 | `glidex-ovn` | lib | OVN northbound database as Glidex uses it: a desired state and a `sync` that touches only rows Glidex owns. | `lib.rs`, `view.rs` | Control plane (cluster networks) |
 | `glidex-dpu` | lib | A BlueField DPU as Glidex uses it (spec/31-dpu.md): `ovs-vsctl` and `virtnet` command builders for VM ports on OVS-DOCA, probe parsing, VF allocation. Depends on no other Glidex crate. | `ovs.rs`, `virtnet.rs`, `probe.rs`, `alloc.rs` | `glidex-dpu-agent`, `glidex-netd` |
@@ -80,7 +80,7 @@ start reading it.
 | Binary | Runs as | Started by | Notes |
 |---|---|---|---|
 | `glidex-control-plane` | `glidex` | `glidex-control-plane.service` | REST and RPC on `:8841`, `/run/glidex-cp/api.sock` (local users) and `/run/glidex-cp/ui.sock` (the UI); node API on `:8842` in a cluster. A few flags run a one-off recovery and exit (`--force-new-cluster`, `--leave-removed`, `--detach-offline`). |
-| `glidex-vm-shim` | `glidex` | `glidex-vm@<id>.service`, in `glidex-vms.slice`, started and stopped by the control plane through systemd (allowed by a polkit rule) | `--vm <id> --dir /run/glidex-cp/vms/<id>`. Kernel extraction jobs use the same template (`glidex-vm@extract-<uuid>`). |
+| `glidex-vm-shim` | `glidex` | `glidex-vm@<id>.service`, in `glidex-vms.slice`, started and stopped by the control plane through systemd (allowed by a polkit rule) | `--vm <id> --dir /run/glidex-cp/vms/<id>`. Kernel extraction jobs use the same template (`glidex-vm@extract-<uuid>`). `glidex-vm-shim --kvm-cpuid` also runs once per boot, as root, from `glidex-kvm-cpuid.service`. |
 | `glidex-ui` | `glidex-ui` | `glidex-ui.service` | `:5173`. `--dev` runs the Vite dev server instead. |
 | `glidex-netd` | root | `glidex-netd.service` | Socket under `/run/glidex`. `glidex-netd --boot-devices` also runs once per boot from `glidex-vfio-boot.service`. |
 | `glidex-stord` | root | `glidex-stord.service` | Socket under `/run/glidex-stord`; idle until a volume group is allowed. |
@@ -258,7 +258,7 @@ holds what the installer puts on a host:
 |---|---|
 | `glidex-control-plane.service.in`, `glidex-vm@.service.in` | Control plane and per-VM units; `@USER@` and `@BIN@` filled in by the installer. |
 | `glidex-vms.slice` | Slice for every VM unit. |
-| `glidex-ui.service`, `glidex-netd.service`, `glidex-stord.service`, `glidex-authd.socket`, `glidex-authd.service`, `glidex-metad.service`, `glidex-vfio-boot.service` | The other units. |
+| `glidex-ui.service`, `glidex-netd.service`, `glidex-stord.service`, `glidex-authd.socket`, `glidex-authd.service`, `glidex-metad.service`, `glidex-vfio-boot.service`, `glidex-kvm-cpuid.service` | The other units. |
 | `glidex-pylond.service` | Pylon's `pylond`, installed only with `--with-pylon`. |
 | `50-glidex-vm.rules.in` | Polkit rule: the control plane's user may start, stop and kill its own `glidex-vm@` units, nothing else. |
 | `glidex.pam` | PAM service for `glidex-authd`. |

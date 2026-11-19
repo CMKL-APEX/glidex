@@ -1,0 +1,20 @@
+[Unit]
+Description=glidex: what this host's KVM offers guests (CPUID)
+Documentation=https://github.com/CMKL-APEX/glidex/blob/main/spec/32-live-migration.md
+# KVM_GET_SUPPORTED_CPUID needs /dev/kvm, which the control plane's user
+# can't open; it reads the file instead (decision 11). What KVM offers
+# changes only with the kernel or microcode, so once per boot is enough.
+ConditionPathExists=/dev/kvm
+After=systemd-modules-load.service
+Before=glidex-control-plane.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/glidex-vm-shim --kvm-cpuid
+RuntimeDirectory=glidex
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+
+[Install]
+WantedBy=multi-user.target

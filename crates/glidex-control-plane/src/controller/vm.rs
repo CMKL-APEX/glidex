@@ -1513,6 +1513,8 @@ impl VmManager {
             device_errors: device_errors_now(&config.vfio_devices),
         });
         st.never_started = false;
+        // What the guest may now use, until its next boot (spec/32 §9).
+        st.boot_cpuid = crate::node::NodeCpu::read().map(|c| c.kvm_cpuid);
         let ev = Event::new(
             "controller",
             EventKind::Normal,

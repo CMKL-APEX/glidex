@@ -191,6 +191,23 @@ export default function HostDetail() {
             )}
             <dt className="text-gray-500">Architecture</dt>
             <dd>{s.features?.arch || "—"}</dd>
+            <dt className="text-gray-500">CPU</dt>
+            <dd>
+              {s.cpu ? (
+                <>
+                  {s.cpu.model_name || s.cpu.vendor}
+                  <span className="text-gray-500">
+                    {" "}
+                    (family {s.cpu.family.toString(16)}h, model {s.cpu.model.toString(16)}h, stepping {s.cpu.stepping}
+                    {s.cpu.microcode ? `, microcode ${s.cpu.microcode}` : ""})
+                  </span>
+                </>
+              ) : (
+                <span className="text-gray-400">not reported</span>
+              )}
+            </dd>
+            <dt className="text-gray-500">Kernel</dt>
+            <dd>{s.cpu?.kernel ?? "—"}</dd>
             <dt className="text-gray-500">Hypervisors</dt>
             <dd>{(s.features?.hypervisors ?? []).join(", ") || "—"}</dd>
             <dt className="text-gray-500">KVM / IOMMU / DPDK</dt>

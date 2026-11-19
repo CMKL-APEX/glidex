@@ -173,6 +173,7 @@ journalctl -u glidex-stord               # LVM-thin volumes, device access
 journalctl -u glidex-metad               # the guests' metadata endpoint
 journalctl -u glidex-pylond              # Pylon hosts
 journalctl -u glidex-vfio-boot -b        # what the boot binding did
+journalctl -u glidex-kvm-cpuid -b        # reading what KVM offers guests
 journalctl -u glidex-vm@<vm-id>          # one VM's shim and hypervisor
 journalctl -u 'glidex-vm@*' --since today
 ```

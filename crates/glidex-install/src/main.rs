@@ -91,6 +91,7 @@ pub(crate) const VFIO_MODULES: &str = "/etc/modules-load.d/glidex-vfio.conf";
 /// This host's control-plane config: its `pci.pools` until the cluster
 /// setting is written, and always its `pci.exclude` and `pci.overrides`.
 const CP_CONFIG: &str = "/etc/glidex/control-plane.json";
+const KVM_CPUID_UNIT: &str = "/etc/systemd/system/glidex-kvm-cpuid.service";
 const CONTROL_PLANE_UNIT: &str = "/etc/systemd/system/glidex-control-plane.service";
 const UI_UNIT: &str = "/etc/systemd/system/glidex-ui.service";
 const METAD_UNIT: &str = "/etc/systemd/system/glidex-metad.service";
@@ -3997,6 +3998,11 @@ fn install_services(
         STORD_UNIT,
         "0644",
     )?;
+    let kvm_cpuid_unit_changed = install_if_changed(
+        &root.join("packaging/glidex-kvm-cpuid.service"),
+        KVM_CPUID_UNIT,
+        "0644",
+    )?;
     let pylond_unit = root.join("packaging/glidex-pylond.service");
     let pylond_installed =
         pylond_unit.exists() && Path::new(&format!("{}/pylond", BIN_DIR)).exists();
@@ -4005,6 +4011,7 @@ fn install_services(
     let ts = tailscale::apply(tailscale_cert, ts_node)?;
     if cp_unit_changed
         || stord_unit_changed
+        || kvm_cpuid_unit_changed
         || ui_unit_changed
         || metad_unit_changed
         || authd_socket_changed
@@ -4027,6 +4034,10 @@ fn install_services(
     if pylond_installed {
         enable_unit("glidex-pylond.service")?;
     }
+    enable_unit("glidex-kvm-cpuid.service")?;
+    // Again now, not only at boot: a new shim may read more, and the control
+    // plane (re)started below reports the file (spec/32 decision 11).
+    sudo(&argv(&["systemctl", "restart", "glidex-kvm-cpuid.service"]))?;
     enable_unit("glidex-control-plane.service")?;
     enable_unit("glidex-ui.service")?;
     if metad {

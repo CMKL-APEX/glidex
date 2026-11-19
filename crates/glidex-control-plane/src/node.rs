@@ -391,9 +391,68 @@ pub struct NodeStatus {
     /// netd's DPU probe (D3); empty on a node without one.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dpus: Vec<DpuStatus>,
+    /// The host's CPU, kernel, and what its KVM offers guests
+    /// (spec/32-live-migration.md §9); `None` until the boot step has
+    /// written it, or from a node of an older version. A VM can't migrate
+    /// to a node without it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cpu: Option<NodeCpu>,
     /// Last `Ready` transition write only (D7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heartbeat: Option<u64>,
+}
+
+/// A node's CPU (spec/32-live-migration.md §9): the host's, for people,
+/// and the CPUID registers Cloud Hypervisor compares, from KVM.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NodeCpu {
+    #[serde(flatten)]
+    pub host: glidex_hv_client::cpuid::HostCpu,
+    pub kvm_cpuid: Vec<glidex_hv_client::cpuid::CpuidValue>,
+}
+
+impl NodeCpu {
+    /// What the boot step wrote (decision 11); `None` when it hasn't.
+    pub fn read() -> Option<NodeCpu> {
+        let path = std::env::var("GLIDEX_KVM_CPUID_FILE")
+            .unwrap_or_else(|_| glidex_hv_client::cpuid::KVM_CPUID_FILE.into());
+        NodeCpu::read_from(std::path::Path::new(&path))
+    }
+
+    pub fn read_from(path: &std::path::Path) -> Option<NodeCpu> {
+        match glidex_hv_client::cpuid::KvmCpuidFile::read(path) {
+            Ok(f) => Some(NodeCpu {
+                kvm_cpuid: glidex_hv_client::cpuid::checked_values(&f.entries),
+                host: f.cpu,
+            }),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => {
+                tracing::warn!("{}: {}", path.display(), e);
+                None
+            }
+        }
+    }
+}
+
+/// Whether a VM that booted with `boot_cpuid` can run on `node`
+/// (spec/32-live-migration.md §9): the reason when it can't. Without a
+/// record on either side the answer is no: a guest may use any CPUID its
+/// KVM offered, and nothing says what that was.
+pub fn cpu_fits(
+    boot_cpuid: Option<&[glidex_hv_client::cpuid::CpuidValue]>,
+    node: &Node,
+) -> Result<(), String> {
+    let Some(vm) = boot_cpuid else {
+        return Err("the VM has no CPUID record from its boot; restart it once".into());
+    };
+    let Some(cpu) = &node.status.cpu else {
+        return Err(format!(
+            "{} hasn't reported what its KVM offers (glidex-kvm-cpuid.service)",
+            node.spec.name
+        ));
+    };
+    glidex_hv_client::cpuid::fits(vm, &cpu.kvm_cpuid)
+        .map_err(|m| format!("{}: {m}", node.spec.name))
 }
 
 /// A node as stored: `{meta, spec, status}` like every resource.
@@ -441,6 +500,7 @@ impl Node {
                 pci_groups: BTreeMap::new(),
                 topology: None,
                 dpus: Vec::new(),
+                cpu: None,
                 heartbeat: None,
             },
         }
@@ -636,6 +696,7 @@ impl NodeStore {
         node.status.pci_devices = probe.pci_devices;
         node.status.pci_groups = probe.pci_groups;
         node.status.topology = probe.topology;
+        node.status.cpu = probe.cpu;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;
         node.status.ui_url = probe.ui_url;
@@ -673,6 +734,8 @@ pub struct SelfProbe {
     /// `None` when netd didn't say (unreachable, or older than DPUs), which
     /// keeps what was reported before.
     pub dpus: Option<Vec<DpuStatus>>,
+    /// From the boot step's file (spec/32-live-migration.md decision 11).
+    pub cpu: Option<NodeCpu>,
 }
 
 /// The first line of `<program> --version` (`ovn-controller 24.03.2`), its
@@ -799,6 +862,7 @@ impl SelfProbe {
             api_pin: None,
             api_pin_pending: None,
             dpus: None,
+            cpu: NodeCpu::read(),
         }
     }
 }
@@ -885,5 +949,97 @@ mod tests {
         let pool: std::collections::BTreeMap<String, u64> =
             [("2048".to_string(), 1024), ("1048576".to_string(), 2)].into();
         assert_eq!(super::hugepage_pool_mib(&pool), 2048 + 2048);
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    use super::*;
+    use glidex_hv_client::cpuid::{CpuidEntry, HostCpu, KvmCpuidFile};
+
+    fn file(edx7: u32) -> KvmCpuidFile {
+        KvmCpuidFile {
+            cpu: HostCpu {
+                vendor: "AuthenticAMD".into(),
+                family: 0x17,
+                model: 0x31,
+                kernel: "6.17.0".into(),
+                ..Default::default()
+            },
+            entries: vec![CpuidEntry {
+                function: 7,
+                index: 0,
+                eax: 1,
+                ebx: 0x219c07a9,
+                ecx: 0x40069c,
+                edx: edx7,
+            }],
+        }
+    }
+
+    fn node_with(cpu: Option<NodeCpu>) -> Node {
+        let mut n = Node::new(
+            "n1",
+            NodeSpec {
+                name: "node-b".into(),
+                role: NodeRole::Agent,
+                unschedulable: false,
+                labels: BTreeMap::new(),
+                br_int_datapath: Default::default(),
+                bridge_mappings: Default::default(),
+                drop_spare_files_before: None,
+                cordoned_devices: Default::default(),
+            },
+        );
+        n.status.cpu = cpu;
+        n
+    }
+
+    #[test]
+    fn the_boot_steps_file_becomes_the_nodes_cpu() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("kvm-cpuid.json");
+        assert_eq!(NodeCpu::read_from(&path), None);
+        file(0xa800_0000).write(&path).unwrap();
+        let cpu = NodeCpu::read_from(&path).unwrap();
+        assert_eq!(cpu.host.vendor, "AuthenticAMD");
+        assert!(
+            cpu.kvm_cpuid
+                .iter()
+                .any(|v| v.leaf == 7 && v.value == 0xa800_0000)
+        );
+        // In the record, the host's fields sit beside the registers.
+        let j = serde_json::to_value(&cpu).unwrap();
+        assert_eq!(j["kernel"], "6.17.0");
+        assert!(j["kvm_cpuid"].is_array());
+        std::fs::write(&path, b"{").unwrap();
+        assert_eq!(NodeCpu::read_from(&path), None);
+    }
+
+    #[test]
+    fn a_vm_fits_a_node_that_offers_what_it_booted_with() {
+        let dir = tempfile::tempdir().unwrap();
+        let cpu = |edx7| {
+            let p = dir.path().join(format!("{edx7:x}.json"));
+            file(edx7).write(&p).unwrap();
+            NodeCpu::read_from(&p).unwrap()
+        };
+        let (older, newer) = (cpu(0xac00_0000), cpu(0xa800_0000));
+        let on_newer = node_with(Some(newer.clone()));
+        let on_older = node_with(Some(older.clone()));
+        // Booted where the older kernel's KVM offers bit 26: not here.
+        let e = cpu_fits(Some(&older.kvm_cpuid), &on_newer).unwrap_err();
+        assert!(e.starts_with("node-b: CPUID leaf 0x7 subleaf 0 edx"), "{e}");
+        assert_eq!(cpu_fits(Some(&newer.kvm_cpuid), &on_older), Ok(()));
+        assert!(
+            cpu_fits(None, &on_older)
+                .unwrap_err()
+                .contains("no CPUID record")
+        );
+        assert!(
+            cpu_fits(Some(&newer.kvm_cpuid), &node_with(None))
+                .unwrap_err()
+                .contains("glidex-kvm-cpuid.service")
+        );
     }
 }
