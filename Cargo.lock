@@ -1549,6 +1549,7 @@ dependencies = [
 name = "glidex-hv-client"
 version = "0.0.9-dev"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "tempfile",

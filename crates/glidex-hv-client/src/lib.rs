@@ -8,6 +8,7 @@
 //! by simply calling again.
 
 pub mod ch;
+pub mod cpuid;
 pub mod qmp;
 pub mod stats;
 

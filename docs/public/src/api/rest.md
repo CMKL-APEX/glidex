@@ -773,7 +773,7 @@ id or its name.
 | `GET` | `/cluster/settings/ovn/edge-defaults` | A suggested shared edge from what the nodes report |
 | `GET` | `/cluster/ovn` | OVN as it is now: databases, chassis, gateways |
 | `GET` | `/cluster/ovn/tunnels` | Each node's Geneve tunnels and their state |
-| `GET` | `/nodes` | List nodes; a server's status has `ui_url`, the web UI address it publishes |
+| `GET` | `/nodes` | List nodes; a server's status has `ui_url`, the web UI address it publishes. `status.cpu`: the host's CPU and kernel, and `kvm_cpuid`, the CPUID registers its KVM offers that a migration compares (absent until the node's `glidex-kvm-cpuid.service` has run) |
 | `GET` | `/nodes/{id}` | Get a node |
 | `GET` | `/nodes/{id}/topology` | A node's NUMA nodes and PCIe tree, read on that node |
 | `GET` | `/nodes/{id}/dpus` | The node's DPUs: what it reports (`status`: state, VFs, chassis), whether it is `healthy`, and netd's live `probe` (or `probe_error`) |

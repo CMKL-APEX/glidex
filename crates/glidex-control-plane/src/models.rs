@@ -557,6 +557,12 @@ pub struct VmStatus {
     /// `kernel_from_disk` (spec/23-kernel-boot.md §10.5).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub disk_kernel: Option<DiskKernel>,
+    /// The CPUID registers its node's KVM offered when it last booted
+    /// (spec/32-live-migration.md §9): what the guest may use, so a
+    /// migration target must offer them. A migration keeps it; a launch
+    /// replaces it. `None` when the node had no record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boot_cpuid: Option<Vec<glidex_hv_client::cpuid::CpuidValue>>,
 }
 
 /// The kernel a `kernel_from_disk` VM boots, and where it came from.

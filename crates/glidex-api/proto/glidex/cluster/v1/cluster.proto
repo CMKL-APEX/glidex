@@ -949,6 +949,31 @@ message NodeStatus {
   google.protobuf.Timestamp heartbeat = 14;
   // A server's web UI address (spec/28-host-page.md W3); agents publish none.
   optional string ui_url = 15 [json_name = "ui_url"];
+  // The host's CPU and kernel, and the CPUID registers its KVM offers that
+  // a migration compares (spec/32-live-migration.md §9). Unset until the
+  // node's boot step has read them.
+  NodeCpu cpu = 16;
+}
+
+message NodeCpu {
+  // `AuthenticAMD`, `GenuineIntel`.
+  string vendor = 1;
+  uint32 family = 2;
+  uint32 model = 3;
+  uint32 stepping = 4;
+  optional string model_name = 5 [json_name = "model_name"];
+  optional string microcode = 6;
+  // The running kernel's release: what KVM offers follows it.
+  string kernel = 7;
+  repeated CpuidValue kvm_cpuid = 8 [json_name = "kvm_cpuid"];
+}
+
+// One CPUID register: `leaf`, `subleaf`, `reg` (`eax` … `edx`).
+message CpuidValue {
+  uint32 leaf = 1;
+  uint32 subleaf = 2;
+  string reg = 3;
+  uint32 value = 4;
 }
 
 message Node {

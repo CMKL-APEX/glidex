@@ -392,6 +392,7 @@ impl VmStore {
                 n.status.pci_devices = probe.pci_devices;
                 n.status.pci_groups = probe.pci_groups;
                 n.status.topology = probe.topology;
+                n.status.cpu = probe.cpu;
                 nodes.insert(local, serde_json::to_vec(&n)?.as_slice())?;
             }
             let mut meta = txn.open_table(META_TABLE)?;

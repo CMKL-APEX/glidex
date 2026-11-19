@@ -198,6 +198,7 @@ An agent installs `ovn-host` only; servers and standalone hosts also get
 | `/etc/sysctl.d/90-glidex.conf` | `net.ipv4.ip_forward=1` for NAT networks and, with `--ovs-profile dpdk`, `vm.nr_hugepages` (kept after going back to the kernel profile unless `--release-hugepages`). The previous values are recorded for the uninstaller. |
 | `/etc/modules-load.d/glidex.conf` | Loads `vfio-pci` at boot, with `--ovs-profile dpdk`. |
 | `/etc/glidex/vfio-devices.json`, `/etc/modules-load.d/glidex-vfio.conf`, `/etc/systemd/system/glidex-vfio-boot.service` | With `--vfio-devices` or `--sriov`: what to bind and set at boot, and the unit that does it. |
+| `/etc/systemd/system/glidex-kvm-cpuid.service`, `/run/glidex/kvm-cpuid.json` | The unit that reads what the host's KVM offers guests at each boot, and the file it writes. |
 | `/srv/glidex/` | The datastore root (`root:root`, mode 0755), empty: mount or create [datastores](datastores.md) under it. |
 | `/var/lib/glidex-control-plane/` | The `glidex` user's home. Its `.glidex/` holds the database, images, disks, firmware and the self-signed certificate. |
 

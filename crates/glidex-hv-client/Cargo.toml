@@ -8,6 +8,7 @@ homepage.workspace = true
 description = "Blocking clients for Cloud Hypervisor's HTTP API and QEMU's QMP (spec/12-reconciliation.md §5.2)"
 
 [dependencies]
+libc = "0.2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
