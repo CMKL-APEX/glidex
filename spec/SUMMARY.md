@@ -48,6 +48,7 @@
 
 - [Clustering](14-clustering.md)
 - [Clustering UI](16-clustering-ui.md)
+- [Migration](32-live-migration.md)
 - [Host page and the UI on agents](28-host-page.md)
 - [Host topology](22-host-topology.md)
 - [GPU VMs](27-gpu-vms.md)

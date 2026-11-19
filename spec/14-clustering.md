@@ -1894,12 +1894,8 @@ cluster networks (no `move_vm_port` mapping) need only C7 without C5.
 
 ## 18. Later (needs its own design)
 
-- **Live migration** of tap VMs, on shared datastores
-  ([24-storage.md](24-storage.md); block drivers such as `rbd` are its §11). With OVN,
-  live migration means multi-chassis port binding
-  (`requested-chassis=src,dst`) with `activation-strategy=rarp`. It
-  also needs a CPU-model policy for Cloud Hypervisor, and the vhost-user
-  migration status of Cloud Hypervisor checked **(verify)**.
+- **Live migration** of tap VMs, on shared datastores: now designed in
+  [32-live-migration.md](32-live-migration.md).
 - **Fencing and automatic evacuation** (IPMI or watchdog, RBD
   exclusive locks), lifting D8 for fenced nodes.
 - **Routed networks, floating IPs, OVN load balancers, BGP** (FRR or
