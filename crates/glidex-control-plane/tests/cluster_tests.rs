@@ -2578,6 +2578,117 @@ async fn a_worker_puts_the_image_in_a_shared_datastore_for_a_linked_disk() {
     );
 }
 
+/// `POST /vms/{id}/migrate {check: true}` (spec/32-live-migration.md §5):
+/// the VM's own reasons and each node's, moving nothing; without `check`,
+/// live migration isn't built yet.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_migration_check_says_why_not_and_moves_nothing() {
+    let _one = serial().await;
+    let root = datastore_root();
+    let (server, agent) = server_and_agent().await;
+    let agent_id = agent.manager.local_node_id();
+    let dir = root.join(format!("nfs-mig-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir(&dir).unwrap();
+    let body = json!({ "name": "nfs-mig", "path": dir, "driver": "DATASTORE_DRIVER_SHARED_DIR" });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        let (s, v) = call(&server, "POST", "/datastores", Some(body.clone()), &[]).await;
+        if s == StatusCode::CONFLICT && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            continue;
+        }
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        break;
+    }
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let (s, d) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "mig", "project": project, "size_gib": 1, "datastore": "nfs-mig" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{d}");
+    disk_created(&server, d["disk"]["id"].as_str().unwrap()).await;
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(json!({ "name": "migrant", "vcpu_count": 1, "mem_size_mib": 256,
+                     "hypervisor": "HYPERVISOR_CLOUD_HYPERVISOR",
+                     "kernel_image_path": "/path/to/vmlinux", "root_disk": "mig", "node": "agent1" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = vm_of(&v)["id"].as_str().unwrap().to_string();
+
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/migrate"),
+        Some(json!({ "check": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let reasons: Vec<String> = v["check"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| r.as_str().unwrap().to_string())
+        .collect();
+    let has = |want: &str| reasons.iter().any(|r| r.contains(want));
+    assert!(has("not running"), "{reasons:?}");
+    assert!(has("recorded no CPUID"), "{reasons:?}");
+    assert!(
+        has("disk mig is on datastore nfs-mig; only hyperstor disks migrate"),
+        "{reasons:?}"
+    );
+    let targets = v["check"]["targets"].as_array().unwrap();
+    assert_eq!(targets.len(), 2, "{v}");
+    let of = |node: &str| {
+        targets
+            .iter()
+            .find(|t| t["node"] == node)
+            .unwrap_or_else(|| panic!("{node} in {v}"))["reasons"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(of(&agent_id), vec![json!("the VM runs there")]);
+    // The server: nothing records what the VM booted with.
+    assert!(!of(&server.manager.local_node_id()).is_empty(), "{v}");
+
+    // One node asked about, by name: only its answer.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/migrate"),
+        Some(json!({ "check": true, "node": "agent1" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(v["check"]["targets"].as_array().unwrap().len(), 1, "{v}");
+
+    // Without `check`: not built yet, and nothing moved.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/migrate"),
+        Some(json!({ "node": "agent1" })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::NOT_IMPLEMENTED, "{v}");
+    let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
+    assert_eq!(vm_of(&v)["node"], agent_id.as_str(), "{v}");
+    assert_eq!(vm_of(&v)["desired_state"], "POWER_STATE_STOPPED", "{v}");
+}
+
 /// A VM whose disks are on a shared datastore is placed again: when
 /// stopped, on another node; when its node is forgotten (Lost), on one that
 /// is left. One with a node-local disk can't go (spec/24-storage.md S10).

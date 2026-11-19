@@ -188,6 +188,18 @@ impl VmService for Svc {
         .await
     }
 
+    async fn migrate_vm(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, MigrateVmRequest>,
+    ) -> ServiceResult<MigrateVmResponse> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |c| async move {
+            svc::migrate_vm(&c.expect("authenticated operation"), req).await
+        })
+        .await
+    }
+
     async fn stop_vm(
         &self,
         ctx: RequestContext,

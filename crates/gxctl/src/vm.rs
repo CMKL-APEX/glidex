@@ -482,6 +482,59 @@ pub async fn start(client: &ApiClient, args: &[&str]) {
     }
 }
 
+/// `migrate <name|id> --check [--node N]`: whether a running VM can
+/// live-migrate, and to which nodes (spec/32-live-migration.md §5). Only
+/// the check is built.
+pub async fn migrate(client: &ApiClient, args: &[&str]) {
+    const USAGE: &str = "Usage: migrate <name|id> --check [--node N]";
+    let Some(vm_id) = resolve(client, args, USAGE).await else {
+        return;
+    };
+    if !has_flag(args, "--check") {
+        return usage(&format!("{USAGE}\n(live migration itself isn't built yet)"));
+    }
+    let t = match rpc(client).await {
+        Ok(t) => t,
+        Err(e) => return err(e),
+    };
+    let r = t
+        .migrate_vm(MigrateVmRequest {
+            id: vm_id,
+            node: crate::flag_value(args, "--node").map(String::from),
+            check: true,
+            ..Default::default()
+        })
+        .await
+        .map(|r| r.into_owned());
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => return err(e),
+    };
+    let check = r.check.as_option().cloned().unwrap_or_default();
+    for line in migration_lines(&check) {
+        println!("{line}");
+    }
+}
+
+/// The check's answer: the VM's own reasons, then each node's.
+fn migration_lines(check: &MigrationCheck) -> Vec<String> {
+    let mut out = Vec::new();
+    if check.reasons.is_empty() {
+        out.push(format!("{} the VM itself can migrate", "OK".green()));
+    } else {
+        out.push(format!("{} the VM can't migrate:", "No".red()));
+        out.extend(check.reasons.iter().map(|r| format!("  - {r}")));
+    }
+    for t in &check.targets {
+        if t.reasons.is_empty() {
+            out.push(format!("{} {}", t.name, "fits".green()));
+        } else {
+            out.push(format!("{}: {}", t.name, t.reasons.join("; ")));
+        }
+    }
+    out
+}
+
 /// `place <name|id> [--node N]`: place a stopped or lost VM again
 /// (spec/24-storage.md S10).
 pub async fn place(client: &ApiClient, args: &[&str]) {

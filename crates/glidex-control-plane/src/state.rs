@@ -817,6 +817,21 @@ impl VmManager {
     }
 
     /// Where `req` goes, from the nodes' records and what each already carries.
+    /// Every node's answer for `req`, `except` VM `except`'s own load
+    /// (spec/32-live-migration.md §5: a migration's targets).
+    pub(crate) fn evaluate_nodes(
+        &self,
+        vms: &HashMap<String, Vm>,
+        except: &str,
+        req: &crate::scheduler::Request,
+    ) -> Vec<crate::scheduler::NodeFit> {
+        crate::scheduler::evaluate(
+            req,
+            &self.node_loads_except(vms, Some(except)),
+            &self.sched.load(),
+        )
+    }
+
     pub(crate) fn pick_node(
         &self,
         vms: &HashMap<String, Vm>,

@@ -326,6 +326,7 @@ The RPC twin of each operation is in [RPC API](rpc.md#services).
 | `DELETE` | `/vms/{id}` | Delete a VM and its own root disk (`?keep_disk=true`, `?wait=`) |
 | `POST` | `/vms/{id}/start` | Start, or resume a paused VM (`?wait=`). With `?node=N`, start a stopped VM on node `N`, placing it there first as `/place` does (needs `placeVm`) |
 | `POST` | `/vms/{id}/place` | Place a stopped or lost VM again: on `node` (`{node}`, optional), or where the scheduler finds room; answers `{vm}`. See [Placing a stopped or lost VM again](../operator-guide/datastores.md#placing-a-stopped-or-lost-vm-again) |
+| `POST` | `/vms/{id}/migrate` | `{check: true, node?}`: whether a running VM can live-migrate, moving nothing; answers `{vm, check: {reasons, targets: [{node, name, reasons}]}}`, empty `reasons` where it can. Without `check`: `501`, live migration isn't built yet. Needs `migrateVm` |
 | `POST` | `/vms/{id}/stop` | Stop; `?graceful_timeout_secs=N` presses the power button first and waits up to `N` s (`?wait=`) |
 | `POST` | `/vms/{id}/pause` | Pause (`?wait=`) |
 | `GET` | `/vms/{id}/events` | The VM's last events |

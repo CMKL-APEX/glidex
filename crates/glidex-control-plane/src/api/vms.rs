@@ -218,6 +218,16 @@ pub async fn place(
     Ok(Proto(StatusCode::OK, svc::place_vm(&c, req).await?).into_response())
 }
 
+pub async fn migrate(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(v): Json<serde_json::Value>,
+) -> Result<Response, ApiErr> {
+    let mut req: pb::MigrateVmRequest = proto_body(v)?;
+    req.id = id;
+    Ok(Proto(StatusCode::OK, svc::migrate_vm(&c, req).await?).into_response())
+}
+
 #[derive(Debug, serde::Deserialize)]
 pub struct StartParams {
     #[serde(default)]

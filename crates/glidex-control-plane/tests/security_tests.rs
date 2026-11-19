@@ -3154,3 +3154,31 @@ async fn starting_on_a_node_takes_place_vm() {
     let desired = vm_of(&v)["desired_state"].as_str().unwrap_or_default();
     assert!(desired.to_ascii_lowercase().ends_with("stopped"), "{v}");
 }
+
+/// spec/32-live-migration.md decision 2: migrating, and checking whether
+/// a VM could, is `migrateVm`'s, a cluster operator's. A project owner is
+/// refused both, and learns nothing about the nodes.
+#[tokio::test]
+async fn migrating_takes_migrate_vm() {
+    let h = harness();
+    let pa = h.project("pa");
+    let owner = h.user("owner");
+    h.link("role.owner", Ent::User(owner.clone()), Ent::Project(pa));
+    h.link("grant.host-paths", Ent::User(owner.clone()), Ent::Cluster);
+    let o = As::Bearer(h.token(&owner));
+    let (s, vm, _) = h.call("POST", "/vms", Some(vm_body("v1", "pa")), &o).await;
+    assert_eq!(s, StatusCode::CREATED, "{vm}");
+    let id = vm_of(&vm)["id"].as_str().unwrap().to_string();
+    for body in [json!({ "check": true }), json!({ "node": "elsewhere" })] {
+        let (s, v, _) = h
+            .call(
+                "POST",
+                &format!("/vms/{id}/migrate"),
+                Some(body.clone()),
+                &o,
+            )
+            .await;
+        assert_eq!(s, StatusCode::FORBIDDEN, "{body}: {v}");
+        assert!(v.get("check").is_none(), "{v}");
+    }
+}

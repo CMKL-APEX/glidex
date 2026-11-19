@@ -1055,6 +1055,46 @@ pub async fn place_vm(call: &Call, req: pb::PlaceVmRequest) -> ServiceResult<pb:
     })
 }
 
+/// `POST /vms/{id}/migrate` (spec/32-live-migration.md §10). Only
+/// `check` is served yet: what may move where (§5), moving nothing.
+pub async fn migrate_vm(
+    call: &Call,
+    req: pb::MigrateVmRequest,
+) -> ServiceResult<pb::MigrateVmResponse> {
+    let (vm, _, _) = visible_vm(call, &req.id).await?;
+    if !req.check {
+        return Err(ServiceError::new(
+            StatusCode::NOT_IMPLEMENTED,
+            "not_implemented",
+            "live migration isn't built yet; `check` says what would stop it",
+        ));
+    }
+    let check = call
+        .manager()
+        .migration_check(&vm.id, req.node.as_deref())
+        .await
+        .map_err(manager_err)?;
+    Ok(pb::MigrateVmResponse {
+        vm: vm_pb(call, &vm).into(),
+        check: pb::MigrationCheck {
+            reasons: check.vm,
+            targets: check
+                .targets
+                .into_iter()
+                .map(|t| pb::MigrationTarget {
+                    node: t.node,
+                    name: t.name,
+                    reasons: t.reasons,
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        }
+        .into(),
+        ..Default::default()
+    })
+}
+
 pub async fn stop_vm(call: &Call, req: pb::StopVmRequest) -> ServiceResult<VmReply> {
     let grace = req
         .graceful_timeout_secs

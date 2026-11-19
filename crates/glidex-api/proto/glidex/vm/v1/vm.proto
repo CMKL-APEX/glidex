@@ -80,6 +80,16 @@ service VmService {
       rest: "POST /vms/{id}/place"
     };
   }
+  // Live-migrate a running VM to `node`, or to a node whose CPU and room
+  // fit (spec/32-live-migration.md). With `check`, only says whether it
+  // can, and where, without moving anything; only `check` is served yet.
+  rpc MigrateVm(MigrateVmRequest) returns (MigrateVmResponse) {
+    option (glidex.api.v1.op) = {
+      action: "migrateVm"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/migrate"
+    };
+  }
   rpc StopVm(StopVmRequest) returns (StopVmResponse) {
     option (glidex.api.v1.op) = {
       action: "stopVm"
@@ -642,6 +652,34 @@ message PlaceVmRequest {
 }
 message PlaceVmResponse {
   Vm vm = 1;
+}
+
+message MigrateVmRequest {
+  string id = 1;
+  // A node id or name; default: a node that fits.
+  optional string node = 2;
+  // The longest the guest may be paused at the switch.
+  optional uint32 downtime_ms = 3 [json_name = "downtime_ms"];
+  // Only check, and say why not.
+  bool check = 4;
+}
+message MigrateVmResponse {
+  Vm vm = 1;
+  MigrationCheck check = 2;
+}
+
+// What may move where (spec/32-live-migration.md §5).
+message MigrationCheck {
+  // Why the VM can't migrate anywhere; empty when it may.
+  repeated string reasons = 1;
+  // Each other node, or the one asked about.
+  repeated MigrationTarget targets = 2;
+}
+message MigrationTarget {
+  string node = 1;
+  string name = 2;
+  // Why the VM can't go there; empty when it can.
+  repeated string reasons = 3;
 }
 
 message StopVmRequest {
