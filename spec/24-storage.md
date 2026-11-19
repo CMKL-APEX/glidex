@@ -814,6 +814,8 @@ over the cluster port.
   - REST `POST /vms/{id}/place {node?}` (node id or name) and RPC
     `VmService.PlaceVm`;
   - gxctl `place <vm> [--node N]`;
+  - to place and start in one step, `start` with a node
+    (32-live-migration.md LM0);
   - the VM page's "Place on another node" ("on a live node" when Lost)
     for those with `placeVm`.
 - **Cedar:** `placeVm` is in `node.drain` (system-admin) and is

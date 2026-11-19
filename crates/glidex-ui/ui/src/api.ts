@@ -762,8 +762,10 @@ const WAIT_SECS = 60;
 export const placeVm = (id: string, node?: string) =>
   rpc(VmService.method.placeVm, { id, node }).then((r) => r.vm as VmResponse);
 
-export const startVm = (id: string) =>
-  vmWrite(rpc(VmService.method.startVm, { id, wait_secs: WAIT_SECS }) as Promise<VmWriteResponse>);
+/** Start a VM; with `node`, a stopped one placed elsewhere is placed
+ * again there first (spec/32-live-migration.md LM0; needs `placeVm`). */
+export const startVm = (id: string, node?: string) =>
+  vmWrite(rpc(VmService.method.startVm, { id, wait_secs: WAIT_SECS, node }) as Promise<VmWriteResponse>);
 
 /** Stop a VM. With `gracefulTimeoutSecs`, press the guest's power button
  * first and stop it hard only if it is still running after that long. */

@@ -218,16 +218,26 @@ pub async fn place(
     Ok(Proto(StatusCode::OK, svc::place_vm(&c, req).await?).into_response())
 }
 
+#[derive(Debug, serde::Deserialize)]
+pub struct StartParams {
+    #[serde(default)]
+    wait: Option<u64>,
+    /// Start a stopped VM on this node (spec/32-live-migration.md LM0).
+    #[serde(default)]
+    node: Option<String>,
+}
+
 pub async fn start(
     c: Caller,
     Path(id): Path<String>,
-    Query(w): Query<WaitQuery>,
+    Query(p): Query<StartParams>,
     headers: HeaderMap,
 ) -> Result<Response, ApiErr> {
     let req = pb::StartVmRequest {
         id,
         expected_resource_version: if_match(&headers)?,
-        wait_secs: secs(w.wait),
+        wait_secs: secs(p.wait),
+        node: p.node,
         ..Default::default()
     };
     Ok(reply(

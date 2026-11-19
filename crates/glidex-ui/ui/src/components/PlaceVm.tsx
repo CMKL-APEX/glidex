@@ -9,8 +9,9 @@ import Modal from "./Modal";
 const isLost = (vm: VmResponse) => (vm.conditions ?? []).some((c) => c.kind === "Ready" && c.reason === "Lost");
 
 /** "Place on another node" (spec/24-storage.md S10): a stopped VM, or a lost
- * one, goes to a chosen node or where the scheduler finds room. Shown to
- * cluster operators (`placeVm`). */
+ * one, goes to a chosen node or where the scheduler finds room, and with
+ * "Place and start" starts there in one step (spec/32-live-migration.md
+ * LM0). Shown to cluster operators (`placeVm`). */
 export default function PlaceVm({ vm, stopped, onDone }: { vm: VmResponse; stopped: boolean; onDone: () => void }) {
   const dir = useNodes();
   const [can] = useCan([{ action: "placeVm", resource: { type: "Vm", id: vm.id } }]) ?? [];
@@ -24,11 +25,12 @@ export default function PlaceVm({ vm, stopped, onDone }: { vm: VmResponse; stopp
     (n) => n.meta.id !== vm.node && n.status?.ready === "CONDITION_STATUS_TRUE",
   );
 
-  const place = async () => {
+  const place = async (start: boolean) => {
     setBusy(true);
     setError(null);
     try {
-      await api.placeVm(vm.id, node || undefined);
+      if (start) await api.startVm(vm.id, node);
+      else await api.placeVm(vm.id, node || undefined);
       setOpen(false);
       onDone();
     } catch (e) {
@@ -53,7 +55,7 @@ export default function PlaceVm({ vm, stopped, onDone }: { vm: VmResponse; stopp
             <p className="text-gray-600">
               {lost
                 ? "Its node was forgotten. It can run on another node if its disks are on shared datastores."
-                : "It moves while stopped, with its disks on shared datastores; start it again afterwards."}
+                : "It moves while stopped, with its disks on shared datastores. Place it, or place and start it on a chosen node."}
             </p>
             <div>
               <label className="block text-sm font-medium text-gray-700">Node</label>
@@ -77,9 +79,17 @@ export default function PlaceVm({ vm, stopped, onDone }: { vm: VmResponse; stopp
               <button
                 disabled={busy}
                 className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50"
-                onClick={place}
+                onClick={() => place(false)}
               >
                 {busy ? "Placing…" : "Place"}
+              </button>
+              <button
+                disabled={busy || !node}
+                title={node ? undefined : "Choose a node to start it on"}
+                className="px-4 py-2 text-sm font-medium text-white bg-sky-600 hover:bg-sky-700 rounded-lg disabled:opacity-50"
+                onClick={() => place(true)}
+              >
+                Place and start
               </button>
             </div>
           </div>

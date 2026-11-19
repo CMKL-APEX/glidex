@@ -282,7 +282,8 @@ node's reason in its status.
 A VM stays on its node once placed. Glidex doesn't move running VMs.
 A stopped VM whose disks are on shared datastores can be placed on
 another node: `gxctl place <vm> [--node N]`, or **Place on another
-node** on its page. A disk on a node's own datastore (`local` or another
+node** on its page; `gxctl start <vm> --node N` places it and starts it
+there in one step. A disk on a node's own datastore (`local` or another
 node-local one) keeps its VM on that node; move it to a shared datastore
 first. See
 [Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again).

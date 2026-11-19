@@ -247,3 +247,65 @@ impl VmManager {
             .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))
     }
 }
+
+impl VmManager {
+    /// Whether starting `vm_id` on `node` means placing it again first
+    /// (spec/32-live-migration.md LM0): it is placed elsewhere, or nowhere.
+    /// Returns the node's id and whether it does.
+    async fn start_moves(
+        &self,
+        vm_id: &str,
+        node: &str,
+    ) -> Result<(String, bool), crate::state::VmManagerError> {
+        let target = self.resolve_node(node)?;
+        let vms = self.vms.read().await;
+        let vm = vms
+            .get(vm_id)
+            .ok_or_else(|| crate::state::VmManagerError::VmNotFound(vm_id.to_string()))?;
+        let here = vm
+            .status
+            .placement
+            .as_ref()
+            .is_some_and(|p| p.node == target);
+        Ok((target, !here))
+    }
+
+    /// Start a stopped VM on `node` (spec/32-live-migration.md LM0):
+    /// [`Self::place_vm`] there unless it is placed there already, then
+    /// [`Self::set_power`]. `if_match` is checked before anything changes,
+    /// and a refused placement changes nothing. If the start itself is
+    /// refused (a quota), the VM stays placed on `node`, stopped.
+    pub async fn start_on(
+        &self,
+        vm_id: &str,
+        node: &str,
+        quota: crate::tenancy::QuotaMode,
+        actor: &str,
+        if_match: Option<u64>,
+    ) -> Result<(crate::models::Vm, Vec<crate::tenancy::QuotaOverrun>), crate::state::VmManagerError>
+    {
+        use crate::models::PowerState;
+        use crate::state::VmManagerError;
+        let (target, moves) = self.start_moves(vm_id, node).await?;
+        if !moves {
+            return self
+                .set_power(vm_id, PowerState::Running, None, quota, actor, if_match)
+                .await;
+        }
+        if let Some(expected) = if_match {
+            let actual = self
+                .vms
+                .read()
+                .await
+                .get(vm_id)
+                .map(|v| v.resource_version)
+                .ok_or_else(|| VmManagerError::VmNotFound(vm_id.to_string()))?;
+            if actual != expected {
+                return Err(VmManagerError::PreconditionFailed { expected, actual });
+            }
+        }
+        self.place_vm(vm_id, Some(&target), actor).await?;
+        self.set_power(vm_id, PowerState::Running, None, quota, actor, None)
+            .await
+    }
+}

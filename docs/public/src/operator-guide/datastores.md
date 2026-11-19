@@ -304,7 +304,8 @@ and pool, alone; clean them up yourself.
 
 - A stopped VM whose disks are all on shared datastores can be placed on
   another node: **Place on another node** on its page, or
-  `gxctl place <vm> --node node2`.
+  `gxctl place <vm> --node node2`. To start it there in the same step,
+  use **Place and start**, or `gxctl start <vm> --node node2`.
 - When a node is gone for good, `gxctl node forget <node> --fenced` marks
   its VMs lost; those on shared datastores can then be placed on a live
   node the same way (**Place on a live node**).
@@ -336,6 +337,21 @@ gxctl place web1                   # wherever the scheduler finds room
 
 It prints where the VM went, or *Not placed yet* with the reason it
 waits. Over the API: `POST /vms/{id}/place` with an optional `node`.
+
+To place it and start it there in one step:
+
+```bash
+gxctl start web1 --node node2
+```
+
+The VM must be stopped, and the same rules apply as for `place`. If it
+is already on `node2`, this is a plain start. **Web UI:** in the same
+dialog, pick a node and **Place and start**. Over the API:
+`POST /vms/{id}/start?node=node2`. Naming a node needs the permission
+to place VMs (`placeVm`, cluster operators), as `place` does, even when
+the VM is already there. If the node has no room, the VM is placed
+nowhere and starts when room appears. If a quota refuses the start, the
+VM stays placed on the new node, stopped.
 
 What can go with the VM:
 

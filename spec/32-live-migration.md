@@ -1,6 +1,6 @@
 # Migration: starting a stopped VM on another host, then moving a running one
 
-**Status: design** (tracked in #573). LM0, the cold move, comes first: it needs only
+**Status: LM0 built; the rest is design** (tracked in #573). LM0, the cold move, comes first: it needs only
 glidex, and most of it exists. Live migration (LM1–LM6) needs hyperstor
 work first, which its issues track (§7). §0 records what was checked
 while writing this. Items marked **(verify)** are checked on hosts in
@@ -58,7 +58,7 @@ Not in v1:
 
 | # | Decision | Why |
 |---|---|---|
-| 1 | **A cold move is `start` with a node.** `POST /vms/{id}/start {node}` re-places a stopped VM on `node` (24-storage.md §9's rules, unchanged), then starts it. If the VM is already placed on that node, it is a plain start. It needs both `startVm` and `placeVm`. | The two-step `place`, then `start`, already works. One call is what an operator means, and no one sees the VM placed but not started. Re-placing stays a cluster operation (S10). |
+| 1 | **A cold move is `start` with a node.** `POST /vms/{id}/start?node=N` re-places a stopped VM on `N` (24-storage.md §9's rules, unchanged), then starts it. If the VM is already placed on that node, it is a plain start. Naming a node needs `placeVm` as well as `startVm`, even when the VM is already there, so a caller without it learns nothing about the nodes. | The two-step `place`, then `start`, already works. One call is what an operator means, and no one sees the VM placed but not started. Re-placing stays a cluster operation (S10). |
 | 2 | **Live migration is explicit, and one at a time per VM.** `POST /vms/{id}/migrate {node?}`, with the Cedar action `migrateVm` in `node.drain` and `host-scoped` (as `placeVm` is). Without a node, the scheduler picks one of the source's CPU class. | Matches D8 and S10: nothing moves by itself. Moving VMs between hosts is the cluster operator's job, not the tenant's. |
 | 3 | **Transport: a relay over the nodes' mTLS** (settled by the person steering, 2026-11-19). On each side, Cloud Hypervisor talks to a unix socket in the VM's runtime directory. The two control planes join those sockets with one stream between the nodes on the peer connection they already have, `/cluster/v1/migrations/{vm}/stream`. | No new port, firewall rule or certificate: the stream carries the node identities the cluster already checks (C11). Cloud Hypervisor's own TLS would need a certificate per destination name and a port open for each migration. If the relay limits throughput, the next step is Cloud Hypervisor's TCP with several `connections` (§13 O2). |
 | 4 | **CPU: one class, no profiles in v1.** A VM migrates only to a host of its source's CPU class: vendor, family, model and stepping, as each node reports (§9). Cloud Hypervisor's own CPUID check on the target is the last check. If it refuses, the VM stays on the source. | Profiles are unreleased and experimental (§0 #3). A class keeps what the guest sees the same without one. A flags hash would split identical hosts (§0 #4). |
@@ -86,29 +86,36 @@ The launch on the target:
 - creates the NICs' taps through netd;
 - preempts a stale `hyperstor-vhost` hold left on the old node (S26).
 
-LM0 adds:
-- **API:** `StartVmRequest.node` (optional; a node id or name), so
-  `POST /vms/{id}/start {"node": "prism2"}` works. If the VM is placed
-  elsewhere or not placed, `start_vm` checks `placeVm`, calls
-  `place_vm(node)`, then sets the power to running.
-  - Either check failing means nothing changes: `400` with `place`'s
-    reason, `403` without `placeVm`, `409` when the VM isn't stopped.
+LM0 adds (**built**):
+- **API:** `StartVmRequest.node` (optional; a node id or name), and
+  `POST /vms/{id}/start?node=N` over REST.
+  - With a node, `start_vm` checks `placeVm` on the VM. Then
+    `VmManager::start_on` checks `If-Match` and, unless the VM is
+    already placed on `N`, calls `place_vm(N)`. Last, it sets the power
+    to running.
+  - Nothing changes if any check fails: `403` without `placeVm`, `400`
+    with `place`'s reason, `409` when the VM isn't stopped, `412` on a
+    stale `If-Match`.
   - If the scheduler finds no room on the node, the VM is placed nowhere
     and waits, as `place` leaves it today. Its power is still set to
     running, so it starts once room is there; the answer shows it
     waiting.
+  - If a quota refuses the start, the VM stays placed on `N`, stopped.
 - **gxctl:** `start <vm> --node N`.
-- **UI:** the VM page's start control gets "Start on another node…", for
-  those with `placeVm`. It lists the nodes and says why a VM can't move
-  (the same reasons `place` gives).
-- **Docs:** in `operator-guide/datastores.md` and the VM guide: moving a
-  stopped VM, and what has to be on a shared datastore.
+- **UI:** the "Place on another node" dialog gets **Place and start**,
+  enabled once a node is chosen. It is shown, as the dialog is, to those
+  with `placeVm`.
+- **Docs:** `operator-guide/datastores.md` (placing and starting in one
+  step), `clusters.md`, and the REST reference.
 - **Tests:**
-  - a cluster test: a stopped VM on shared disks started on the other
-    node runs there, with its disk's worker on that node;
-  - one with a node-local disk is refused and stays stopped where it
-    was;
-  - a caller with `startVm` but not `placeVm` gets `403`.
+  - `cluster_tests.rs::a_vm_on_shared_disks_is_placed_again_when_stopped_or_lost`:
+    - a stopped VM on shared disks started with a node is placed there,
+      its power set to running, and its disk's worker moved with it;
+    - one with a node-local disk is refused with `400` and stays stopped
+      where it was;
+  - `security_tests.rs::starting_on_a_node_takes_place_vm`: a project
+    owner, who may start the VM, gets `403` for a start naming any node,
+    and the VM stays stopped.
 - **Host check (apex, when the person steering agrees):**
   - a VM with a hyperstor root disk and a cluster-network NIC, stopped
     on prism1 and started with `--node prism2`;
@@ -262,7 +269,7 @@ glidex's side (LM3):
 ## 10. API, clients and permissions
 
 - **REST:**
-  - `POST /vms/{id}/start {node?}` (LM0);
+  - `POST /vms/{id}/start?node=N` (LM0);
   - `POST /vms/{id}/migrate {node?, downtime_ms?, check?}`;
   - `POST /vms/{id}/migrate/cancel`.
 - **RPC:** `VmService.MigrateVm` and `CancelMigration`, and
@@ -297,7 +304,7 @@ glidex's side (LM3):
 
 | Milestone | What | Tests and checks |
 |---|---|---|
-| **LM0** Cold move | §3: `StartVmRequest.node`; `start --node`; the UI's "Start on another node…"; docs | Cluster tests of §3. Host check: a hyperstor VM from prism1 to prism2, stopped (apex). |
+| **LM0** Cold move | §3: `StartVmRequest.node`; `start --node`; the UI's **Place and start**; docs | Cluster tests of §3. Host check: a hyperstor VM from prism1 to prism2, stopped (apex). |
 | **LM1** Spike and versions | Cloud Hypervisor v54.1 in the installer (decision 10). By hand on prism1 and prism2: a migration of a VM booted from a kernel and initramfs with no disk, with a tap NIC, over a unix socket bridged between the hosts. Measure the relay against direct TCP. Check the paths of §0 #6. | Findings in §0. No hyperstor disk until §7 is in. |
 | **LM2** CPU class | `cpu` in node status, the class, the host page and `node show` | Unit tests: class from CPUID. Host: apex shows prism1 and prism2 in one class. |
 | **LM3** hyperstor | The driver's delegate calls; S26's probe skips migrating VMs; the feature check | Unit tests with a fake vhost control socket. Needs hyperstor's issues done. |
@@ -326,6 +333,6 @@ issues. LM4 needs LM2 and LM3. LM5 and LM6 need LM4.
 
 | | |
 |---|---|
-| **Spec \| Code** | Design. LM0's base (`place`, S4) is built; LM0 itself isn't. |
-| **Tests** | None yet. |
-| **Not yet** | LM0–LM6. hyperstor's dirty log and delegate (its issues). |
+| **Spec \| Code** | LM0 built: `start` with a node (API, RPC, gxctl, the UI's **Place and start**, docs). LM1–LM6 are design. |
+| **Tests** | LM0: a cluster test (start on the other node; a node-local disk refused) and a security test (`placeVm` needed). |
+| **Not yet** | LM0's host check on apex (not run yet). LM1–LM6. hyperstor's dirty log and delegate (CMKL-APEX/hyperstor#397, #398). |

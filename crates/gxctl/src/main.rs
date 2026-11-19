@@ -596,8 +596,8 @@ fn help_text() -> String {
         "create <name> (--image I [--disk-size GiB] | --root-disk D | --rootfs PATH) [--vcpus N] [--memory MiB|NG] [--hypervisor ch|qemu|pylon] [--firmware F|PATH|none] [--kernel K|PATH] [--initrd PATH] [--follow-kernel] [--kernel-args A] [--network N|none]... [--credential C|none] [--data-disk D]... [--cloud-init PATH] [--gpus N[:pool][:nvlink]] [--devices pool[:n],...] [--vfio PATH]... [--min-vcpus N] [--max-vcpus N] [--cpu-weight N] [--service-account SA] [--node N] [--start]".cyan()
     );
     line!(
-        "  {}  - Start a VM (waits until it runs; --no-wait returns at once)",
-        "start <name|id>".cyan()
+        "  {}  - Start a VM (waits until it runs; --no-wait returns at once); --node starts a stopped one on that node, its disks on shared datastores",
+        "start <name|id> [--node N]".cyan()
     );
     line!("  {}   - Stop a VM", "stop <name|id>".cyan());
     line!(
