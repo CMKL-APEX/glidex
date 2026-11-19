@@ -3,7 +3,8 @@
 //! API (`glidex-hv-client`).
 //!
 //! The command line is the `vm.create` payload of earlier releases, option
-//! for option. Verified against the pinned v53.0 (spec §4, F1/F2):
+//! for option. Verified against v53.0 (spec §4, F1/F2), and on the pinned
+//! v54.1 by the functional boot tests:
 //! `image_type=` takes lower-case names (`vhd`, not the API's `FixedVhd`),
 //! `mtu=` is accepted although `--help` does not list it, and a value
 //! containing `,` must be double-quoted.
@@ -196,8 +197,10 @@ fn segments(config: &VmConfig) -> Segments {
 pub(crate) fn args(config: &VmConfig, api_socket: &str) -> Vec<String> {
     let mut a: Vec<String> = vec!["--api-socket".into(), format!("path={}", q(api_socket))];
     a.push("--cpus".into());
+    // v54 turned nested virtualization off by default; glidex keeps it on,
+    // as every release before did (spec/32-live-migration.md decision 10).
     let mut cpus = format!(
-        "boot={},max={}",
+        "boot={},max={},nested=on",
         config.vcpu_count,
         config.effective_max_vcpus()
     );
@@ -595,11 +598,11 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         // No sched_ext at all, or none attached: Cloud Hypervisor's default.
-        assert_eq!(cpus(None), ["boot=2,max=2"]);
-        assert_eq!(cpus(Some("disabled\n")), ["boot=2,max=2"]);
+        assert_eq!(cpus(None), ["boot=2,max=2,nested=on"]);
+        assert_eq!(cpus(Some("disabled\n")), ["boot=2,max=2,nested=on"]);
         assert_eq!(
             cpus(Some("enabled\n")),
-            ["boot=2,max=2,core_scheduling=off"]
+            ["boot=2,max=2,nested=on,core_scheduling=off"]
         );
         // Nothing to change without `--cpus`.
         let mut none = vec!["--memory".to_string(), "size=1M".to_string()];
@@ -617,7 +620,7 @@ mod tests {
             values(&a, "--api-socket"),
             ["path=/run/glidex-cp/vms/x/api.sock"]
         );
-        assert_eq!(values(&a, "--cpus"), ["boot=2,max=2"]);
+        assert_eq!(values(&a, "--cpus"), ["boot=2,max=2,nested=on"]);
         assert_eq!(values(&a, "--memory"), ["size=1024M"]);
         assert_eq!(values(&a, "--kernel"), ["/k"]);
         assert_eq!(values(&a, "--cmdline"), ["console=hvc0 root=/dev/vda"]);
@@ -641,7 +644,7 @@ mod tests {
             })),
             "/run/glidex-cp/vms/x/api.sock",
         );
-        assert_eq!(values(&a, "--cpus"), ["boot=2,max=8"]);
+        assert_eq!(values(&a, "--cpus"), ["boot=2,max=8,nested=on"]);
     }
 
     #[test]
@@ -828,7 +831,7 @@ mod tests {
         let a = args(&c, "/s");
         assert_eq!(
             values(&a, "--cpus"),
-            ["boot=2,max=2,affinity=[0@[49],1@[177]]"]
+            ["boot=2,max=2,nested=on,affinity=[0@[49],1@[177]]"]
         );
         assert_eq!(values(&a, "--memory"), ["size=0"]);
         assert_eq!(

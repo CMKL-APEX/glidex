@@ -117,7 +117,7 @@ by later runs (flags override the saved values):
    networking through netd, and people now reach glidex through
    `api.sock`. Log out and back in for group changes to apply.
 7. **Cloud-Hypervisor** — the static binary at the version pinned in
-   `CLOUD_HYPERVISOR_VERSION` (currently `v53.0`), installed to
+   `CLOUD_HYPERVISOR_VERSION` (currently `v54.1`; 32-live-migration.md decision 10), installed to
    `/usr/local/bin` when that copy's version differs. Running VMs keep
    their process, so no restart follows. With `--with-pylon`, also
    Pylon's `pylon` and `pylond` from the release pinned in
