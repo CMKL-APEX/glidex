@@ -71,7 +71,7 @@ Not in v1:
 | 7 | **OVN: a port bound to both hosts during the move.** `requested-chassis=<source>,<target>` with `activation-strategy=rarp`, then the target alone after the commit. | OVN moves traffic when the guest announces itself from the target, not before (14-clustering.md §18). The address and MAC stay, because IPAM is the control plane's (D12). |
 | 8 | **Which node acts.** The source's VM controller keeps the VM until the commit. The target runs only the receiving instance, which belongs to the migration. Neither node's hyperstor probe lets go of a migrating VM's disks (S26). | Today the target would see a VM placed elsewhere, and the probe would detach the volume being handed over. |
 | 9 | **A failure before the commit cancels.** The VM keeps running on the source, and the target's instance, ports and delegate attachments are removed. A failure after the target is running is finished forwards (§11). | Cloud Hypervisor resumes the source when the VM hasn't moved yet (v54's cancel, and its handling of a failed migration). Once the target runs the guest, the source has stopped it. |
-| 10 | **Cloud Hypervisor v54.1 before LM4, with nested virtualization kept on.** The installer's pin moves from v53.0, and `--cpus` gets `nested=on`. In a cluster, both ends of a migration must run the same release, or the target a newer one within two releases. | v54 has `cancel-migration`, migration events, and the n-2 guarantee. Going back to an older release isn't supported upstream. v54 turned nested off by default (§0 #10); keeping it on means the upgrade changes nothing a guest sees. Whether to turn it off is its own question (§13 O5). |
+| 10 | **Cloud Hypervisor v54.1 before LM4, with nested virtualization kept on.** The installer's pin moves from v53.0, and `--cpus` gets `nested=on`. In a cluster, both ends of a migration must run the same release, or the target a newer one within two releases. | v54 has `cancel-migration`, migration events, and the n-2 guarantee. Going back to an older release isn't supported upstream. v54 turned nested off by default (§0 #10); keeping it on means the upgrade changes nothing a guest sees. On by default was settled on 2026-11-19 (§13 O5); a per-VM or per-project switch to turn it off can come later. |
 
 ## 3. LM0: the cold move
 
@@ -332,7 +332,8 @@ issues. LM4 needs LM2 and LM3. LM5 and LM6 need LM4.
   to the target at the switch, and NFS's own behaviour during a move.
 - **O4 Drain and evacuation.** Should `node drain` migrate running VMs
   that can migrate, and stop the rest?
-- **O5 Nested virtualization.** v54 turned it off by default for a smaller attack surface. glidex keeps it on (decision 10). Should it be off by default, and on per VM or per project?
+- **O5 Nested virtualization.** Settled 2026-11-19: on by default
+  (decision 10).
 - **O6 Who reads KVM's CPUID (LM2).** `KVM_GET_SUPPORTED_CPUID` needs
   `/dev/kvm`. The control plane runs as `glidex`, which isn't in the
   `kvm` group, and giving it `/dev/kvm` widens what an unprivileged
