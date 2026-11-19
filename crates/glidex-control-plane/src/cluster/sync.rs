@@ -439,12 +439,12 @@ pub fn check_status_write(
                 let cur = get(TableId::Disks, key)?
                     .ok_or_else(|| format!("disk {key} does not exist"))?;
                 if !disk_is_nodes(&cur, node) {
-                    // Its VM's node releases it as the instance ends (D11), and
-                    // a hyperstor disk's worker may be another server (S22).
+                    // Its VM's node releases it, or asks its deletion, and a
+                    // hyperstor disk's worker may be another server (S22).
                     if let Op::Put { value, .. } = op {
                         let new: Value =
                             serde_json::from_slice(value).map_err(|e| e.to_string())?;
-                        if releases_vms_disk(&get, &cur, &new, node)? {
+                        if vms_node_disk_write(&get, ws, &cur, &new, node)? {
                             continue;
                         }
                     }
@@ -499,7 +499,7 @@ pub fn check_status_write(
                             {
                                 let new: Value =
                                     serde_json::from_slice(value).map_err(|e| e.to_string())?;
-                                return releases_vms_disk(&get, &d, &new, node);
+                                return vms_node_disk_write(&get, ws, &d, &new, node);
                             }
                         }
                         Ok(false)
@@ -724,22 +724,48 @@ fn check_move_write(cur: &Value, new: &Value, node: &str) -> Result<(), String> 
     Ok(())
 }
 
-/// Whether `new` only releases disk `cur` from the VM that holds it, and
-/// that VM is placed on `node` (spec/24-storage.md S22, D11): the node that
-/// sees the instance end, which isn't always the disk's worker.
-fn releases_vms_disk(
+/// Whether `new` is a write to disk `cur` that `node` may make without
+/// working on it, as the node of the VM that holds it (spec/24-storage.md
+/// S22, D11): a hyperstor disk's worker is a server, maybe another one,
+/// and only the VM's node sees its instance end and its record go. That is
+/// the claim released while the VM is placed there; or, in the write that
+/// deletes the VM, the claim released, a kept disk's owner cleared, and
+/// the VM's own disk's deletion asked of its worker.
+fn vms_node_disk_write(
     get: &impl Fn(TableId, &str) -> Result<Option<Value>, String>,
+    ws: &WriteSet,
     cur: &Value,
     new: &Value,
     node: &str,
 ) -> Result<bool, String> {
-    let Some(vm) = cur["attached_to"].as_str() else {
+    let Some(vm) = cur["attached_to"].as_str().or(cur["owner"].as_str()) else {
         return Ok(false);
     };
-    if !new["attached_to"].is_null() || same_except(cur, new, &["attached_to"]).is_err() {
+    if !new["attached_to"].is_null() || !get(TableId::Vms, vm)?.is_some_and(|v| placed_on(&v, node))
+    {
         return Ok(false);
     }
-    Ok(get(TableId::Vms, vm)?.is_some_and(|v| placed_on(&v, node)))
+    if same_except(cur, new, &["attached_to"]).is_ok() {
+        return Ok(cur["attached_to"] == vm);
+    }
+    let deleted_here = ws
+        .ops
+        .iter()
+        .any(|o| matches!(o, Op::Delete { table: TableId::Vms, key } if key == vm.as_bytes()));
+    if !deleted_here
+        || same_except(cur, new, &["attached_to", "owner", "deletion_requested_at"]).is_err()
+    {
+        return Ok(false);
+    }
+    let owned = cur["owner"] == vm;
+    let asked = new["deletion_requested_at"] != cur["deletion_requested_at"];
+    let owner_ok = new["owner"] == cur["owner"] || (owned && new["owner"].is_null() && !asked);
+    let asked_ok = !asked
+        || (owned
+            && cur["deletion_requested_at"].is_null()
+            && new["deletion_requested_at"].is_u64()
+            && new["owner"] == cur["owner"]);
+    Ok(owner_ok && asked_ok)
 }
 
 fn check_disk_status_only(cur: &Value, new: &Value, node: &str) -> Result<(), String> {
@@ -1105,10 +1131,11 @@ mod tests {
     }
 
     /// A hyperstor disk's worker is a server (S22), maybe not its VM's node;
-    /// that node releases it as the instance ends (D11), and may do nothing
-    /// else to it.
+    /// that node releases it as the instance ends (D11), and as the VM is
+    /// deleted asks the worker to delete the VM's own disk or lets a kept one
+    /// go. Nothing else.
     #[test]
-    fn a_vms_node_releases_a_disk_another_node_works_on() {
+    fn a_vms_node_releases_or_asks_to_delete_a_disk_another_node_works_on() {
         let dir = tempfile::tempdir().unwrap();
         let db = Db::create(dir.path().join("db")).unwrap();
         let disk = serde_json::json!({
@@ -1117,7 +1144,10 @@ mod tests {
         db.write(Origin::Api, |tx| -> Result<(), StoreError> {
             let mut vms = tx.open_table(TableId::Vms.definition())?;
             for (id, n) in [("vm1", "n1"), ("vm2", "n3")] {
-                let v = serde_json::json!({ "status": { "placement": { "node": n } } });
+                let v = serde_json::json!({
+                    "meta": { "deletion_requested_at": 1 },
+                    "status": { "placement": { "node": n } },
+                });
                 vms.insert(id, v.to_string().as_bytes())?;
             }
             tx.open_table(TableId::Disks.definition())?
@@ -1173,6 +1203,72 @@ mod tests {
         ] {
             assert!(check("n1", ops).is_err(), "{what}");
         }
+
+        // In the write that deletes its VM: the VM's own disk's deletion
+        // asked of the worker, or a kept disk let go; nothing more.
+        let gone = Op::Delete {
+            table: TableId::Vms,
+            key: b"vm1".to_vec(),
+        };
+        let mut owned = disk.clone();
+        owned["owner"] = "vm1".into();
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::Disks.definition())?
+                .insert("d1", owned.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+        let mut asked = owned.clone();
+        asked["attached_to"] = Value::Null;
+        asked["deletion_requested_at"] = 1.into();
+        let mut kept = owned.clone();
+        kept["attached_to"] = Value::Null;
+        kept["owner"] = Value::Null;
+        for (what, w) in [("asked", &asked), ("kept", &kept)] {
+            let ops = vec![gone.clone(), put(TableId::Disks, "d1", w)];
+            assert_eq!(check("n1", ops), Ok(()), "{what}");
+            assert!(check("n3", vec![gone.clone(), put(TableId::Disks, "d1", w)]).is_err());
+            assert!(
+                check("n1", vec![put(TableId::Disks, "d1", w)]).is_err(),
+                "{what} alone"
+            );
+        }
+        let mut both = asked.clone();
+        both["owner"] = Value::Null;
+        let mut grown = asked.clone();
+        grown["size_bytes"] = 2.into();
+        for (what, w) in [("asked and disowned", both), ("more", grown)] {
+            assert!(
+                check("n1", vec![gone.clone(), put(TableId::Disks, "d1", &w)]).is_err(),
+                "{what}"
+            );
+        }
+        // Another's disk: its deletion is not the VM's to ask.
+        let mut theirs = disk.clone();
+        theirs["owner"] = "vm2".into();
+        db.write(Origin::Api, |tx| -> Result<(), StoreError> {
+            tx.open_table(TableId::Disks.definition())?
+                .insert("d1", theirs.to_string().as_bytes())?;
+            Ok(())
+        })
+        .unwrap();
+        let mut asked = theirs.clone();
+        asked["attached_to"] = Value::Null;
+        asked["deletion_requested_at"] = 1.into();
+        assert!(check("n1", vec![gone.clone(), put(TableId::Disks, "d1", &asked)]).is_err());
+        assert!(
+            check(
+                "n1",
+                vec![
+                    gone.clone(),
+                    Op::Delete {
+                        table: TableId::Disks,
+                        key: b"d1".to_vec()
+                    }
+                ]
+            )
+            .is_err()
+        );
     }
 
     /// A snapshot (or a lagged receiver) resets the log to a revision: older

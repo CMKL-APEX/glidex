@@ -2425,19 +2425,14 @@ impl VmManager {
                 let Ok(mut d) = self.images.get_disk(id) else {
                     continue;
                 };
-                if d.attached_to.as_deref().is_some_and(|a| a != vm.id) {
-                    continue;
-                }
-                d.attached_to = None;
-                if c.owns_root_disk && has(FINALIZER_OWNED_DISK) && Some(id) == c.root_disk.as_ref()
-                {
-                    owned = Some(d);
-                } else {
-                    // A kept root disk outlives its VM: it is no one's now.
-                    if d.owner.as_deref() == Some(vm.id.as_str()) {
-                        d.owner = None;
-                    }
-                    detach.push(d);
+                let own = c.owns_root_disk
+                    && has(FINALIZER_OWNED_DISK)
+                    && Some(id) == c.root_disk.as_ref();
+                let works_on = self.is_local_disk(&d);
+                match disk_on_vm_delete(&mut d, &vm.id, own, works_on) {
+                    DiskOnDelete::Delete => owned = Some(d),
+                    DiskOnDelete::Put => detach.push(d),
+                    DiskOnDelete::Untouched => {}
                 }
             }
         }
@@ -2480,6 +2475,47 @@ impl VmManager {
     /// Queue `id` for its controller (also used by the API after writes).
     pub fn enqueue_vm(&self, id: &str) {
         self.queue.add(Key::Vm(id.to_string()));
+    }
+}
+
+/// What deleting a VM does to one of its disks.
+#[derive(Debug, PartialEq)]
+enum DiskOnDelete {
+    /// Its record goes with the VM's, and this node removes its file.
+    Delete,
+    /// Its record is written with the VM's deletion.
+    Put,
+    /// Not the VM's to change, or nothing to change.
+    Untouched,
+}
+
+/// The VM's claim on disk `d` goes (D11). The VM's own root disk is deleted
+/// by this node when it works on it; else (a hyperstor disk's worker is a
+/// server, S22) its deletion is asked of its worker, as the API asks it. A
+/// kept disk outlives its VM: it is no one's now.
+fn disk_on_vm_delete(
+    d: &mut crate::images::Disk,
+    vm: &str,
+    own: bool,
+    works_on: bool,
+) -> DiskOnDelete {
+    if d.attached_to.as_deref().is_some_and(|a| a != vm) {
+        return DiskOnDelete::Untouched;
+    }
+    let before = d.clone();
+    d.attached_to = None;
+    if own {
+        if works_on {
+            return DiskOnDelete::Delete;
+        }
+        d.deletion_requested_at.get_or_insert(crate::tenancy::now());
+    } else if d.owner.as_deref() == Some(vm) {
+        d.owner = None;
+    }
+    if *d == before {
+        DiskOnDelete::Untouched
+    } else {
+        DiskOnDelete::Put
     }
 }
 
@@ -2671,6 +2707,58 @@ mod tests {
             let d = manager.images.get_disk(id).unwrap();
             assert_eq!((d.attached_to, d.owner), (None, None), "{id}");
         }
+    }
+
+    /// The root disk a deleted VM owns goes with it where this node works
+    /// on it; elsewhere (a hyperstor disk's worker, S22) its worker is asked
+    /// to delete it. Nothing is written for a disk with nothing to change.
+    #[test]
+    fn a_deleted_vms_disks_are_deleted_asked_released_or_left() {
+        let disk = |attached: Option<&str>, owner: Option<&str>| -> crate::images::Disk {
+            serde_json::from_value(serde_json::json!({
+                "id": "d", "name": "d", "format": "raw", "size_bytes": 1 << 20,
+                "origin": {"kind": "blank"}, "created_at": 0,
+                "attached_to": attached, "owner": owner,
+            }))
+            .unwrap()
+        };
+        let mut d = disk(Some("vm"), Some("vm"));
+        assert_eq!(
+            disk_on_vm_delete(&mut d, "vm", true, true),
+            DiskOnDelete::Delete
+        );
+
+        let mut d = disk(Some("vm"), Some("vm"));
+        assert_eq!(
+            disk_on_vm_delete(&mut d, "vm", true, false),
+            DiskOnDelete::Put
+        );
+        assert!(d.deletion_requested_at.is_some());
+        assert_eq!(
+            (d.attached_to.as_deref(), d.owner.as_deref()),
+            (None, Some("vm"))
+        );
+
+        let mut d = disk(Some("vm"), Some("vm"));
+        assert_eq!(
+            disk_on_vm_delete(&mut d, "vm", false, false),
+            DiskOnDelete::Put
+        );
+        assert_eq!(
+            (d.attached_to, d.owner, d.deletion_requested_at),
+            (None, None, None)
+        );
+
+        let mut d = disk(None, None);
+        assert_eq!(
+            disk_on_vm_delete(&mut d, "vm", false, false),
+            DiskOnDelete::Untouched
+        );
+        let mut d = disk(Some("other"), Some("vm"));
+        assert_eq!(
+            disk_on_vm_delete(&mut d, "vm", true, false),
+            DiskOnDelete::Untouched
+        );
     }
 
     #[test]
