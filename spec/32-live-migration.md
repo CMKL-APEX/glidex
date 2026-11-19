@@ -235,11 +235,27 @@ in the hyperstor repository:
      delegate-of argument, `promote`, `drop`) and in `list`, so S26's
      probe can tell a delegate from a stale hold.
 
+Both are merged in hyperstor (CMKL-APEX/hyperstor#399 and #400, its
+D349–D352), in `hyperstor-vhost`'s control-socket protocol 3. Verified:
+there is no cluster-wide feature flag. `hello` answers `"features":
+["live_migration"]` for the node's `hyperstor-vhost`, and whether the
+storage nodes can hand a lease over is checked by the target's standby
+`attach`, which an older cluster refuses (`invalid`) before any memory
+is copied.
+
 glidex's side (LM3):
-- the driver's `attach_delegate`, `promote` and `release_delegate`;
-- the S26 probe skips the disks of a migrating VM;
-- the check of §5 asks the datastore whether its cluster supports both
-  (a `GetStatus` feature flag; **verify** what hyperstor offers).
+- the driver's `delegate` (source), `attach_delegate` (target, standing
+  by), `promote` (target, at the switch; answers the leases being
+  fenced), `release_delegate` (source, on cancel) and `detach_forced`
+  (target, on cancel, its receiving hypervisor connected);
+- the S26 probe lets go only of holds: a disk `list`ed with `"role":
+  "delegate"` (a target standing by) is left alone. From the promotion
+  until the commit the target holds a disk whose VM is still placed on
+  the source, so the probe must also skip the disks of a VM with
+  `status.migration`; that comes with `status.migration` in LM4 task 4;
+- each node reports, per hyperstor datastore, `live_migration` from its
+  `hyperstor-vhost`'s `hello` (the datastore's node rows), and the check
+  of §5 wants it on the source and the target.
 
 ## 8. Networking
 
@@ -311,7 +327,7 @@ glidex's side (LM3):
 | **LM0** Cold move | §3: `StartVmRequest.node`; `start --node`; the UI's **Place and start**; docs | Cluster tests of §3. Host check: a hyperstor VM from node-a to node-b, stopped (the test cluster). |
 | **LM1** Spike and versions | Cloud Hypervisor v54.1 in the installer, with `nested=on` (decision 10). By hand on node-a and node-b: a migration of a VM booted from a kernel and initramfs with no disk, over a unix socket bridged between the hosts and over TCP. | Findings in §0 #7–#10 (spike run 2026-11-19 on v53.0). The functional tests on v54.1. Not yet: the relay against TCP with a guest that writes its memory, a tap NIC, and the spike on v54.1. |
 | **LM2** CPU compatibility | `cpu` in node status (KVM's CPUID and the host's CPU and kernel), `boot_cpuid` on VMs, the fit check; the host page and `node show` | Unit tests: the superset check on recorded CPUID. Host: node-b's CPUID fits node-a, and node-a's doesn't fit node-b, as §0 #7 found. |
-| **LM3** hyperstor | The driver's delegate calls; S26's probe skips migrating VMs; the feature check | Unit tests with a fake vhost control socket. Needs hyperstor's issues done. |
+| **LM3** hyperstor | The driver's delegate calls; S26's probe leaves a target standing by alone; the feature check (§7) | Unit tests with a fake vhost control socket. hyperstor's issues are done (#399, #400). |
 | **LM4** The migration | `status.migration`, the leader's steps, receive mode in the shim, the relay, OVN two-chassis binding, the commit, cancel and recovery; the API, RPC and gxctl | Cluster tests with fake hypervisors: each phase, cancel, each failure in §11, a leader change mid-way. |
 | **LM5** UI, metering, docs | The Migrate dialog, progress, events; metering's split; operator docs | UI e2e. Unit tests of the ledger split. |
 | **LM6** Host checks | On the test cluster, node-a ↔ node-b: an idle guest; a guest under memory and disk load (`fio` with verify); a ping across the move (the loss is reported); cancel; the target's control plane killed mid-copy | Results in this spec's status, with the date, the build and pass/fail. |
@@ -347,6 +363,6 @@ issues. LM4 needs LM2 and LM3. LM5 and LM6 need LM4.
 
 | | |
 |---|---|
-| **Spec \| Code** | LM0 built: `start` with a node (API, RPC, gxctl, the UI's **Place and start**, docs). LM1: the spike run (§0 #7–#10); Cloud Hypervisor pinned at v54.1 with `nested=on`. LM2 built: `glidex-kvm-cpuid.service` and `glidex-vm-shim --kvm-cpuid` (decision 11); `cpu` in node status (REST, RPC `NodeCpu`, `gxctl node <id>`, the host page's CPU and Kernel rows); `boot_cpuid` on VMs at each launch; the fit check (`node::cpu_fits`), which LM4 will call. LM4 task 1 built: `POST /vms/{id}/migrate {check: true}` (RPC `MigrateVm`, Cedar `migrateVm` in `node.drain` and `host-scoped`, `gxctl migrate --check`), with every check of §5 but the Cloud Hypervisor release; without `check` it answers `501`. LM3, LM4 tasks 2–4, LM5 and LM6 are design. |
-| **Tests** | LM0: a cluster test (start on the other node; a node-local disk refused) and a security test (`placeVm` needed). LM1: on node-b with v54.1 (2026-11-19), the Cloud Hypervisor functional boot tests passed: firmware and cloud-init, catalog image with root growth, extracted kernel, guest kernel updates, NAT network, mixed hypervisors on one network, and a VM surviving a control-plane restart. LM2: unit tests of each comparison, of one-way compatibility with the spike's registers, of the file and of `cpu_fits`. `glidex-vm-shim --kvm-cpuid` run by hand on node-b: 59 entries, leaf 0x7 EDX `0xa8000000`, as the spike found. LM4 task 1: a cluster test (a stopped VM on a shared-directory disk: its reasons, each node's, one node by name, `501` without `check`, nothing moved) and a security test (a project owner is refused `migrate`, check or not). |
-| **Not yet** | LM0's host check on the test cluster (not run yet). LM1: the spike on v54.1, a guest that writes its memory, a tap NIC; `numa_placement_e2e` and the QEMU, vhost-user, LVM and hyperstor functional tests on v54.1 (not run: they need GPUs, OVS-DPDK, a volume group or a hyperstor token). The nested e2e on v54.1 (not run). LM2: the Cloud Hypervisor release in node status; the host check, node-b's CPUID fitting node-a and not the reverse, from the nodes' reports (not run yet: it needs a rollout). LM4's check of the Cloud Hypervisor release; LM3, LM4 tasks 2–4, LM5, LM6. hyperstor's dirty log and delegate (CMKL-APEX/hyperstor#397, #398). |
+| **Spec \| Code** | LM0 built: `start` with a node (API, RPC, gxctl, the UI's **Place and start**, docs). LM1: the spike run (§0 #7–#10); Cloud Hypervisor pinned at v54.1 with `nested=on`. LM2 built: `glidex-kvm-cpuid.service` and `glidex-vm-shim --kvm-cpuid` (decision 11); `cpu` in node status (REST, RPC `NodeCpu`, `gxctl node <id>`, the host page's CPU and Kernel rows); `boot_cpuid` on VMs at each launch; the fit check (`node::cpu_fits`), which LM4 will call. LM4 task 1 built: `POST /vms/{id}/migrate {check: true}` (RPC `MigrateVm`, Cedar `migrateVm` in `node.drain` and `host-scoped`, `gxctl migrate --check`), with every check of §5 but the Cloud Hypervisor release; without `check` it answers `501`. LM3 built (§7): the hyperstor driver's `delegate`, `attach_delegate`, `promote`, `release_delegate` and `detach_forced`; `held_volumes` for S26, which leaves a delegate alone; `live_migration` in a hyperstor datastore's node rows (REST, RPC `DatastoreNode.live_migration`), from `hello`, which the migration check wants on both ends. LM4 tasks 2–4, LM5 and LM6 are design. |
+| **Tests** | LM0: a cluster test (start on the other node; a node-local disk refused) and a security test (`placeVm` needed). LM1: on node-b with v54.1 (2026-11-19), the Cloud Hypervisor functional boot tests passed: firmware and cloud-init, catalog image with root growth, extracted kernel, guest kernel updates, NAT network, mixed hypervisors on one network, and a VM surviving a control-plane restart. LM2: unit tests of each comparison, of one-way compatibility with the spike's registers, of the file and of `cpu_fits`. `glidex-vm-shim --kvm-cpuid` run by hand on node-b: 59 entries, leaf 0x7 EDX `0xa8000000`, as the spike found. LM4 task 1: a cluster test (a stopped VM on a shared-directory disk: its reasons, each node's, one node by name, `501` without `check`, nothing moved) and a security test (a project owner is refused `migrate`, check or not). LM3: unit tests against a fake `hyperstor-vhost` control socket (each call's request, the standby not a hold, the probe's `live_migration`) and of `hello`'s feature. |
+| **Not yet** | LM0's host check on the test cluster (not run yet). LM1: the spike on v54.1, a guest that writes its memory, a tap NIC; `numa_placement_e2e` and the QEMU, vhost-user, LVM and hyperstor functional tests on v54.1 (not run: they need GPUs, OVS-DPDK, a volume group or a hyperstor token). The nested e2e on v54.1 (not run). LM2: the Cloud Hypervisor release in node status; the host check, node-b's CPUID fitting node-a and not the reverse, from the nodes' reports (not run yet: it needs a rollout). LM4's check of the Cloud Hypervisor release; LM3: the S26 probe skipping a migrating VM's disks (needs `status.migration`, LM4 task 4), and the handover against a real `hyperstor-vhost` (needs a hyperstor release with #399 and #400 on the test cluster; LM6). LM4 tasks 2–4, LM5, LM6. |

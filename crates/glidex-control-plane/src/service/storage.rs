@@ -1084,6 +1084,7 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
                 checked_at: crate::service::common::ts_opt(r.checked_at).into(),
                 warnings: r.warnings.clone(),
                 image_volumes: r.image_volumes.clone(),
+                live_migration: r.live_migration,
                 ..Default::default()
             })
             .collect(),
