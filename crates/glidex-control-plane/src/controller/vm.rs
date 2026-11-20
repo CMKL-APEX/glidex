@@ -758,18 +758,26 @@ impl VmManager {
             kind,
             "InstanceExited",
             match (cause, message.as_deref().and_then(|m| m.lines().next())) {
-                // Why a launch failed, as the shim recorded it.
-                (ExitCause::LaunchFailed, Some(why)) if !why.is_empty() => format!(
-                    "instance {} ended: {}: {}",
-                    inst.instance_id,
-                    cause.as_str(),
-                    why
-                ),
+                // Why a launch or a migration's receive failed, as the
+                // shim recorded it.
+                (ExitCause::LaunchFailed | ExitCause::MigrationFailed, Some(why))
+                    if !why.is_empty() =>
+                {
+                    format!(
+                        "instance {} ended: {}: {}",
+                        inst.instance_id,
+                        cause.as_str(),
+                        why
+                    )
+                }
                 _ => format!("instance {} ended: {}", inst.instance_id, cause.as_str()),
             },
         ));
         match cause {
             ExitCause::Requested => {}
+            // A migration's target that never ran the guest: the VM runs
+            // on where it was (spec/32-live-migration.md decision 9).
+            ExitCause::MigrationFailed => {}
             ExitCause::Lost if !shim_died => {}
             ExitCause::Terminated => {
                 stop = Some((
@@ -1459,6 +1467,7 @@ impl VmManager {
             vcpu_pins: launch_pins,
             cpu_weight: config.effective_cpu_weight(),
             job: false,
+            receive: None,
         };
         launch
             .write(&paths.launch)

@@ -43,7 +43,8 @@ export type ExitCause =
   | "EXIT_CAUSE_CRASHED"
   | "EXIT_CAUSE_LAUNCH_FAILED"
   | "EXIT_CAUSE_HOST_REBOOT"
-  | "EXIT_CAUSE_LOST";
+  | "EXIT_CAUSE_LOST"
+  | "EXIT_CAUSE_MIGRATION_FAILED";
 
 export interface ExitRecord {
   /** RFC 3339. */

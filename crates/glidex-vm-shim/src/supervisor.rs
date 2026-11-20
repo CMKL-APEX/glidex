@@ -150,6 +150,10 @@ struct Supervisor {
     poll_stop: Arc<AtomicBool>,
     /// Shared disks' locks, held until the shim exits (S16).
     locks: Vec<File>,
+    /// A migration's target: how the receive ended, once it has.
+    receiving: Option<Receiver<Result<(), String>>>,
+    /// Why the hypervisor was stopped, for its exit record.
+    exit_message: Option<String>,
 }
 
 impl Supervisor {
@@ -182,6 +186,8 @@ impl Supervisor {
             disk_poll: Arc::new(Mutex::new(None)),
             poll_stop: Arc::new(AtomicBool::new(false)),
             locks: Vec::new(),
+            receiving: None,
+            exit_message: None,
         };
         s.save();
         Ok(s)
@@ -219,7 +225,9 @@ impl Supervisor {
         // A failed launch says why on the console too: the hypervisor's own
         // output doesn't when the shim stopped it.
         let why = match (cause, message.as_deref().and_then(|m| m.lines().next())) {
-            (ExitCause::LaunchFailed, Some(l)) if !l.is_empty() => format!(": {l}"),
+            (ExitCause::LaunchFailed | ExitCause::MigrationFailed, Some(l)) if !l.is_empty() => {
+                format!(": {l}")
+            }
             _ => String::new(),
         };
         self.note(format!(
@@ -380,6 +388,10 @@ impl Supervisor {
                         self.record_exit(ExitCause::LaunchFailed, status, Some(message));
                         return;
                     }
+                    if let Some(url) = self.launch.receive.clone() {
+                        self.start_receiving(url);
+                        return;
+                    }
                     self.instance.phase = Phase::Running;
                     self.save();
                     self.start_disk_poller();
@@ -406,6 +418,60 @@ impl Supervisor {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+    }
+
+    /// A migration's target (spec/32-live-migration.md §4): ask the VMM,
+    /// which has no VM, to receive one over `url`. Its answer comes when
+    /// the migration ends, so it is awaited on a thread; [`Self::serve`]
+    /// takes it from there.
+    fn start_receiving(&mut self, url: String) {
+        self.instance.phase = Phase::Receiving;
+        self.save();
+        self.note(format!(
+            "\r\n--- glidex: receiving a migrating VM over {url} ---\r\n"
+        ));
+        let (tx, rx) = channel();
+        let sock = self.launch.api_socket.clone();
+        let spawned = std::thread::Builder::new()
+            .name("receive".into())
+            .spawn(move || {
+                let r = ChClient::new(&sock)
+                    .receive_migration(&url)
+                    .map_err(|e| e.to_string());
+                let _ = tx.send(r);
+            });
+        match spawned {
+            Ok(_) => self.receiving = Some(rx),
+            Err(e) => self.receive_failed(format!("cannot wait for the migration: {e}")),
+        }
+    }
+
+    /// How the receive ended, if it has: the guest runs here, or the VMM
+    /// (with no guest) is stopped.
+    fn check_receiving(&mut self) {
+        let Some(rx) = &self.receiving else { return };
+        match rx.try_recv() {
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.receiving = None,
+            Ok(Ok(())) => {
+                self.receiving = None;
+                self.instance.phase = Phase::Running;
+                self.save();
+                self.note("\r\n--- glidex: the migrated VM runs here ---\r\n".into());
+                self.start_disk_poller();
+            }
+            Ok(Err(e)) => {
+                self.receiving = None;
+                self.receive_failed(format!("receiving the migration: {e}"));
+            }
+        }
+    }
+
+    fn receive_failed(&mut self, message: String) {
+        if self.exit_message.is_none() {
+            self.exit_message = Some(message);
+        }
+        self.kill(ExitCause::MigrationFailed);
     }
 
     /// QEMU: pin vCPU `i` to `vcpu_pins[i]` (host-topology §7.3). A
@@ -623,6 +689,8 @@ impl Supervisor {
                 }
             }
 
+            self.check_receiving();
+
             if TERM.swap(false, Ordering::SeqCst) {
                 if self.instance.phase == Phase::Exited {
                     self.release();
@@ -641,12 +709,18 @@ impl Supervisor {
                 let cause = match (self.kill_cause, &self.stop) {
                     (Some(c), _) => c,
                     (None, Some(s)) => s.cause,
+                    // A target's VMM gone before the guest ran here.
+                    (None, None) if self.instance.phase == Phase::Receiving => {
+                        ExitCause::MigrationFailed
+                    }
                     (None, None) if status.code() == Some(0) => ExitCause::CleanExit,
                     (None, None) => ExitCause::Crashed,
                 };
+                self.receiving = None;
                 // Let the proxy drain the guest's last words first.
                 std::thread::sleep(Duration::from_millis(50));
-                self.record_exit(cause, Some(status), None);
+                let message = self.exit_message.take();
+                self.record_exit(cause, Some(status), message);
                 if self.auto_release {
                     self.release();
                     return EXIT_OK;
@@ -756,6 +830,11 @@ impl Supervisor {
             Some(s) => s.deadline = s.deadline.min(deadline),
             None => self.stop = Some(StopState { deadline, cause }),
         }
+        // A target still receiving has no guest to ask: stop it now.
+        if self.instance.phase == Phase::Receiving {
+            self.kill(cause);
+            return;
+        }
         let wall_deadline = now() + grace_secs;
         let info = match &self.instance.stop {
             Some(s) if s.deadline <= wall_deadline => s.clone(),
@@ -812,6 +891,13 @@ impl Supervisor {
             self.kill_cause = Some(cause);
         }
         if self.kill_at.is_some() {
+            return;
+        }
+        // A VMM receiving a migration answers nothing until it ends, and
+        // has no disks open to close: SIGKILL.
+        if self.instance.phase == Phase::Receiving {
+            self.hard_kill();
+            self.kill_at = Some(Instant::now() + QUIT_GRACE);
             return;
         }
         let sock = self.launch.api_socket.clone();

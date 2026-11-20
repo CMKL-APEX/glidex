@@ -75,6 +75,13 @@ pub struct LaunchFile {
     /// Cgroup v2 `cpu.weight` (1..=10000, default 100); spec/30-pylon.md §5.
     #[serde(default = "default_cpu_weight")]
     pub cpu_weight: u32,
+    /// Cloud Hypervisor only: a live migration's target
+    /// (spec/32-live-migration.md §4). `argv` starts a VMM with no VM; once
+    /// its socket answers the shim asks it to receive the VM over this URL
+    /// (`unix:<absolute path>`), and the instance is `Receiving` until the
+    /// guest runs here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receive: Option<String>,
 }
 
 pub fn default_cpu_weight() -> u32 {
@@ -162,6 +169,21 @@ impl LaunchFile {
                 c,
                 crate::util::CPU_SETSIZE - 1
             )));
+        }
+        if let Some(url) = &self.receive {
+            if self.hypervisor != HypervisorKind::CloudHypervisor || self.job {
+                return Err(LaunchError::Invalid(
+                    "receive is for a Cloud Hypervisor VM".into(),
+                ));
+            }
+            if !url
+                .strip_prefix("unix:")
+                .is_some_and(|p| Path::new(p).is_absolute())
+            {
+                return Err(LaunchError::Invalid(format!(
+                    "receive {url:?}: not unix:<absolute path>"
+                )));
+            }
         }
         if !self.vcpu_pins.is_empty() && self.hypervisor == HypervisorKind::CloudHypervisor {
             return Err(LaunchError::Invalid(
@@ -272,6 +294,7 @@ mod tests {
             job: false,
             volume_locks: vec![],
             cpu_weight: 100,
+            receive: None,
         }
     }
 
@@ -355,6 +378,38 @@ mod tests {
         assert!(
             matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("4096"))
         );
+    }
+
+    #[test]
+    fn a_receive_is_a_cloud_hypervisor_vms_over_a_unix_socket() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("hv");
+        std::fs::write(&bin, "").unwrap();
+        let allowed = vec![std::fs::canonicalize(&bin).unwrap()];
+        let path = dir.path().join(crate::LAUNCH_FILE);
+        let mut f = sample(dir.path(), bin.to_str().unwrap());
+        f.receive = Some("unix:/run/glidex/vms/v/migration.sock".into());
+        f.validate(None, &allowed).unwrap();
+        f.write(&path).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap(), f);
+        for url in ["tcp:10.0.0.1:6000", "unix:relative.sock", "/abs.sock"] {
+            f.receive = Some(url.into());
+            assert!(
+                matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(_))),
+                "{url}"
+            );
+        }
+        f.receive = Some("unix:/m.sock".into());
+        f.hypervisor = HypervisorKind::Qemu;
+        assert!(matches!(
+            f.validate(None, &allowed),
+            Err(LaunchError::Invalid(_))
+        ));
+        // An older launch file has none.
+        let mut v = serde_json::to_value(sample(dir.path(), "/bin/true")).unwrap();
+        v.as_object_mut().unwrap().remove("receive");
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap().receive, None);
     }
 
     #[test]

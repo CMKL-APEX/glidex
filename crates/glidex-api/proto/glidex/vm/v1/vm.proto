@@ -277,6 +277,9 @@ enum ExitCause {
   EXIT_CAUSE_LAUNCH_FAILED = 5;
   EXIT_CAUSE_HOST_REBOOT = 6;
   EXIT_CAUSE_LOST = 7;
+  // A live migration's target whose receive failed or was cancelled
+  // (spec/32-live-migration.md §4); the VM runs on as it was.
+  EXIT_CAUSE_MIGRATION_FAILED = 8;
 }
 
 // How the last instance ended.
