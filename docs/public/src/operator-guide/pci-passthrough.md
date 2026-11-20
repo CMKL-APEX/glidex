@@ -56,6 +56,46 @@ the port (`gxctl node topology <node>`, the host page). `glidex-netd`
 reads the ports' ACS, so the warning needs it running. Glidex never
 changes ACS itself.
 
+### Switch-local peer-to-peer
+
+Two passed-through devices under one PCIe switch, such as a NIC reading
+a GPU's memory, can talk directly across the switch and stay isolated.
+This needs three settings:
+
+- ACS on (above);
+- ATS on the device that sends the requests;
+- ACS Direct Translated P2P on the switch's downstream ports, with
+  Translation Blocking off.
+
+The IOMMU translates the device's addresses ahead of time (ATS), and the
+switch forwards requests already translated straight to the other
+device. Without these, each request goes up to the root complex and
+back. Some hosts don't complete such requests, and the completion
+timeout can take down the whole root port.
+
+`gxctl node topology <node> --devices` shows each device's ATS (`ats
+on`, `off` or `unsupported`). It then lists each pair of devices on
+`vfio-pci` below one switch, one line per direction:
+
+```text
+p2p 0000:88:00.0 -> 0000:87:00.0  switch 0000:81:00.0  direct
+p2p 0000:87:00.0 -> 0000:88:00.0  switch 0000:81:00.0  via root complex (0000:82:00.0 has Direct Translated P2P off)
+```
+
+The reason names the first setting missing. `unknown` means
+`glidex-netd` couldn't read a device or port on the way. The full tree
+(`GET /nodes/{id}/topology`) has the same, in `ats`,
+`direct_translated` and `translation_blocking` on each device and port
+and in its `p2p` list. Devices that share only a root port aren't
+listed, because their requests go through the root complex anyway.
+
+Glidex only reports these and never turns them on. Direct Translated
+P2P makes the switch trust the addresses a device marks as translated,
+so turn it on only for devices you trust, outside glidex. A boot script
+with `setpci` on the downstream ports is one way. The Linux IOMMU driver
+turns ATS on by itself for a device on `vfio-pci` when the IOMMU
+supports it.
+
 ### Host kernel
 
 Before a VM starts, the hypervisor maps each passed-through device's

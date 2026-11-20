@@ -485,6 +485,25 @@ message Topology {
   // Every PCI function, by address.
   repeated PciFunction devices = 2;
   repeated TopologyWarning warnings = 3;
+  // Pairs of functions on vfio-pci below one switch, and where translated
+  // requests between them go (spec/22-host-topology.md §5.2a).
+  repeated P2pPair p2p = 4;
+}
+
+message P2pPair {
+  string a = 1;
+  string b = 2;
+  // The upstream port of the switch they share.
+  string switch = 3;
+  P2pPath a_to_b = 4 [json_name = "a_to_b"];
+  P2pPath b_to_a = 5 [json_name = "b_to_a"];
+}
+
+message P2pPath {
+  // direct, via_root or unknown.
+  string route = 1;
+  // The first condition that failed; empty when direct.
+  string reason = 2;
 }
 
 // What a node reports in its status (spec/22-host-topology.md §3.1).
@@ -573,6 +592,13 @@ message PciFunction {
   // Kept at D0: never runtime-suspended, and D3cold disallowed on it and
   // the bridges above it (spec/22-host-topology.md H28).
   bool kept_on = 22 [json_name = "kept_on"];
+  // On vfio-pci: ATS, as unsupported, off or on; unset when unread
+  // (spec/22-host-topology.md H31).
+  optional string ats = 23;
+  // A root or downstream port above one: ACS Direct Translated P2P
+  // (unsupported, off or on; unset when unread) and Translation Blocking.
+  optional string direct_translated = 24 [json_name = "direct_translated"];
+  bool translation_blocking = 25 [json_name = "translation_blocking"];
 }
 
 // A PCI function's power state, and what the kernel may do with it.
