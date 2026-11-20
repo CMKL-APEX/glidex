@@ -1378,9 +1378,11 @@ impl VmManager {
         if !self.datastores_supported() {
             return;
         }
-        // The leader keeps hyperstor's certificates renewed (S20) and
-        // removes image volumes left behind (S24).
+        // The leader keeps hyperstor's certificates renewed (S20) and its
+        // addresses current (S35), and removes image volumes left behind
+        // (S24).
         self.renew_hyperstor_identities();
+        self.refresh_hyperstor_addresses();
         self.collect_hyperstor_image_volumes();
         let db = self.store.database();
         let me = self.local_node_id();

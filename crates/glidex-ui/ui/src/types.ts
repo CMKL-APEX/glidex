@@ -800,6 +800,8 @@ export interface Datastore {
   hyperstor_identity_expires?: string;
   /** `hyperstor`: its management UI, linked as "Manage cluster" (spec/24-storage.md S33). */
   hyperstor_mgmt_url?: string;
+  /** `hyperstor`: when its API and map addresses were last read from the cluster's members, or set (spec/24-storage.md S35). */
+  hyperstor_addresses_checked?: string;
   /** `SHARED`: one filesystem every node mounts; disks on it are bound to no node. */
   topology?: "DATASTORE_TOPOLOGY_NODE_LOCAL" | "DATASTORE_TOPOLOGY_SHARED";
   /** The directory on nodes without their own (`node_paths`). */

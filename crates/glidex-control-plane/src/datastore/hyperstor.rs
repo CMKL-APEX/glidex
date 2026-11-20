@@ -1432,6 +1432,123 @@ pub async fn check_pool(api: &[String], id: &Identity, pool: u32) -> Result<(), 
     Err(last)
 }
 
+/// A hyperstor cluster's addresses as its members list them (S35).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Addresses {
+    /// The voters' cluster APIs, the leader's first; empty when no voter
+    /// has recorded one (members older than hyperstor's `api_address`).
+    pub api: Vec<String>,
+    /// The voters' map services, separated by commas, as the join gives
+    /// them.
+    pub map: String,
+}
+
+/// The voters' addresses in `members`; `None` when no voter names a map
+/// address. Learners are left out until they vote: they may yet be
+/// removed, and a voter answers whatever a learner would.
+fn addresses_of(members: &[pb::Member]) -> Option<Addresses> {
+    let mut voters: Vec<&pb::Member> = members
+        .iter()
+        .filter(|m| m.voter && !m.map_address.is_empty())
+        .collect();
+    if voters.is_empty() {
+        return None;
+    }
+    voters.sort_by_key(|m| (!m.leader, m.id));
+    let mut api: Vec<String> = Vec::new();
+    for m in &voters {
+        if !m.api_address.is_empty() && !api.contains(&m.api_address) {
+            api.push(m.api_address.clone());
+        }
+    }
+    let mut map: Vec<&str> = voters.iter().map(|m| m.map_address.as_str()).collect();
+    map.sort_unstable();
+    map.dedup();
+    Some(Addresses {
+        api,
+        map: map.join(","),
+    })
+}
+
+fn member_client(
+    a: &str,
+    tls: &std::sync::Arc<connectrpc::rustls::ClientConfig>,
+) -> Result<hyperstor_api::MemberServiceClient<connectrpc::client::HttpClient>, String> {
+    let uri = format!("https://{a}")
+        .parse::<http::Uri>()
+        .map_err(|_| format!("{a}: not host:port"))?;
+    Ok(hyperstor_api::MemberServiceClient::new(
+        connectrpc::client::HttpClient::with_tls(tls.clone()),
+        connectrpc::client::ClientConfig::new(uri).with_default_timeout(API_TIMEOUT),
+    ))
+}
+
+/// The cluster's addresses now, from the member list of the first of `api`
+/// that answers as `id` (its root pinned by the TLS). Blocks.
+pub fn addresses(api: &[String], id: &Identity) -> Result<Addresses, String> {
+    let tls = std::sync::Arc::new(hyperstor_pki::client_config(&id.cert, &id.key, &id.root)?);
+    block_on(async {
+        let mut last = String::from("no hyperstor API address");
+        for a in api {
+            let r = match member_client(a, &tls) {
+                Ok(c) => c.list_members(pb::ListMembersRequest::default()).await,
+                Err(e) => {
+                    last = e;
+                    continue;
+                }
+            };
+            match r {
+                Ok(r) => {
+                    return addresses_of(&r.into_owned().members)
+                        .ok_or_else(|| format!("{a}: the member list names no voter"));
+                }
+                Err(e) => last = format!("{a}: {}", e.message.unwrap_or_default()),
+            }
+        }
+        Err(last)
+    })
+}
+
+/// Checks addresses an operator gives for the cluster API (S35): every one
+/// answers, under the cluster's pinned root, as the cluster `id` names;
+/// then the map service's addresses, from the member list.
+pub async fn check_addresses(api: &[String], id: &Identity) -> Result<Addresses, String> {
+    if api.is_empty() {
+        return Err("give the cluster API's addresses (host:port)".into());
+    }
+    let cluster = hyperstor_pki::identity_in(&id.cert)
+        .map(|i| i.cluster)
+        .ok_or("the certificate names no hyperstor identity")?;
+    let tls = std::sync::Arc::new(hyperstor_pki::client_config(&id.cert, &id.key, &id.root)?);
+    let mut found = None;
+    for a in api {
+        let status = cluster_client(a, id)?
+            .get_status(pb::GetStatusRequest::default())
+            .await
+            .map_err(|e| format!("{a}: {}", e.message.unwrap_or_default()))?
+            .into_owned();
+        if status.cluster_id != cluster {
+            return Err(format!(
+                "{a} is hyperstor cluster {}, not this datastore's {cluster}",
+                status.cluster_id
+            ));
+        }
+        if found.is_none() {
+            let members = member_client(a, &tls)?
+                .list_members(pb::ListMembersRequest::default())
+                .await
+                .map_err(|e| format!("{a}: {}", e.message.unwrap_or_default()))?
+                .into_owned()
+                .members;
+            found = Some(
+                addresses_of(&members)
+                    .ok_or_else(|| format!("{a}: the member list names no voter"))?,
+            );
+        }
+    }
+    found.ok_or_else(|| "no hyperstor API address".into())
+}
+
 /// A renewed certificate for `id`, with a new key (S20); `None` when it
 /// isn't due yet (a third of its life left).
 pub fn renew(api: &[String], id: &Identity) -> Result<Option<Enrolled>, String> {
@@ -1644,6 +1761,41 @@ mod tests {
         };
         assert_eq!(b.path().to_str().unwrap(), format!("hyperstor://m:1/{odd}"));
         assert_eq!(b.vhost_socket(), None, "not staged");
+    }
+
+    fn member(id: u64, map: &str, api: &str, voter: bool, leader: bool) -> pb::Member {
+        pb::Member {
+            id,
+            map_address: map.into(),
+            api_address: api.into(),
+            voter,
+            leader,
+            ..Default::default()
+        }
+    }
+
+    /// #582: member 3 removed, member 4 added on another host.
+    #[test]
+    fn addresses_are_the_voters_with_the_leaders_api_first() {
+        let a = addresses_of(&[
+            member(1, "192.0.2.11:8849", "192.0.2.11:8850", true, false),
+            member(2, "192.0.2.12:8849", "192.0.2.12:8850", true, true),
+            member(4, "198.51.100.14:8849", "198.51.100.14:8850", true, false),
+            member(5, "198.51.100.15:8849", "198.51.100.15:8850", false, false),
+        ])
+        .unwrap();
+        assert_eq!(
+            a.api,
+            ["192.0.2.12:8850", "192.0.2.11:8850", "198.51.100.14:8850"]
+        );
+        assert_eq!(a.map, "192.0.2.11:8849,192.0.2.12:8849,198.51.100.14:8849");
+        // Members that never led have recorded no API: the map only.
+        let a = addresses_of(&[member(1, "192.0.2.11:8849", "", true, true)]).unwrap();
+        assert!(a.api.is_empty());
+        assert_eq!(a.map, "192.0.2.11:8849");
+        // No voter: nothing to go by.
+        assert_eq!(addresses_of(&[member(5, "x:1", "x:2", false, false)]), None);
+        assert_eq!(addresses_of(&[]), None);
     }
 
     #[test]

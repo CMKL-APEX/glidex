@@ -2138,6 +2138,7 @@ mod tests {
                 pool: 1,
                 identity: None,
                 mgmt_url: None,
+                addresses_checked: None,
                 node_paths: Default::default(),
             },
             nodes: Vec::new(),

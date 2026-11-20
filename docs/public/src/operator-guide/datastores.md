@@ -673,6 +673,31 @@ Over the API: `POST /datastores` with `driver`
 identity and when its certificate expires; the leader renews it when a
 third of its life is left.
 
+### When hyperstor's members move
+
+Glidex keeps the datastore's addresses current itself. Every 15 minutes,
+and after renewing the certificate, the leader reads the cluster's
+member list, and records the voters' cluster API addresses (the
+leader's first) and their map service addresses. `gxctl datastore show`
+prints them, and when they were last checked with the members. So after
+`hyperstorctl member add` or `member remove`, the datastore follows
+within 15 minutes, as long as one of the addresses it has still answers.
+Members that have never led the cluster record no API address; the
+datastore then keeps the API addresses it has.
+
+If none of its addresses answers any more (every member it knew has
+moved), give it the new ones:
+
+```bash
+gxctl datastore set hs1 --hyperstor 198.51.100.14:8850,192.0.2.12:8850
+```
+
+Each address must answer as the datastore's own cluster, checked against
+the cluster's root and id that Glidex enrolled with; another cluster's
+API is refused. The map service's addresses are then read from the
+member list. Run it on a server: the servers hold the datastore's
+identity. Over the API: `PATCH /datastores/{id}` with `hyperstor_api`.
+
 ### Node status
 
 Each node reports whether its `hyperstor-vhost` answers

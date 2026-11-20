@@ -1095,3 +1095,56 @@ async fn an_lvm_datastore_with_image_volumes_is_not_deleted() {
     let (s, v) = h.rest("DELETE", "/datastores/thin-del", None, &t).await;
     assert!(s.is_success(), "{v}");
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_hyperstor_datastores_addresses_are_set_only_against_its_cluster() {
+    // S35: `hyperstor_api` is a hyperstor datastore's, and is checked
+    // against its cluster as glidex's identity, which a server must hold.
+    let h = harness();
+    let t = h.admin("root");
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "files", "path": place("files")})),
+            &t,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["datastore"]["id"].as_str().unwrap().to_string();
+    let api = json!({"hyperstor_api": ["192.0.2.12:8850"]});
+    let (s, v) = h
+        .rest("PATCH", "/datastores/files", Some(api.clone()), &t)
+        .await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("only a hyperstor"),
+        "{v}"
+    );
+
+    // A hyperstor record without its identity: refused, nothing changed.
+    use glidex_control_plane::datastore::record;
+    let db = h.app.manager.database();
+    let mut ds = record::find(&db, &id).unwrap().unwrap();
+    ds.driver = record::DriverSpec::Hyperstor {
+        api: vec!["192.0.2.11:8850".into()],
+        map: "192.0.2.11:8849".into(),
+        pool: 1,
+        identity: None,
+        mgmt_url: None,
+        addresses_checked: Some(1_800_000_000),
+        node_paths: Default::default(),
+    };
+    record::put(&db, &ds, &record::root()).unwrap();
+    let (s, v) = h.rest("PATCH", "/datastores/files", Some(api), &t).await;
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["message"].as_str().unwrap().contains("identity"), "{v}");
+    let d = h.datastore("files", &t).await;
+    assert_eq!(d["hyperstor_api"], json!(["192.0.2.11:8850"]), "{d}");
+    assert_eq!(d["path"], "192.0.2.11:8849", "{d}");
+    // When the addresses were last checked with the members.
+    assert_eq!(
+        d["hyperstor_addresses_checked"], "2027-01-15T08:00:00Z",
+        "{d}"
+    );
+}

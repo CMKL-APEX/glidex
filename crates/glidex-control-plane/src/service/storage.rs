@@ -1031,13 +1031,14 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
             pb::DatastoreTopology::DATASTORE_TOPOLOGY_SHARED,
         ),
     };
-    let (hyperstor_api, hyperstor_pool, hyperstor_identity, expires, hyperstor_mgmt_url) =
+    let (hyperstor_api, hyperstor_pool, hyperstor_identity, expires, hyperstor_mgmt_url, checked) =
         match &d.driver {
             DriverSpec::Hyperstor {
                 api,
                 pool,
                 identity,
                 mgmt_url,
+                addresses_checked,
                 ..
             } => (
                 api.clone(),
@@ -1048,8 +1049,9 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
                     .unwrap_or_default(),
                 identity.as_ref().map(|i| i.not_after),
                 mgmt_url.clone().unwrap_or_default(),
+                *addresses_checked,
             ),
-            _ => (Vec::new(), 0, String::new(), None, String::new()),
+            _ => (Vec::new(), 0, String::new(), None, String::new(), None),
         };
     let (path, volume_group, thin_pool) = match &d.driver {
         DriverSpec::Lvm { vg, thin_pool, .. } => (String::new(), vg.clone(), thin_pool.clone()),
@@ -1094,6 +1096,7 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
         hyperstor_identity,
         hyperstor_identity_expires: crate::service::common::ts_opt(expires.unwrap_or(0)).into(),
         hyperstor_mgmt_url,
+        hyperstor_addresses_checked: crate::service::common::ts_opt(checked.unwrap_or(0)).into(),
         ..Default::default()
     }
 }
@@ -1241,12 +1244,13 @@ pub async fn update_datastore(
             }
             "overcommit" => ch.overcommit = Some(req.overcommit.unwrap_or(true)),
             "hyperstor_mgmt_url" => ch.mgmt_url = Some(mgmt_url_of(&req.hyperstor_mgmt_url)?),
+            "hyperstor_api" => ch.hyperstor_api = Some(req.hyperstor_api.clone()),
             other => {
                 return Err(ServiceError::new(
                     StatusCode::BAD_REQUEST,
                     "invalid",
                     format!(
-                        "can't update {other}: node_paths, nodes, default_for_disks, overcommit or hyperstor_mgmt_url"
+                        "can't update {other}: node_paths, nodes, default_for_disks, overcommit, hyperstor_mgmt_url or hyperstor_api"
                     ),
                 ));
             }

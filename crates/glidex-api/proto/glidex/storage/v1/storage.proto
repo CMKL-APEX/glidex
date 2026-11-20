@@ -892,6 +892,10 @@ message Datastore {
   // `hyperstor`: its management UI (`https://host[:port]`), linked as
   // "Manage cluster"; empty: none set (spec/24-storage.md S33).
   string hyperstor_mgmt_url = 20 [json_name = "hyperstor_mgmt_url"];
+  // `hyperstor`: when `hyperstor_api` and the map service's addresses
+  // (`path`) were last read from the cluster's members, or set; unset: not
+  // since the datastore was created (spec/24-storage.md S35).
+  google.protobuf.Timestamp hyperstor_addresses_checked = 21 [json_name = "hyperstor_addresses_checked"];
 }
 
 message ListDatastoresRequest {}
@@ -943,6 +947,11 @@ message UpdateDatastoreRequest {
   google.protobuf.FieldMask update_mask = 6 [json_name = "update_mask"];
   // `hyperstor`: its management UI's address; empty clears it.
   string hyperstor_mgmt_url = 7 [json_name = "hyperstor_mgmt_url"];
+  // `hyperstor`: its cluster API's addresses (`host:port`), when its
+  // members have moved. Each must answer as the datastore's cluster, under
+  // its pinned root; the map service's addresses are then read from the
+  // members (spec/24-storage.md S35).
+  repeated string hyperstor_api = 8 [json_name = "hyperstor_api"];
 }
 message UpdateDatastoreResponse {
   Datastore datastore = 1;
