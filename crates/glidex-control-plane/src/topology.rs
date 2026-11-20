@@ -3,6 +3,7 @@
 //! gets, and the NUMA node of each device a VM could be given. It goes in
 //! the node's replicated status, so it stays small: no PCIe tree here.
 
+use glidex_ovs::acs::{AcsReport, Support};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -210,6 +211,123 @@ impl TopologyTree {
             }
         }
         self.warnings.extend(warnings);
+    }
+
+    /// Fill in ATS and Direct Translated P2P from netd's `acs_above` answer,
+    /// and list the switch-local pairs (H31, §5.2a). An answer without any
+    /// (netd older than the fields, or none) leaves both out.
+    pub fn apply_p2p(&mut self, report: &AcsReport) {
+        if report.ports.is_empty() && report.devices.is_empty() {
+            return;
+        }
+        for d in &mut self.devices {
+            if let Some(a) = report.devices.iter().find(|a| a.address == d.address) {
+                d.ats = Some(a.ats);
+            }
+            if let Some(p) = report.ports.iter().find(|p| p.address == d.address) {
+                d.direct_translated = Some(p.direct_translated);
+                d.translation_blocking = p.translation_blocking;
+            }
+        }
+        let by_address: BTreeMap<&str, &PciFunction> = self
+            .devices
+            .iter()
+            .map(|d| (d.address.as_str(), d))
+            .collect();
+        // Each bridge above `d`, nearest first.
+        let above = |d: &PciFunction| {
+            let mut out: Vec<&PciFunction> = Vec::new();
+            let mut at = by_address.get(d.parent.as_str());
+            while let Some(b) = at {
+                if out.iter().any(|o| o.address == b.address) {
+                    break;
+                }
+                out.push(b);
+                at = by_address.get(b.parent.as_str());
+            }
+            out
+        };
+        let acs_off: BTreeSet<&str> = report.off.iter().map(|p| p.address.as_str()).collect();
+        // A translated request from `from` up to `switch`.
+        let path = |from: &PciFunction, up: &[&PciFunction], switch: &str| {
+            let unknown = |a: &str| P2pPath {
+                route: P2pRoute::Unknown,
+                reason: format!("{a} couldn't be read"),
+            };
+            let via = |reason: String| P2pPath {
+                route: P2pRoute::ViaRoot,
+                reason,
+            };
+            match from.ats {
+                None => return unknown(&from.address),
+                Some(Support::Unsupported) => {
+                    return via(format!("{} has no ATS", from.address));
+                }
+                Some(Support::Off) => return via(format!("{} has ATS off", from.address)),
+                Some(Support::On) => {}
+            }
+            let ports: Vec<&PciFunction> = up
+                .iter()
+                .take_while(|b| b.address != switch)
+                .filter(|b| b.kind == PciKind::SwitchDownstream)
+                .copied()
+                .collect();
+            for p in &ports {
+                match p.direct_translated {
+                    // netd answers for every port it read.
+                    None => return unknown(&p.address),
+                    Some(Support::Unsupported) => {
+                        return via(format!("{} has no Direct Translated P2P", p.address));
+                    }
+                    Some(Support::Off) => {
+                        return via(format!("{} has Direct Translated P2P off", p.address));
+                    }
+                    Some(Support::On) if p.translation_blocking => {
+                        return via(format!("{} has Translation Blocking on", p.address));
+                    }
+                    Some(Support::On) => {}
+                }
+            }
+            if let Some(p) = ports.iter().find(|p| acs_off.contains(p.address.as_str())) {
+                return via(format!(
+                    "{} has ACS off: requests cross it without the IOMMU (acs_off)",
+                    p.address
+                ));
+            }
+            P2pPath {
+                route: P2pRoute::Direct,
+                reason: String::new(),
+            }
+        };
+        let on_vfio: Vec<&PciFunction> = self
+            .devices
+            .iter()
+            .filter(|d| d.driver.as_deref() == Some("vfio-pci"))
+            .collect();
+        let mut pairs = Vec::new();
+        for (i, a) in on_vfio.iter().enumerate() {
+            let up_a = above(a);
+            for b in &on_vfio[i + 1..] {
+                let up_b = above(b);
+                let Some(common) = up_a
+                    .iter()
+                    .find(|x| up_b.iter().any(|y| y.address == x.address))
+                else {
+                    continue;
+                };
+                if common.kind != PciKind::SwitchUpstream {
+                    continue;
+                }
+                pairs.push(P2pPair {
+                    a: a.address.clone(),
+                    b: b.address.clone(),
+                    switch: common.address.clone(),
+                    a_to_b: path(a, &up_a, &common.address),
+                    b_to_a: path(b, &up_b, &common.address),
+                });
+            }
+        }
+        self.p2p = pairs;
     }
 
     /// `d` as the summary has it.
@@ -539,6 +657,43 @@ pub struct PciFunction {
     /// above it up to its root port (H28).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub kept_on: bool,
+    /// A function on vfio-pci: its ATS, as netd read it (H31).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ats: Option<Support>,
+    /// A root or downstream port above one: its ACS Direct Translated P2P
+    /// and Translation Blocking, as netd read them (H31).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub direct_translated: Option<Support>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub translation_blocking: bool,
+}
+
+/// Where a translated request from one device to another goes (§5.2a).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum P2pRoute {
+    Direct,
+    ViaRoot,
+    Unknown,
+}
+
+/// One direction of a [`P2pPair`], and the first condition that failed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct P2pPath {
+    pub route: P2pRoute,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// Two functions on vfio-pci whose nearest common bridge is a switch's
+/// upstream port (§5.2a).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct P2pPair {
+    pub a: String,
+    pub b: String,
+    pub switch: String,
+    pub a_to_b: P2pPath,
+    pub b_to_a: P2pPath,
 }
 
 /// A gap the node reports, never acts on (§5.2).
@@ -558,6 +713,9 @@ pub struct TopologyTree {
     pub devices: Vec<PciFunction>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<TopologyWarning>,
+    /// Switch-local pairs of devices on vfio-pci (§5.2a, H31).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub p2p: Vec<P2pPair>,
 }
 
 /// What readiness depends on besides the device.
@@ -732,6 +890,9 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             aer: r.aer,
             power: r.power.clone(),
             kept_on: kept_on(r),
+            ats: None,
+            direct_translated: None,
+            translation_blocking: false,
         });
     }
     devices.sort_by(|a, b| a.address.cmp(&b.address));
@@ -754,6 +915,7 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
         summary,
         devices,
         warnings,
+        p2p: Vec::new(),
     }
 }
 
@@ -1228,6 +1390,210 @@ mod tests {
                     "0000:87:00.0 is on vfio-pci below 0000:80:01.1, whose ACS is off (source validation): devices under it reach each other without the IOMMU"
                 ),
             ]
+        );
+    }
+
+    /// A switch with a GPU and a NIC on vfio-pci below two of its
+    /// downstream ports and, below a third, a nested switch with a second
+    /// NIC; and a GPU on vfio-pci on its own root port.
+    fn p2p_tree() -> TopologyTree {
+        let sw = "pci0000:80/0000:80:01.1/0000:81:00.0";
+        let bridge = |path: String, group: &str| {
+            raw(&path, "0x060400", Some("pcieport"), Some(group), Some(0))
+        };
+        let dev = |path: String, class: &str, group: &str| {
+            raw(&path, class, Some("vfio-pci"), Some(group), Some(0))
+        };
+        let raw = vec![
+            bridge("pci0000:80/0000:80:01.1".into(), "1"),
+            bridge(sw.into(), "2"),
+            bridge(format!("{sw}/0000:82:00.0"), "3"),
+            bridge(format!("{sw}/0000:82:01.0"), "4"),
+            bridge(format!("{sw}/0000:82:02.0"), "5"),
+            dev(format!("{sw}/0000:82:00.0/0000:87:00.0"), "0x030200", "20"),
+            dev(format!("{sw}/0000:82:01.0/0000:88:00.0"), "0x020000", "21"),
+            bridge(format!("{sw}/0000:82:02.0/0000:89:00.0"), "6"),
+            bridge(format!("{sw}/0000:82:02.0/0000:89:00.0/0000:8a:00.0"), "7"),
+            dev(
+                format!("{sw}/0000:82:02.0/0000:89:00.0/0000:8a:00.0/0000:8b:00.0"),
+                "0x020000",
+                "22",
+            ),
+            bridge("pci0000:00/0000:00:03.1".into(), "8"),
+            dev(
+                "pci0000:00/0000:00:03.1/0000:07:00.0".into(),
+                "0x030200",
+                "30",
+            ),
+        ];
+        let ctx = ReadyContext {
+            iommu: true,
+            ..Default::default()
+        };
+        build_tree(TopologySummary::default(), &raw, &ctx)
+    }
+
+    /// netd's answer for [`p2p_tree`]: ATS on every device, Direct
+    /// Translated P2P on every downstream port, ACS on everywhere.
+    fn p2p_report() -> AcsReport {
+        use glidex_ovs::acs::{DeviceAts, PortP2p};
+        let port = |a: &str, dt: Support| PortP2p {
+            address: a.into(),
+            direct_translated: dt,
+            translation_blocking: false,
+        };
+        AcsReport {
+            ports: vec![
+                port("0000:80:01.1", Support::Unsupported),
+                port("0000:82:00.0", Support::On),
+                port("0000:82:01.0", Support::On),
+                port("0000:82:02.0", Support::On),
+                port("0000:8a:00.0", Support::On),
+                port("0000:00:03.1", Support::Unsupported),
+            ],
+            devices: [
+                "0000:07:00.0",
+                "0000:87:00.0",
+                "0000:88:00.0",
+                "0000:8b:00.0",
+            ]
+            .into_iter()
+            .map(|a| DeviceAts {
+                address: a.into(),
+                ats: Support::On,
+            })
+            .collect(),
+            ..Default::default()
+        }
+    }
+
+    /// Each pair as `a b switch a_to_b b_to_a`, with the reasons.
+    fn pairs(t: &TopologyTree) -> Vec<String> {
+        let path = |p: &P2pPath| match p.route {
+            P2pRoute::Direct => "direct".to_string(),
+            P2pRoute::ViaRoot => format!("via_root ({})", p.reason),
+            P2pRoute::Unknown => format!("unknown ({})", p.reason),
+        };
+        t.p2p
+            .iter()
+            .map(|p| {
+                format!(
+                    "{} {} {}: {} / {}",
+                    p.a,
+                    p.b,
+                    p.switch,
+                    path(&p.a_to_b),
+                    path(&p.b_to_a)
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn switch_local_pairs_go_direct_when_all_is_on() {
+        let mut t = p2p_tree();
+        assert_eq!(func(&t, "0000:81:00.0").kind, PciKind::SwitchUpstream);
+        assert_eq!(func(&t, "0000:89:00.0").kind, PciKind::SwitchUpstream);
+        t.apply_p2p(&p2p_report());
+        // The GPU on its own root port pairs with nothing; the nested
+        // switch's NIC pairs through the outer switch.
+        assert_eq!(
+            pairs(&t),
+            [
+                "0000:87:00.0 0000:88:00.0 0000:81:00.0: direct / direct",
+                "0000:87:00.0 0000:8b:00.0 0000:81:00.0: direct / direct",
+                "0000:88:00.0 0000:8b:00.0 0000:81:00.0: direct / direct",
+            ]
+        );
+        assert_eq!(func(&t, "0000:88:00.0").ats, Some(Support::On));
+        assert_eq!(
+            func(&t, "0000:82:01.0").direct_translated,
+            Some(Support::On)
+        );
+        assert_eq!(func(&t, "0000:81:00.0").direct_translated, None);
+    }
+
+    #[test]
+    fn the_first_condition_that_fails_is_the_reason() {
+        use glidex_ovs::acs::{AcsBit, PortAcs};
+        let at = |r: &mut AcsReport, a: &str| r.ports.iter().position(|p| p.address == a).unwrap();
+        let first = |r: AcsReport| {
+            let mut t = p2p_tree();
+            t.apply_p2p(&r);
+            pairs(&t).remove(0)
+        };
+        // ATS off on the GPU: only its direction goes up.
+        let mut r = p2p_report();
+        r.devices[1].ats = Support::Off;
+        assert_eq!(
+            first(r),
+            "0000:87:00.0 0000:88:00.0 0000:81:00.0: via_root (0000:87:00.0 has ATS off) / direct"
+        );
+        let mut r = p2p_report();
+        r.devices[1].ats = Support::Unsupported;
+        assert!(first(r).contains("via_root (0000:87:00.0 has no ATS) / direct"));
+        // Direct Translated P2P off on the NIC's port.
+        let mut r = p2p_report();
+        let i = at(&mut r, "0000:82:01.0");
+        r.ports[i].direct_translated = Support::Off;
+        assert_eq!(
+            first(r),
+            "0000:87:00.0 0000:88:00.0 0000:81:00.0: direct / via_root (0000:82:01.0 has Direct Translated P2P off)"
+        );
+        // Translation Blocking on.
+        let mut r = p2p_report();
+        let i = at(&mut r, "0000:82:00.0");
+        r.ports[i].translation_blocking = true;
+        assert!(first(r).contains("via_root (0000:82:00.0 has Translation Blocking on) / direct"));
+        // ACS off: not direct, whatever the rest.
+        let mut r = p2p_report();
+        r.off.push(PortAcs {
+            address: "0000:82:00.0".into(),
+            off: vec![AcsBit::RequestRedirect],
+        });
+        assert!(first(r).contains("via_root (0000:82:00.0 has ACS off: requests cross it without the IOMMU (acs_off)) / direct"));
+        // The nested switch's own downstream port counts too.
+        let mut r = p2p_report();
+        let i = at(&mut r, "0000:8a:00.0");
+        r.ports[i].direct_translated = Support::Unsupported;
+        let mut t = p2p_tree();
+        t.apply_p2p(&r);
+        assert!(
+            pairs(&t)[1].ends_with("direct / via_root (0000:8a:00.0 has no Direct Translated P2P)"),
+            "{:?}",
+            pairs(&t)
+        );
+    }
+
+    #[test]
+    fn what_netd_couldnt_read_is_unknown() {
+        let mut r = p2p_report();
+        r.devices.retain(|d| d.address != "0000:87:00.0");
+        r.failed.push(("0000:87:00.0".into(), "short read".into()));
+        let i = r
+            .ports
+            .iter()
+            .position(|p| p.address == "0000:82:01.0")
+            .unwrap();
+        r.ports.remove(i);
+        let mut t = p2p_tree();
+        t.apply_p2p(&r);
+        assert_eq!(
+            pairs(&t)[0],
+            "0000:87:00.0 0000:88:00.0 0000:81:00.0: unknown (0000:87:00.0 couldn't be read) / unknown (0000:82:01.0 couldn't be read)"
+        );
+        assert_eq!(func(&t, "0000:87:00.0").ats, None);
+    }
+
+    #[test]
+    fn an_older_netd_gives_no_fields_and_no_pairs() {
+        let mut t = p2p_tree();
+        t.apply_p2p(&AcsReport::default());
+        assert!(t.p2p.is_empty());
+        assert!(
+            t.devices
+                .iter()
+                .all(|d| d.ats.is_none() && d.direct_translated.is_none())
         );
     }
 

@@ -1111,8 +1111,10 @@ host check is not run yet.
 **HT10** is in progress. Built and unit-tested: netd's `acs_above` also
 answers ATS for the given devices and Direct Translated P2P and
 Translation Blocking for each root and downstream port above them
-(H31). Not yet: the fields and pairs in the full tree, the API, `gxctl`
-and the node page; docs; the host check.
+(H31); `ats`, `direct_translated` and `translation_blocking` on the
+full tree's functions and its `p2p` pairs (§5.2a), in
+`GetNodeTopology` and `gxctl node topology --devices`; the operator
+guide. Not yet: the node page; the host check.
 
 HT6's acceptance run on the R9700 host, in the three-server test
 cluster with the single-A100 host leading (term 1052), main at `5b56b25` on the three servers:

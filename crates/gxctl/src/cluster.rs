@@ -718,6 +718,9 @@ pub(crate) fn topology_lines(
             if d.kept_on {
                 l.push_str("  kept at D0");
             }
+            if let Some(ats) = &d.ats {
+                l.push_str(&format!("  ats {ats}"));
+            }
         }
         format!("{l}  {ready}")
     };
@@ -744,6 +747,28 @@ pub(crate) fn topology_lines(
     if devices_only {
         out.extend(assignable.iter().map(|d| dev(d)));
         out.extend(fabric.iter().map(|d| fabric_line(d)));
+        // Switch-local P2P, one line per direction (spec/22 §5.2a).
+        for p in &t.p2p {
+            for (from, to, path) in [(&p.a, &p.b, &p.a_to_b), (&p.b, &p.a, &p.b_to_a)] {
+                let Some(path) = path.as_option() else {
+                    continue;
+                };
+                let route = match path.route.as_str() {
+                    "direct" => "direct".green().to_string(),
+                    "via_root" => "via root complex".yellow().to_string(),
+                    other => other.to_string(),
+                };
+                let why = if path.reason.is_empty() {
+                    String::new()
+                } else {
+                    format!(" ({})", path.reason)
+                };
+                out.push(format!(
+                    "p2p {from} -> {to}  switch {}  {route}{why}",
+                    p.switch
+                ));
+            }
+        }
     } else {
         let s = t.summary.as_option().cloned().unwrap_or_default();
         for n in &s.numa_nodes {
@@ -1211,6 +1236,53 @@ mod tests {
         assert!(l[5].starts_with("warning numa_unknown:"), "{l:?}");
         let d = topology_lines(&t, true);
         assert!(d[0].contains("numa 7  switch 0000:85:00.0"), "{d:?}");
+        assert!(!d.iter().any(|l| l.contains("ats") || l.starts_with("p2p")));
+    }
+
+    #[test]
+    fn devices_show_ats_and_the_switch_local_pairs() {
+        use glidex_api::proto::glidex::host::v1 as h;
+        colored::control::set_override(false);
+        let dev = |a: &str, ats: &str| h::PciFunction {
+            address: a.into(),
+            vendor_id: "0x10de".into(),
+            device_id: "0x20b0".into(),
+            class_id: "0x030200".into(),
+            driver: Some("vfio-pci".into()),
+            assignable: true,
+            ready: true,
+            ats: Some(ats.into()),
+            ..Default::default()
+        };
+        let path = |route: &str, reason: &str| {
+            Some(h::P2pPath {
+                route: route.into(),
+                reason: reason.into(),
+                ..Default::default()
+            })
+            .into()
+        };
+        let t = h::Topology {
+            devices: vec![dev("0000:87:00.0", "on"), dev("0000:88:00.0", "off")],
+            p2p: vec![h::P2pPair {
+                a: "0000:87:00.0".into(),
+                b: "0000:88:00.0".into(),
+                switch: "0000:81:00.0".into(),
+                a_to_b: path("direct", ""),
+                b_to_a: path("via_root", "0000:88:00.0 has ATS off"),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let d = topology_lines(&t, true);
+        assert!(d[0].ends_with("ats on  ready"), "{d:?}");
+        assert_eq!(
+            &d[2..],
+            [
+                "p2p 0000:87:00.0 -> 0000:88:00.0  switch 0000:81:00.0  direct",
+                "p2p 0000:88:00.0 -> 0000:87:00.0  switch 0000:81:00.0  via root complex (0000:88:00.0 has ATS off)",
+            ]
+        );
     }
 
     use super::*;

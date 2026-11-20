@@ -829,6 +829,9 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                     })
                     .into(),
                 kept_on: d.kept_on,
+                ats: d.ats.map(support_name),
+                direct_translated: d.direct_translated.map(support_name),
+                translation_blocking: d.translation_blocking,
                 ..Default::default()
             })
             .collect(),
@@ -841,6 +844,41 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                 ..Default::default()
             })
             .collect(),
+        p2p: t
+            .p2p
+            .iter()
+            .map(|p| {
+                let path = |x: &crate::topology::P2pPath| pb::P2pPath {
+                    route: match x.route {
+                        crate::topology::P2pRoute::Direct => "direct",
+                        crate::topology::P2pRoute::ViaRoot => "via_root",
+                        crate::topology::P2pRoute::Unknown => "unknown",
+                    }
+                    .into(),
+                    reason: x.reason.clone(),
+                    ..Default::default()
+                };
+                pb::P2pPair {
+                    a: p.a.clone(),
+                    b: p.b.clone(),
+                    switch: p.switch.clone(),
+                    a_to_b: Some(path(&p.a_to_b)).into(),
+                    b_to_a: Some(path(&p.b_to_a)).into(),
+                    ..Default::default()
+                }
+            })
+            .collect(),
         ..Default::default()
     }
+}
+
+/// ATS or Direct Translated P2P as the API says it (spec/22-host-topology.md
+/// H31).
+fn support_name(s: glidex_ovs::acs::Support) -> String {
+    match s {
+        glidex_ovs::acs::Support::Unsupported => "unsupported",
+        glidex_ovs::acs::Support::Off => "off",
+        glidex_ovs::acs::Support::On => "on",
+    }
+    .into()
 }
