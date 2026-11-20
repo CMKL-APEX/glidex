@@ -72,6 +72,8 @@ and pools for GPUs, DPUs and NICs.
 | H28 | Devices kept at D0 | A pool with `power_save: false` keeps its devices out of PCIe power saving on each node (§5.3a). The node keeps each of the pool's devices that is on `vfio-pci`, whoever bound it, at D0: the device gets `power/control=on`, so it isn't runtime-suspended while no VM holds it, and `d3cold_allowed=0`. Each bridge above it, up to and including its root port, also gets `d3cold_allowed=0`. The default, `power_save: true`, changes nothing. A host's `pci.overrides` may set it for that host (H23), and `--vfio-devices <pool>` copies it, so the boot binding applies it too. Glidex never sets `vfio-pci`'s `disable_idle_d3`. | The user's call (2026-11-17, issue #548). On the HGX host, waking idle A100s from D3cold failed thousands of times a day, and the NVMe drives behind the neighbouring switch dropped off the bus at the same moments. The per-device settings take effect at once and stay on the hosts and pools that need them. The module parameter covers every vfio device on the host and needs a reload or a reboot. Keeping devices at D0 costs their idle power. |
 | H29 | Closest devices | Of a VM's pool picks on a node, after the NUMA order (§8.3), each prefers the device that shares the deepest switch with the VM's devices already picked, then the one with the closest free device in each of the VM's later pool requests, then the lowest address. The summary gives each device its `switches`: the upstream port of every switch above it, nearest first. A node of an older version reports none, and only its nearest `switch` counts. | The user's call (2026-11-18, issue #527). On an HGX board a GPU and its NIC meet two switch levels down from the root port, and every device under the root port shares the top switch: a 1-GPU, 1-NIC VM got a GPU whose only switch in common with its NIC was the top one, so their traffic crossed both levels. A request needs nothing new: a GPU and a NIC that share a switch are what GPUDirect needs, and nothing gains from the farther pair. |
 | H30 | ACS above a VFIO device | The node warns `acs_off` (§5.2) for each device on `vfio-pci` with a port above it, a root port or a switch's downstream port, that supports ACS but has Source Validation, Request Redirect, Completion Redirect or Upstream Forwarding off. Glidex never changes ACS. `glidex-netd` reads it, as only root can read a device's extended configuration. | The user's call (2026-11-18). The kernel forms IOMMU groups at boot from the ACS it enables then. A tool that turns ACS off afterwards (NVIDIA's `nvidia-acs-disable`, meant for GPUDirect on bare metal) leaves the groups as they were: a switch then forwards a passed-through device's requests to its neighbours without the IOMMU, at addresses that are the guest's. The VM's devices are no longer isolated, and peer-to-peer between them (issue #527) reaches the wrong addresses. |
+| H31 | Switch-local P2P | Each node reports, read through `glidex-netd` with H30's ACS: for each function on `vfio-pci`, whether it has ATS and has it enabled (extended capability `0x000f`, the Enable bit of ATS Control); for each root port and switch downstream port above one, whether it supports and has on ACS Direct Translated P2P (bit 6) and Translation Blocking (bit 1). For each pair of functions on `vfio-pci` below one switch, it reports per direction whether a translated request goes **direct** across the switch or **via the root complex**, and why (§5.2a). Shown in the full tree, `gxctl node topology --devices` and the node page; no warning. | Issue #580. Isolated P2P between passthrough devices (a NIC reading GPU memory, #527) needs ACS on, ATS on the requester and Direct Translated P2P on the switch's downstream ports; then translated requests go across the switch instead of up to the root complex, where some hosts don't complete them and a completion timeout can take down the root port. Glidex couldn't show whether a host had it. |
+| H32 | Report only | Glidex never changes ATS, Direct Translated P2P or any other ACS control (as H30). An operator who wants switch-local P2P sets it up outside glidex, for example in a boot script, and glidex shows whether it is in effect. | The user's call (2026-11-20). Direct Translated P2P forwards a request the device marks as already translated, so isolation then rests on trusting the device's ATS: a device, or firmware a guest controls, can send a forged translated address (why Linux turns ATS off for untrusted devices). Turning it on is the operator's decision about their devices. |
 
 ## 3. Model
 
@@ -157,8 +159,16 @@ Two devices are **peer-close** when they share a switch (or a root
 port). The model carries this so §9 can ask for "2 GPUs under one switch"
 or "a GPU and a NIC under one switch". GPUDirect and peer-to-peer work
 across a switch without crossing the root complex. Glidex reports the
-fact and does not judge whether P2P actually works (that depends on ACS,
-the IOMMU and the vendor driver).
+fact, and for devices on `vfio-pci` whether translated requests between
+them can go across the switch (H31, §5.2a). It does not judge whether
+P2P actually works, which also depends on the IOMMU and the vendor
+driver.
+
+A function on `vfio-pci` also carries `ats` (`unsupported`, `off` or
+`on`), and a root port or switch downstream port above one carries
+`direct_translated` (`unsupported`, `off` or `on`) and
+`translation_blocking` (`true` when on). Each is read by `glidex-netd`
+and left out when netd couldn't read it (H31).
 
 ### 3.3 Assignable devices
 
@@ -253,12 +263,15 @@ as counts per PF (§10) and enumerated only in the full tree.
 - `gxctl node topology <node>` prints the §3.2 tree.
   `--devices` prints a table with one row per assignable device: address,
   class, model, NUMA node, IOMMU group, driver, ready, holder (the VM, if
-  any). `gxctl pci` gains the NUMA and ready columns.
+  any), and ATS; then the switch-local pairs (§5.2a), one line per
+  direction. `gxctl pci` gains the NUMA and ready columns.
 - The UI's node page gets a **Topology** card. NUMA nodes are columns
   showing CPUs (free, shared, dedicated, reserved), memory and hugepages,
   with their devices under each one and the VM holding each device.
   Warnings are shown above it. Clicking a device shows its tree path and
-  IOMMU group.
+  IOMMU group, with ATS and the Direct Translated P2P of each port on
+  the path. Below the card, a **Switch-local P2P** list shows the pairs
+  (§5.2a) when there are any.
 - The Cluster page's node list gains a device summary column
   (`8 gpu · 4 nic`).
 
@@ -316,6 +329,31 @@ acted on:
   bridge's above it) still allows power saving;
 - `acs_off`: a device on `vfio-pci` below a port whose ACS is off (H30),
   naming the device and the port.
+
+### 5.2a Switch-local P2P
+
+The full tree's `p2p` lists each pair of functions on `vfio-pci` whose
+nearest common bridge is a switch's upstream port (`switch`), with a
+result for each direction, `a` to `b` and `b` to `a` (H31). A request
+from `a` to `b` is **direct** when all of these hold:
+
+1. `a` has ATS on;
+2. every downstream port between `a` and the shared switch, the one on
+   that switch included, has Direct Translated P2P on and Translation
+   Blocking off;
+3. no port on that path has its ACS off (H30). With Request Redirect
+   off, requests already go across the switch, without the IOMMU; that
+   case is `acs_off`, not direct.
+
+Otherwise it is **via the root complex**, with the first condition that
+fails as its reason (`0000:43:00.0 has ATS off`, `0000:42:00.0 has
+Direct Translated P2P off`). A pair whose devices share only a root port
+is not listed: their requests go through the root complex anyway. When
+netd couldn't read a device or port on the path, the direction reads
+**unknown**, naming it.
+
+Glidex only reads these (H32). The pairs are the node's; which VM holds
+each device shows on the device.
 
 ### 5.3 Preparing a device
 
@@ -1008,6 +1046,9 @@ is a device of class `dpu`:
   hugepages.
 - **IOMMU-backed P2P groups:** asking for a set of devices whose P2P is
   verified rather than just switch-local.
+- **Turning switch-local P2P on:** a pool setting that has netd turn on
+  Direct Translated P2P above its devices at boot, for devices the
+  operator trusts (H32 leaves it to the operator for now).
 
 ## 14. Edits to existing documents
 
@@ -1040,6 +1081,7 @@ is a device of class `dpu`:
 | **HT6** Replicated and discovered pools | H20–H23: `pci_settings` with its API, gxctl and Cluster page card; the file's migration; discovered pools; `exclude` and `overrides` and their summary fields; the installer's `--vfio-devices` through the setting | Unit tests: the migration writes once and a differing file is ignored; every server resolves the same pools from the same summaries; a defined pool, an exclude and a slug clash each remove a device from discovery; a tenant can't see or request a discovered pool, a host role can; a rename with VMs requesting the pool is refused. Cluster test: a pool set on the leader is requested through a follower and after a leader change. On the R9700 host in the three-server test cluster: `amd-7551` discovered with both R9700s, adopted as `r9700`, a 1-GPU VM created while the single-A100 host leads. |
 | **HT7** Devices kept at D0 | H28, §5.3a: `power_save` on pools, in `pci.overrides` and in the boot selectors; netd's `keep_devices_on` with its `power` table; the control plane's set at start and after each read; `power` in the full tree, `kept_on` in the summary, the `power_save_on` warning; the pool form, gxctl and docs | netd tests with a fake sysfs: the device and its bridges up to the root port are written, a device leaving the set and a bridge with no kept device below get their values back, a second call writes nothing. Unit tests: overrides and a device in two pools; the set leaves out excluded devices and devices not on `vfio-pci`; the warning. On the HGX host: a pool with `power_save: false` keeps the idle A100s at D0 across a control-plane restart and a reboot. |
 | **HT9** ACS above a VFIO device | H30, §5.2: netd's read-only `acs_above` (the ports above given devices, read from their configuration space); the `acs_off` warning in the full tree, `GetNodeTopology`, `gxctl node topology` and the node page; docs | Unit tests: the ACS parser on byte fixtures (controls supported and off, a control the port lacks, no ACS, a short read, a looping capability list), root and downstream ports read and upstream ports skipped, the warning per device and port. netd test: the op reports the port, writes nothing and refuses anything but a PCI address. On a host with devices on `vfio-pci`: the warnings match the `ACSCtl` that `lspci -vvv` shows for the ports above them. |
+| **HT10** Switch-local P2P | H31, H32, §5.2a: netd's `acs_above` also answers ATS for the given devices and Direct Translated P2P and Translation Blocking for the ports above them (additive fields; an older netd's answer has none); `ats`, `direct_translated`, `translation_blocking` on functions and the tree's `p2p` pairs (full tree, `GetNodeTopology`, `gxctl node topology --devices`, the node page); docs | Unit tests: the ATS parser and the two new ACS bits on byte fixtures (no ATS, ATS off and on, DT and TB on and off), the pairs on fixture trees (a switch with two devices: each condition failing in turn, nested switches, a pair under a root port only not listed, a port netd couldn't read giving unknown), an older netd's answer giving no fields and no pairs. netd test: the op still writes nothing. UI e2e for the node page's list. On a host with a switch and two devices on `vfio-pci`: ATS and the ACS bits match `lspci -vvv` (`ATSCtl`, `ACSCtl` `DirectTrans`, `TransBlk`). |
 
 HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
