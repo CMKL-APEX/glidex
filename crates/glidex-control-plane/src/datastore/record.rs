@@ -79,9 +79,11 @@ pub enum DriverSpec {
     /// A hyperstor cluster's pool (spec/24-storage.md §11.2): volumes served
     /// to VMs over vhost-user-blk by each node's `hyperstor-vhost`.
     Hyperstor {
-        /// The cluster API's addresses (`host:port`).
+        /// The cluster API's addresses (`host:port`): as created or set, then
+        /// as the members list them (S35).
         api: Vec<String>,
-        /// The map service's addresses, as the join gave them.
+        /// The map service's addresses, separated by commas: as the join
+        /// gave them, then as the members list them (S35).
         map: String,
         pool: u32,
         /// The identity glidex enrolled with (S20): its certificate and the
@@ -93,6 +95,10 @@ pub enum DriverSpec {
         /// datastore (S33); the operator's, not checked against the cluster.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         mgmt_url: Option<String>,
+        /// When `api` and `map` were last read from the members, or set
+        /// (Unix seconds; S35). `None`: not since the join.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        addresses_checked: Option<u64>,
         /// Unused: a hyperstor datastore is the same from every node.
         #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
         node_paths: BTreeMap<String, String>,

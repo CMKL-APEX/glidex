@@ -48,6 +48,10 @@ pub struct NewHyperstor {
     pub mgmt_url: Option<String>,
 }
 
+/// How often the leader reads a hyperstor cluster's member list for its
+/// addresses (S35).
+pub const ADDRESS_CHECK_SECS: u64 = 15 * 60;
+
 /// `PATCH /datastores/{id}`: what is `Some` changes.
 #[derive(Debug, Clone, Default)]
 pub struct DatastoreChanges {
@@ -57,6 +61,8 @@ pub struct DatastoreChanges {
     pub overcommit: Option<bool>,
     /// A hyperstor datastore's management UI; `Some(None)` clears it.
     pub mgmt_url: Option<Option<String>>,
+    /// A hyperstor datastore's cluster API addresses (S35).
+    pub hyperstor_api: Option<Vec<String>>,
 }
 
 impl VmManager {
@@ -221,6 +227,7 @@ impl VmManager {
             pool: h.pool,
             identity: Some(enrolled.identity),
             mgmt_url: h.mgmt_url,
+            addresses_checked: None,
             node_paths: BTreeMap::new(),
         })
     }
@@ -246,7 +253,13 @@ impl VmManager {
             let Some(opened) = self.images.hyperstor_identity(&ds) else {
                 continue;
             };
-            let DriverSpec::Hyperstor { api, identity, .. } = &mut ds.driver else {
+            let DriverSpec::Hyperstor {
+                api,
+                identity,
+                addresses_checked,
+                ..
+            } = &mut ds.driver
+            else {
                 continue;
             };
             match super::hyperstor::renew(api, &opened) {
@@ -258,6 +271,8 @@ impl VmManager {
                         continue;
                     }
                     *identity = Some(new.identity);
+                    // Read the members again in this round (S35).
+                    *addresses_checked = None;
                     if let Err(e) = record::put(&db, &ds, &record::root()) {
                         tracing::warn!(datastore = %ds.name, error = %e, "recording hyperstor's renewed certificate");
                     } else {
@@ -267,6 +282,72 @@ impl VmManager {
                 Err(e) => {
                     tracing::warn!(datastore = %ds.name, error = %e, "renewing hyperstor's certificate");
                 }
+            }
+        }
+    }
+
+    /// Reads each hyperstor datastore's addresses from its cluster's member
+    /// list, at most every [`ADDRESS_CHECK_SECS`] and after a certificate
+    /// renewal, and records them with the time (S35). The leader's, from
+    /// its probe rounds. A cluster that doesn't answer keeps its addresses
+    /// and is asked again next round.
+    pub(crate) fn refresh_hyperstor_addresses(&self) {
+        let db = self.database();
+        if !db.can_write() {
+            return;
+        }
+        let now = crate::tenancy::now();
+        for ds in record::list(&db).unwrap_or_default() {
+            let DriverSpec::Hyperstor {
+                api,
+                addresses_checked,
+                ..
+            } = &ds.driver
+            else {
+                continue;
+            };
+            if addresses_checked.is_some_and(|t| now.saturating_sub(t) < ADDRESS_CHECK_SECS) {
+                continue;
+            }
+            let Some(opened) = self.images.hyperstor_identity(&ds) else {
+                continue;
+            };
+            let found = match super::hyperstor::addresses(api, &opened) {
+                Ok(a) => a,
+                Err(e) => {
+                    tracing::warn!(datastore = %ds.name, error = %e, "reading hyperstor's members");
+                    continue;
+                }
+            };
+            // Read again: a change made meanwhile (`datastore set`) stays.
+            let Ok(Some(mut ds)) = record::find(&db, &ds.id) else {
+                continue;
+            };
+            let DriverSpec::Hyperstor {
+                api,
+                map,
+                addresses_checked,
+                ..
+            } = &mut ds.driver
+            else {
+                continue;
+            };
+            if (!found.api.is_empty() && *api != found.api) || *map != found.map {
+                tracing::info!(
+                    datastore = %ds.name,
+                    api = %found.api.join(","),
+                    map = %found.map,
+                    "hyperstor's members moved; recording their addresses"
+                );
+            }
+            // Members that never led name no API: keep what we have.
+            if !found.api.is_empty() {
+                *api = found.api;
+            }
+            *map = found.map;
+            *addresses_checked = Some(now);
+            if let Err(e) = record::put(&db, &ds, &record::root()) {
+                tracing::warn!(datastore = %ds.name, error = %e, "recording hyperstor's addresses");
             }
         }
     }
@@ -370,6 +451,33 @@ impl VmManager {
         }
         if let Some(v) = ch.overcommit {
             ds.overcommit = v;
+        }
+        if let Some(new) = ch.hyperstor_api {
+            let id = self.images.hyperstor_identity(&ds);
+            let DriverSpec::Hyperstor {
+                api,
+                map,
+                addresses_checked,
+                ..
+            } = &mut ds.driver
+            else {
+                return Err(DatastoreError::Invalid(
+                    "only a hyperstor datastore has a cluster API".into(),
+                )
+                .into());
+            };
+            let id = id.ok_or_else(|| {
+                DatastoreError::Invalid(
+                    "this server doesn't hold the datastore's hyperstor identity; set it from another server"
+                        .into(),
+                )
+            })?;
+            let found = super::hyperstor::check_addresses(&new, &id)
+                .await
+                .map_err(|e| DatastoreError::Invalid(format!("hyperstor: {e}")))?;
+            *api = new;
+            *map = found.map;
+            *addresses_checked = Some(crate::tenancy::now());
         }
         if let Some(v) = ch.mgmt_url {
             let DriverSpec::Hyperstor { mgmt_url, .. } = &mut ds.driver else {

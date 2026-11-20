@@ -434,12 +434,13 @@ pub async fn update_datastore(
     Path(id): Path<String>,
     Json(v): Json<Value>,
 ) -> Result<impl IntoResponse, ApiErr> {
-    const FIELDS: [&str; 5] = [
+    const FIELDS: [&str; 6] = [
         "node_paths",
         "nodes",
         "default_for_disks",
         "overcommit",
         "hyperstor_mgmt_url",
+        "hyperstor_api",
     ];
     let present: Vec<String> = v
         .as_object()

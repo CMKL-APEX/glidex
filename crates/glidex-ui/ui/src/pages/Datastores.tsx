@@ -306,6 +306,11 @@ function Detail({ d }: { d: Datastore }) {
               <>
                 hyperstor: pool <span className="font-mono text-xs">{d.hyperstor_pool}</span> of{" "}
                 <span className="font-mono text-xs">{(d.hyperstor_api ?? []).join(", ")}</span>
+                {d.hyperstor_addresses_checked && (
+                  <div className="text-xs text-gray-500">
+                    Addresses checked with its members {new Date(d.hyperstor_addresses_checked).toLocaleString()}
+                  </div>
+                )}
                 {d.hyperstor_identity && (
                   <div>
                     As <span className="font-mono text-xs">{d.hyperstor_identity}</span>

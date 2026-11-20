@@ -801,7 +801,7 @@ fn help_text() -> String {
     );
     line!(
         "  {} - Change paths, nodes, the default, overcommit, a hyperstor datastore's management UI",
-        "datastore set <name|id> [--node-path NODE=P] [--nodes N,M|--all-nodes] [--default|--no-default] [--overcommit|--no-overcommit] [--mgmt-url URL]"
+        "datastore set <name|id> [--node-path NODE=P] [--nodes N,M|--all-nodes] [--default|--no-default] [--overcommit|--no-overcommit] [--mgmt-url URL] [--hyperstor API[,API...]]"
             .cyan()
     );
     line!(

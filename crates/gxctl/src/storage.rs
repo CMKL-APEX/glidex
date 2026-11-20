@@ -904,7 +904,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
 
 // ---- datastores (spec/24-storage.md §13) -------------------------------------
 
-const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F [--mgmt-url URL]) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] [--mgmt-url URL] | rm <datastore>";
+const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F [--mgmt-url URL]) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] [--mgmt-url URL] [--hyperstor API[,API...]] | rm <datastore>";
 
 /// `--node-path NODE=PATH`, repeated.
 fn node_paths(args: &[&str]) -> Result<Vec<(String, String)>, String> {
@@ -961,6 +961,12 @@ fn print_datastore(d: &Datastore) {
             d.hyperstor_pool,
             d.path
         );
+        if let Some(t) = d.hyperstor_addresses_checked.as_option() {
+            println!(
+                "  addresses checked with its members: {}",
+                format_unix_time(t.seconds.max(0) as u64)
+            );
+        }
         if !d.hyperstor_mgmt_url.is_empty() {
             println!("  manage cluster: {}", d.hyperstor_mgmt_url);
         }
@@ -1234,6 +1240,16 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
             if let Some(v) = flag_value(args, "--mgmt-url") {
                 req.hyperstor_mgmt_url = v.to_string();
                 mask.push("hyperstor_mgmt_url");
+            }
+            // When its members have moved: checked against the cluster.
+            if let Some(v) = flag_value(args, "--hyperstor") {
+                req.hyperstor_api = v
+                    .split(',')
+                    .map(str::trim)
+                    .filter(|a| !a.is_empty())
+                    .map(String::from)
+                    .collect();
+                mask.push("hyperstor_api");
             }
             if mask.is_empty() {
                 return usage(u);
