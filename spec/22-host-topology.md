@@ -269,9 +269,10 @@ as counts per PF (§10) and enumerated only in the full tree.
   showing CPUs (free, shared, dedicated, reserved), memory and hugepages,
   with their devices under each one and the VM holding each device.
   Warnings are shown above it. Clicking a device shows its tree path and
-  IOMMU group, with ATS and the Direct Translated P2P of each port on
-  the path. Below the card, a **Switch-local P2P** list shows the pairs
-  (§5.2a) when there are any.
+  IOMMU group. A device on `vfio-pci` also shows its ATS and the Direct
+  Translated P2P of each port above it. Below the card, a
+  **Switch-local P2P** list shows the pairs (§5.2a), one line per
+  direction, when there are any.
 - The Cluster page's node list gains a device summary column
   (`8 gpu · 4 nic`).
 
@@ -1113,8 +1114,9 @@ answers ATS for the given devices and Direct Translated P2P and
 Translation Blocking for each root and downstream port above them
 (H31); `ats`, `direct_translated` and `translation_blocking` on the
 full tree's functions and its `p2p` pairs (§5.2a), in
-`GetNodeTopology` and `gxctl node topology --devices`; the operator
-guide. Not yet: the node page; the host check.
+`GetNodeTopology`, `gxctl node topology --devices` and the node page's
+Topology card (UI e2e `host-p2p`); the operator guide. Not yet: the
+host check.
 
 HT6's acceptance run on the R9700 host, in the three-server test
 cluster with the single-A100 host leading (term 1052), main at `5b56b25` on the three servers:
