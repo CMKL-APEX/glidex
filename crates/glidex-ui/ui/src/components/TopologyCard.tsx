@@ -1,9 +1,21 @@
 import { useEffect, useState } from "react";
 import * as api from "../api";
-import type { HostTopology, PciFunction } from "../types";
+import type { HostTopology, P2pPath, PciFunction } from "../types";
 import { cpuList, num, pciClassWord } from "../types";
 import { Badge, Card, ErrorBanner, errorMessage } from "./ui";
 import { LoadingCard } from "./Loading";
+
+/** The ports above a device with their Direct Translated P2P, nearest
+ * first (spec/22-host-topology.md H31). */
+function portsAbove(d: PciFunction, all: Map<string, PciFunction>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (let p = d.parent ? all.get(d.parent) : undefined; p && !seen.has(p.address); p = p.parent ? all.get(p.parent) : undefined) {
+    seen.add(p.address);
+    if (p.direct_translated) out.push(`${p.address} ${p.direct_translated}${p.translation_blocking ? " (translation blocking on)" : ""}`);
+  }
+  return out;
+}
 
 /** What the viewer may do with a node's devices, and how. */
 interface DeviceOps {
@@ -13,6 +25,8 @@ interface DeviceOps {
   /** Set a PF's SR-IOV virtual functions (§10.1). */
   sriov: (address: string, current: number, total: number) => void;
   busy: string | null;
+  /** Every function, by address: for the ports above a device. */
+  all: Map<string, PciFunction>;
 }
 
 /** One device a VM could be given: what it is, where it sits, whether it
@@ -63,7 +77,11 @@ function Device({ d, ops }: { d: PciFunction; ops: DeviceOps }) {
         {d.kept_on && " (kept at D0)"}
         {d.sriov && ` · VFs ${d.sriov.enabled_vfs ?? 0}/${d.sriov.total_vfs ?? 0}`}
         {d.sriov && (d.sriov.enabled_vfs ?? 0) > 0 && ` (${d.sriov.ready_vfs ?? 0} ready${d.sriov.vf_driver ? `, on ${d.sriov.vf_driver}` : ""})`}
+        {d.ats && ` · ATS ${d.ats}`}
       </div>
+      {d.ats && portsAbove(d, ops.all).length > 0 && (
+        <div className="text-xs text-gray-500">Direct Translated P2P: {portsAbove(d, ops.all).join(", ")}</div>
+      )}
       {!d.ready && (d.not_ready ?? []).length > 0 && <div className="text-xs text-amber-700">{(d.not_ready ?? []).join("; ")}</div>}
     </li>
   );
@@ -87,6 +105,7 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
     };
   }, [node, tick]);
   const ops: DeviceOps = {
+    all: new Map((t?.devices ?? []).map((d) => [d.address, d])),
     sriov: () => {},
     manage,
     cordoned: new Set(cordoned),
@@ -225,6 +244,39 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
                 </div>
               </li>
             ))}
+          </ul>
+        </div>
+      )}
+      {(t.p2p ?? []).length > 0 && (
+        <div className="mt-4" data-testid="switch-local-p2p">
+          <div className="text-sm font-medium text-gray-900">Switch-local P2P</div>
+          <p className="text-xs text-gray-500">
+            Whether translated requests between devices on vfio-pci under one switch go straight across it. Glidex only reports this; see the operator guide.
+          </p>
+          <ul className="text-sm">
+            {(t.p2p ?? []).flatMap((p) =>
+              (
+                [
+                  [p.a, p.b, p.a_to_b],
+                  [p.b, p.a, p.b_to_a],
+                ] as [string, string, P2pPath | undefined][]
+              ).map(([from, to, path]) => (
+                <li key={`${from}>${to}`} className="py-1 border-t border-gray-100 first:border-t-0 flex flex-wrap items-center gap-2">
+                  <span className="font-mono">
+                    {from} → {to}
+                  </span>
+                  <span className="text-xs text-gray-400">switch {p.switch}</span>
+                  {path?.route === "direct" ? (
+                    <Badge kind="ok">direct</Badge>
+                  ) : path?.route === "via_root" ? (
+                    <Badge kind="warn">via root complex</Badge>
+                  ) : (
+                    <Badge kind="warn">unknown</Badge>
+                  )}
+                  {path?.reason && <span className="text-xs text-gray-500">{path.reason}</span>}
+                </li>
+              )),
+            )}
           </ul>
         </div>
       )}

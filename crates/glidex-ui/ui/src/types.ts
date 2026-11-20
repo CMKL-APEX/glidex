@@ -2337,6 +2337,28 @@ export interface PciFunction {
   power?: { state?: string; control?: string; d3cold_allowed?: boolean };
   /** Kept at D0: never runtime-suspended, and D3cold off on it and the bridges above it (H28). */
   kept_on?: boolean;
+  /** On vfio-pci: ATS, `unsupported`, `off` or `on`; unset when unread (H31). */
+  ats?: string;
+  /** A root or downstream port above one: ACS Direct Translated P2P, and Translation Blocking (H31). */
+  direct_translated?: string;
+  translation_blocking?: boolean;
+}
+
+/** One direction of a switch-local pair (spec/22-host-topology.md §5.2a). */
+export interface P2pPath {
+  /** `direct`, `via_root` or `unknown`. */
+  route?: string;
+  /** The first condition that failed. */
+  reason?: string;
+}
+
+export interface P2pPair {
+  a: string;
+  b: string;
+  /** The upstream port of the switch they share. */
+  switch?: string;
+  a_to_b?: P2pPath;
+  b_to_a?: P2pPath;
 }
 
 export interface HostTopology {
@@ -2349,6 +2371,8 @@ export interface HostTopology {
   };
   devices?: PciFunction[];
   warnings?: { kind?: string; detail?: string }[];
+  /** Pairs of devices on vfio-pci below one switch (§5.2a). */
+  p2p?: P2pPair[];
 }
 
 /** `0-3,8,10-11` for a set of CPUs. */
