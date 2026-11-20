@@ -138,6 +138,17 @@ const CHECKED: &[(u32, u32, Reg, Check)] = &[
     (0x4000_0001, 0, Reg::Edx, Check::Subset),
 ];
 
+/// Bits Cloud Hypervisor sets in every guest on KVM, whatever KVM offers
+/// (`required_common_cpuid_updates` in its `arch` crate): leaf 0x1 ECX
+/// HYPERVISOR (31) and TSC_DEADLINE_TIMER (24), and EDX MTRR (12). The
+/// guests of both hosts have them, so [`fits`] doesn't compare them: a
+/// kernel whose KVM doesn't list them (6.8 doesn't list the ECX two) would
+/// otherwise be refused for a VM it would take (#585).
+const VMM_SET: &[(u32, u32, Reg, u32)] = &[
+    (0x1, 0, Reg::Ecx, (1 << 31) | (1 << 24)),
+    (0x1, 0, Reg::Edx, 1 << 12),
+];
+
 /// One checked register's value: what node and VM status keep.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CpuidValue {
@@ -200,13 +211,18 @@ impl Misfit {
 }
 
 /// Whether a VM that booted with `vm` can run where KVM offers `target`.
-/// A value absent from either side counts as zero.
+/// A value absent from either side counts as zero; the bits Cloud
+/// Hypervisor sets itself ([`VMM_SET`]) count as set on both.
 pub fn fits(vm: &[CpuidValue], target: &[CpuidValue]) -> Result<(), Misfit> {
     let get = |of: &[CpuidValue], leaf, subleaf, reg| {
+        let set = VMM_SET
+            .iter()
+            .find(|s| (s.0, s.1, s.2) == (leaf, subleaf, reg))
+            .map_or(0, |s| s.3);
         of.iter()
             .find(|v| v.leaf == leaf && v.subleaf == subleaf && v.reg == reg)
-            .map(|v| v.value)
-            .unwrap_or(0)
+            .map_or(0, |v| v.value)
+            | set
     };
     for &(leaf, subleaf, reg, check) in CHECKED {
         let (v, t) = (get(vm, leaf, subleaf, reg), get(target, leaf, subleaf, reg));
@@ -372,6 +388,31 @@ mod tests {
         assert!(m.to_string().contains("lacks bits 0x04000000"), "{m}");
         assert_eq!(fits(&new_kernel, &old_kernel), Ok(()));
         assert_eq!(fits(&old_kernel, &old_kernel), Ok(()));
+    }
+
+    /// #585: node-a (6.8) and node-b (6.17), both EPYC 7742. 6.8's KVM
+    /// doesn't list HYPERVISOR or TSC_DEADLINE_TIMER in leaf 0x1 ECX, which
+    /// Cloud Hypervisor gives every guest anyway.
+    #[test]
+    fn bits_the_vmm_sets_itself_are_not_compared() {
+        let host = |ecx1, edx7| {
+            checked_values(&[
+                entry(0x1, 0, [0x830f10, 0x800, ecx1, 0x178bebff]),
+                entry(0x7, 0, [0x1, 0x219c07a9, 0x40069c, edx7]),
+            ])
+        };
+        let (k68, k617) = (
+            host(0x76f8_3203, 0xac00_0000),
+            host(0xf7f8_3203, 0xa800_0000),
+        );
+        // A VM booted on 6.17 fits 6.8: only VMM-set bits differ in leaf 0x1.
+        assert_eq!(fits(&k617, &k68), Ok(()));
+        // The other way the leaf 0x7 EDX difference is real and still refused.
+        let m = fits(&k68, &k617).unwrap_err();
+        assert_eq!((m.leaf, m.reg, m.vm & !m.target), (0x7, Reg::Edx, 1 << 26));
+        // Any other missing leaf 0x1 ECX bit is still refused.
+        let m = fits(&host(0xf7f8_3203 | 1 << 2, 0xa800_0000), &k68).unwrap_err();
+        assert_eq!((m.leaf, m.reg, m.vm & !m.target), (0x1, Reg::Ecx, 1 << 2));
     }
 
     #[test]
