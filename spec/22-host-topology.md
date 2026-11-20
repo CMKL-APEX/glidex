@@ -1108,6 +1108,12 @@ Forwarding. The control plane asks netd each time it reads the full
 tree; without netd, or with an older one, the warning is left out. Its
 host check is not run yet.
 
+**HT10** is in progress. Built and unit-tested: netd's `acs_above` also
+answers ATS for the given devices and Direct Translated P2P and
+Translation Blocking for each root and downstream port above them
+(H31). Not yet: the fields and pairs in the full tree, the API, `gxctl`
+and the node page; docs; the host check.
+
 HT6's acceptance run on the R9700 host, in the three-server test
 cluster with the single-A100 host leading (term 1052), main at `5b56b25` on the three servers:
 
