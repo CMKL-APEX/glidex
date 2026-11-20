@@ -173,7 +173,8 @@ pub enum Op {
         addresses: Vec<String>,
     },
     /// Read-only: the root ports and switch downstream ports above these
-    /// devices whose ACS is off (spec/22-host-topology.md H30).
+    /// devices whose ACS is off (spec/22-host-topology.md H30), what each
+    /// does with translated requests, and the devices' ATS (H31).
     AcsAbove {
         addresses: Vec<String>,
     },

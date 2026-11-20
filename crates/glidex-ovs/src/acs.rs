@@ -1,9 +1,11 @@
 //! ACS on the ports above passthrough devices (spec/22-host-topology.md
 //! H30, §5.2). The kernel forms IOMMU groups at boot from the ACS it
 //! enables then; a port whose ACS is turned off afterwards forwards a
-//! device's requests to its neighbours without the IOMMU. Read only: glidex
-//! never changes ACS. Runs in glidex-netd, as only root can read a device's
-//! extended configuration space.
+//! device's requests to its neighbours without the IOMMU. Also what
+//! switch-local P2P needs (H31): ATS on the devices, and Direct Translated
+//! P2P and Translation Blocking on the ports. Read only: glidex never
+//! changes ACS or ATS (H32). Runs in glidex-netd, as only root can read a
+//! device's extended configuration space.
 
 use crate::Exec;
 use crate::power::bridges_above;
@@ -13,6 +15,13 @@ use std::path::Path;
 
 /// The ACS extended capability.
 const ACS_ID: u16 = 0x000d;
+/// The ATS extended capability.
+const ATS_ID: u16 = 0x000f;
+/// ACS Translation Blocking and Direct Translated P2P.
+const ACS_TB: u16 = 1 << 1;
+const ACS_DT: u16 = 1 << 6;
+/// Enable, in the ATS Control register.
+const ATS_ENABLE: u16 = 1 << 15;
 /// The PCI Express capability, in the standard capability list.
 const PCIE_ID: u8 = 0x10;
 /// Device/Port Type in the PCI Express Capabilities register.
@@ -66,12 +75,52 @@ pub struct PortAcs {
     pub off: Vec<AcsBit>,
 }
 
+/// Whether a function has a capability, and has it on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Support {
+    Unsupported,
+    Off,
+    On,
+}
+
+impl Support {
+    fn of(cap: bool, on: bool) -> Self {
+        match (cap, on) {
+            (false, _) => Support::Unsupported,
+            (true, false) => Support::Off,
+            (true, true) => Support::On,
+        }
+    }
+}
+
+/// What a port above a device does with translated requests (H31).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PortP2p {
+    pub address: String,
+    pub direct_translated: Support,
+    pub translation_blocking: bool,
+}
+
+/// A device's ATS (H31).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeviceAts {
+    pub address: String,
+    pub ats: Support,
+}
+
 /// What [`ports_off`] found.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AcsReport {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub off: Vec<PortAcs>,
-    /// A port, and why its ACS couldn't be read.
+    /// Every root and downstream port read, ACS off or not.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<PortP2p>,
+    /// The given devices whose configuration space was read.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub devices: Vec<DeviceAts>,
+    /// A port or device, and why it couldn't be read.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed: Vec<(String, String)>,
 }
@@ -142,8 +191,47 @@ pub fn acs_off(config: &[u8]) -> Option<Vec<AcsBit>> {
     )
 }
 
+/// A port's Direct Translated P2P and Translation Blocking; a port without
+/// ACS has neither.
+pub fn port_p2p(config: &[u8]) -> (Support, bool) {
+    let Some(at) = extended_capability(config, ACS_ID) else {
+        return (Support::Unsupported, false);
+    };
+    let cap = u16_at(config, at + 4).unwrap_or(0);
+    let ctrl = u16_at(config, at + 6).unwrap_or(0);
+    (
+        Support::of(cap & ACS_DT != 0, ctrl & ACS_DT != 0),
+        cap & ACS_TB != 0 && ctrl & ACS_TB != 0,
+    )
+}
+
+/// A function's ATS, from its whole configuration space.
+pub fn ats(config: &[u8]) -> Support {
+    match extended_capability(config, ATS_ID).and_then(|at| u16_at(config, at + 6)) {
+        Some(ctrl) => Support::of(true, ctrl & ATS_ENABLE != 0),
+        None => Support::Unsupported,
+    }
+}
+
+/// A function's whole configuration space, or why it can't be had: only
+/// root reads past the first 64 bytes.
+fn read_config(exec: &dyn Exec, address: &str) -> Result<Vec<u8>, String> {
+    let path = Path::new("/sys/bus/pci/devices")
+        .join(address)
+        .join("config");
+    let config = exec.read_bytes(&path).map_err(|e| e.to_string())?;
+    if config.len() <= 0x100 {
+        return Err(format!(
+            "only {} bytes of its configuration space are readable",
+            config.len()
+        ));
+    }
+    Ok(config)
+}
+
 /// The root ports and switch downstream ports above `addresses` (checked
-/// PCI addresses) whose ACS is off.
+/// PCI addresses): those whose ACS is off (H30), and what each does with
+/// translated requests; and each device's ATS (H31).
 pub fn ports_off(exec: &dyn Exec, addresses: &[String]) -> AcsReport {
     let ports: BTreeSet<String> = addresses
         .iter()
@@ -175,7 +263,25 @@ pub fn ports_off(exec: &dyn Exec, addresses: &[String]) -> AcsReport {
         if let Some(off) = acs_off(&config)
             && !off.is_empty()
         {
-            report.off.push(PortAcs { address: p, off });
+            report.off.push(PortAcs {
+                address: p.clone(),
+                off,
+            });
+        }
+        let (direct_translated, translation_blocking) = port_p2p(&config);
+        report.ports.push(PortP2p {
+            address: p,
+            direct_translated,
+            translation_blocking,
+        });
+    }
+    for a in addresses.iter().collect::<BTreeSet<_>>() {
+        match read_config(exec, a) {
+            Ok(config) => report.devices.push(DeviceAts {
+                address: a.clone(),
+                ats: ats(&config),
+            }),
+            Err(why) => report.failed.push((a.clone(), why)),
         }
     }
     report
@@ -207,6 +313,45 @@ mod tests {
             c[0x14e..0x150].copy_from_slice(&ctrl.to_le_bytes());
         }
         c
+    }
+
+    /// An endpoint with AER, then ATS with its Control register `ctrl`
+    /// when given.
+    fn endpoint(ats_ctrl: Option<u16>) -> Vec<u8> {
+        let mut c = config(0x0, None);
+        if let Some(ctrl) = ats_ctrl {
+            c[0x100..0x104].copy_from_slice(&(0x0001u32 | 1 << 16 | 0x180 << 20).to_le_bytes());
+            c[0x180..0x184].copy_from_slice(&(u32::from(ATS_ID) | 1 << 16).to_le_bytes());
+            c[0x184..0x186].copy_from_slice(&0x0020u16.to_le_bytes());
+            c[0x186..0x188].copy_from_slice(&ctrl.to_le_bytes());
+        }
+        c
+    }
+
+    #[test]
+    fn ats_is_read_from_its_control_register() {
+        assert_eq!(ats(&endpoint(None)), Support::Unsupported);
+        assert_eq!(ats(&endpoint(Some(0))), Support::Off);
+        // Enable, with a Smallest Translation Unit set.
+        assert_eq!(ats(&endpoint(Some(0x8003))), Support::On);
+        assert_eq!(ats(&endpoint(Some(0x8000))[..64]), Support::Unsupported);
+    }
+
+    #[test]
+    fn direct_translated_and_translation_blocking() {
+        // DT and TB supported, both on (with the four H30 controls).
+        let c = config(DOWNSTREAM_PORT, Some((0x5f, 0x5f)));
+        assert_eq!(port_p2p(&c), (Support::On, true));
+        // Supported, both off.
+        let c = config(DOWNSTREAM_PORT, Some((0x5f, 0x1d)));
+        assert_eq!(port_p2p(&c), (Support::Off, false));
+        // Not supported: the control bits mean nothing.
+        let c = config(DOWNSTREAM_PORT, Some((0x1d, 0x5f)));
+        assert_eq!(port_p2p(&c), (Support::Unsupported, false));
+        assert_eq!(
+            port_p2p(&config(ROOT_PORT, None)),
+            (Support::Unsupported, false)
+        );
     }
 
     #[test]
@@ -265,16 +410,17 @@ mod tests {
         assert_eq!(port_type(&[0u8; 64]), None);
     }
 
-    /// A root port, a switch (upstream and downstream ports) and a GPU.
+    /// A root port, a switch (upstream and downstream ports) and a GPU
+    /// without ATS.
     fn host(root: Vec<u8>, down: Vec<u8>) -> RecordingExec {
+        host_with(root, down, endpoint(None))
+    }
+
+    fn host_with(root: Vec<u8>, down: Vec<u8>, gpu: Vec<u8>) -> RecordingExec {
         let exec = RecordingExec::new();
         let up = "../../../devices/pci0000:40/0000:40:01.1/0000:41:00.0/0000:42:00.0";
         for (bdf, link, config) in [
-            (
-                "0000:43:00.0",
-                format!("{up}/0000:43:00.0"),
-                config(0x0, None),
-            ),
+            ("0000:43:00.0", format!("{up}/0000:43:00.0"), gpu),
             ("0000:42:00.0", up.to_string(), down),
             (
                 "0000:41:00.0",
@@ -303,6 +449,11 @@ mod tests {
             config(DOWNSTREAM_PORT, Some((0x1d, 0x11))),
         );
         let r = ports_off(&exec, &["0000:43:00.0".into()]);
+        let port = |address: &str| PortP2p {
+            address: address.into(),
+            direct_translated: Support::Unsupported,
+            translation_blocking: false,
+        };
         assert_eq!(
             r,
             AcsReport {
@@ -310,18 +461,73 @@ mod tests {
                     address: "0000:42:00.0".into(),
                     off: vec![AcsBit::RequestRedirect, AcsBit::CompletionRedirect],
                 }],
+                ports: vec![port("0000:40:01.1"), port("0000:42:00.0")],
+                devices: vec![DeviceAts {
+                    address: "0000:43:00.0".into(),
+                    ats: Support::Unsupported,
+                }],
                 failed: vec![],
             }
         );
-        // All on: nothing.
+        // All on: nothing off.
         let exec = host(
             config(ROOT_PORT, Some((0x1d, 0x1d))),
             config(DOWNSTREAM_PORT, Some((0x1d, 0x1d))),
         );
-        assert_eq!(
-            ports_off(&exec, &["0000:43:00.0".into()]),
-            AcsReport::default()
+        assert!(ports_off(&exec, &["0000:43:00.0".into()]).off.is_empty());
+    }
+
+    #[test]
+    fn switch_local_p2p_is_read_on_ports_and_devices() {
+        let exec = host_with(
+            config(ROOT_PORT, Some((0x1d, 0x1d))),
+            config(DOWNSTREAM_PORT, Some((0x5f, 0x5d))),
+            endpoint(Some(0x8000)),
         );
+        let r = ports_off(&exec, &["0000:43:00.0".into()]);
+        assert!(r.off.is_empty(), "{r:?}");
+        assert_eq!(
+            r.ports,
+            [
+                PortP2p {
+                    address: "0000:40:01.1".into(),
+                    direct_translated: Support::Unsupported,
+                    translation_blocking: false,
+                },
+                PortP2p {
+                    address: "0000:42:00.0".into(),
+                    direct_translated: Support::On,
+                    translation_blocking: false,
+                },
+            ]
+        );
+        assert_eq!(
+            r.devices,
+            [DeviceAts {
+                address: "0000:43:00.0".into(),
+                ats: Support::On,
+            }]
+        );
+        assert!(exec.writes().is_empty());
+    }
+
+    #[test]
+    fn a_device_read_short_is_reported() {
+        let exec = host_with(
+            config(ROOT_PORT, Some((0x1d, 0x1d))),
+            config(DOWNSTREAM_PORT, Some((0x1d, 0x1d))),
+            endpoint(Some(0x8000))[..64].to_vec(),
+        );
+        let r = ports_off(&exec, &["0000:43:00.0".into()]);
+        assert!(r.devices.is_empty());
+        assert_eq!(r.failed.len(), 1, "{r:?}");
+        assert_eq!(r.failed[0].0, "0000:43:00.0");
+    }
+
+    #[test]
+    fn an_older_answer_has_no_ports_or_devices() {
+        let r: AcsReport = serde_json::from_value(serde_json::json!({"off": []})).unwrap();
+        assert!(r.ports.is_empty() && r.devices.is_empty());
     }
 
     #[test]

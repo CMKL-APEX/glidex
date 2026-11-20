@@ -2728,9 +2728,10 @@ fn devices_are_kept_at_d0_and_given_back_their_values() {
     );
 }
 
-/// spec/22-host-topology.md H30: the root port above a device, with
-/// Request and Completion Redirect supported and off, is reported; the op
-/// is read-only and takes only PCI addresses.
+/// spec/22-host-topology.md H30, H31: the root port above a device, with
+/// Request and Completion Redirect supported and off, is reported, with
+/// its Direct Translated P2P and the device's ATS; the op is read-only and
+/// takes only PCI addresses.
 #[test]
 fn ports_above_a_device_with_acs_off_are_reported() {
     let exec = exec();
@@ -2754,6 +2755,11 @@ fn ports_above_a_device_with_acs_off_are_reported() {
         exec.link(&d, link);
     }
     exec.bytes("/sys/bus/pci/devices/0000:4a:00.0/config", &root);
+    // The device: ATS at 0x100, enabled.
+    let mut dev = vec![0u8; 4096];
+    dev[0x100..0x104].copy_from_slice(&0x0001_000fu32.to_le_bytes());
+    dev[0x106..0x108].copy_from_slice(&0x8000u16.to_le_bytes());
+    exec.bytes(&format!("/sys/bus/pci/devices/{gpu}/config"), &dev);
     let dir = TempDir::new().unwrap();
     let (netd, _) = netd(exec.clone(), &dir);
     let op = Op::AcsAbove {
@@ -2764,10 +2770,18 @@ fn ports_above_a_device_with_acs_off_are_reported() {
     let r = netd.handle(op, &peer()).unwrap();
     assert_eq!(
         r,
-        serde_json::json!({"off": [{
-            "address": "0000:4a:00.0",
-            "off": ["request_redirect", "completion_redirect"],
-        }]})
+        serde_json::json!({
+            "off": [{
+                "address": "0000:4a:00.0",
+                "off": ["request_redirect", "completion_redirect"],
+            }],
+            "ports": [{
+                "address": "0000:4a:00.0",
+                "direct_translated": "unsupported",
+                "translation_blocking": false,
+            }],
+            "devices": [{"address": gpu, "ats": "on"}],
+        })
     );
     assert!(exec.writes().is_empty());
     let err = netd
