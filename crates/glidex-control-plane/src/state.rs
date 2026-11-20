@@ -401,6 +401,9 @@ pub struct VmManager {
     ovn_file: ArcSwap<crate::cluster::config::OvnConfig>,
     /// The file's cluster-wide OVN fields were reported as ignored.
     ovn_file_warned: std::sync::atomic::AtomicBool,
+    /// Held while a probe round does the leader's hyperstor upkeep, so
+    /// rounds that overlap don't each renew, refresh and collect.
+    hyperstor_upkeep: std::sync::Mutex<()>,
     nodes: crate::node::NodeStore,
     roles: std::sync::Mutex<crate::node::Roles>,
     db_path: PathBuf,
@@ -602,6 +605,7 @@ impl VmManager {
             ovn: ArcSwap::from_pointee(Default::default()),
             ovn_file: ArcSwap::from_pointee(Default::default()),
             ovn_file_warned: std::sync::atomic::AtomicBool::new(false),
+            hyperstor_upkeep: std::sync::Mutex::new(()),
             nodes,
             roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
             db_path,
@@ -1380,10 +1384,18 @@ impl VmManager {
         }
         // The leader keeps hyperstor's certificates renewed (S20) and its
         // addresses current (S35), and removes image volumes left behind
-        // (S24).
-        self.renew_hyperstor_identities();
-        self.refresh_hyperstor_addresses();
-        self.collect_hyperstor_image_volumes();
+        // (S24). A round that finds another one at it leaves it.
+        let upkeep = match self.hyperstor_upkeep.try_lock() {
+            Ok(g) => Some(g),
+            Err(std::sync::TryLockError::Poisoned(p)) => Some(p.into_inner()),
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if upkeep.is_some() {
+            self.renew_hyperstor_identities();
+            self.refresh_hyperstor_addresses();
+            self.collect_hyperstor_image_volumes();
+        }
+        drop(upkeep);
         let db = self.store.database();
         let me = self.local_node_id();
         let Ok(all) = record::list(&db) else { return };
