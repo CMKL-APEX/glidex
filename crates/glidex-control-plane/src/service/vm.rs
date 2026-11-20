@@ -143,6 +143,7 @@ fn exit_pb(e: &m::ExitRecord) -> pb::ExitRecord {
             C::LaunchFailed => pb::ExitCause::EXIT_CAUSE_LAUNCH_FAILED,
             C::HostReboot => pb::ExitCause::EXIT_CAUSE_HOST_REBOOT,
             C::Lost => pb::ExitCause::EXIT_CAUSE_LOST,
+            C::MigrationFailed => pb::ExitCause::EXIT_CAUSE_MIGRATION_FAILED,
         }
         .into(),
         code: e.code,

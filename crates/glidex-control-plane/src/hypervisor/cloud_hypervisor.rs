@@ -499,6 +499,39 @@ pub(crate) fn check_mmio64_here(config: &VmConfig) -> Result<(), HypervisorError
 
 pub struct CloudHypervisorDriver;
 
+impl CloudHypervisorDriver {
+    /// A live migration's target (spec/32-live-migration.md §4): a VMM
+    /// with no VM, which the shim then asks to receive one over
+    /// `migration_socket` (`LaunchFile::receive`). The VM's configuration
+    /// comes from the source, so nothing of it is on this command line.
+    pub fn receive_args(
+        api_socket: &str,
+        migration_socket: &str,
+    ) -> Result<(LaunchArgs, String), HypervisorError> {
+        let bin = resolve_binary("cloud-hypervisor").ok_or_else(|| {
+            HypervisorError::ProcessStart(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cloud-hypervisor is not installed",
+            ))
+        })?;
+        Ok((
+            LaunchArgs {
+                argv: receive_argv(&bin.to_string_lossy(), api_socket),
+                fallback: None,
+            },
+            format!("unix:{migration_socket}"),
+        ))
+    }
+}
+
+fn receive_argv(bin: &str, api_socket: &str) -> Vec<String> {
+    vec![
+        bin.to_string(),
+        "--api-socket".into(),
+        format!("path={}", q(api_socket)),
+    ]
+}
+
 impl HypervisorDriver for CloudHypervisorDriver {
     fn hypervisor_type(&self) -> HypervisorType {
         HypervisorType::CloudHypervisor
@@ -556,6 +589,22 @@ impl HypervisorDriver for CloudHypervisorDriver {
 
 #[cfg(test)]
 mod tests {
+    /// A migration's target starts with no VM: only its API socket.
+    #[test]
+    fn a_receiving_vmm_has_only_its_api_socket() {
+        assert_eq!(
+            super::receive_argv(
+                "/usr/local/bin/cloud-hypervisor",
+                "/run/glidex/vms/v/api.sock"
+            ),
+            [
+                "/usr/local/bin/cloud-hypervisor",
+                "--api-socket",
+                "path=/run/glidex/vms/v/api.sock"
+            ]
+        );
+    }
+
     use super::*;
     use crate::images::qemu_img::{DiskFormat, detect_image_type};
     use crate::models::{NicBinding, VolumeBinding};

@@ -40,8 +40,16 @@ impl ChClient {
         path: &str,
         body: Option<&str>,
     ) -> Result<(u16, Option<String>), HvError> {
-        let mut stream = connect(&self.socket_path)?;
+        self.send_request_on(connect(&self.socket_path)?, method, path, body)
+    }
 
+    fn send_request_on(
+        &self,
+        mut stream: std::os::unix::net::UnixStream,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+    ) -> Result<(u16, Option<String>), HvError> {
         // Request format of the official cloud-hypervisor api_client:
         //   {METHOD} /api/v1/{path} HTTP/1.1\r\nHost: localhost\r\nAccept: */*\r\n
         // With body: add Content-Type and Content-Length headers.
@@ -191,6 +199,28 @@ impl ChClient {
             .map(|_| ())
     }
 
+    /// Receive a migrating VM into this VMM, which has none, over
+    /// `receiver_url` (`unix:<path>`; spec/32-live-migration.md §4). Cloud
+    /// Hypervisor answers only when the migration has ended: `Ok` once the
+    /// guest runs here, an error when it failed or was abandoned. Its VMM
+    /// answers nothing else meanwhile, so this waits without a timeout:
+    /// call it on a thread of its own, and end it by killing the VMM.
+    pub fn receive_migration(&self, receiver_url: &str) -> Result<(), HvError> {
+        let stream = connect(&self.socket_path)?;
+        stream.set_read_timeout(None)?;
+        let body = serde_json::json!({ "receiver_url": receiver_url }).to_string();
+        let path = "/vm.receive-migration";
+        let (status, response) = self.send_request_on(stream, "PUT", path, Some(&body))?;
+        if (200..300).contains(&status) {
+            Ok(())
+        } else {
+            Err(HvError::Api(format!(
+                "PUT /api/v1{path} failed with status {status}: {}",
+                response.unwrap_or_default()
+            )))
+        }
+    }
+
     /// Resize the running guest's active vCPU count to `desired`.
     pub fn resize_vcpus(&self, desired: u8) -> Result<(), HvError> {
         let body = serde_json::json!({ "desired_vcpus": desired }).to_string();
@@ -332,6 +362,46 @@ mod tests {
             ChClient::new("/nonexistent/api.sock").ping(),
             Err(HvError::Connect(_))
         ));
+    }
+
+    /// A receive names its URL, and a failed one is an error with Cloud
+    /// Hypervisor's words.
+    #[test]
+    fn receiving_a_migration_waits_for_its_end() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("api.sock");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        ChClient::new(sock.to_str().unwrap())
+            .receive_migration("unix:/run/glidex/vms/v/migration.sock")
+            .unwrap();
+        let req = server.join().unwrap();
+        assert!(
+            req.starts_with("PUT /api/v1/vm.receive-migration HTTP/1.1\r\n"),
+            "{req}"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "receiver_url": "unix:/run/glidex/vms/v/migration.sock" })
+        );
+
+        let sock = dir.path().join("api2.sock");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 9\r\n\r\nCPUID bad",
+        );
+        let err = ChClient::new(sock.to_str().unwrap())
+            .receive_migration("unix:/x")
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            matches!(err, HvError::Api(ref m) if m.contains("CPUID bad")),
+            "{err}"
+        );
     }
 
     #[test]

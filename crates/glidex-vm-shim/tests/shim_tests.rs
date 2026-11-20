@@ -43,6 +43,7 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
         job: false,
         volume_locks: vec![],
         cpu_weight: 100,
+        receive: None,
     }
 }
 
@@ -601,4 +602,160 @@ fn a_job_records_its_exit() {
             assert!(log.contains("cloud-hypervisor v"), "{log}");
         }
     }
+}
+
+/// A fake Cloud Hypervisor for a migration's target: its API answers
+/// `vmm.ping`, and `vm.receive-migration` listens on the receiver URL's
+/// socket and answers when the "source" there says how it ended (`ok`, or
+/// why not). Like the real one it has no VM until then.
+const FAKE_CH: &str = r#"
+import json, os, socket, sys, threading
+path = sys.argv[1]
+def answer(c, code, body=b""):
+    reason = {200: "OK", 204: "No Content", 500: "Internal Server Error"}[code]
+    c.sendall(b"HTTP/1.1 %d %s\r\nContent-Length: %d\r\n\r\n" % (code, reason.encode(), len(body)) + body)
+def serve(c):
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = c.recv(4096)
+        if not chunk:
+            return
+        data += chunk
+    head, body = data.split(b"\r\n\r\n", 1)
+    lines = head.decode().split("\r\n")
+    n = 0
+    for l in lines[1:]:
+        if l.lower().startswith("content-length:"):
+            n = int(l.split(":")[1])
+    while len(body) < n:
+        body += c.recv(4096)
+    method, url = lines[0].split()[:2]
+    if url.endswith("/vmm.ping"):
+        answer(c, 200, b"{}")
+    elif url.endswith("/vmm.shutdown"):
+        answer(c, 204)
+        os._exit(0)
+    elif url.endswith("/vm.receive-migration"):
+        where = json.loads(body)["receiver_url"][len("unix:"):]
+        m = socket.socket(socket.AF_UNIX)
+        m.bind(where)
+        m.listen(1)
+        src, _ = m.accept()
+        said = src.makefile().readline().strip()
+        if said == "ok":
+            answer(c, 204)
+        else:
+            answer(c, 500, said.encode())
+    else:
+        answer(c, 500, b"no VM")
+    c.close()
+s = socket.socket(socket.AF_UNIX)
+s.bind(path)
+s.listen(8)
+while True:
+    c, _ = s.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+"#;
+
+fn fake_ch_receive(dir: &Path) -> Option<LaunchFile> {
+    if !Path::new(PYTHON).exists() {
+        return None;
+    }
+    let api = dir.join("api.sock");
+    let mut l = launch_file(
+        dir,
+        vec![
+            PYTHON.into(),
+            "-c".into(),
+            FAKE_CH.into(),
+            api.to_string_lossy().into_owned(),
+        ],
+    );
+    l.receive = Some(format!("unix:{}", dir.join("migration.sock").display()));
+    Some(l)
+}
+
+/// The "source": connects to the target's migration socket and says how
+/// the migration ended.
+fn end_migration(dir: &Path, how: &str) {
+    use std::io::Write;
+    let sock = dir.join("migration.sock");
+    wait_for("migration.sock", Duration::from_secs(10), || sock.exists());
+    let mut c = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+    writeln!(c, "{how}").unwrap();
+}
+
+/// A migration's target (spec/32-live-migration.md §4): `Receiving` once
+/// the VMM answers, `Running` when the receive succeeds; a failed receive
+/// stops the VMM and says why; a stop while receiving doesn't wait for the
+/// VMM, which answers nothing meanwhile.
+#[test]
+fn a_migrations_target_receives_and_then_runs() {
+    let receiving = |dir: &Path| {
+        wait_for("receiving", Duration::from_secs(15), || {
+            instance(dir).is_some_and(|i| i.phase != Phase::Launching)
+        });
+        assert_eq!(instance(dir).unwrap().phase, Phase::Receiving);
+    };
+
+    let dir = tempfile::tempdir().unwrap();
+    let Some(launch) = fake_ch_receive(dir.path()) else {
+        return;
+    };
+    let mut shim = start_shim(dir.path(), &launch);
+    receiving(dir.path());
+    end_migration(dir.path(), "ok");
+    wait_for("running", Duration::from_secs(10), || {
+        instance(dir.path()).is_some_and(|i| i.phase == Phase::Running)
+    });
+    shim_client(dir.path()).kill().unwrap();
+    assert_eq!(
+        wait_exited(dir.path()).exit.unwrap().cause,
+        ExitCause::Requested
+    );
+    shim_client(dir.path()).release().unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
+    let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
+    assert!(log.contains("the migrated VM runs here"), "{log}");
+
+    // Refused by the target's Cloud Hypervisor: the VMM is stopped.
+    let dir = tempfile::tempdir().unwrap();
+    let launch = fake_ch_receive(dir.path()).unwrap();
+    let mut shim = start_shim(dir.path(), &launch);
+    receiving(dir.path());
+    end_migration(dir.path(), "CPUID leaf 0x7 is not compatible");
+    let exit = wait_exited(dir.path()).exit.unwrap();
+    assert_eq!(exit.cause, ExitCause::MigrationFailed);
+    assert!(
+        exit.message
+            .as_deref()
+            .is_some_and(|m| m.contains("CPUID leaf 0x7")),
+        "{:?}",
+        exit.message
+    );
+    shim_client(dir.path()).release().unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
+    let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
+    assert!(log.contains("exited: migration_failed"), "{log}");
+
+    // Cancelled before the source came: stopped at once, not after the
+    // VMM's API times out.
+    let dir = tempfile::tempdir().unwrap();
+    let launch = fake_ch_receive(dir.path()).unwrap();
+    let mut shim = start_shim(dir.path(), &launch);
+    receiving(dir.path());
+    wait_for("migration.sock", Duration::from_secs(10), || {
+        dir.path().join("migration.sock").exists()
+    });
+    let asked = Instant::now();
+    shim_client(dir.path()).stop(30).unwrap();
+    let exit = wait_exited(dir.path()).exit.unwrap();
+    assert!(
+        asked.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        asked.elapsed()
+    );
+    assert_eq!(exit.cause, ExitCause::Requested);
+    shim_client(dir.path()).release().unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
 }

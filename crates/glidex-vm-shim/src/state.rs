@@ -11,6 +11,9 @@ pub const INSTANCE_VERSION: u32 = 1;
 pub enum Phase {
     /// The hypervisor is being started; its socket has not answered yet.
     Launching,
+    /// A live migration's target: the VMM answers and is receiving the VM
+    /// (`LaunchFile::receive`); `Running` once the guest runs here.
+    Receiving,
     Running,
     /// The hypervisor is gone; the shim keeps the console until `release`.
     Exited,
@@ -32,6 +35,9 @@ pub enum ExitCause {
     Crashed,
     /// Exited before its API socket answered.
     LaunchFailed,
+    /// A live migration's target whose receive failed or was abandoned:
+    /// the shim stopped the VMM, which had no guest.
+    MigrationFailed,
     HostReboot,
     Lost,
 }
@@ -44,6 +50,7 @@ impl ExitCause {
             ExitCause::CleanExit => "clean_exit",
             ExitCause::Crashed => "crashed",
             ExitCause::LaunchFailed => "launch_failed",
+            ExitCause::MigrationFailed => "migration_failed",
             ExitCause::HostReboot => "host_reboot",
             ExitCause::Lost => "lost",
         }

@@ -465,6 +465,7 @@ The shim records how the hypervisor ended (§8.4); the controller acts:
 | `CleanExit` | shim: exit status 0, nothing requested | `spec.power = Stopped`, actor `guest`. By F3/F4 this is a guest power-off or a SIGTERM sent straight to the hypervisor; both mean "off" |
 | `Crashed` | shim: non-zero status or a signal | `OnFailure`: relaunch at `next_restart_at` = now + 10 s × 2^(`restart_count`), capped at 300 s; `restart_count` resets after 600 s of `Running`; `CrashLoopBackOff=True` while waiting. `Never`: `spec.power = Stopped`, `Ready=False/Crashed` |
 | `LaunchFailed` | shim: the hypervisor exited before its API socket answered | `phase: Failed`, reason `LaunchFailed`, message = captured output (today's launch error); retried with the reconcile backoff (§9.3), not counted as a crash |
+| `MigrationFailed` | shim: a live migration's target (`launch.json` `receive`) whose receive failed or was stopped before the guest ran there | none: the VM runs on where it was ([32-live-migration.md](32-live-migration.md) decision 9). The migration's own steps clean up the target |
 | `HostReboot` | controller: `instance.boot_id` ≠ current boot id | `Resume`: launch into `spec.power`. `Stop`: `spec.power = Stopped`, actor `host` |
 | `Lost` | controller: an intent record whose launch never happened, or a shim that died without writing an exit | `Lost` from an intent: none. From a dead shim: treated as `Crashed` |
 
@@ -575,6 +576,16 @@ the intent record:
   starts, without waiting for `api_socket`, and records its exit as for
   a VM (`clean_exit` on status 0). Such instances are named `extract-…`
   and are no VM's; startup's orphan scan leaves them alone.
+- `receive` (Cloud Hypervisor only; absent by default): a live
+  migration's target ([32-live-migration.md §4](32-live-migration.md#4-live-migration-step-by-step)),
+  `unix:<absolute path>`. `argv` starts a VMM with no VM. Once
+  `api_socket` answers, the shim reports `receiving` and calls
+  `vm.receive-migration` with that URL on a thread of its own: Cloud
+  Hypervisor answers only when the migration ends, and nothing else
+  meanwhile. On success the instance is `running`. On a failure the
+  shim kills the VMM (it has no guest) and records `migration_failed`
+  with Cloud Hypervisor's error. A `stop` or `kill` while receiving
+  sends SIGKILL at once, since the VMM can't answer `vmm.shutdown`.
 - The environment is not configurable: the shim starts the hypervisor
   with `LC_ALL=C`, `PATH=/usr/sbin:/usr/bin:/sbin:/bin` and nothing else.
 - No secret is ever in `argv` (it is visible in `/proc`): credentials
@@ -702,7 +713,7 @@ Written by the shim, atomic tmp + rename, on every phase change:
   "boot_id": "…",
   "shim_pid": 4242, "shim_starttime": 123456,
   "hypervisor_pid": 4250, "hypervisor_starttime": 123470,
-  "phase": "launching | running | exited",
+  "phase": "launching | receiving | running | exited",
   "launched_at": 1791000000,
   "stop": { "requested_at": 1791000500, "grace_secs": 30, "deadline": 1791000530 },
   "exit": { "at": 1791000520, "cause": "requested", "code": 0, "signal": null, "message": null,

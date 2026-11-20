@@ -92,6 +92,10 @@ pub struct VmPaths {
     pub launch: PathBuf,
     pub instance: PathBuf,
     pub shim_socket: String,
+    /// A live migration's stream: the target's Cloud Hypervisor receives
+    /// on it, the source's sends to it, and the relay joins the two
+    /// (spec/32-live-migration.md §4, §6).
+    pub migration_socket: String,
 }
 
 impl VmPaths {
@@ -112,6 +116,7 @@ pub fn vm_paths(vm_id: &str) -> VmPaths {
         launch: dir.join(glidex_vm_shim::LAUNCH_FILE),
         instance: dir.join(glidex_vm_shim::INSTANCE_FILE),
         shim_socket: p(glidex_vm_shim::SHIM_SOCKET),
+        migration_socket: p("migration.sock"),
         dir,
     }
 }
