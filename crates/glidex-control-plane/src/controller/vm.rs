@@ -12,7 +12,7 @@ use crate::images::ImageError;
 use crate::instance::{Liveness, Seen, liveness};
 use crate::models::{
     Condition, ExitCause, ExitRecord, InstanceRef, NicBinding, NicStatus, PowerState,
-    RestartPolicy, Tristate, Vm, VmPhase, VmSpec, VmStatus,
+    RestartPolicy, Tristate, Vm, VmConfig, VmPhase, VmSpec, VmStatus,
 };
 use crate::network::NetError;
 use crate::state::{VmManager, VmManagerError, power_name};
@@ -1217,6 +1217,32 @@ impl VmManager {
 
     /// Seed, firmware vars, ports, `launch.json`, intent, runner (§9.1
     /// step 5.1-5.5). The error says whether the intent was written.
+    /// Give `config` the devices picked for `vm`'s pool requests
+    /// (spec/22-host-topology.md §9), grouped as on the host, and have their
+    /// switch-local P2P set.
+    async fn ready_devices(&self, vm: &Vm, config: &mut VmConfig) {
+        for d in vm
+            .status
+            .placement
+            .iter()
+            .flat_map(|p| p.pool_devices.iter())
+        {
+            let path = format!("/sys/bus/pci/devices/{}", d.address);
+            if !config.vfio_devices.contains(&path) {
+                config.vfio_devices.push(path);
+            }
+        }
+        // Devices close on the host stay close in the guest
+        // (spec/27-gpu-vms.md G21).
+        config.vfio_switch_groups = crate::hypervisor::switch_groups_here(&config.vfio_devices);
+        // Switch-local P2P for its trusted devices, set before the guest
+        // can use them (spec/22-host-topology.md H34).
+        if !config.vfio_devices.is_empty() {
+            self.sync_switch_p2p(Some((vm.name.clone(), config.vfio_devices.clone())), None)
+                .await;
+        }
+    }
+
     async fn provision_and_start(
         &self,
         vm: &Vm,
@@ -1370,27 +1396,7 @@ impl VmManager {
             .as_ref()
             .map(|p| p.numa.clone())
             .unwrap_or_default();
-        // The devices picked for its pool requests (spec/22-host-topology.md §9).
-        for d in vm
-            .status
-            .placement
-            .iter()
-            .flat_map(|p| p.pool_devices.iter())
-        {
-            let path = format!("/sys/bus/pci/devices/{}", d.address);
-            if !config.vfio_devices.contains(&path) {
-                config.vfio_devices.push(path);
-            }
-        }
-        // Devices close on the host stay close in the guest
-        // (spec/27-gpu-vms.md G21).
-        config.vfio_switch_groups = crate::hypervisor::switch_groups_here(&config.vfio_devices);
-        // Switch-local P2P for its trusted devices, set before the guest
-        // can use them (spec/22-host-topology.md H34).
-        if !config.vfio_devices.is_empty() {
-            self.sync_switch_p2p(Some((vm.name.clone(), config.vfio_devices.clone())), None)
-                .await;
-        }
+        self.ready_devices(vm, &mut config).await;
         let (cpu_affinity, launch_pins) = if held.is_empty() {
             (self.local_shared_pool().await, Vec::new())
         } else {
@@ -2861,5 +2867,126 @@ mod tests {
             launch_relevant(&pylon_spec_scaled),
             "changing min_vcpus or cpu_weight on Pylon VM must NOT change launch_relevant"
         );
+    }
+
+    /// A netd in `run_dir` that answers `acs_above` with the topology
+    /// tests' tree before glidex sets anything, and sends on the ports of
+    /// each `switch_p2p`. Other ops get an error.
+    fn switch_p2p_netd(run_dir: &std::path::Path) -> std::sync::mpsc::Receiver<Vec<String>> {
+        use glidex_netd::proto::{ErrorBody, PROTOCOL_VERSION, Request, Response};
+        use std::io::{BufRead, Write};
+        let listener = std::os::unix::net::UnixListener::bind(
+            run_dir.join(glidex_netd::proto::FULL_SOCKET_NAME),
+        )
+        .unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            for s in listener.incoming() {
+                let Ok(mut s) = s else { return };
+                let lines = std::io::BufReader::new(s.try_clone().unwrap()).lines();
+                for line in lines.map_while(Result::ok) {
+                    let req: Request = serde_json::from_str(&line).unwrap();
+                    let resp = match req.op {
+                        Op::Hello { .. } => Response::ok(
+                            req.id,
+                            serde_json::json!({ "protocol": PROTOCOL_VERSION, "netd_version": "test" }),
+                        ),
+                        Op::AcsAbove { .. } => Response::ok(
+                            req.id,
+                            serde_json::to_value(crate::topology::tests::dt_off_report()).unwrap(),
+                        ),
+                        Op::SwitchP2p { ports } => {
+                            let _ = tx.send(ports);
+                            Response::ok(req.id, serde_json::json!({}))
+                        }
+                        op => Response::err(req.id, ErrorBody::new("unknown_op", op.name())),
+                    };
+                    writeln!(s, "{}", serde_json::to_string(&resp).unwrap()).unwrap();
+                }
+            }
+        });
+        rx
+    }
+
+    /// spec/22-host-topology.md H34, §5.3b: a launch has netd set Direct
+    /// Translated P2P for the VM's trusted pair before the guest starts,
+    /// a report keeps it while the VM runs, and the VM's exit puts it
+    /// back. Without a `switch_p2p` pool netd isn't asked.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn switch_local_p2p_is_set_at_launch_and_put_back_at_exit() {
+        const GPU: &str = "0000:87:00.0";
+        const NIC: &str = "0000:88:00.0";
+        let dir = tempfile::tempdir().unwrap();
+        let sent = switch_p2p_netd(dir.path());
+        let next = || {
+            sent.recv_timeout(Duration::from_secs(10))
+                .expect("no switch_p2p sent")
+        };
+        let manager = VmManager::with_db_path_and_netd(
+            dir.path().join("glidex.db"),
+            crate::network::Netd::new(dir.path()),
+        )
+        .unwrap();
+        manager
+            .switch_p2p_tree
+            .set(crate::topology::tests::dt_off_tree())
+            .unwrap();
+        let config: crate::models::VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": "", "firmware_path": "/f.fd"
+        }))
+        .unwrap();
+        let mut vm = manager.create_vm("p2p".into(), config).await.unwrap();
+        vm.status.placement = Some(
+            serde_json::from_value(serde_json::json!({
+                "node": manager.local_node_id(), "at": 0,
+                "pool_devices": [
+                    { "pool": "gpus", "address": GPU },
+                    { "pool": "nics", "address": NIC },
+                ],
+            }))
+            .unwrap(),
+        );
+
+        let mut config = vm.config().clone();
+        manager.ready_devices(&vm, &mut config).await;
+        assert_eq!(
+            config.vfio_devices,
+            [GPU, NIC].map(|a| format!("/sys/bus/pci/devices/{a}"))
+        );
+        assert!(
+            sent.try_recv().is_err(),
+            "netd asked without a switch_p2p pool"
+        );
+
+        let pool = |name: &str, address: &str, switch_p2p: bool| -> crate::config::PciPool {
+            serde_json::from_value(serde_json::json!({
+                "name": name, "match": { "addresses": [address] }, "switch_p2p": switch_p2p,
+            }))
+            .unwrap()
+        };
+        let mut cfg = crate::config::Config::default();
+        cfg.pci.pools = vec![pool("gpus", GPU, false), pool("nics", NIC, true)];
+        manager.configure(&cfg);
+        let mut config = vm.config().clone();
+        manager.ready_devices(&vm, &mut config).await;
+        assert_eq!(next(), ["0000:82:01.0"], "the trusted NIC's port only");
+
+        // Running: a report keeps it.
+        let inst: InstanceRef = serde_json::from_value(serde_json::json!({
+            "instance_id": "i", "runner": { "kind": "detached" }, "boot_id": "b",
+            "launched_generation": vm.generation, "launched_at": 0,
+            "vfio_devices": config.vfio_devices,
+        }))
+        .unwrap();
+        vm.status.instance = Some(inst.clone());
+        manager.vms.write().await.insert(vm.id.clone(), vm.clone());
+        manager.sync_switch_p2p(None, None).await;
+        assert_eq!(next(), ["0000:82:01.0"]);
+
+        manager
+            .finish_exit(&vm, vm.status.clone(), inst, None, "b", Vec::new())
+            .await
+            .unwrap();
+        assert!(next().is_empty(), "the exit put it back");
     }
 }
