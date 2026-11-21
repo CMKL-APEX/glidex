@@ -1187,9 +1187,19 @@ tested: netd's `switch_p2p` op (bit 6 of ACS Control only, on switch
 downstream ports, the earlier value kept in `acs_dt` and put back; a
 port with ACS off, without the capability or not a downstream port left
 alone and reported) and `prepare_device` with `rescan` (refused unless
-the device is on `vfio-pci` and no VM holds its group). Not yet: the
-pool setting, the control plane's set and calls, the reporting, the UI,
-the docs and the host check.
+the device is on `vfio-pci` and no VM holds its group). Built, with
+unit tests of the port set: `switch_p2p` on pools (setting, the proto's
+`PciPoolSpec`, `pci.overrides`) keeping them at D0; the set of ports
+from this node's VMs holding pairs (a pair in one VM, devices two VMs
+hold, a requester without ATS or with it off, ACS off, Translation
+Blocking, no capability, nested switches, a port with another ATS
+function below), sent to netd before a launch with VFIO devices, after
+such an exit and with each report; `direct_translated_set`, `set_for`
+and `switch_p2p_blocked` (full tree, `GetNodeTopology`, `gxctl node
+topology --devices`); `prepare-device --rescan` (`?rescan=true`); the
+operator guide. Not yet: a controller test of the calls at launch and
+exit (the control plane's tests have no fake netd), the pool form and
+node page, and the host check.
 
 **HT10** is built and tested: netd's `acs_above` also answers ATS for
 the given devices and Direct Translated P2P and Translation Blocking

@@ -115,14 +115,17 @@ impl TopologyTree {
     }
 
     /// The devices to keep at D0 (H28, §5.3a): on `vfio-pci`, of a pool
-    /// with `power_save: false` (`pools` as this host has them), and not
-    /// one the host keeps.
+    /// with `power_save: false` or `switch_p2p` (H33; `pools` as this host
+    /// has them), and not one the host keeps.
     pub fn to_keep_on(
         &self,
         pools: &[crate::config::PciPool],
         exclude: &[crate::config::PoolMatch],
     ) -> Vec<String> {
-        let keep: Vec<_> = pools.iter().filter(|p| !p.power_save).collect();
+        let keep: Vec<_> = pools
+            .iter()
+            .filter(|p| !p.power_save || p.switch_p2p)
+            .collect();
         if keep.is_empty() {
             return Vec::new();
         }
@@ -133,6 +136,30 @@ impl TopologyTree {
                 let s = self.summary_of(d);
                 !exclude.iter().any(|m| m.matches_device(&s))
                     && keep.iter().any(|p| p.matches.matches_device(&s))
+            })
+            .map(|d| d.address.clone())
+            .collect()
+    }
+
+    /// The devices whose ATS the operator trusts (H33, §5.3b): on
+    /// `vfio-pci`, of a pool with `switch_p2p` (`pools` as this host has
+    /// them), and not one the host keeps.
+    pub fn to_trust(
+        &self,
+        pools: &[crate::config::PciPool],
+        exclude: &[crate::config::PoolMatch],
+    ) -> BTreeSet<String> {
+        let trusted: Vec<_> = pools.iter().filter(|p| p.switch_p2p).collect();
+        if trusted.is_empty() {
+            return BTreeSet::new();
+        }
+        self.devices
+            .iter()
+            .filter(|d| d.assignable && d.driver.as_deref() == Some("vfio-pci"))
+            .filter(|d| {
+                let s = self.summary_of(d);
+                !exclude.iter().any(|m| m.matches_device(&s))
+                    && trusted.iter().any(|p| p.matches.matches_device(&s))
             })
             .map(|d| d.address.clone())
             .collect()
@@ -234,29 +261,19 @@ impl TopologyTree {
             .iter()
             .map(|d| (d.address.as_str(), d))
             .collect();
-        // Each bridge above `d`, nearest first.
-        let above = |d: &PciFunction| {
-            let mut out: Vec<&PciFunction> = Vec::new();
-            let mut at = by_address.get(d.parent.as_str());
-            while let Some(b) = at {
-                if out.iter().any(|o| o.address == b.address) {
-                    break;
-                }
-                out.push(b);
-                at = by_address.get(b.parent.as_str());
-            }
-            out
-        };
+        let above = |d: &PciFunction| bridges_above(&by_address, d);
         let acs_off: BTreeSet<&str> = report.off.iter().map(|p| p.address.as_str()).collect();
         // A translated request from `from` up to `switch`.
         let path = |from: &PciFunction, up: &[&PciFunction], switch: &str| {
             let unknown = |a: &str| P2pPath {
                 route: P2pRoute::Unknown,
                 reason: format!("{a} couldn't be read"),
+                set_for: None,
             };
             let via = |reason: String| P2pPath {
                 route: P2pRoute::ViaRoot,
                 reason,
+                set_for: None,
             };
             match from.ats {
                 None => return unknown(&from.address),
@@ -297,6 +314,7 @@ impl TopologyTree {
             P2pPath {
                 route: P2pRoute::Direct,
                 reason: String::new(),
+                set_for: None,
             }
         };
         let on_vfio: Vec<&PciFunction> = self
@@ -328,6 +346,175 @@ impl TopologyTree {
             }
         }
         self.p2p = pairs;
+    }
+
+    /// spec/22-host-topology.md §5.3b: the ports that get Direct Translated
+    /// P2P, from `held` (each VM on this node launching or running, with the
+    /// addresses of its VFIO devices), `trusted` (the devices in a
+    /// `switch_p2p` pool) and `acs_off` (the ports whose ACS is off, H30).
+    /// Reads the ATS and Direct Translated P2P [`Self::apply_p2p`] put on
+    /// the functions.
+    pub fn switch_p2p_plan(
+        &self,
+        held: &[(String, Vec<String>)],
+        trusted: &BTreeSet<String>,
+        acs_off: &BTreeSet<String>,
+    ) -> SwitchP2pPlan {
+        let mut plan = SwitchP2pPlan::default();
+        if trusted.is_empty() {
+            return plan;
+        }
+        let by_address: BTreeMap<&str, &PciFunction> = self
+            .devices
+            .iter()
+            .map(|d| (d.address.as_str(), d))
+            .collect();
+        for (vm, addresses) in held {
+            let devs: Vec<&PciFunction> = addresses
+                .iter()
+                .filter_map(|a| by_address.get(a.as_str()).copied())
+                .filter(|d| d.driver.as_deref() == Some("vfio-pci"))
+                .collect();
+            let ours =
+                |x: &PciFunction| addresses.contains(&x.address) && trusted.contains(&x.address);
+            for a in devs.iter().filter(|a| trusted.contains(&a.address)) {
+                let up_a = bridges_above(&by_address, a);
+                for b in devs.iter().filter(|b| b.address != a.address) {
+                    let up_b = bridges_above(&by_address, b);
+                    let Some(common) = up_a
+                        .iter()
+                        .find(|x| up_b.iter().any(|y| y.address == x.address))
+                    else {
+                        continue;
+                    };
+                    if common.kind != PciKind::SwitchUpstream {
+                        continue;
+                    }
+                    let mut block = |reason: String| {
+                        plan.blocked.push(Blocked {
+                            from: a.address.clone(),
+                            to: b.address.clone(),
+                            vm: vm.clone(),
+                            reason,
+                        })
+                    };
+                    let why_not = match a.ats {
+                        Some(Support::On) => None,
+                        Some(Support::Off) => Some(format!(
+                            "{} has ATS off: the IOMMU didn't enable it (prepare-device --rescan)",
+                            a.address
+                        )),
+                        Some(Support::Unsupported) => Some(format!(
+                            "{} has no ATS: turn it on in its firmware",
+                            a.address
+                        )),
+                        None => Some(format!("{}'s ATS couldn't be read", a.address)),
+                    };
+                    if let Some(why) = why_not {
+                        block(why);
+                        continue;
+                    }
+                    let ports: Vec<&PciFunction> = up_a
+                        .iter()
+                        .take_while(|x| x.address != common.address)
+                        .filter(|x| x.kind == PciKind::SwitchDownstream)
+                        .copied()
+                        .collect();
+                    let refused = ports.iter().find_map(|p| {
+                        let why = match p.direct_translated {
+                            None => Some("couldn't be read".to_string()),
+                            Some(Support::Unsupported) => {
+                                Some("has no Direct Translated P2P".to_string())
+                            }
+                            _ if p.translation_blocking => {
+                                Some("has Translation Blocking on".to_string())
+                            }
+                            _ if acs_off.contains(&p.address) => {
+                                Some("has ACS off (acs_off)".to_string())
+                            }
+                            _ => self
+                                .devices
+                                .iter()
+                                .filter(|x| x.ats == Some(Support::On) && !ours(x))
+                                .find(|x| {
+                                    bridges_above(&by_address, x)
+                                        .iter()
+                                        .any(|y| y.address == p.address)
+                                })
+                                .map(|x| {
+                                    format!(
+                                        "has {} below it too, with ATS on, which isn't a trusted device of this VM",
+                                        x.address
+                                    )
+                                }),
+                        };
+                        why.map(|w| format!("{} {w}", p.address))
+                    });
+                    match refused {
+                        Some(why) => block(why),
+                        None => {
+                            for p in ports {
+                                plan.ports
+                                    .entry(p.address.clone())
+                                    .or_insert_with(|| vm.clone());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        plan
+    }
+
+    /// Show `plan` (§5.3b): `direct_translated_set` on the ports it set
+    /// that read on, `set_for` on the direct directions that cross one, and
+    /// a `switch_p2p_blocked` warning for each direction it couldn't make
+    /// direct. After [`Self::apply_p2p`].
+    pub fn apply_switch_p2p(&mut self, plan: &SwitchP2pPlan) {
+        for d in &mut self.devices {
+            d.direct_translated_set =
+                plan.ports.contains_key(&d.address) && d.direct_translated == Some(Support::On);
+        }
+        let by_address: BTreeMap<String, Vec<String>> = {
+            let m: BTreeMap<&str, &PciFunction> = self
+                .devices
+                .iter()
+                .map(|d| (d.address.as_str(), d))
+                .collect();
+            self.devices
+                .iter()
+                .map(|d| {
+                    let up = bridges_above(&m, d)
+                        .iter()
+                        .map(|b| b.address.clone())
+                        .collect();
+                    (d.address.clone(), up)
+                })
+                .collect()
+        };
+        let set_for = |from: &str, switch: &str| {
+            by_address
+                .get(from)?
+                .iter()
+                .take_while(|b| b.as_str() != switch)
+                .find_map(|b| plan.ports.get(b).cloned())
+        };
+        for pair in &mut self.p2p {
+            for (from, path) in [(&pair.a, &mut pair.a_to_b), (&pair.b, &mut pair.b_to_a)] {
+                if path.route == P2pRoute::Direct {
+                    path.set_for = set_for(from, &pair.switch);
+                }
+            }
+        }
+        for b in &plan.blocked {
+            self.warnings.push(TopologyWarning {
+                kind: "switch_p2p_blocked".into(),
+                detail: format!(
+                    "{} to {} in VM {} can't go across the switch: {}",
+                    b.from, b.to, b.vm, b.reason
+                ),
+            });
+        }
     }
 
     /// `d` as the summary has it.
@@ -666,6 +853,10 @@ pub struct PciFunction {
     pub direct_translated: Option<Support>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub translation_blocking: bool,
+    /// Glidex turned this port's Direct Translated P2P on for a VM (H33,
+    /// §5.3b).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub direct_translated_set: bool,
 }
 
 /// Where a translated request from one device to another goes (§5.2a).
@@ -683,6 +874,10 @@ pub struct P2pPath {
     pub route: P2pRoute,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
+    /// The VM glidex turned this direction's Direct Translated P2P on for
+    /// (§5.3b).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub set_for: Option<String>,
 }
 
 /// Two functions on vfio-pci whose nearest common bridge is a switch's
@@ -700,9 +895,45 @@ pub struct P2pPair {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TopologyWarning {
     /// `iommu_off`, `numa_unknown`, `group_shared`, `link_degraded`,
-    /// `hugepages_unbalanced`, `power_save_on`, `acs_off`.
+    /// `hugepages_unbalanced`, `power_save_on`, `acs_off`,
+    /// `switch_p2p_blocked`.
     pub kind: String,
     pub detail: String,
+}
+
+/// What a node turns on for switch-local P2P (§5.3b).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SwitchP2pPlan {
+    /// Each port to have Direct Translated P2P on, and the VM it is for.
+    pub ports: BTreeMap<String, String>,
+    /// The directions of trusted devices that can't be made direct.
+    pub blocked: Vec<Blocked>,
+}
+
+/// A direction of a pair one VM holds that can't be made direct (§5.3b).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blocked {
+    pub from: String,
+    pub to: String,
+    pub vm: String,
+    pub reason: String,
+}
+
+/// Each bridge above `d` in `by_address`, nearest first.
+fn bridges_above<'a>(
+    by_address: &BTreeMap<&str, &'a PciFunction>,
+    d: &PciFunction,
+) -> Vec<&'a PciFunction> {
+    let mut out: Vec<&PciFunction> = Vec::new();
+    let mut at = by_address.get(d.parent.as_str());
+    while let Some(b) = at {
+        if out.iter().any(|o| o.address == b.address) {
+            break;
+        }
+        out.push(b);
+        at = by_address.get(b.parent.as_str());
+    }
+    out
 }
 
 /// A host's full topology (`GET /host/topology`): the summary, every PCI
@@ -893,6 +1124,7 @@ pub fn build_tree(summary: TopologySummary, raw: &[RawPci], ctx: &ReadyContext) 
             ats: None,
             direct_translated: None,
             translation_blocking: false,
+            direct_translated_set: false,
         });
     }
     devices.sort_by(|a, b| a.address.cmp(&b.address));
@@ -1305,12 +1537,19 @@ mod tests {
             per_device: None,
             bar_mib: None,
             power_save,
+            switch_p2p: false,
         };
         let t = power_tree(&[], "D3hot");
         // Only the GPU on vfio-pci, of a pool that says so, and not kept
         // by the host.
         assert_eq!(t.to_keep_on(&[gpus(false)], &[]), ["0000:87:00.0"]);
         assert!(t.to_keep_on(&[gpus(true)], &[]).is_empty());
+        // H33: a trusted pool is kept at D0 whatever its power_save.
+        let trusted = crate::config::PciPool {
+            switch_p2p: true,
+            ..gpus(true)
+        };
+        assert_eq!(t.to_keep_on(&[trusted], &[]), ["0000:87:00.0"]);
         let keep = crate::config::PoolMatch {
             addresses: vec!["0000:87:00.0".into()],
             ..Default::default()
@@ -1710,6 +1949,7 @@ mod tests {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         };
         assert_eq!(
             t.to_prepare(std::slice::from_ref(&pool), &[]),
@@ -1811,6 +2051,7 @@ mod tests {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         };
         // 87:00.0 is ready; the NIC isn't the pool's.
         assert_eq!(
@@ -1905,5 +2146,181 @@ mod tests {
         assert_eq!(t.reserved_cpus.get(&65).map(String::as_str), Some("pylon"));
         assert!(!t.reserved_cpus.contains_key(&2));
         assert!(!t.reserved_cpus.contains_key(&66));
+    }
+
+    /// [`p2p_tree`] with netd's answer, every downstream port's Direct
+    /// Translated P2P supported and off, as before glidex sets any.
+    fn dt_off_tree() -> TopologyTree {
+        let mut t = p2p_tree();
+        let mut r = p2p_report();
+        for p in &mut r.ports {
+            if p.direct_translated == Support::On {
+                p.direct_translated = Support::Off;
+            }
+        }
+        t.apply_p2p(&r);
+        t
+    }
+
+    fn held(vms: &[(&str, &[&str])]) -> Vec<(String, Vec<String>)> {
+        vms.iter()
+            .map(|(vm, a)| (vm.to_string(), a.iter().map(|s| s.to_string()).collect()))
+            .collect()
+    }
+
+    fn set(a: &[&str]) -> BTreeSet<String> {
+        a.iter().map(|s| s.to_string()).collect()
+    }
+
+    const GPU: &str = "0000:87:00.0";
+    const NIC: &str = "0000:88:00.0";
+    const DEEP: &str = "0000:8b:00.0";
+
+    #[test]
+    fn a_trusted_device_in_a_pair_one_vm_holds_gets_its_ports() {
+        let t = dt_off_tree();
+        let vm = held(&[("v", &[GPU, NIC])]);
+        let plan = t.switch_p2p_plan(&vm, &set(&[NIC]), &BTreeSet::new());
+        assert_eq!(
+            plan.ports,
+            BTreeMap::from([("0000:82:01.0".to_string(), "v".to_string())]),
+            "the NIC's port only: the GPU isn't trusted"
+        );
+        assert!(plan.blocked.is_empty(), "{:?}", plan.blocked);
+        let both = t.switch_p2p_plan(&vm, &set(&[GPU, NIC]), &BTreeSet::new());
+        assert_eq!(
+            both.ports.keys().cloned().collect::<Vec<_>>(),
+            ["0000:82:00.0", "0000:82:01.0"]
+        );
+        // Nothing trusted: nothing to do.
+        assert_eq!(
+            t.switch_p2p_plan(&vm, &BTreeSet::new(), &BTreeSet::new()),
+            SwitchP2pPlan::default()
+        );
+    }
+
+    #[test]
+    fn devices_two_vms_hold_get_nothing() {
+        let t = dt_off_tree();
+        let vms = held(&[("v1", &[GPU]), ("v2", &[NIC])]);
+        let plan = t.switch_p2p_plan(&vms, &set(&[GPU, NIC]), &BTreeSet::new());
+        assert_eq!(plan, SwitchP2pPlan::default());
+        // A device under a root port only has no switch-local peer.
+        let vm = held(&[("v", &[NIC, "0000:07:00.0"])]);
+        let plan = t.switch_p2p_plan(&vm, &set(&[NIC]), &BTreeSet::new());
+        assert_eq!(plan, SwitchP2pPlan::default());
+    }
+
+    #[test]
+    fn nested_switches_get_each_downstream_port_on_the_way() {
+        let t = dt_off_tree();
+        let vm = held(&[("v", &[DEEP, GPU])]);
+        let plan = t.switch_p2p_plan(&vm, &set(&[DEEP]), &BTreeSet::new());
+        assert_eq!(
+            plan.ports.keys().cloned().collect::<Vec<_>>(),
+            ["0000:82:02.0", "0000:8a:00.0"],
+            "not the inner switch's upstream port, nor the root port"
+        );
+    }
+
+    #[test]
+    fn what_keeps_a_trusted_direction_from_going_direct_is_reported() {
+        let vm = held(&[("v", &[GPU, NIC])]);
+        let reason = |t: &TopologyTree, off: &[&str]| {
+            let plan = t.switch_p2p_plan(&vm, &set(&[NIC]), &set(off));
+            assert!(plan.ports.is_empty(), "{plan:?}");
+            assert_eq!(plan.blocked.len(), 1, "{plan:?}");
+            assert_eq!(
+                (plan.blocked[0].from.as_str(), plan.blocked[0].vm.as_str()),
+                (NIC, "v")
+            );
+            plan.blocked[0].reason.clone()
+        };
+        let mut t = dt_off_tree();
+        fn dev<'a>(t: &'a mut TopologyTree, a: &str) -> &'a mut PciFunction {
+            t.devices.iter_mut().find(|d| d.address == a).unwrap()
+        }
+        dev(&mut t, NIC).ats = Some(Support::Unsupported);
+        assert!(reason(&t, &[]).contains("has no ATS: turn it on in its firmware"));
+        dev(&mut t, NIC).ats = Some(Support::Off);
+        assert!(reason(&t, &[]).contains("prepare-device --rescan"));
+        dev(&mut t, NIC).ats = Some(Support::On);
+        assert!(reason(&t, &["0000:82:01.0"]).contains("0000:82:01.0 has ACS off"));
+        dev(&mut t, "0000:82:01.0").translation_blocking = true;
+        assert!(reason(&t, &[]).contains("has Translation Blocking on"));
+        dev(&mut t, "0000:82:01.0").translation_blocking = false;
+        dev(&mut t, "0000:82:01.0").direct_translated = Some(Support::Unsupported);
+        assert!(reason(&t, &[]).contains("has no Direct Translated P2P"));
+    }
+
+    #[test]
+    fn a_port_with_another_ats_function_below_is_left_off() {
+        let mut t = p2p_tree();
+        let mut other = t
+            .devices
+            .iter()
+            .find(|d| d.address == DEEP)
+            .unwrap()
+            .clone();
+        other.address = "0000:8b:00.1".into();
+        t.devices.push(other);
+        let mut r = p2p_report();
+        r.devices.push(glidex_ovs::acs::DeviceAts {
+            address: "0000:8b:00.1".into(),
+            ats: Support::On,
+        });
+        t.apply_p2p(&r);
+        let vm = held(&[("v", &[DEEP, GPU])]);
+        let plan = t.switch_p2p_plan(&vm, &set(&[DEEP]), &BTreeSet::new());
+        assert!(plan.ports.is_empty(), "{plan:?}");
+        assert!(
+            plan.blocked[0]
+                .reason
+                .contains("has 0000:8b:00.1 below it too"),
+            "{plan:?}"
+        );
+        // Both functions trusted and in the VM: the port is theirs.
+        let vm = held(&[("v", &[DEEP, "0000:8b:00.1", GPU])]);
+        let plan = t.switch_p2p_plan(&vm, &set(&[DEEP, "0000:8b:00.1"]), &BTreeSet::new());
+        assert!(plan.blocked.is_empty(), "{plan:?}");
+        assert!(plan.ports.contains_key("0000:8a:00.0"));
+    }
+
+    #[test]
+    fn the_plan_is_shown_on_ports_pairs_and_warnings() {
+        let mut t = p2p_tree();
+        let mut r = p2p_report();
+        // The GPU has no ATS: its direction is blocked; the NIC's port is set.
+        r.devices.retain(|d| d.address != GPU);
+        r.devices.push(glidex_ovs::acs::DeviceAts {
+            address: GPU.into(),
+            ats: Support::Unsupported,
+        });
+        t.apply_p2p(&r);
+        let vm = held(&[("v", &[GPU, NIC])]);
+        let plan = t.switch_p2p_plan(&vm, &set(&[GPU, NIC]), &BTreeSet::new());
+        t.apply_switch_p2p(&plan);
+        let port = |a: &str| t.devices.iter().find(|d| d.address == a).unwrap();
+        assert!(port("0000:82:01.0").direct_translated_set);
+        assert!(!port("0000:82:00.0").direct_translated_set);
+        let pair = t
+            .p2p
+            .iter()
+            .find(|p| p.a == GPU && p.b == NIC)
+            .expect("the pair");
+        assert_eq!(pair.b_to_a.route, P2pRoute::Direct);
+        assert_eq!(pair.b_to_a.set_for.as_deref(), Some("v"));
+        assert_eq!(pair.a_to_b.set_for, None);
+        let warned: Vec<_> = t
+            .warnings
+            .iter()
+            .filter(|w| w.kind == "switch_p2p_blocked")
+            .collect();
+        assert_eq!(warned.len(), 1, "{warned:?}");
+        assert!(
+            warned[0]
+                .detail
+                .contains("0000:87:00.0 to 0000:88:00.0 in VM v")
+        );
     }
 }

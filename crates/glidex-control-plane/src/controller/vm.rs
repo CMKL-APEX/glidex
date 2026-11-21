@@ -739,6 +739,10 @@ impl VmManager {
         st.instance = None;
         st.phase = VmPhase::Stopped;
         st.stop_deadline = None;
+        // Its pairs' Direct Translated P2P goes back off (H34).
+        if !inst.vfio_devices.is_empty() {
+            self.sync_switch_p2p(None, Some(&vm.id)).await;
+        }
         set_cond(
             &mut st.conditions,
             "ConsoleReady",
@@ -1381,6 +1385,12 @@ impl VmManager {
         // Devices close on the host stay close in the guest
         // (spec/27-gpu-vms.md G21).
         config.vfio_switch_groups = crate::hypervisor::switch_groups_here(&config.vfio_devices);
+        // Switch-local P2P for its trusted devices, set before the guest
+        // can use them (spec/22-host-topology.md H34).
+        if !config.vfio_devices.is_empty() {
+            self.sync_switch_p2p(Some((vm.name.clone(), config.vfio_devices.clone())), None)
+                .await;
+        }
         let (cpu_affinity, launch_pins) = if held.is_empty() {
             (self.local_shared_pool().await, Vec::new())
         } else {

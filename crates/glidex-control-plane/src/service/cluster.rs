@@ -823,6 +823,7 @@ fn pool_of(p: &pb::PciPoolSpec) -> ServiceResult<crate::config::PciPool> {
         per_device,
         bar_mib: p.bar_mib.map(u64::from),
         power_save: p.power_save.unwrap_or(true),
+        switch_p2p: p.switch_p2p.unwrap_or(false),
     })
 }
 

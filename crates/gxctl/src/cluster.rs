@@ -758,10 +758,10 @@ pub(crate) fn topology_lines(
                     "via_root" => "via root complex".yellow().to_string(),
                     other => other.to_string(),
                 };
-                let why = if path.reason.is_empty() {
-                    String::new()
-                } else {
-                    format!(" ({})", path.reason)
+                let why = match &path.set_for {
+                    Some(vm) => format!(" (set by glidex for {vm})"),
+                    None if path.reason.is_empty() => String::new(),
+                    None => format!(" ({})", path.reason),
                 };
                 out.push(format!(
                     "p2p {from} -> {to}  switch {}  {route}{why}",
@@ -896,7 +896,14 @@ pub async fn node(client: &ApiClient, args: &[&str]) {
         }
         Some(op @ ("prepare-device" | "release-device" | "cordon-device" | "uncordon-device")) => {
             let (Some(node), Some(address)) = (args.get(1), args.get(2)) else {
-                return usage(&format!("Usage: node {op} <node> <pci-address>"));
+                return usage(&format!(
+                    "Usage: node {op} <node> <pci-address>{}",
+                    if op == "prepare-device" {
+                        " [--rescan]"
+                    } else {
+                        ""
+                    }
+                ));
             };
             let (id, address) = (node.to_string(), address.to_string());
             let s = svc!(node_rpc(client));
@@ -905,6 +912,7 @@ pub async fn node(client: &ApiClient, args: &[&str]) {
                     let v = answer!(s.prepare_device(PrepareDeviceRequest {
                         id,
                         address,
+                        rescan: has_flag(args, "--rescan"),
                         ..Default::default()
                     }));
                     println!(
@@ -1258,6 +1266,7 @@ mod tests {
             Some(h::P2pPath {
                 route: route.into(),
                 reason: reason.into(),
+                set_for: (route == "direct").then(|| "v1".to_string()),
                 ..Default::default()
             })
             .into()
@@ -1279,7 +1288,7 @@ mod tests {
         assert_eq!(
             &d[2..],
             [
-                "p2p 0000:87:00.0 -> 0000:88:00.0  switch 0000:81:00.0  direct",
+                "p2p 0000:87:00.0 -> 0000:88:00.0  switch 0000:81:00.0  direct (set by glidex for v1)",
                 "p2p 0000:88:00.0 -> 0000:87:00.0  switch 0000:81:00.0  via root complex (0000:88:00.0 has ATS off)",
             ]
         );

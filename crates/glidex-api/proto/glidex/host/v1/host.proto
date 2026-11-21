@@ -504,6 +504,8 @@ message P2pPath {
   string route = 1;
   // The first condition that failed; empty when direct.
   string reason = 2;
+  // The VM glidex turned this direction's Direct Translated P2P on for.
+  optional string set_for = 3 [json_name = "set_for"];
 }
 
 // What a node reports in its status (spec/22-host-topology.md §3.1).
@@ -599,6 +601,8 @@ message PciFunction {
   // (unsupported, off or on; unset when unread) and Translation Blocking.
   optional string direct_translated = 24 [json_name = "direct_translated"];
   bool translation_blocking = 25 [json_name = "translation_blocking"];
+  // Glidex turned this port's Direct Translated P2P on for a VM.
+  bool direct_translated_set = 26 [json_name = "direct_translated_set"];
 }
 
 // A PCI function's power state, and what the kernel may do with it.
@@ -618,7 +622,7 @@ message AerCounts {
 
 message TopologyWarning {
   // iommu_off, numa_unknown, group_shared, link_degraded,
-  // hugepages_unbalanced, power_save_on, acs_off.
+  // hugepages_unbalanced, power_save_on, acs_off, switch_p2p_blocked.
   string kind = 1;
   string detail = 2;
 }

@@ -88,6 +88,7 @@ mod tests {
                 per_device: None,
                 bar_mib: Some(16384),
                 power_save: true,
+                switch_p2p: false,
             }],
             allow: vec![PciGrant {
                 bdf: None,

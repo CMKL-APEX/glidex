@@ -2048,6 +2048,7 @@ mod tests {
                 per_device: None,
                 bar_mib: None,
                 power_save: true,
+                switch_p2p: false,
             },
             count,
             same_switch,

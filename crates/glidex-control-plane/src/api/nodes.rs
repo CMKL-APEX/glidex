@@ -40,6 +40,12 @@ pub async fn topology(c: Caller, Path(id): Path<String>) -> Result<impl IntoResp
 }
 
 #[derive(serde::Deserialize)]
+pub struct PrepareQuery {
+    #[serde(default)]
+    rescan: bool,
+}
+
+#[derive(serde::Deserialize)]
 pub struct PoolsQuery {
     #[serde(default)]
     project: Option<String>,
@@ -78,10 +84,12 @@ pub async fn set_sriov_vfs(
 pub async fn prepare_device(
     c: Caller,
     Path((id, address)): Path<(String, String)>,
+    Query(q): Query<PrepareQuery>,
 ) -> Result<impl IntoResponse, ApiErr> {
     let req = pb::PrepareDeviceRequest {
         id,
         address,
+        rescan: q.rescan,
         ..Default::default()
     };
     Ok(Proto(StatusCode::OK, svc::prepare_device(&c, req).await?))

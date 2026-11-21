@@ -1654,6 +1654,15 @@ impl VmManager {
             if self.keep_devices_on(&tree) {
                 tree = read();
             }
+            // A clear a launch or an exit missed is put right here (H34).
+            match self.vms.try_read() {
+                Ok(vms) => {
+                    let held = self.held_here(&vms);
+                    drop(vms);
+                    self.set_switch_p2p(&tree, &held);
+                }
+                Err(_) => tracing::debug!("switch-local P2P left for the next report"),
+            }
             t.devices = tree.summary_devices();
             let file = self.pci_file.load();
             for d in &mut t.devices {
@@ -5020,7 +5029,128 @@ impl VmManager {
         let acs = self.acs_above(&tree.on_vfio());
         tree.warn_acs(&acs.off);
         tree.apply_p2p(&acs);
+        let trusted = self.devices_to_trust(&tree);
+        if !trusted.is_empty()
+            && let Ok(vms) = self.vms.try_read()
+        {
+            let held = self.held_here(&vms);
+            drop(vms);
+            let off = acs.off.iter().map(|p| p.address.clone()).collect();
+            let plan = tree.switch_p2p_plan(&held, &trusted, &off);
+            tree.apply_switch_p2p(&plan);
+        }
         tree
+    }
+
+    /// The devices of `tree` whose ATS this node trusts (H33, §5.3b).
+    fn devices_to_trust(
+        &self,
+        tree: &crate::topology::TopologyTree,
+    ) -> std::collections::BTreeSet<String> {
+        tree.to_trust(&self.pools_on_this_node(), &self.pci_file.load().exclude)
+    }
+
+    /// This node's VMs that are launching or running (they have an
+    /// instance), each with its name and its VFIO devices' addresses
+    /// (spec/22-host-topology.md §5.3b).
+    fn held_here(&self, vms: &HashMap<String, Vm>) -> Vec<(String, Vec<String>)> {
+        vms.values()
+            .filter(|v| self.is_local(v))
+            .filter_map(|v| {
+                let inst = v.status.instance.as_ref()?;
+                let addresses: Vec<String> = inst
+                    .vfio_devices
+                    .iter()
+                    .map(|d| crate::scheduler::pci_address(d))
+                    .collect();
+                (!addresses.is_empty()).then(|| (v.name.clone(), addresses))
+            })
+            .collect()
+    }
+
+    /// spec/22-host-topology.md H34, §5.3b: have netd turn Direct
+    /// Translated P2P on for the pairs this node's VMs hold, counting
+    /// `launching` (its name and devices) as holding them already and
+    /// leaving out the VM `gone`. Does nothing on a node without a
+    /// `switch_p2p` pool: the next report clears what was set before.
+    pub(crate) async fn sync_switch_p2p(
+        &self,
+        launching: Option<(String, Vec<String>)>,
+        gone: Option<&str>,
+    ) {
+        if !self.pools_on_this_node().iter().any(|p| p.switch_p2p) {
+            return;
+        }
+        let mut held = {
+            let vms = self.vms.read().await;
+            let skip: Vec<&str> = vms
+                .values()
+                .filter(|v| Some(v.id.as_str()) == gone)
+                .map(|v| v.name.as_str())
+                .collect();
+            let mut h = self.held_here(&vms);
+            h.retain(|(name, _)| {
+                !skip.contains(&name.as_str()) && launching.as_ref().is_none_or(|(l, _)| l != name)
+            });
+            h
+        };
+        held.extend(launching.map(|(name, devices)| {
+            let addresses = devices
+                .iter()
+                .map(|d| crate::scheduler::pci_address(d))
+                .collect();
+            (name, addresses)
+        }));
+        let Some(me) = self.me.upgrade() else {
+            return;
+        };
+        let _ = tokio::task::spawn_blocking(move || {
+            let summary = me
+                .nodes
+                .get(&me.local_node_id())
+                .ok()
+                .flatten()
+                .and_then(|n| n.status.topology)
+                .unwrap_or_default();
+            let tree =
+                crate::topology::read_tree(summary, me.dpdk_uplink_bdfs(), |g| me.held_groups(g));
+            me.set_switch_p2p(&tree, &held);
+        })
+        .await;
+    }
+
+    /// Send netd the ports that `held`'s pairs need (§5.3b), reading the
+    /// ACS and ATS above `tree`'s devices first. No trusted device here:
+    /// the empty set, which puts back anything set before.
+    fn set_switch_p2p(&self, tree: &crate::topology::TopologyTree, held: &[(String, Vec<String>)]) {
+        let trusted = self.devices_to_trust(tree);
+        let ports: Vec<String> = if trusted.is_empty() {
+            Vec::new()
+        } else {
+            let mut tree = tree.clone();
+            let acs = self.acs_above(&tree.on_vfio());
+            tree.apply_p2p(&acs);
+            let off = acs.off.iter().map(|p| p.address.clone()).collect();
+            let plan = tree.switch_p2p_plan(held, &trusted, &off);
+            for b in &plan.blocked {
+                tracing::debug!(vm = %b.vm, "{} to {} stays via the root complex: {}", b.from, b.to, b.reason);
+            }
+            plan.ports.into_keys().collect()
+        };
+        let wanted = !ports.is_empty();
+        match self
+            .netd
+            .call::<glidex_ovs::acs::DtReport>(Op::SwitchP2p { ports })
+        {
+            Ok(r) => {
+                for (port, why) in &r.failed {
+                    tracing::warn!("Direct Translated P2P on {port}: {why}");
+                }
+            }
+            Err(e) if wanted => tracing::warn!("switch-local P2P: {e}"),
+            // An older netd, or none: nothing it set to put back.
+            Err(e) => tracing::debug!("switch-local P2P: {e}"),
+        }
     }
 
     /// The ports above `addresses` whose ACS is off (H30), with what they
@@ -6641,8 +6771,8 @@ impl crate::cluster::runtime::NodeHandlers for HandlersOf {
 fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Value, VmManagerError> {
     let address = address.to_string();
     let r = match op {
-        "prepare" => netd.call(Op::PrepareDevice {
-            rescan: false,
+        "prepare" | "prepare-rescan" => netd.call(Op::PrepareDevice {
+            rescan: op == "prepare-rescan",
             address,
             bar_mib: None,
         }),

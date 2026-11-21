@@ -111,6 +111,7 @@ pub fn discover(defined: &[PciPool], nodes: &[Node]) -> Vec<PciPool> {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         })
         .filter(|p| !defined.iter().any(|q| q.name == p.name))
         .collect()
@@ -167,6 +168,7 @@ mod tests {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         }
     }
 

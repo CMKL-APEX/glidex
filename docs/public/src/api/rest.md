@@ -781,7 +781,7 @@ id or its name.
 | `GET` | `/nodes/{id}/topology` | A node's NUMA nodes and PCIe tree, read on that node |
 | `GET` | `/nodes/{id}/dpus` | The node's DPUs: what it reports (`status`: state, VFs, chassis), whether it is `healthy`, and netd's live `probe` (or `probe_error`) |
 | `GET` | `/nodes/{id}/dpus/{dpu}/ports` | The VM ports on that DPU, as its agent lists them |
-| `POST` | `/nodes/{id}/devices/{address}/prepare` | Bind a device's IOMMU group to vfio-pci on its node |
+| `POST` | `/nodes/{id}/devices/{address}/prepare` | Bind a device's IOMMU group to vfio-pci on its node; `?rescan=true` removes and rescans a device already on vfio-pci first, so the IOMMU sees ATS turned on since boot |
 | `POST` | `/nodes/{id}/devices/{address}/sriov` | Set a physical function's SR-IOV virtual functions: `{"vfs": N}` (0 removes them) |
 | `POST` | `/nodes/{id}/devices/{address}/release` | Put a prepared device back on its drivers |
 | `POST` | `/nodes/{id}/devices/{address}/cordon` | No new VM gets the device |

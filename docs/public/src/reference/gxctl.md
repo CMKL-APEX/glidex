@@ -357,7 +357,7 @@ See [Authentication](../operator-guide/authentication.md),
 | `nodes`, `node` | List nodes |
 | `node <node>` | One node in detail |
 | `node drain <node>`, `node undrain <node>` | Stop or resume placing VMs on a node |
-| `node prepare-device <node> <address>`, `node release-device <node> <address>` | Bind a device's IOMMU group to vfio-pci on its node, or put it back on its drivers |
+| `node prepare-device <node> <address> [--rescan]`, `node release-device <node> <address>` | Bind a device's IOMMU group to vfio-pci on its node, or put it back on its drivers. `--rescan` first removes and rescans a device already on vfio-pci, so the IOMMU sees ATS turned on in its firmware since boot |
 | `node sriov <node> <pf-address> <vfs>` | Give a physical function that many SR-IOV virtual functions (0 removes them) |
 | `node cordon-device <node> <address>`, `node uncordon-device <node> <address>` | Stop or resume giving a device to new VMs |
 | `node topology <node> [--devices]` | A node's NUMA nodes, CPUs, memory, hugepages and the devices a VM could be given, read on that node; `--devices`: the devices with their place in the PCIe tree |
