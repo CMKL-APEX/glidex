@@ -1109,14 +1109,29 @@ Forwarding. The control plane asks netd each time it reads the full
 tree; without netd, or with an older one, the warning is left out. Its
 host check is not run yet.
 
-**HT10** is in progress. Built and unit-tested: netd's `acs_above` also
-answers ATS for the given devices and Direct Translated P2P and
-Translation Blocking for each root and downstream port above them
-(H31); `ats`, `direct_translated` and `translation_blocking` on the
-full tree's functions and its `p2p` pairs (§5.2a), in
-`GetNodeTopology`, `gxctl node topology --devices` and the node page's
-Topology card (UI e2e `host-p2p`); the operator guide. Not yet: the
-host check.
+**HT10** is built and tested: netd's `acs_above` also answers ATS for
+the given devices and Direct Translated P2P and Translation Blocking
+for each root and downstream port above them (H31); `ats`,
+`direct_translated` and `translation_blocking` on the full tree's
+functions and its `p2p` pairs (§5.2a), in `GetNodeTopology`,
+`gxctl node topology --devices` and the node page's Topology card (UI
+e2e `host-p2p`); the operator guide. Its host check passed on both HGX
+hosts (below). No device on `vfio-pci` there has an ATS capability, so
+every pair stops at the first condition: a `direct` route, and the
+Direct Translated P2P and Translation Blocking reasons, are shown only
+by the unit tests. The node page was not looked at on the hosts; the
+API answer it renders was.
+
+HT10's host check, on both HGX hosts of the test cluster,
+glidex `0f7c321` (main after HT10) from the cluster's rollout, read-only
+(`gxctl node topology <node> --devices`, `GetNodeTopology`, and
+`lspci -vvv` as root):
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-11-21 | ATS on each device on `vfio-pci` against `lspci -vvv` (ATS capability, `ATSCtl`) | **pass**: 15 devices on the first host (8 A100s, six NVSwitches `10de:1af1` in use by another hypervisor, a BlueField management function) and 10 on the second (8 A100s, a ConnectX-6 `15b3:101b`, the BlueField function); `lspci` shows no ATS capability on any of them (the ConnectX-6 included), and glidex reports `ats unsupported` on each |
+| 2026-11-21 | Direct Translated P2P and Translation Blocking on each root and switch downstream port above them, against `ACSCap`/`ACSCtl` `DirectTrans` and `TransBlk` | **pass**: every port whose ACS capability has `DirectTrans+` has it off (`DirectTrans-`), and glidex reports `direct_translated: off`; `TransBlk-` everywhere, and `translation_blocking` false; ports without an ACS capability have no `direct_translated`. ACS was all off on the first host's ports and on (Source Validation, Request and Completion Redirect, Upstream Forwarding) on the second's |
+| 2026-11-21 | The `p2p` pairs: which are listed, and each direction's route and reason (§5.2a) | **pass**: 31 pairs on the first host and 12 on the second, each pair of devices on `vfio-pci` whose nearest common ancestor is a switch upstream port, nested switches included (pairs inside a second-level switch name that switch; the same devices with a GPU under another branch name the top switch); the BlueField function, alone under its root port, is in none. Each direction is `via root complex (<sender> has no ATS)`, the first condition, as the readings above give |
 
 HT6's acceptance run on the R9700 host, in the three-server test
 cluster with the single-A100 host leading (term 1052), main at `5b56b25` on the three servers:
