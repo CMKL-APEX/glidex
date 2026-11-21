@@ -5091,6 +5091,7 @@ impl VmManager {
             let r = self
                 .netd
                 .call::<serde_json::Value>(Op::PrepareDevice {
+                    rescan: false,
                     address: address.clone(),
                     bar_mib,
                 })
@@ -6641,6 +6642,7 @@ fn device_op_on(netd: &Netd, address: &str, op: &str) -> Result<serde_json::Valu
     let address = address.to_string();
     let r = match op {
         "prepare" => netd.call(Op::PrepareDevice {
+            rescan: false,
             address,
             bar_mib: None,
         }),

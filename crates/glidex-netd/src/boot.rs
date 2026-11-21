@@ -44,6 +44,7 @@ pub fn apply_live(
         match action {
             Action::AlreadyVfio => report.skipped.push((address, "already on vfio-pci".into())),
             Action::Bind { bar_mib, .. } => match call(Op::PrepareDevice {
+                rescan: false,
                 address: address.clone(),
                 bar_mib,
             }) {

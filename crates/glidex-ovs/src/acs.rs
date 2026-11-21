@@ -3,9 +3,11 @@
 //! enables then; a port whose ACS is turned off afterwards forwards a
 //! device's requests to its neighbours without the IOMMU. Also what
 //! switch-local P2P needs (H31): ATS on the devices, and Direct Translated
-//! P2P and Translation Blocking on the ports. Read only: glidex never
-//! changes ACS or ATS (H32). Runs in glidex-netd, as only root can read a
-//! device's extended configuration space.
+//! P2P and Translation Blocking on the ports. Glidex reads these, and
+//! changes one thing only: Direct Translated P2P on the ports above a
+//! trusted pool's devices while one VM holds a pair (H33, H34,
+//! [`set_direct_translated`]). Runs in glidex-netd, as only root can read
+//! and write a device's extended configuration space.
 
 use crate::Exec;
 use crate::power::bridges_above;
@@ -211,6 +213,130 @@ pub fn ats(config: &[u8]) -> Support {
         Some(ctrl) => Support::of(true, ctrl & ATS_ENABLE != 0),
         None => Support::Unsupported,
     }
+}
+
+/// A port whose Direct Translated P2P netd turned on, and whether it was on
+/// before (spec/22-host-topology.md §5.3b).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedDt {
+    pub address: String,
+    pub previous: bool,
+}
+
+/// What [`set_direct_translated`] did.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DtReport {
+    /// Ports it turned Direct Translated P2P on for.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub set: Vec<String>,
+    /// Ports given their earlier value back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub restored: Vec<String>,
+    /// A port, and why it was left alone or couldn't be done.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed: Vec<(String, String)>,
+}
+
+/// Why `port` (its whole configuration space) mustn't get Direct
+/// Translated P2P, or the offset of its ACS Control register.
+fn dt_control(config: &[u8]) -> Result<usize, String> {
+    if port_type(config) != Some(DOWNSTREAM_PORT) {
+        return Err("not a switch downstream port".into());
+    }
+    let at = extended_capability(config, ACS_ID).ok_or("it has no ACS")?;
+    let cap = u16_at(config, at + 4).ok_or("its ACS can't be read")?;
+    if cap & ACS_DT == 0 {
+        return Err("it doesn't support Direct Translated P2P".into());
+    }
+    // H30: with ACS off, requests already cross without the IOMMU.
+    if let Some(off) = acs_off(config)
+        && !off.is_empty()
+    {
+        return Err("its ACS is off".into());
+    }
+    Ok(at + 6)
+}
+
+/// Write `port`'s ACS Control with Direct Translated P2P `on`, every other
+/// bit as read; whether it changed.
+fn write_dt(
+    exec: &dyn Exec,
+    port: &str,
+    config: &[u8],
+    at: usize,
+    on: bool,
+) -> Result<bool, String> {
+    let ctrl = u16_at(config, at).ok_or("its ACS Control can't be read")?;
+    let want = if on { ctrl | ACS_DT } else { ctrl & !ACS_DT };
+    if want == ctrl {
+        return Ok(false);
+    }
+    let path = Path::new("/sys/bus/pci/devices").join(port).join("config");
+    exec.write_bytes_at(&path, at as u64, &want.to_le_bytes())
+        .map_err(|e| e.to_string())?;
+    let back = read_config(exec, port).and_then(|c| u16_at(&c, at).ok_or("short".into()))?;
+    if back & ACS_DT != want & ACS_DT {
+        return Err(format!(
+            "ACS Control reads {back:#06x} after writing {want:#06x}"
+        ));
+    }
+    Ok(true)
+}
+
+/// spec/22-host-topology.md §5.3b: Direct Translated P2P on exactly
+/// `ports` (checked PCI addresses of switch downstream ports), changing
+/// that bit of ACS Control only. `saved` is what netd recorded before
+/// earlier writes; a port that leaves the set gets its earlier value back.
+/// A port with ACS off, without the capability, or not a downstream port
+/// is left alone and reported. Returns what to keep recorded.
+pub fn set_direct_translated(
+    exec: &dyn Exec,
+    ports: &[String],
+    saved: &[SavedDt],
+) -> (DtReport, Vec<SavedDt>) {
+    let mut report = DtReport::default();
+    let mut now = Vec::new();
+    let wanted: BTreeSet<&String> = ports.iter().collect();
+    for &p in &wanted {
+        let prior = saved.iter().find(|s| &s.address == p);
+        let done = read_config(exec, p).and_then(|c| {
+            let at = dt_control(&c)?;
+            let before = u16_at(&c, at).map(|v| v & ACS_DT != 0).unwrap_or(false);
+            let changed = write_dt(exec, p, &c, at, true)?;
+            Ok((before, changed))
+        });
+        match done {
+            Ok((before, changed)) => {
+                now.push(prior.cloned().unwrap_or(SavedDt {
+                    address: p.clone(),
+                    previous: before,
+                }));
+                if changed {
+                    report.set.push(p.clone());
+                }
+            }
+            Err(why) => {
+                // Still ours to put back once it reads again.
+                now.extend(prior.cloned());
+                report.failed.push((p.clone(), why));
+            }
+        }
+    }
+    for s in saved.iter().filter(|s| !wanted.contains(&s.address)) {
+        let done = read_config(exec, &s.address).and_then(|c| {
+            let at = extended_capability(&c, ACS_ID).ok_or("it has no ACS")? + 6;
+            write_dt(exec, &s.address, &c, at, s.previous)
+        });
+        match done {
+            Ok(true) => report.restored.push(s.address.clone()),
+            Ok(false) => {}
+            Err(why) => {
+                now.push(s.clone());
+                report.failed.push((s.address.clone(), why));
+            }
+        }
+    }
+    (report, now)
 }
 
 /// A function's whole configuration space, or why it can't be had: only
@@ -540,5 +666,106 @@ mod tests {
         assert!(r.off.is_empty());
         assert_eq!(r.failed.len(), 1, "{r:?}");
         assert_eq!(r.failed[0].0, "0000:40:01.1");
+    }
+
+    /// ACS Control of `port` as `exec` holds it now.
+    fn control(exec: &RecordingExec, port: &str) -> u16 {
+        let c = read_config(exec, port).unwrap();
+        u16_at(&c, 0x14e).unwrap()
+    }
+
+    const DOWN: &str = "0000:42:00.0";
+    const ROOT: &str = "0000:40:01.1";
+    /// SV, TB, RR, CR, UF and DT supported.
+    const CAP: u16 = 0x5f;
+
+    #[test]
+    fn direct_translated_is_set_alone_and_given_back() {
+        let exec = host(
+            config(ROOT_PORT, Some((CAP, 0x1d))),
+            config(DOWNSTREAM_PORT, Some((CAP, 0x1d))),
+        );
+        let (r, saved) = set_direct_translated(&exec, &[DOWN.into()], &[]);
+        assert_eq!(r.set, vec![DOWN.to_string()], "{r:?}");
+        assert!(r.failed.is_empty(), "{r:?}");
+        // Bit 6 only: SV, RR, CR and UF stay on, TB stays off.
+        assert_eq!(control(&exec, DOWN), 0x5d);
+        assert_eq!(control(&exec, ROOT), 0x1d, "the root port isn't touched");
+        assert_eq!(
+            saved,
+            vec![SavedDt {
+                address: DOWN.into(),
+                previous: false
+            }]
+        );
+        let writes = exec.writes().len();
+        let (again, saved) = set_direct_translated(&exec, &[DOWN.into()], &saved);
+        assert_eq!(again, DtReport::default(), "the same set writes nothing");
+        assert_eq!(exec.writes().len(), writes);
+        let (back, saved) = set_direct_translated(&exec, &[], &saved);
+        assert_eq!(back.restored, vec![DOWN.to_string()], "{back:?}");
+        assert_eq!(control(&exec, DOWN), 0x1d);
+        assert!(saved.is_empty());
+    }
+
+    #[test]
+    fn a_port_that_had_it_on_keeps_it() {
+        let exec = host(
+            config(ROOT_PORT, Some((CAP, 0x1d))),
+            config(DOWNSTREAM_PORT, Some((CAP, 0x5d))),
+        );
+        let (r, saved) = set_direct_translated(&exec, &[DOWN.into()], &[]);
+        assert!(r.set.is_empty(), "{r:?}");
+        assert!(saved[0].previous);
+        let (back, saved) = set_direct_translated(&exec, &[], &saved);
+        assert_eq!(back, DtReport::default());
+        assert_eq!(control(&exec, DOWN), 0x5d);
+        assert!(saved.is_empty());
+        assert!(exec.writes().is_empty());
+    }
+
+    #[test]
+    fn ports_that_mustnt_get_it_are_left_alone() {
+        for (down, why) in [
+            // H30: SV, RR, CR and UF supported and off.
+            (config(DOWNSTREAM_PORT, Some((CAP, 0))), "its ACS is off"),
+            (
+                config(DOWNSTREAM_PORT, Some((0x1f, 0x1d))),
+                "doesn't support Direct Translated P2P",
+            ),
+            (config(DOWNSTREAM_PORT, None), "it has no ACS"),
+        ] {
+            let exec = host(config(ROOT_PORT, Some((CAP, 0x1d))), down);
+            let (r, saved) = set_direct_translated(&exec, &[DOWN.into()], &[]);
+            assert!(r.set.is_empty() && saved.is_empty(), "{r:?}");
+            assert_eq!(r.failed.len(), 1, "{r:?}");
+            assert!(r.failed[0].1.contains(why), "{r:?}");
+            assert!(exec.writes().is_empty());
+        }
+        let exec = host(
+            config(ROOT_PORT, Some((CAP, 0x1d))),
+            config(DOWNSTREAM_PORT, Some((CAP, 0x1d))),
+        );
+        let (r, _) = set_direct_translated(&exec, &[ROOT.into()], &[]);
+        assert!(
+            r.failed[0].1.contains("not a switch downstream port"),
+            "{r:?}"
+        );
+        assert!(exec.writes().is_empty());
+    }
+
+    #[test]
+    fn a_port_that_cant_be_read_stays_recorded() {
+        let exec = host(
+            config(ROOT_PORT, Some((CAP, 0x1d))),
+            config(DOWNSTREAM_PORT, Some((CAP, 0x5d)))[..256].to_vec(),
+        );
+        let saved = vec![SavedDt {
+            address: DOWN.into(),
+            previous: false,
+        }];
+        let (r, kept) = set_direct_translated(&exec, &[], &saved);
+        assert_eq!(r.failed.len(), 1, "{r:?}");
+        assert_eq!(kept, saved, "put back once it reads again");
     }
 }

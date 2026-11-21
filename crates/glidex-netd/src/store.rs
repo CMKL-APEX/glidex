@@ -20,6 +20,9 @@ pub const ARP_SAVED: TableDefinition<&str, &[u8]> = TableDefinition::new("arp_sa
 /// `<address> <attr>` → a power attribute's value before netd kept the
 /// device at D0 (spec/22-host-topology.md §5.3a).
 pub const POWER: TableDefinition<&str, &[u8]> = TableDefinition::new("power");
+/// port address → whether its Direct Translated P2P was on before netd
+/// turned it on (spec/22-host-topology.md §5.3b).
+pub const ACS_DT: TableDefinition<&str, &[u8]> = TableDefinition::new("acs_dt");
 
 pub struct Store {
     db: Database,
@@ -78,6 +81,7 @@ impl Store {
             SOURCE_TABLES,
             ARP_SAVED,
             POWER,
+            ACS_DT,
         ] {
             txn.open_table(t).map_err(err)?;
         }

@@ -182,6 +182,14 @@ pub trait Exec: Send + Sync {
         self.read_file(path).map(String::into_bytes)
     }
     fn write_file(&self, path: &Path, data: &[u8]) -> Result<(), OvsError>;
+    /// Write `data` at `offset` in an existing file, leaving the rest (a
+    /// register in a PCI device's `config`).
+    fn write_bytes_at(&self, path: &Path, _offset: u64, _data: &[u8]) -> Result<(), OvsError> {
+        Err(OvsError::Io(format!(
+            "{}: writing at an offset isn't supported here",
+            path.display()
+        )))
+    }
     fn remove_file(&self, path: &Path) -> Result<(), OvsError>;
     /// Create a directory (and parents) and set its mode.
     fn create_dir(&self, path: &Path, mode: u32) -> Result<(), OvsError>;
@@ -402,6 +410,22 @@ impl Exec for SystemExec {
         std::fs::write(path, data).map_err(|e| OvsError::Io(format!("{}: {}", path.display(), e)))
     }
 
+    fn write_bytes_at(&self, path: &Path, offset: u64, data: &[u8]) -> Result<(), OvsError> {
+        use std::os::unix::fs::FileExt;
+        if self.sudo {
+            return Err(OvsError::Io(format!(
+                "refusing to write {} via sudo",
+                path.display()
+            )));
+        }
+        let io = |e: std::io::Error| OvsError::Io(format!("{}: {}", path.display(), e));
+        let f = std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .map_err(io)?;
+        f.write_all_at(data, offset).map_err(io)
+    }
+
     fn remove_file(&self, path: &Path) -> Result<(), OvsError> {
         if self.sudo {
             return Err(OvsError::Io(format!(
@@ -619,6 +643,24 @@ impl Exec for RecordingExec {
             path.to_path_buf(),
             String::from_utf8_lossy(data).into_owned(),
         ));
+        Ok(())
+    }
+
+    fn write_bytes_at(&self, path: &Path, offset: u64, data: &[u8]) -> Result<(), OvsError> {
+        let mut b = self.read_bytes(path)?;
+        let at = offset as usize;
+        if at + data.len() > b.len() {
+            return Err(OvsError::Io(format!(
+                "{}: write past its end",
+                path.display()
+            )));
+        }
+        b[at..at + data.len()].copy_from_slice(data);
+        self.writes.lock().unwrap().push((
+            PathBuf::from(format!("{}@{offset:#x}", path.display())),
+            data.to_vec(),
+        ));
+        self.binaries.lock().unwrap().push((path.to_path_buf(), b));
         Ok(())
     }
 
