@@ -13,7 +13,7 @@ path = "src/main.rs"
 
 [dependencies]
 axum = { workspace = true }
-glidex-tls = { path = "../glidex-tls" }
+glidex-tls = { workspace = true }
 hyper = { version = "1", features = ["client", "server", "http1"] }
 hyper-util = { version = "0.1", features = ["http1", "tokio"] }
 tokio = { workspace = true }
@@ -26,7 +26,7 @@ serde_json = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [dev-dependencies]
-glidex-tls = { path = "../glidex-tls", features = ["test-util"] }
+glidex-tls = { workspace = true, features = ["test-util"] }
 tempfile = "3"
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 time = "0.3"

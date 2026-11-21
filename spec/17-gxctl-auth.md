@@ -606,7 +606,7 @@ still passes with no config file (byte-identical behaviour).
   beside `/auth/methods` (`mod.rs:246`), `gate.rs:29`, and the
   public-list pin `mod.rs:768-772`; `packaging/control-plane.json.example`
   gains `server_name`.
-- **Client track** — `crates/glidex-tls`: `ClientTls::with_trust
+- **Client track** — glidex-commons' `crates/glidex-tls`: `ClientTls::with_trust
   (system_store, extra_roots, pins, verify_host)`; the pin check as a
   second verifier next to `Recording` (`lib.rs:456-473`), reusing its
   rejected-fingerprint capture; tests beside the existing client tests

@@ -294,17 +294,12 @@ crates/
   glidex-ovs/             Open vSwitch, NAT, uplinks and VM ports
   glidex-ovn/             OVN: cluster networks, the edge, routers
   glidex-stord/           root helper for LVM-thin datastores
-  glidex-authd/           root helper that checks local passwords (PAM)
   glidex-metad/           the metadata endpoint guests reach at 169.254.169.254
-  glidex-tls/             TLS certificates
-  glidex-topology/        a host's NUMA, PCIe and network ports from sysfs (shared with hyperstor)
-  glidex-raftstore/       replicated ReDB store on Raft (shared with hyperstor)
-  glidex-auth/            sessions, tokens, Cedar engine, OIDC login (shared with hyperstor)
   glidex-install/         installer and uninstaller
   glidex/                 the crates.io umbrella: re-exports the library crates
   glidex-ui/              serves the web UI and proxies the API
   glidex-ui/ui/           web UI (Vite + React)
-  glidex-ui/kit/          @glidex/ui-kit: shared sign-in and session pieces
+  glidex-ui/kit/          copy of glidex-commons' @glidex/ui-kit (sign-in and session pieces)
   glidex-ui/e2e/          web UI end-to-end tests (Playwright)
   glidex-e2e/             cluster end-to-end tests (nested VMs)
 docs/                     user and operator docs (docs/public)
@@ -312,6 +307,11 @@ spec/                     design docs
 LICENSES/                 MIT and Apache-2.0 texts, COPYRIGHT
 scripts/dev/              test helpers
 ```
+
+The libraries shared with hyperstor (auth, authd, raftstore, tls,
+topology, trust) and the UI kit live in
+[glidex-commons](https://github.com/CMKL-APEX/glidex-commons), pinned at
+one release tag in `Cargo.toml`.
 
 ### Contributing
 

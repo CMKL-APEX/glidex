@@ -572,7 +572,7 @@ per-tenant validation scopes and lock-out rules. See
 
 **Decision.** The parts of authentication that aren't Glidex-specific
 live in their own crate,
-[`glidex-auth`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-auth):
+[`glidex-auth`](https://github.com/CMKL-APEX/glidex-commons/tree/main/crates/glidex-auth):
 secrets, session and token rules, the Cedar engine (generic over a
 `Model` that supplies the schema, policies, entity types and
 break-glass rule) and OIDC login. The control plane specializes them in
@@ -588,6 +588,27 @@ once.
 **Consequences.** The crate and the kit must not depend on Glidex's own
 records or `api.ts`; Glidex-only pieces (stored users, directories,
 passkeys, capability checks) stay in the control plane and the UI.
+
+### Shared libraries in glidex-commons
+
+**Decision.** The libraries glidex and hyperstor both use (`glidex-auth`,
+`glidex-authd`, `glidex-raftstore`, `glidex-tls`, `glidex-topology`,
+`glidex-trust`) and the UI kit live in their own repository,
+[glidex-commons](https://github.com/CMKL-APEX/glidex-commons), with
+their history and names. Both projects pin one release tag of it; the UI
+kit is copied at that tag, since bun can't install a package from a
+repository's subdirectory. Their designs stay in glidex's specs
+([00-architecture.md](https://github.com/CMKL-APEX/glidex/blob/main/spec/00-architecture.md)).
+
+**Why.** Neither project should build from the other's repository: a
+fix to shared code then doesn't wait on, or drag in, the rest of glidex,
+and moving a pin moves only what is shared.
+
+**Consequences.** A change to a shared crate takes a glidex-commons pull
+request and a release before glidex or hyperstor can use it (a local
+`[patch]` tries it first). The crates must stay free of either project's
+own code. `glidex` and `gxctl` leave the crates.io workflow until
+glidex-commons is published there.
 
 ## Tenancy and directories
 

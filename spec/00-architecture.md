@@ -116,12 +116,27 @@ Reading top-to-bottom inside `crates/glidex-control-plane/src/`:
 Outside the control plane: `crates/glidex-vm-shim` (the per-VM
 supervisor, [12-reconciliation.md §8.3](12-reconciliation.md#83-shim-process)),
 `crates/glidex-hv-client` (CH HTTP and QMP clients, used by both), and
-`crates/glidex-raftstore` (the replicated ReDB store: write sets, the
+glidex-commons' `crates/glidex-raftstore` (the replicated ReDB store: write sets, the
 Raft log, state machine, snapshots and transport, and an in-process test
 cluster with fault injection; also used by hyperstor's map service) and
-`crates/glidex-auth` (secrets, session and token rules, the Cedar engine
+glidex-commons' `crates/glidex-auth` (secrets, session and token rules, the Cedar engine
 and OIDC login, which `auth`, `authz` and `directory::oidc` specialize
 for glidex; also used by hyperstor's management service).
+
+**The libraries glidex shares with hyperstor live in
+[glidex-commons](https://github.com/CMKL-APEX/glidex-commons)**
+(2026-11-21; hyperstor D356): `glidex-auth`, `glidex-authd` (library
+and binary), `glidex-raftstore`, `glidex-tls`, `glidex-topology` and
+`glidex-trust`, and the web UI kit. They moved with their history and
+kept their names; the workspace pins one release tag for all of them
+(`[workspace.dependencies]`), and `crates/glidex-ui/kit` is a copy of the
+kit at that tag, checked in CI (`scripts/ui-kit-sync.sh --check`). Their
+designs stay in these specs. A change to them is a glidex-commons pull
+request and a release, then a pull request here moving the tag.
+*Why:* neither project builds from the other's repository; a fix to
+shared code doesn't wait on the rest of glidex, and a pin moves only what
+is shared. Until glidex-commons is on crates.io, `glidex` and `gxctl`
+can't be packaged for it and the crates.io workflow leaves them out.
 
 ## Data flow: "create and start a VM"
 

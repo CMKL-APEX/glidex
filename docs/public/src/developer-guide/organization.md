@@ -43,20 +43,35 @@ Every crate is in `crates/` and listed in the workspace
 | `glidex-dpu-agent` | lib + bin | The agent on a BlueField DPU (spec/31-dpu.md §10.2): `glidex-dpu` behind the netd-style protocol over mutual TLS; the library is its protocol and netd's client. | `proto.rs`, `server.rs`, `client.rs`, `tls.rs` | `glidex-netd` |
 | `glidex-netd` | lib + bin | Root network helper daemon wrapping `glidex-ovs`; the library is its wire protocol and client. | `proto.rs`, `client.rs`, `server.rs`, `store.rs` (its own state), `supervisor.rs` (dnsmasq), `boot.rs` | Control plane (client), installer |
 | `glidex-stord` | lib + bin | Root storage helper for LVM-thin datastores; protocol and client in the library. | `proto.rs`, `client.rs`, `server.rs`, `lvm.rs`, `devices.rs` (per-VM `DeviceAllow=`) | Control plane |
-| `glidex-authd` | lib + bin | Root PAM helper that checks local passwords; protocol and client in the library. | `proto.rs`, `client.rs`, `server.rs`, `pam.rs`, `limiter.rs` | Control plane |
 | `glidex-metad` | lib + bin | The metadata endpoint guests reach at `169.254.169.254`: checks each request, then asks the control plane over `metad.sock`, naming only the VM port's peer address. Holds no key. | `lib.rs` (routes, rate limit), `main.rs` | Run as a service, fed by netd's rules |
-| `glidex-auth` | lib | Core authentication, kept free of Glidex's own records so other services can reuse it: secrets (random values, base62, SHA-256, constant-time compare), session and token rules, a Cedar policy engine generic over a `Model` (schema, policies, entity types, break-glass rule), and OIDC login (code flow with PKCE, device grant, JWKS). | `secrets.rs`, `session.rs`, `token.rs`, `cedar.rs`, `oidc.rs` | Control plane (`auth/`, `authz.rs`, `directory/oidc.rs` specialize it for Glidex); hyperstor's management service |
-| `glidex-topology` | lib | A host's topology read from sysfs, with no host tools: NUMA nodes and sockets, the PCIe tree with each function's root port and switch, and network ports with their RDMA devices. Depends on no other Glidex crate. | `numa.rs`, `pci.rs`, `net.rs` | Control plane (`topology.rs`, `pci.rs`); `gxctl`; hyperstor |
-| `glidex-tls` | lib | HTTPS listeners, self-signed certificates, reloadable certificates chosen by SNI, client trust, the node's Tailscale certificates. | `lib.rs`, `tailscale.rs` | Control plane, `gxctl`, `glidex-ui`, installer |
-| `glidex-trust` | lib | The cluster side of trust with another organization's directory, with no records of its own: offer tokens, signed peer assertions and pinned requests, the feed and reports, checks of a redeem and of a directory's tokens; feature `fake`, a directory in-process for tests. | `wire.rs`, `peer.rs`, `key.rs`, `client.rs`, `cluster.rs`, `tokens.rs`, `feed.rs`, `fake.rs` | Control plane (`trust.rs`, `api/trust.rs`, `api/trusted_login.rs`); hyperstor's management service |
-| `glidex-raftstore` | lib | A replicated ReDB store on openraft: transactions recorded as write sets, applied as bytes on every member; waits that don't stall a Tokio worker; an in-process test cluster. | `store.rs`, `raft/`, `wait.rs`, `testing.rs` | Control plane (`store/`, `cluster/raft/`); hyperstor's map service |
 | `glidex` | lib | The crates.io umbrella: re-exports the library crates above, each behind a feature of its name (`api` by default, `client`, `full`). Holds no code of its own. | `lib.rs` | Users of the libraries from crates.io |
-| `glidex-ui` | bin + web app | The Rust binary serves the built UI and proxies `/api` to the control plane; `ui/` is the Vite + React app; `kit/` the shared `@glidex/ui-kit`; `e2e/` its Playwright suite. | `src/main.rs`, `src/home.rs`, `src/tailscale.rs` | Run as a service |
+| `glidex-ui` | bin + web app | The Rust binary serves the built UI and proxies `/api` to the control plane; `ui/` is the Vite + React app; `kit/` a copy of glidex-commons' `@glidex/ui-kit` at the pinned tag (`scripts/ui-kit-sync.sh`); `e2e/` its Playwright suite. | `src/main.rs`, `src/home.rs`, `src/tailscale.rs` | Run as a service |
 | `glidex-install` | bin | Installer and uninstaller: packages, hypervisors (Pylon with `--with-pylon`), firmware, OVS, users and groups, units, the UI build. | `main.rs`, `uninstall.rs`, `sysconfig.rs`, `tailscale.rs`, `ovn_match.rs` | Run by hand |
 | `glidex-e2e` | test crate | Helpers and the end-to-end tests that run against a real Glidex: the nested cluster test, which installs Glidex into VMs of the host's own Glidex, and the metadata endpoint test from inside a guest. | `tests/nested_cluster.rs`, `tests/metadata.rs` | `cargo test -p glidex-e2e` |
 
 Each library's crate-level doc (`//!` in `src/lib.rs`) is the place to
 start reading it.
+
+### Shared with hyperstor: glidex-commons
+
+Six libraries, and the web UI kit, live in their own repository,
+[glidex-commons](https://github.com/CMKL-APEX/glidex-commons), because
+hyperstor uses them too. The workspace pins one release tag of it for all
+six (`[workspace.dependencies]` in `Cargo.toml`); they keep their names,
+so code uses them as before. A change to them is a glidex-commons pull
+request and a release, then a pull request here moving the tag; to try
+one first, point Cargo at a local checkout with an uncommitted `[patch]`
+(glidex-commons' README, "Using it"). `glidex-install` still builds
+`glidex-authd` with `cargo build -p glidex-authd`.
+
+| Crate | Kind | What it is | Key modules | Used by |
+|---|---|---|---|---|
+| `glidex-authd` | lib + bin | Root PAM helper that checks local passwords; protocol and client in the library. | `proto.rs`, `client.rs`, `server.rs`, `pam.rs`, `limiter.rs` | Control plane |
+| `glidex-auth` | lib | Core authentication, kept free of Glidex's own records so other services can reuse it: secrets (random values, base62, SHA-256, constant-time compare), session and token rules, a Cedar policy engine generic over a `Model` (schema, policies, entity types, break-glass rule), and OIDC login (code flow with PKCE, device grant, JWKS). | `secrets.rs`, `session.rs`, `token.rs`, `cedar.rs`, `oidc.rs` | Control plane (`auth/`, `authz.rs`, `directory/oidc.rs` specialize it for Glidex); hyperstor's management service |
+| `glidex-topology` | lib | A host's topology read from sysfs, with no host tools: NUMA nodes and sockets, the PCIe tree with each function's root port and switch, and network ports with their RDMA devices. Depends on no other Glidex crate. | `numa.rs`, `pci.rs`, `net.rs` | Control plane (`topology.rs`, `pci.rs`); `gxctl`; hyperstor |
+| `glidex-tls` | lib | HTTPS listeners, self-signed certificates, reloadable certificates chosen by SNI, client trust, the node's Tailscale certificates. | `lib.rs`, `tailscale.rs` | Control plane, `gxctl`, `glidex-ui`, installer |
+| `glidex-trust` | lib | The cluster side of trust with another organization's directory, with no records of its own: offer tokens, signed peer assertions and pinned requests, the feed and reports, checks of a redeem and of a directory's tokens; feature `fake`, a directory in-process for tests. | `wire.rs`, `peer.rs`, `key.rs`, `client.rs`, `cluster.rs`, `tokens.rs`, `feed.rs`, `fake.rs` | Control plane (`trust.rs`, `api/trust.rs`, `api/trusted_login.rs`); hyperstor's management service |
+| `glidex-raftstore` | lib | A replicated ReDB store on openraft: transactions recorded as write sets, applied as bytes on every member; waits that don't stall a Tokio worker; an in-process test cluster. | `store.rs`, `raft/`, `wait.rs`, `testing.rs` | Control plane (`store/`, `cluster/raft/`); hyperstor's map service |
 
 ## Processes
 

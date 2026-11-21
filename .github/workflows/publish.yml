@@ -36,8 +36,11 @@ jobs:
 
     steps:
     - uses: actions/checkout@v7
+    # `glidex` and `gxctl` depend on crates from glidex-commons, which
+    # aren't on crates.io yet; cargo can't package a crate whose dependency
+    # is only on git. They come back once glidex-commons is published.
     - name: Package and build, uploading nothing
-      run: cargo publish --workspace --dry-run --locked
+      run: cargo publish --workspace --exclude glidex --exclude gxctl --dry-run --locked
 
   publish:
 
@@ -72,6 +75,6 @@ jobs:
     - uses: rust-lang/crates-io-auth-action@v1
       id: auth
     - name: Publish
-      run: cargo publish --workspace --locked
+      run: cargo publish --workspace --exclude glidex --exclude gxctl --locked
       env:
         CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
