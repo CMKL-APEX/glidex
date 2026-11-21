@@ -106,7 +106,11 @@ export default function DevicePools() {
                   <td>
                     {p.per_device_vcpus ? `${p.per_device_vcpus} vCPUs, ${p.per_device_memory_mib} MiB` : "—"}
                     {d?.bar_mib ? <span className="text-gray-400"> · window {d.bar_mib} MiB</span> : null}
-                    {d?.power_save === false ? <span className="text-gray-400"> · kept at D0</span> : null}
+                    {d?.switch_p2p ? (
+                      <span className="text-gray-400"> · switch-local P2P (trusted) · kept at D0</span>
+                    ) : d?.power_save === false ? (
+                      <span className="text-gray-400"> · kept at D0</span>
+                    ) : null}
                   </td>
                   <td>{p.discovered ? "host roles only" : grantees(allow, p.name ?? "")}</td>
                   <td className="text-right whitespace-nowrap">

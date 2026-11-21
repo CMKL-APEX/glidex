@@ -66,6 +66,19 @@ test("the card lists defined and discovered pools with their grants", async ({ p
   await expect(amd).toContainText("host roles only");
 });
 
+test("a pool trusted for switch-local P2P says so, and that it is kept at D0", async ({ page }) => {
+  // spec/22-host-topology.md H33: the later route wins over beforeEach's.
+  await rpcRoute(page, `${CLUSTER_SVC}/GetPciSettings`, () => ({
+    message: {
+      source: "PCI_SETTINGS_SOURCE_CLUSTER",
+      settings: { pools: [{ ...t4, switch_p2p: true }], allow: [grant], updated_by: "api:admin" },
+    },
+  }));
+  await page.goto("/cluster");
+  const t4Row = page.getByRole("row").filter({ hasText: "t4" });
+  await expect(t4Row).toContainText("switch-local P2P (trusted) · kept at D0");
+});
+
 test("adopting a discovered pool adds a pool matching its model and keeps the rest", async ({ page }) => {
   let sent: any = null;
   await rpcRoute(page, `${CLUSTER_SVC}/PutPciSettings`, (req) => {

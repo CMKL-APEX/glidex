@@ -543,6 +543,10 @@ message PciPoolSpec {
   // `false`: each node keeps the pool's devices on `vfio-pci` at D0, out
   // of PCIe power saving. Absent: `true`.
   optional bool power_save = 8 [json_name = "power_save"];
+  // `true`: the operator trusts the devices' ATS. Each node turns on ACS
+  // Direct Translated P2P above them while one VM holds a pair, and keeps
+  // them at D0. Absent: `false`.
+  optional bool switch_p2p = 9 [json_name = "switch_p2p"];
 }
 
 // A grant: one device (`bdf`, on every node or on `node`) or one pool, to
@@ -1043,6 +1047,9 @@ message PrepareDeviceRequest {
   string id = 1;
   // PCI address, 0000:41:00.0.
   string address = 2;
+  // Remove the device (on vfio-pci, held by no VM) and rescan the port
+  // above it first, so the IOMMU sees ATS turned on since boot.
+  bool rescan = 3;
 }
 message PreparedMember {
   string address = 1;

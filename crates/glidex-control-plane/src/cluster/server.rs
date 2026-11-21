@@ -1225,7 +1225,8 @@ async fn topology(State(c): Ctx, p: Option<Extension<PeerCert>>) -> Response {
     }
 }
 
-/// `POST /cluster/v1/devices/{address}/{prepare|release}`: prepare or
+/// `POST /cluster/v1/devices/{address}/{op}` (`prepare`, `prepare-rescan`,
+/// `release`, …): prepare or
 /// release this node's PCI device, for a server that authorized the
 /// caller (spec/22-host-topology.md §5.3). Servers only.
 async fn device_op(

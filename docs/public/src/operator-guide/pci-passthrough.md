@@ -89,12 +89,32 @@ The reason names the first setting missing. `unknown` means
 and in its `p2p` list. Devices that share only a root port aren't
 listed, because their requests go through the root complex anyway.
 
-Glidex only reports these and never turns them on. Direct Translated
-P2P makes the switch trust the addresses a device marks as translated,
-so turn it on only for devices you trust, outside glidex. A boot script
-with `setpci` on the downstream ports is one way. The Linux IOMMU driver
-turns ATS on by itself for a device on `vfio-pci` when the IOMMU
-supports it.
+Direct Translated P2P makes the switch trust the addresses a device
+marks as translated, so glidex turns it on only for pools you mark
+`switch_p2p: true` ([Pool and grant reference](#pool-and-grant-reference)):
+you trust those devices' ATS. On each node, while one VM holds a device
+of such a pool and a peer device under the same switch, glidex turns on
+Direct Translated P2P on the switch downstream ports between that
+device and the switch, and nothing else of their ACS. It sets them just
+before the VM starts, and puts each port's earlier value back after the
+VM stops. Each node report sends the whole set again, so a missed clear
+is undone within two minutes. A `switch_p2p` pool's devices are also
+kept at D0, as with `power_save: false`. Glidex never turns on ATS, and
+leaves a port alone whose ACS is off, that lacks the capability, or
+below which another function with ATS on isn't part of that VM's
+trusted devices.
+
+`gxctl node topology <node> --devices` then shows such a direction as
+`direct (set by glidex for <vm>)`. When a trusted device's direction
+can't go across the switch, the node warns `switch_p2p_blocked` with
+the reason: no ATS (turn it on in the device's firmware), ATS off
+(`gxctl node prepare-device <node> <address> --rescan`), or a port that
+can't take it.
+
+Without `switch_p2p`, glidex only reports these. You can still set them
+up outside glidex, for example with a boot script running `setpci` on
+the downstream ports. The Linux IOMMU driver turns ATS on by itself for
+a device on `vfio-pci` when the IOMMU supports it.
 
 #### Setting it up for a ConnectX NIC and a GPU
 
@@ -116,7 +136,8 @@ complex; switch-local, it runs at about 190 Gb/s. As root on the host:
    --level 3 --skip_driver reset`), or a host reboot.
 2. **Let the IOMMU see it.** The IOMMU decides about ATS when it probes
    the device, so after a firmware reset remove and rescan it, then put
-   it back on `vfio-pci`:
+   it back on `vfio-pci`. `gxctl node prepare-device <node> 0000:4b:00.0
+   --rescan` does all of it; by hand:
 
    ```bash
    echo 1 > /sys/bus/pci/devices/0000:4b:00.0/remove
@@ -125,8 +146,9 @@ complex; switch-local, it runs at about 190 Gb/s. As root on the host:
 
    `lspci -vvv -s 4b:00.0` then shows `Address Translation Service
    (ATS)`, and `ATSCtl: Enable+` once the device is in an IOMMU domain.
-3. **Keep the NIC out of power saving.** Give its pool `power_save:
-   false` ([Keep devices out of power saving](#keep-devices-out-of-power-saving)).
+3. **Mark the NIC's pool `switch_p2p: true`** (steps 3 and 4 by hand
+   otherwise). That keeps the NIC out of power saving too, as
+   `power_save: false` would ([Keep devices out of power saving](#keep-devices-out-of-power-saving)).
    An idle NIC in D3hot after the reset made its root port log
    `PME: Spurious native interrupt!` several times a second.
 4. **Direct Translated P2P** on the NIC's downstream port in each switch
@@ -136,8 +158,9 @@ complex; switch-local, it runs at about 190 Gb/s. As root on the host:
    setpci -s 0000:4a:00.0 ECAP_ACS+0x6.w=0040:0040
    ```
 
-   Run that from a boot unit ordered before `glidex-netd`: it doesn't
-   survive a reboot. Only the NIC's side is needed. A GPU without ATS
+   With `switch_p2p`, glidex does this while a VM holds the pair. By
+   hand, run it from a boot unit ordered before `glidex-netd`: it
+   doesn't survive a reboot. Only the NIC's side is needed. A GPU without ATS
    (the A100 has none) still sends its own requests through the root
    complex, and reports that direction `via root complex`.
 5. **Check:** `gxctl node topology <node> --devices` shows the NIC `ats
@@ -610,6 +633,7 @@ A pool (`pools[]`):
 | `per_device` | object | What a `gpus` request gets per device unless the VM sizes itself: `vcpus` and `memory_mib` (required), `hugepages` (bool) and `cpu_policy` (`"shared"` or `"dedicated"`). Without it, a VM asking `gpus` gives its own `vcpu_count` and `mem_size_mib`. |
 | `bar_mib` | integer | The largest GPU memory window, in MiB, a power of two (`16384`). Without it, the window is sized against the host's memory ([AMD GPUs](#amd-gpus)). |
 | `power_save` | bool, default `true` | `false` keeps the pool's devices on `vfio-pci` at full power (D0) while no VM holds them ([Keep devices out of power saving](#keep-devices-out-of-power-saving)). |
+| `switch_p2p` | bool, default `false` | `true`: you trust the devices' ATS. While one VM holds a device of the pool and a peer under the same switch, glidex turns on ACS Direct Translated P2P above it, and it keeps the devices at D0 ([Switch-local peer-to-peer](#switch-local-peer-to-peer)). |
 
 A match (`match`) holds keys that must all match:
 
@@ -697,7 +721,7 @@ What only one host decides stays in that host's `control-plane.json`:
   host: it is in no pool, Glidex never prepares it, and a VM that names
   its address isn't placed on this host. `gxctl pci pools` leaves it
   out.
-- `overrides` set a pool's `bar_mib`, `prepare` and `power_save` on
+- `overrides` set a pool's `bar_mib`, `prepare`, `power_save` and `switch_p2p` on
   this host only. Use it when hosts differ in memory, since the safe GPU
   window size depends on it, or to keep one host's devices out of power
   saving (`{"nvidia-20b0": {"power_save": false}}`; a discovered pool's

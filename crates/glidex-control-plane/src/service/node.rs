@@ -284,7 +284,8 @@ pub async fn node_dpu_ports(call: &Call, id: String, dpu: String) -> ServiceResu
 }
 
 /// `POST /nodes/{id}/devices/{address}/prepare` (spec/22-host-topology.md
-/// §5.3): its IOMMU group bound to vfio-pci on that node.
+/// §5.3): its IOMMU group bound to vfio-pci on that node; with `rescan`,
+/// removed and rescanned first (H35).
 pub async fn prepare_device(
     call: &Call,
     req: pb::PrepareDeviceRequest,
@@ -292,7 +293,15 @@ pub async fn prepare_device(
     let (id, addr) = device_target(call, req.id, &req.address)?;
     let v = call
         .manager()
-        .node_device_op(&id, &addr, "prepare")
+        .node_device_op(
+            &id,
+            &addr,
+            if req.rescan {
+                "prepare-rescan"
+            } else {
+                "prepare"
+            },
+        )
         .await
         .map_err(crate::service::host::manager_err)?;
     let p: glidex_ovs::vfio::Prepared = serde_json::from_value(v)

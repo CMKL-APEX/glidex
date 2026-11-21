@@ -375,8 +375,8 @@ pub struct PciConfig {
     /// Devices this host keeps: in no pool, and never given to a VM here
     /// (spec/22-host-topology.md H23). Per host, never replicated.
     pub exclude: Vec<PoolMatch>,
-    /// A pool's `bar_mib`, `prepare` and `power_save` on this host, by pool
-    /// name (H23, H28).
+    /// A pool's `bar_mib`, `prepare`, `power_save` and `switch_p2p` on this
+    /// host, by pool name (H23, H28, H33).
     pub overrides: std::collections::BTreeMap<String, PoolOverride>,
 }
 
@@ -390,6 +390,8 @@ pub struct PoolOverride {
     pub prepare: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub power_save: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub switch_p2p: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, serde::Serialize)]
@@ -450,6 +452,11 @@ pub struct PciPool {
         skip_serializing_if = "is_power_save_default"
     )]
     pub power_save: bool,
+    /// `true`: the operator trusts the pool's devices' ATS. Each node turns
+    /// on Direct Translated P2P above them while one VM holds a pair, and
+    /// keeps them at D0 (spec/22-host-topology.md H33, H34, §5.3b).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub switch_p2p: bool,
 }
 
 fn power_save_default() -> bool {
@@ -553,6 +560,7 @@ impl PciConfig {
                     p.bar_mib = o.bar_mib.or(p.bar_mib);
                     p.prepare = o.prepare.unwrap_or(p.prepare);
                     p.power_save = o.power_save.unwrap_or(p.power_save);
+                    p.switch_p2p = o.switch_p2p.unwrap_or(p.switch_p2p);
                 }
                 p
             })
@@ -925,6 +933,7 @@ mod tests {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         };
         let mut c = PciConfig {
             pools: vec![pool("a100", Some("0x10de"))],
@@ -938,12 +947,18 @@ mod tests {
                 bar_mib: Some(8192),
                 prepare: Some(true),
                 power_save: Some(false),
+                switch_p2p: Some(true),
             },
         );
         let here = c.pools_here(&c.pools);
         assert_eq!(
-            (here[0].bar_mib, here[0].prepare, here[0].power_save),
-            (Some(8192), true, false)
+            (
+                here[0].bar_mib,
+                here[0].prepare,
+                here[0].power_save,
+                here[0].switch_p2p
+            ),
+            (Some(8192), true, false, true)
         );
         assert_eq!(c.pools_here(&[pool("t4", None)])[0].bar_mib, None);
         c.overrides.get_mut("a100").unwrap().bar_mib = Some(3000);

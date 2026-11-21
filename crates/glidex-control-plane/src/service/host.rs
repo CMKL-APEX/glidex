@@ -832,6 +832,7 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                 ats: d.ats.map(support_name),
                 direct_translated: d.direct_translated.map(support_name),
                 translation_blocking: d.translation_blocking,
+                direct_translated_set: d.direct_translated_set,
                 ..Default::default()
             })
             .collect(),
@@ -856,6 +857,7 @@ pub(crate) fn topology_pb(t: &crate::topology::TopologyTree) -> pb::Topology {
                     }
                     .into(),
                     reason: x.reason.clone(),
+                    set_for: x.set_for.clone(),
                     ..Default::default()
                 };
                 pb::P2pPair {

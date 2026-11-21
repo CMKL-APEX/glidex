@@ -718,6 +718,7 @@ async fn tenant_pools_split_a_granted_cluster_pool_among_projects() {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,
@@ -902,6 +903,7 @@ async fn tenant_pools_are_the_tenants_only_way_to_its_granted_pool() {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         }];
         let grant = |projects: Vec<String>, tenants: Vec<String>| PciGrant {
             bdf: None,
@@ -1093,6 +1095,7 @@ async fn a_project_of_another_tenant_answers_like_a_missing_one() {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,
@@ -1244,6 +1247,7 @@ async fn a_device_grant_names_one_project() {
         per_device: None,
         bar_mib: None,
         power_save: true,
+        switch_p2p: false,
     };
     let h = harness_with(|c| {
         c.pci.pools = vec![a100];
@@ -1380,6 +1384,7 @@ async fn a_device_grant_slug_is_the_local_directorys() {
         per_device: None,
         bar_mib: None,
         power_save: true,
+        switch_p2p: false,
     };
     let grant = |pool: &str, projects: &[&str], tenants: &[&str]| PciGrant {
         bdf: None,
@@ -2512,6 +2517,7 @@ async fn an_open_pool_is_granted_to_every_admitted_tenant() {
             per_device: None,
             bar_mib: None,
             power_save: true,
+            switch_p2p: false,
         }];
         c.pci.allow = vec![PciGrant {
             bdf: None,
