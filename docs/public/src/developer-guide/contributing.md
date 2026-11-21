@@ -131,6 +131,13 @@ tests run against an in-process `glidex-netd` with a recording executor
 (no root, no OVS). `cluster_tests.rs` runs three control planes on one
 machine over real mutual TLS.
 
+A controller unit test that checks what the control plane asks of netd
+can use a small fake netd instead: a Unix socket that answers the ops
+it is given and records them, with `Netd::new` pointed at its directory.
+`switch_local_p2p_is_set_at_launch_and_put_back_at_exit` in
+`controller/vm.rs` is one: it gives the manager a PCI tree
+(`switch_p2p_tree`, test builds only) in place of the host's sysfs.
+
 ### Functional tests
 
 These boot real guests. Run them one at a time:
