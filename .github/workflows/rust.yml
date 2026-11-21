@@ -82,6 +82,9 @@ jobs:
     - name: Lint and format
       working-directory: crates/glidex-api
       run: buf lint && buf format --exit-code > /dev/null
+    # The UI kit is glidex-commons' at the tag Cargo.toml pins, unchanged.
+    - name: ui-kit matches glidex-commons
+      run: scripts/ui-kit-sync.sh --check
     - uses: oven-sh/setup-bun@v2
     - name: Generated TypeScript is current
       run: |

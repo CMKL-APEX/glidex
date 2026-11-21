@@ -1399,7 +1399,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-auth"
-version = "0.0.9-dev"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.0#dac63c7e55243aa46ac26884089fd8eadde3e85a"
 dependencies = [
  "arc-swap",
  "base64 0.23.1",
@@ -1418,14 +1419,14 @@ dependencies = [
 
 [[package]]
 name = "glidex-authd"
-version = "0.0.9-dev"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.0#dac63c7e55243aa46ac26884089fd8eadde3e85a"
 dependencies = [
  "libc",
  "libloading",
  "nix",
  "serde",
  "serde_json",
- "tempfile",
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
@@ -1632,7 +1633,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-raftstore"
-version = "0.0.9-dev"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.0#dac63c7e55243aa46ac26884089fd8eadde3e85a"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -1664,7 +1666,8 @@ dependencies = [
 
 [[package]]
 name = "glidex-tls"
-version = "0.0.9-dev"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.0#dac63c7e55243aa46ac26884089fd8eadde3e85a"
 dependencies = [
  "arc-swap",
  "http",
@@ -1679,7 +1682,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "socket2",
- "tempfile",
  "time",
  "tokio",
  "tokio-rustls",
@@ -1689,23 +1691,23 @@ dependencies = [
 
 [[package]]
 name = "glidex-topology"
-version = "0.0.9-dev"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.0#dac63c7e55243aa46ac26884089fd8eadde3e85a"
 dependencies = [
  "nix",
  "serde",
- "tempfile",
 ]
 
 [[package]]
 name = "glidex-trust"
-version = "0.0.9-dev"
+version = "0.1.0"
+source = "git+https://github.com/CMKL-APEX/glidex-commons?tag=v0.1.0#dac63c7e55243aa46ac26884089fd8eadde3e85a"
 dependencies = [
  "aws-lc-rs",
  "base64 0.23.1",
  "bytes",
  "getrandom 0.4.3",
  "glidex-tls",
- "glidex-trust",
  "http",
  "http-body-util",
  "hyper",

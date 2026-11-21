@@ -10,17 +10,11 @@ members = [
     "crates/glidex-install",
     "crates/glidex-netd",
     "crates/glidex-stord",
-    "crates/glidex-authd",
     "crates/glidex-ui",
     "crates/glidex-hv-client",
     "crates/glidex-vm-shim",
-    "crates/glidex-tls",
-    "crates/glidex-trust",
     "crates/glidex-e2e",
-    "crates/glidex-raftstore",
-    "crates/glidex-auth",
     "crates/glidex-metad",
-    "crates/glidex-topology",
     "crates/glidex",
 ]
 resolver = "2"
@@ -35,16 +29,20 @@ homepage = "https://cmkl-apex.github.io/glidex/docs/"
 [workspace.dependencies]
 # Workspace crates a published crate depends on: crates.io needs a
 # version beside the path. It moves with `[workspace.package]` version.
+# The libraries shared with hyperstor (glidex-auth, -authd, -raftstore,
+# -tls, -topology, -trust) live in glidex-commons, pinned at one release
+# tag for all of them (README.md there, "Using it").
 glidex-api = { path = "crates/glidex-api", version = "0.0.9-dev" }
-glidex-auth = { path = "crates/glidex-auth", version = "0.0.9-dev" }
+glidex-auth = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0", version = "0.1.0" }
 glidex-hv-client = { path = "crates/glidex-hv-client", version = "0.0.9-dev" }
 glidex-dpu = { path = "crates/glidex-dpu", version = "0.0.9-dev" }
 glidex-ovn = { path = "crates/glidex-ovn", version = "0.0.9-dev" }
 glidex-ovs = { path = "crates/glidex-ovs", version = "0.0.9-dev" }
-glidex-raftstore = { path = "crates/glidex-raftstore", version = "0.0.9-dev" }
-glidex-tls = { path = "crates/glidex-tls", version = "0.0.9-dev" }
-glidex-trust = { path = "crates/glidex-trust", version = "0.0.9-dev" }
-glidex-topology = { path = "crates/glidex-topology", version = "0.0.9-dev" }
+glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0", version = "0.1.0" }
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0", version = "0.1.0" }
+glidex-trust = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0", version = "0.1.0" }
+glidex-topology = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0", version = "0.1.0" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

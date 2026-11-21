@@ -8,7 +8,7 @@ description = "The glidex control plane: VMs, networks, storage, directory and c
 publish = false
 
 [dependencies]
-glidex-topology = { path = "../glidex-topology" }
+glidex-topology = { workspace = true }
 # WebAuthn's ES256 and RS256 (spec/25-passkeys.md) and the issuer's ES256
 # tokens (directory/issuer.rs), as jsonwebtoken does: constant-time, and
 # no p256 0.13 or rsa (RUSTSEC-2026-0387, RUSTSEC-2023-0071; #353).
@@ -57,12 +57,12 @@ arc-swap = "1"
 zeroize = { version = "1", features = ["serde"] }
 jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
 base64 = "0.23"
-glidex-authd = { path = "../glidex-authd" }
-glidex-tls = { path = "../glidex-tls" }
-glidex-trust = { path = "../glidex-trust" }
-glidex-raftstore = { path = "../glidex-raftstore" }
+glidex-authd = { workspace = true }
+glidex-tls = { workspace = true }
+glidex-trust = { workspace = true }
+glidex-raftstore = { workspace = true }
 # Core authentication, shared with hyperstor (spec/11-security.md §5, §7).
-glidex-auth = { path = "../glidex-auth" }
+glidex-auth = { workspace = true }
 # RPC API next to REST (spec/18-grpc.md); pinned with glidex-api's connectrpc.
 glidex-api = { path = "../glidex-api" }
 # The hyperstor datastore driver (spec/24-storage.md §11.2): hyperstor's
@@ -98,7 +98,7 @@ time = "0.3"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["handshake"] }
 glidex-api = { path = "../glidex-api", features = ["client"] }
 # A hyperstor cluster's API over pinned HTTPS for the storage relay's tests.
-glidex-trust = { path = "../glidex-trust", features = ["fake"] }
+glidex-trust = { workspace = true, features = ["fake"] }
 mime = "0.3"
 
 [[bin]]

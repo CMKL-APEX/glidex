@@ -139,7 +139,9 @@ Everything is same-origin from the browser's perspective.
 ## Source layout
 
 The pieces hyperstor's management UI shares (hyperstor D97) live in
-`crates/glidex-ui/kit`, the `@glidex/ui-kit` package: `Modal`,
+`crates/glidex-ui/kit`, the `@glidex/ui-kit` package (a copy of
+glidex-commons' `ui-kit/` at the tag `Cargo.toml` pins, replaced by
+`scripts/ui-kit-sync.sh TAG` and checked in CI): `Modal`,
 `TokenReveal`, the PAM form and SSO buttons, the step-up dialog, and the
 session layer (whoami, login page, CSRF value, the 401 `reauth_required`
 → log in again → retry flow). They take an `AuthApi` adapter, not

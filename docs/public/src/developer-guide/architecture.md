@@ -53,7 +53,7 @@ daemon with a narrow protocol on a Unix socket.
 | `glidex-control-plane` | `glidex` (`glidex-control-plane.service`) | [`glidex-control-plane`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane) | API, authentication, authorization, the store, controllers, scheduler, cluster membership |
 | `glidex-netd` | root (`glidex-netd.service`) | [`glidex-netd`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-netd), on the [`glidex-ovs`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-ovs) library | Everything privileged on the host network: OVS bridges and uplinks, NAT (nftables + dnsmasq), VM ports, joining OVN, binding devices to `vfio-pci` |
 | `glidex-stord` | root (`glidex-stord.service`) | [`glidex-stord`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-stord) | Makes, activates and removes LVM-thin volumes in the volume groups the operator allows, and hands each device to the `glidex` user |
-| `glidex-authd` | root, socket-activated (`glidex-authd.socket`) | [`glidex-authd`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-authd) | Checks local users' passwords with PAM; one operation, `authenticate` |
+| `glidex-authd` | root, socket-activated (`glidex-authd.socket`) | [`glidex-authd`](https://github.com/CMKL-APEX/glidex-commons/tree/main/crates/glidex-authd) | Checks local users' passwords with PAM; one operation, `authenticate` |
 | `glidex-vm-shim` | `glidex`, one `glidex-vm@<id>.service` per running VM | [`glidex-vm-shim`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-vm-shim) | Parent of one hypervisor; owns its PTY, console socket and console log; records how it exited |
 | `cloud-hypervisor`, `qemu-system-*`, `pylon` | child of the shim | upstream (Pylon: a Cloud Hypervisor fork, installed with `--with-pylon`) | The VM itself |
 | `glidex-metad` | `glidex-metad` (`glidex-metad.service`) | [`glidex-metad`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-metad) | The metadata endpoint guests reach at `169.254.169.254`: checks each request and asks the control plane to answer for the VM behind the port it came from. Holds no key |
@@ -162,9 +162,9 @@ axum router (`api::router` in
 
 | Step | Where | Notes |
 |---|---|---|
-| Listeners | [`serve.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/serve.rs), [`glidex-tls`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-tls) | TCP is HTTPS unless TLS is off, which only loopback listeners allow. The Unix sockets tag each request with the peer's uid from `SO_PEERCRED` |
+| Listeners | [`serve.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/serve.rs), [`glidex-tls`](https://github.com/CMKL-APEX/glidex-commons/tree/main/crates/glidex-tls) | TCP is HTTPS unless TLS is off, which only loopback listeners allow. The Unix sockets tag each request with the peer's uid from `SO_PEERCRED` |
 | Authentication | `authenticate` in `api/mod.rs`, [`auth/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/auth) | Every request gets a `Principal`. Credentials accepted depend on the listener: cookies only through `glidex-ui`, peer uid only on `api.sock` |
-| Authorization | [`authz.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/authz.rs) (Glidex's `Model` over the engine in [`glidex-auth`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-auth/src/cedar.rs)), policies in [`crates/glidex-control-plane/policies/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/policies) | Cedar. The policy set is the shipped base policies and role templates, one template link per role assignment, and enabled site policies, validated against the schema and swapped atomically. A decision allows only if Cedar allows and no policy errored |
+| Authorization | [`authz.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/authz.rs) (Glidex's `Model` over the engine in [`glidex-auth`](https://github.com/CMKL-APEX/glidex-commons/blob/main/crates/glidex-auth/src/cedar.rs)), policies in [`crates/glidex-control-plane/policies/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/policies) | Cedar. The policy set is the shipped base policies and role templates, one template link per role assignment, and enabled site policies, validated against the schema and swapped atomically. A decision allows only if Cedar allows and no policy errored |
 | Operation table | [`glidex-api`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-api/src/lib.rs) | Each RPC in `proto/` carries a `glidex.api.v1.op` option: its Cedar action, `READ` or `WRITE`, and its REST twin. `build.rs` turns them into `OPERATIONS`. Tests check that every RPC and REST route maps to a Cedar action in the schema and that twins agree |
 | Service layer | [`service/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/service) | One transport-neutral function per operation makes every decision. REST handlers in `api/` and RPC adapters in `api/rpc/` only decode, call it and encode, so the two transports can't drift |
 | Audit | `audit_layer` / `write_audit` in `api/mod.rs`; RPCs in `api/rpc/mod.rs` | Every write, every denied request and reads a handler marks, into the `audit` table. Logins are audited by their handlers |
@@ -230,7 +230,7 @@ database, `glidex.db` under the service user's home
 (`/var/lib/glidex-control-plane/.glidex/`). Every change goes through
 `Db::write`: a transaction that records each `put` and `delete` as a
 **write set**. The store and its Raft integration are the
-[`glidex-raftstore`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-raftstore)
+[`glidex-raftstore`](https://github.com/CMKL-APEX/glidex-commons/tree/main/crates/glidex-raftstore)
 crate; glidex's schema (the `TableId` list, each table's scope, and the
 write `Origin`s) is
 [`store/db.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/store/db.rs).
@@ -243,7 +243,7 @@ other lock held across a store write (the network store's write mutex,
 the image cache, the directory key lock): if the worker that blocked
 was the one driving I/O, the lane's holder never hears back and every
 later request queues behind it. Those waits go through
-[`glidex_raftstore::wait`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-raftstore/src/wait.rs):
+[`glidex_raftstore::wait`](https://github.com/CMKL-APEX/glidex-commons/blob/main/crates/glidex-raftstore/src/wait.rs):
 a free lock is taken at once, a held one is waited for in
 `block_in_place`. The holder's own wait on Raft is bounded too: a write
 not committed within 10 election timeouts fails (and may still be
@@ -597,7 +597,7 @@ VM. A node reports whether `pylond` runs. Design:
   the node's replicated status
   ([`topology.rs`](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-control-plane/src/topology.rs));
   the full PCIe tree on request. The PCIe tree is read from sysfs by the
-  [`glidex-topology`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-topology)
+  [`glidex-topology`](https://github.com/CMKL-APEX/glidex-commons/tree/main/crates/glidex-topology)
   crate, which hyperstor shares (it also reads network ports, which
   hyperstor uses). The scheduler uses it for NUMA and
   dedicated-CPU policies.
@@ -620,8 +620,8 @@ user.
 | Source | How | Code |
 |---|---|---|
 | Local socket | `api.sock` peer uid → a `unix:` identity | `auth/mod.rs` |
-| Local accounts | The `pam` connector sends the password to `glidex-authd`, which runs PAM as root and answers yes or no | [`glidex-authd`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-authd), [`directory/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/directory) |
-| OIDC connectors | Authorization code flow with PKCE against any OIDC provider, or a preset (Google, JumpCloud); gxctl uses the device grant | `directory/oidc.rs` (Glidex's adapter over [`glidex-auth`'s OIDC](https://github.com/CMKL-APEX/glidex/blob/main/crates/glidex-auth/src/oidc.rs)), `directory/presets/` |
+| Local accounts | The `pam` connector sends the password to `glidex-authd`, which runs PAM as root and answers yes or no | [`glidex-authd`](https://github.com/CMKL-APEX/glidex-commons/tree/main/crates/glidex-authd), [`directory/`](https://github.com/CMKL-APEX/glidex/tree/main/crates/glidex-control-plane/src/directory) |
+| OIDC connectors | Authorization code flow with PKCE against any OIDC provider, or a preset (Google, JumpCloud); gxctl uses the device grant | `directory/oidc.rs` (Glidex's adapter over [`glidex-auth`'s OIDC](https://github.com/CMKL-APEX/glidex-commons/blob/main/crates/glidex-auth/src/oidc.rs)), `directory/presets/` |
 | Directory as provider | Each directory is itself an OpenID provider with its own signing keys and JWKS; its access tokens are accepted as bearer tokens | `directory/issuer.rs`, `directory/op.rs`, `api/op.rs` |
 | Provisioning | SCIM 2.0 endpoints (`/scim/v2/c/{id}/…`) for an IdP to push users and groups; pull sync reads them from the IdP's directory on the leader | `directory/scim.rs`, `api/scim.rs`, `directory/sync.rs` |
 | Passkeys | WebAuthn registration and sign-in; a passkey is one of a user's identities | `auth/passkeys.rs`, `auth/webauthn.rs`, `api/passkeys.rs` |
