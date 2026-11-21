@@ -314,6 +314,41 @@ fn load_vfio_pci(exec: &dyn Exec) -> Result<(), OvsError> {
     }
 }
 
+/// spec/22-host-topology.md §5.3 (`rescan`, H35): remove a device that
+/// is on `vfio-pci` from the bus and rescan the bridge above it, so the
+/// kernel probes it again and the IOMMU sees a capability that changed
+/// since boot (ATS turned on in firmware). The device comes back on its
+/// own driver; [`prepare`] binds it to `vfio-pci` again. Whether a VM
+/// holds its group is the caller's to check first.
+pub fn rescan(exec: &dyn Exec, bdf: &str) -> Result<(), OvsError> {
+    nic::validate_bdf(bdf)?;
+    let dir = dev_dir(bdf);
+    if !exec.exists(&dir) {
+        return Err(OvsError::not_found(format!("PCI device {bdf}")));
+    }
+    match exec.link_name(&dir.join("driver")).as_deref() {
+        Some("vfio-pci") => {}
+        other => {
+            return Err(OvsError::conflict(format!(
+                "{bdf} is on {}, not vfio-pci: only a prepared device is rescanned",
+                other.unwrap_or("no driver")
+            )));
+        }
+    }
+    let bridge = crate::power::bridges_above(exec, bdf)
+        .into_iter()
+        .next()
+        .ok_or_else(|| OvsError::invalid(format!("{bdf} has no bridge above it to rescan")))?;
+    exec.write_file(&dir.join("remove"), b"1")?;
+    exec.write_file(&dev_dir(&bridge).join("rescan"), b"1")?;
+    if !exec.exists(&dir) {
+        return Err(OvsError::Io(format!(
+            "{bdf} didn't come back after rescanning {bridge}"
+        )));
+    }
+    Ok(())
+}
+
 /// Bind `bdf`'s IOMMU group to `vfio-pci` and give `/dev/vfio/<group>` to
 /// `vm_group` (0660), through a udev rule that keeps it so and a change
 /// now. Not persistent across reboots (the installer's `--vfio-devices`

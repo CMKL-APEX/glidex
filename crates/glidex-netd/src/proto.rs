@@ -154,6 +154,10 @@ pub enum Op {
         /// A pool's ceiling for GPU windows (spec/27-gpu-vms.md G18).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         bar_mib: Option<u64>,
+        /// Remove the device and rescan the bridge above it first, so the
+        /// IOMMU sees a capability turned on since boot (ATS; H35).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        rescan: bool,
     },
     /// Put a prepared device's group back on its drivers.
     ReleaseDevice {
@@ -177,6 +181,12 @@ pub enum Op {
     /// does with translated requests, and the devices' ATS (H31).
     AcsAbove {
         addresses: Vec<String>,
+    },
+    /// Direct Translated P2P on exactly these switch downstream ports, and
+    /// nothing else of their ACS; any port set before and not listed gets
+    /// its earlier value back (spec/22-host-topology.md H33, §5.3b).
+    SwitchP2p {
+        ports: Vec<String>,
     },
     /// Give a physical function `vfs` SR-IOV virtual functions
     /// (spec/22-host-topology.md §10.1); 0 removes them.
@@ -298,6 +308,7 @@ impl Op {
             Op::SetSriovVfs { .. } => "set_sriov_vfs",
             Op::KeepDevicesOn { .. } => "keep_devices_on",
             Op::AcsAbove { .. } => "acs_above",
+            Op::SwitchP2p { .. } => "switch_p2p",
         }
     }
 }

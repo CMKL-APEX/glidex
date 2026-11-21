@@ -1648,6 +1648,7 @@ fn devices_are_prepared_for_passthrough_and_released() {
     let p = netd
         .handle(
             Op::PrepareDevice {
+                rescan: false,
                 address: "0000:07:00.0".into(),
                 bar_mib: None,
             },
@@ -1703,6 +1704,7 @@ fn sriov_vfs_are_set_and_removed_vfs_forgotten() {
     let (netd, _) = netd(exec.clone(), &dir);
     netd.handle(
         Op::PrepareDevice {
+            rescan: false,
             address: vf.into(),
             bar_mib: None,
         },
@@ -1772,6 +1774,7 @@ fn held_devices_are_not_released_and_their_vf_counts_stay() {
     let (netd, _) = netd(exec.clone(), &dir);
     netd.handle(
         Op::PrepareDevice {
+            rescan: false,
             address: gpu.into(),
             bar_mib: None,
         },
@@ -2793,4 +2796,125 @@ fn ports_above_a_device_with_acs_off_are_reported() {
         )
         .unwrap_err();
     assert!(err.to_string().contains("not a PCI address"), "{err}");
+}
+
+/// A switch downstream port's configuration space: PCI Express capability
+/// at 0x40 (type 6), ACS at 0x100 with `cap` and `ctrl`.
+fn downstream_port(cap: u16, ctrl: u16) -> Vec<u8> {
+    let mut c = vec![0u8; 4096];
+    c[0x06] = 1 << 4;
+    c[0x34] = 0x40;
+    c[0x40] = 0x10;
+    c[0x42] = 0x62;
+    c[0x100..0x104].copy_from_slice(&0x0001_000du32.to_le_bytes());
+    c[0x104..0x106].copy_from_slice(&cap.to_le_bytes());
+    c[0x106..0x108].copy_from_slice(&ctrl.to_le_bytes());
+    c
+}
+
+/// spec/22-host-topology.md H33, §5.3b: Direct Translated P2P is turned on
+/// alone, its earlier value survives a restart of netd and comes back with
+/// an empty set; a port with ACS off is left alone and reported; anything
+/// but a PCI address is refused.
+#[test]
+fn direct_translated_p2p_is_set_on_ports_and_given_back() {
+    let exec = exec();
+    let port = "0000:4a:00.0";
+    let off = "0000:4a:10.0";
+    let config = |bdf: &str| format!("/sys/bus/pci/devices/{bdf}/config");
+    // SV, TB, RR, CR, UF and DT supported; SV, RR, CR and UF on.
+    exec.bytes(&config(port), &downstream_port(0x5f, 0x1d));
+    exec.bytes(&config(off), &downstream_port(0x5f, 0));
+    let control = |bdf: &str| {
+        let c = glidex_ovs::Exec::read_bytes(exec.as_ref(), std::path::Path::new(&config(bdf)))
+            .unwrap();
+        u16::from_le_bytes([c[0x106], c[0x107]])
+    };
+    let dir = TempDir::new().unwrap();
+    {
+        let (netd, _) = netd(exec.clone(), &dir);
+        let op = Op::SwitchP2p {
+            ports: vec![port.to_uppercase(), off.into()],
+        };
+        assert_eq!(op.name(), "switch_p2p");
+        assert!(op.is_mutating());
+        let r = netd.handle(op, &peer()).unwrap();
+        assert_eq!(r["set"], serde_json::json!([port]), "{r}");
+        assert_eq!(r["failed"][0][0], off, "{r}");
+        assert!(r["failed"][0][1].as_str().unwrap().contains("ACS is off"));
+        assert_eq!(control(port), 0x5d);
+        assert_eq!(control(off), 0, "a port with ACS off isn't written");
+        let err = netd
+            .handle(
+                Op::SwitchP2p {
+                    ports: vec!["../../config".into()],
+                },
+                &peer(),
+            )
+            .unwrap_err();
+        assert!(err.to_string().contains("not a PCI address"), "{err}");
+    }
+    let (netd, _) = netd(exec.clone(), &dir);
+    let r = netd
+        .handle(Op::SwitchP2p { ports: vec![] }, &peer())
+        .unwrap();
+    assert_eq!(r["restored"], serde_json::json!([port]), "{r}");
+    assert_eq!(control(port), 0x1d);
+    let r = netd
+        .handle(Op::SwitchP2p { ports: vec![] }, &peer())
+        .unwrap();
+    assert_eq!(r, serde_json::json!({}), "nothing left to put back");
+}
+
+/// spec/22-host-topology.md §5.3 (`rescan`, H35): a device on vfio-pci is
+/// removed, its bridge rescanned and the device prepared again; one on a
+/// host driver is refused before anything is written.
+#[test]
+fn a_prepared_device_is_rescanned_and_bound_back() {
+    let exec = exec();
+    let nic = "0000:4b:00.0";
+    let d = format!("/sys/bus/pci/devices/{nic}");
+    exec.file(&d, "");
+    exec.link(
+        &d,
+        "../../../devices/pci0000:40/0000:40:01.1/0000:4a:00.0/0000:4b:00.0",
+    );
+    exec.file("/sys/bus/pci/devices/0000:4a:00.0", "");
+    exec.file(&format!("{d}/class"), "0x020700");
+    exec.file(&format!("{d}/uevent"), "DRIVER=mlx5_core\n");
+    exec.link(&format!("{d}/driver"), "mlx5_core");
+    exec.link(&format!("{d}/iommu_group"), "42");
+    exec.link(&format!("/sys/kernel/iommu_groups/42/devices/{nic}"), nic);
+    exec.file("/sys/bus/pci/drivers/vfio-pci", "");
+    let dir = TempDir::new().unwrap();
+    let (netd, _) = netd(exec.clone(), &dir);
+    let rescan = || {
+        netd.handle(
+            Op::PrepareDevice {
+                address: nic.into(),
+                bar_mib: None,
+                rescan: true,
+            },
+            &peer(),
+        )
+    };
+    let e = rescan().unwrap_err();
+    assert!(
+        e.to_string().contains("is on mlx5_core, not vfio-pci"),
+        "{e}"
+    );
+    assert!(exec.writes().is_empty(), "{:?}", exec.writes());
+    exec.link(&format!("{d}/driver"), "vfio-pci");
+    let p = rescan().unwrap();
+    assert_eq!(p["iommu_group"], "42", "{p}");
+    let written: Vec<String> = exec
+        .writes()
+        .iter()
+        .map(|(p, _)| p.display().to_string())
+        .collect();
+    let at = |f: &str| written.iter().position(|w| w == f);
+    let removed = at(&format!("{d}/remove")).expect("removed");
+    let rescanned = at("/sys/bus/pci/devices/0000:4a:00.0/rescan").expect("rescanned");
+    let bound = at(&format!("{d}/driver_override")).expect("bound to vfio-pci");
+    assert!(removed < rescanned && rescanned < bound, "{written:?}");
 }

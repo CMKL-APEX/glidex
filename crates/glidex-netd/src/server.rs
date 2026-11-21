@@ -4,7 +4,8 @@ use crate::auth::{self, Peer};
 use crate::dpu::{self, DpuBackend};
 use crate::proto::*;
 use crate::store::{
-    self, ARP_SAVED, BRIDGES, DEVICES, META, NAT, POWER, SOURCE_TABLES, Store, UPLINKS, VM_PORTS,
+    self, ACS_DT, ARP_SAVED, BRIDGES, DEVICES, META, NAT, POWER, SOURCE_TABLES, Store, UPLINKS,
+    VM_PORTS,
 };
 use crate::supervisor::Supervisor;
 use glidex_dpu::{Backend, DpuPortSpec, VfAllocator};
@@ -288,7 +289,14 @@ impl Netd {
                 Ok(Value::Null)
             }
             Op::OvnStatus => to_value(glidex_ovs::ovn::status(self.ex())?),
-            Op::PrepareDevice { address, bar_mib } => {
+            Op::PrepareDevice {
+                address,
+                bar_mib,
+                rescan,
+            } => {
+                if rescan {
+                    self.rescan_device(&address)?;
+                }
                 to_value(self.prepare_device(&address, bar_mib)?)
             }
             Op::ReleaseDevice { address } => self.release_device(&address).map(|_| Value::Null),
@@ -299,6 +307,7 @@ impl Netd {
             Op::DpuListPorts => to_value(self.dpu_list_ports()?),
             Op::SetSriovVfs { address, vfs } => to_value(self.set_sriov_vfs(&address, vfs)?),
             Op::KeepDevicesOn { addresses } => to_value(self.keep_devices_on(&addresses)?),
+            Op::SwitchP2p { ports } => to_value(self.switch_p2p(&ports)?),
             Op::AcsAbove { addresses } => to_value(glidex_ovs::acs::ports_off(
                 self.ex(),
                 &glidex_ovs::power::checked(&addresses)?,
@@ -609,6 +618,66 @@ impl Netd {
             tracing::warn!("keeping {what} at D0: {why}");
         }
         Ok(report)
+    }
+
+    /// spec/22-host-topology.md §5.3b: Direct Translated P2P on exactly
+    /// `ports`, recording each port's earlier value before netd first
+    /// changes it and putting that back for any port no longer listed.
+    pub fn switch_p2p(&self, ports: &[String]) -> Result<glidex_ovs::acs::DtReport, OvsError> {
+        let ports = glidex_ovs::power::checked(ports)?;
+        let saved: Vec<glidex_ovs::acs::SavedDt> = self
+            .store
+            .list::<glidex_ovs::acs::SavedDt>(ACS_DT)?
+            .into_iter()
+            .map(|(_, s)| s)
+            .collect();
+        let (report, now) = glidex_ovs::acs::set_direct_translated(self.ex(), &ports, &saved);
+        for s in &saved {
+            if !now.iter().any(|n| n.address == s.address) {
+                self.store.delete(ACS_DT, &s.address)?;
+            }
+        }
+        for s in now.iter().filter(|n| !saved.contains(n)) {
+            self.store.put(ACS_DT, &s.address, s)?;
+        }
+        for p in &report.set {
+            tracing::info!(port = %p, "Direct Translated P2P turned on");
+        }
+        for p in &report.restored {
+            tracing::info!(port = %p, "Direct Translated P2P given back its earlier value");
+        }
+        for (port, why) in &report.failed {
+            tracing::warn!("Direct Translated P2P on {port}: {why}");
+        }
+        Ok(report)
+    }
+
+    /// spec/22-host-topology.md §5.3 (`rescan`, H35): remove and rescan a
+    /// device no VM holds, so `prepare_device` binds it back with what the
+    /// IOMMU sees now. Its group may come back with another number: the
+    /// record under the old one moves along, keeping the drivers release
+    /// puts back.
+    fn rescan_device(&self, address: &str) -> Result<(), OvsError> {
+        let address = address.to_ascii_lowercase();
+        let group = glidex_ovs::vfio::iommu_group(self.ex(), &address);
+        self.refuse_held(group.as_slice())?;
+        glidex_ovs::vfio::rescan(self.ex(), &address)?;
+        if let Some(old) = group {
+            let now = glidex_ovs::vfio::iommu_group(self.ex(), &address);
+            if now.as_deref() != Some(old.as_str())
+                && let Some(mut p) = self
+                    .store
+                    .get::<glidex_ovs::vfio::Prepared>(DEVICES, &old)?
+            {
+                self.store.delete(DEVICES, &old)?;
+                if let Some(n) = now {
+                    p.iommu_group = n.clone();
+                    self.store.put(DEVICES, &n, &p)?;
+                }
+            }
+        }
+        tracing::info!(device = %address, "removed and rescanned");
+        Ok(())
     }
 
     /// Refuse while a process (a VM) has one of `groups` open.

@@ -1182,7 +1182,14 @@ Forwarding. The control plane asks netd each time it reads the full
 tree; without netd, or with an older one, the warning is left out. Its
 host check is not run yet.
 
-**HT11** is specified (H33–H35, §5.3b, issue #596); not built.
+**HT11** is in progress (H33–H35, §5.3b, issue #596). Built and
+tested: netd's `switch_p2p` op (bit 6 of ACS Control only, on switch
+downstream ports, the earlier value kept in `acs_dt` and put back; a
+port with ACS off, without the capability or not a downstream port left
+alone and reported) and `prepare_device` with `rescan` (refused unless
+the device is on `vfio-pci` and no VM holds its group). Not yet: the
+pool setting, the control plane's set and calls, the reporting, the UI,
+the docs and the host check.
 
 **HT10** is built and tested: netd's `acs_above` also answers ATS for
 the given devices and Direct Translated P2P and Translation Blocking
