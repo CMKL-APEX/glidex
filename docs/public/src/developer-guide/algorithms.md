@@ -352,7 +352,8 @@ every software version.
 
 **Library.** [openraft](https://docs.rs/openraft/0.9.25/openraft/) 0.9.25,
 pinned exactly. It implements [Raft](https://raft.github.io/raft.pdf). The
-store is [redb](https://docs.rs/redb). Code: crate `glidex-raftstore`
+store is [redb](https://docs.rs/redb). Code: crate
+[`glidex-raftstore`](https://github.com/CMKL-APEX/glidex-commons/blob/main/crates/glidex-raftstore) in glidex-commons
 (`store.rs`, `raft/`) and `cluster/`.
 
 ### Write sets
@@ -498,8 +499,8 @@ A revision older than the server's in-memory log gets `410 Gone`, and the
 agent lists again.
 
 **Tests.**
-- `glidex-raftstore`: `write_sets_replay_to_the_same_bytes`.
-- `glidex-raftstore/tests/raft.rs`: `a_lagging_learner_catches_up_from_a_snapshot`,
+- `glidex-raftstore` (glidex-commons): `write_sets_replay_to_the_same_bytes`.
+- `glidex-raftstore/tests/raft.rs` (glidex-commons): `a_lagging_learner_catches_up_from_a_snapshot`,
   `killing_the_leader_keeps_writes_going`,
   `a_partitioned_leaders_writes_are_rejected`.
 - `tests/cluster_tests.rs`:
@@ -1092,7 +1093,8 @@ Code: `auth/passkeys.rs` `Ceremonies::attempt()`, `directory/exchange.rs`
 `take()`, `api/scim.rs` `take()`. See
 [token bucket](https://en.wikipedia.org/wiki/Token_bucket).
 
-**Sliding window of failures.** `glidex-authd/src/limiter.rs` keeps the
+**Sliding window of failures.** [`glidex-authd/src/limiter.rs`](https://github.com/CMKL-APEX/glidex-commons/blob/main/crates/glidex-authd/src/limiter.rs)
+(glidex-commons) keeps the
 times of recent failed logins: one queue per user and one global queue.
 Old entries are pruned on each check. A login is refused while either queue
 is full. A success clears that user's failures. Memory is bounded, because
