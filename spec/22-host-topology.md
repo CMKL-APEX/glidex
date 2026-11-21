@@ -73,7 +73,10 @@ and pools for GPUs, DPUs and NICs.
 | H29 | Closest devices | Of a VM's pool picks on a node, after the NUMA order (§8.3), each prefers the device that shares the deepest switch with the VM's devices already picked, then the one with the closest free device in each of the VM's later pool requests, then the lowest address. The summary gives each device its `switches`: the upstream port of every switch above it, nearest first. A node of an older version reports none, and only its nearest `switch` counts. | The user's call (2026-11-18, issue #527). On an HGX board a GPU and its NIC meet two switch levels down from the root port, and every device under the root port shares the top switch: a 1-GPU, 1-NIC VM got a GPU whose only switch in common with its NIC was the top one, so their traffic crossed both levels. A request needs nothing new: a GPU and a NIC that share a switch are what GPUDirect needs, and nothing gains from the farther pair. |
 | H30 | ACS above a VFIO device | The node warns `acs_off` (§5.2) for each device on `vfio-pci` with a port above it, a root port or a switch's downstream port, that supports ACS but has Source Validation, Request Redirect, Completion Redirect or Upstream Forwarding off. Glidex never changes ACS. `glidex-netd` reads it, as only root can read a device's extended configuration. | The user's call (2026-11-18). The kernel forms IOMMU groups at boot from the ACS it enables then. A tool that turns ACS off afterwards (NVIDIA's `nvidia-acs-disable`, meant for GPUDirect on bare metal) leaves the groups as they were: a switch then forwards a passed-through device's requests to its neighbours without the IOMMU, at addresses that are the guest's. The VM's devices are no longer isolated, and peer-to-peer between them (issue #527) reaches the wrong addresses. |
 | H31 | Switch-local P2P | Each node reports, read through `glidex-netd` with H30's ACS: for each function on `vfio-pci`, whether it has ATS and has it enabled (extended capability `0x000f`, the Enable bit of ATS Control); for each root port and switch downstream port above one, whether it supports and has on ACS Direct Translated P2P (bit 6) and Translation Blocking (bit 1). For each pair of functions on `vfio-pci` below one switch, it reports per direction whether a translated request goes **direct** across the switch or **via the root complex**, and why (§5.2a). Shown in the full tree, `gxctl node topology --devices` and the node page; no warning. | Issue #580. Isolated P2P between passthrough devices (a NIC reading GPU memory, #527) needs ACS on, ATS on the requester and Direct Translated P2P on the switch's downstream ports; then translated requests go across the switch instead of up to the root complex, where some hosts don't complete them and a completion timeout can take down the root port. Glidex couldn't show whether a host had it. |
-| H32 | Report only | Glidex never changes ATS, Direct Translated P2P or any other ACS control (as H30). An operator who wants switch-local P2P sets it up outside glidex, for example in a boot script, and glidex shows whether it is in effect. | The user's call (2026-11-20). Direct Translated P2P forwards a request the device marks as already translated, so isolation then rests on trusting the device's ATS: a device, or firmware a guest controls, can send a forged translated address (why Linux turns ATS off for untrusted devices). Turning it on is the operator's decision about their devices. |
+| H32 | Report only | Glidex never changes ATS, Direct Translated P2P or any other ACS control (as H30). An operator who wants switch-local P2P sets it up outside glidex, for example in a boot script, and glidex shows whether it is in effect. Amended by H33–H35 (2026-11-21): for a pool marked `switch_p2p`, glidex sets Direct Translated P2P itself; everything else stays report only. | The user's call (2026-11-20). Direct Translated P2P forwards a request the device marks as already translated, so isolation then rests on trusting the device's ATS: a device, or firmware a guest controls, can send a forged translated address (why Linux turns ATS off for untrusted devices). Turning it on is the operator's decision about their devices. |
+| H33 | Trusted pools get switch-local P2P | A pool with `switch_p2p: true` (default `false`; in the pool, in a host's `pci.overrides`, and in the pool form) says the operator trusts its devices' ATS. On each node, netd turns on ACS Direct Translated P2P (bit 6 of ACS Control, nothing else) on the switch downstream ports above such a device, for the pairs and at the times H34 gives (§5.3b), and puts each port's previous value back when no pair needs it. Glidex never turns on ATS, never changes another ACS bit, and never sets a port whose ACS is off (H30), that lacks Direct Translated P2P, or below which a function with ATS on isn't part of the same pair. A `switch_p2p` pool's devices are also kept at D0, as with `power_save: false` (H28). | The user's call (2026-11-21, issue #596). Issue #527 showed it works: a NIC reading GPU memory in a VM took both devices and the root port down through the root complex, and ran at 192 Gb/s once the read stayed in the switch. Set up by hand, it rests on port addresses written into a boot script, which nothing ties to a pool, and which a moved card or a renumbered bus silently breaks. The trust stays the operator's (H32's reason): opt-in per pool, only the ports above its devices. An idle ConnectX on `vfio-pci` in D3hot made its root port log spurious PME interrupts, hence D0. |
+| H34 | Only while one VM holds the pair | Direct Translated P2P is on above a trusted device only while one VM on the node holds both that device and a peer device under the switch they share: from just before that VM launches until its hypervisor has exited. The control plane sends netd the whole set of ports each time (op `switch_p2p`): before each launch of a VM with VFIO devices, after each such VM stops, and with each node report, so a clear that was missed is undone within two minutes. | The user's call (2026-11-21). The bit is never on for idle devices, or between devices that two VMs, or two projects, hold. The exposure lasts as long as the VM that holds both ends. |
+| H35 | ATS: report and rescan | Glidex doesn't turn ATS on in device firmware. A device whose ATS capability is present but not enabled reads `ats off`, with a hint: the IOMMU enables ATS only when it probes a device, so a capability that appears after a firmware change needs the device removed and rescanned. `prepare-device --rescan` does that through netd and binds the device back to `vfio-pci` (§5.3). A trusted device that a VM holds with a peer, but whose direction can't be made direct, gets the `switch_p2p_blocked` warning, with the reason. | The user's call (2026-11-21). On #527's host, after `ATS_ENABLED=1` and a firmware reset, the NIC's ATS stayed off until it was removed and rescanned, and the rescan bound it to `mlx5_core`, not `vfio-pci`. |
 
 ## 3. Model
 
@@ -329,7 +332,10 @@ acted on:
   D3cold, or whose `power/control` or `d3cold_allowed` (its own, or a
   bridge's above it) still allows power saving;
 - `acs_off`: a device on `vfio-pci` below a port whose ACS is off (H30),
-  naming the device and the port.
+  naming the device and the port;
+- `switch_p2p_blocked`: a direction of a pair one VM holds, whose
+  requester is in a `switch_p2p` pool, that can't be made direct (H35,
+  §5.3b), with the reason.
 
 ### 5.2a Switch-local P2P
 
@@ -353,8 +359,10 @@ is not listed: their requests go through the root complex anyway. When
 netd couldn't read a device or port on the path, the direction reads
 **unknown**, naming it.
 
-Glidex only reads these (H32). The pairs are the node's; which VM holds
-each device shows on the device.
+Glidex only reads these, except for pools marked `switch_p2p`, where
+it turns on Direct Translated P2P while one VM holds a pair (H33, H34,
+§5.3b). The pairs are the node's; which VM holds each device shows on
+the device.
 
 ### 5.3 Preparing a device
 
@@ -373,7 +381,17 @@ each device shows on the device.
 It is refused for a device holding host addresses, a DPDK uplink, or a
 group with such a device. It does not persist across reboots by itself.
 The installer gains `--vfio-devices <pool or addresses>` for the
-`modprobe.d` / `driverctl` persistence. A pool with `prepare: true`
+`modprobe.d` / `driverctl` persistence.
+
+With `rescan: true` (`gxctl node prepare-device <node> <address>
+--rescan`, H35), netd first removes the function and rescans the port
+above it, so the kernel probes it again and the IOMMU sees a capability
+that changed since boot, such as ATS turned on in firmware. A rescan
+binds the device's own driver (for a ConnectX, `mlx5_core`), so netd
+then binds it to `vfio-pci` as above. It is refused while a VM holds
+the device's group, and for a device on a host driver (only a device
+already on `vfio-pci` is rescanned). The answer gives the device's ATS
+after. A pool with `prepare: true`
 (§9.1) is prepared by each node at start.
 
 ### 5.3a Keeping a device at D0
@@ -408,6 +426,56 @@ on:
   doesn't, or that reads D3cold.
 - **Cost.** A kept GPU draws its idle power while no VM holds it. The
   setting is per pool and per host for that reason.
+
+### 5.3b Turning switch-local P2P on
+
+For pools with `switch_p2p: true` (H33; the setting's value, or this
+host's `pci.overrides`):
+
+- **Pairs.** Two functions on `vfio-pci` that one VM on this node
+  holds (its instance's VFIO devices: pool picks and paths), whose
+  nearest common bridge is a switch's upstream port, at least one of
+  them in a `switch_p2p` pool (H34). A VM counts from the start of its
+  launch until its hypervisor has exited.
+- **Ports.** For each device of a pair that is in a `switch_p2p` pool
+  and has ATS on (the requester): each downstream port between it and
+  the shared switch, the one on that switch included, as in §5.2a's
+  condition 2. A port is left out, with the reason reported, when its
+  ACS is off (H30), when it doesn't support Direct Translated P2P, or
+  when a function below it with ATS on isn't a device of that VM in a
+  `switch_p2p` pool (the switch would trust its translated requests
+  too). A requester without ATS (an A100 has none) sends no translated
+  requests, so nothing is set for its direction. Translation Blocking
+  is never changed: a port with it on is reported.
+- **How.** netd op `switch_p2p {ports}`: the whole set this node wants,
+  each time. For each port, netd reads ACS Control and sets bit 6 with a
+  masked write, leaving the other bits. It records the bit's value
+  before its first write (table `acs_dt` in its store), and a port that
+  leaves the set gets its value back. The same set again writes
+  nothing. netd logs each set and clear, with the port.
+- **When.** The node's controller computes the set from its VMs that
+  are launching or running: before a VM with VFIO devices launches
+  (once its devices are resolved, before the hypervisor starts), after
+  such a VM's hypervisor has exited, and with each node report (at
+  start and every two minutes). ACS Control doesn't survive a reboot,
+  and a VM the host resumes at boot (`on_host_boot`) goes through its
+  launch.
+- **D0.** A `switch_p2p` pool's devices join the set kept at D0
+  (§5.3a), as with `power_save: false`.
+- **Reporting.** Each port glidex holds the bit on for gets
+  `direct_translated_set: true` in the full tree. A `direct` direction
+  that depends on bits glidex set names the VM (`set_for`). The node
+  warns `switch_p2p_blocked` (§5.2) for each direction of a pair whose
+  requester is in a `switch_p2p` pool but that can't be made direct:
+  ATS unsupported (turn it on in the device's firmware) or off
+  (`prepare-device --rescan`), a port left out above, or Translation
+  Blocking on.
+- **Trust.** Direct Translated P2P makes the switch forward a request
+  its device marks as translated, without the IOMMU: a device, or
+  firmware a guest can change, could reach any device below the shared
+  switch, host NVMe or another VM's GPU included. Hence opt-in per
+  pool, only the ports above that pool's devices, only while one VM
+  holds both ends, and logged.
 
 ### 5.4 Health
 
@@ -825,6 +893,9 @@ setting. Devices no pool covers may form discovered pools (§9.1b).
 - `nodes` limits a pool to some nodes; absent means every node.
 - `power_save: false` keeps the pool's devices at D0 on its nodes
   (H28, §5.3a); absent means `true`, the kernel's default.
+- `switch_p2p: true` trusts the pool's devices' ATS: Direct Translated
+  P2P is turned on above them while one VM holds a pair (H33, H34,
+  §5.3b), and they are kept at D0. Absent means `false`.
 - A device belongs to at most one pool. Overlap is refused at load,
   naming both pools.
 - A pool's free count per cluster is the number of ready, unclaimed
@@ -1014,6 +1085,10 @@ is a device of class `dpu`:
 - Per-vCPU pinning by the QEMU shim uses `sched_setaffinity` on the
   shim's own children, inside the unit's `CPUAffinity`. It needs no new
   capability.
+- `switch_p2p` (H33) is the one exception to the next point: while a
+  VM holds a trusted device and its peer, that device's translated
+  requests cross the switch without the IOMMU. Only the operator turns
+  it on, per pool (§5.3b).
 - A VM holding a device can DMA into its own memory only (IOMMU). Peer
   devices in one IOMMU group are given together (§5.1) and never to two
   VMs.
@@ -1047,9 +1122,6 @@ is a device of class `dpu`:
   hugepages.
 - **IOMMU-backed P2P groups:** asking for a set of devices whose P2P is
   verified rather than just switch-local.
-- **Turning switch-local P2P on:** a pool setting that has netd turn on
-  Direct Translated P2P above its devices at boot, for devices the
-  operator trusts (H32 leaves it to the operator for now).
 
 ## 14. Edits to existing documents
 
@@ -1083,6 +1155,7 @@ is a device of class `dpu`:
 | **HT7** Devices kept at D0 | H28, §5.3a: `power_save` on pools, in `pci.overrides` and in the boot selectors; netd's `keep_devices_on` with its `power` table; the control plane's set at start and after each read; `power` in the full tree, `kept_on` in the summary, the `power_save_on` warning; the pool form, gxctl and docs | netd tests with a fake sysfs: the device and its bridges up to the root port are written, a device leaving the set and a bridge with no kept device below get their values back, a second call writes nothing. Unit tests: overrides and a device in two pools; the set leaves out excluded devices and devices not on `vfio-pci`; the warning. On the HGX host: a pool with `power_save: false` keeps the idle A100s at D0 across a control-plane restart and a reboot. |
 | **HT9** ACS above a VFIO device | H30, §5.2: netd's read-only `acs_above` (the ports above given devices, read from their configuration space); the `acs_off` warning in the full tree, `GetNodeTopology`, `gxctl node topology` and the node page; docs | Unit tests: the ACS parser on byte fixtures (controls supported and off, a control the port lacks, no ACS, a short read, a looping capability list), root and downstream ports read and upstream ports skipped, the warning per device and port. netd test: the op reports the port, writes nothing and refuses anything but a PCI address. On a host with devices on `vfio-pci`: the warnings match the `ACSCtl` that `lspci -vvv` shows for the ports above them. |
 | **HT10** Switch-local P2P | H31, H32, §5.2a: netd's `acs_above` also answers ATS for the given devices and Direct Translated P2P and Translation Blocking for the ports above them (additive fields; an older netd's answer has none); `ats`, `direct_translated`, `translation_blocking` on functions and the tree's `p2p` pairs (full tree, `GetNodeTopology`, `gxctl node topology --devices`, the node page); docs | Unit tests: the ATS parser and the two new ACS bits on byte fixtures (no ATS, ATS off and on, DT and TB on and off), the pairs on fixture trees (a switch with two devices: each condition failing in turn, nested switches, a pair under a root port only not listed, a port netd couldn't read giving unknown), an older netd's answer giving no fields and no pairs. netd test: the op still writes nothing. UI e2e for the node page's list. On a host with a switch and two devices on `vfio-pci`: ATS and the ACS bits match `lspci -vvv` (`ATSCtl`, `ACSCtl` `DirectTrans`, `TransBlk`). |
+| **HT11** Switch-local P2P for trusted pools | H33–H35, §5.3b: netd's `switch_p2p` op (bit 6 of ACS Control only, the previous value kept in `acs_dt` and put back) and `prepare` with `rescan: true`; `switch_p2p` on pools (setting, `pci.overrides`, `gxctl pci pool set`, the pool form) implying D0; the set of ports from the VMs holding pairs, sent before a launch, after an exit and with each report; `direct_translated_set`, `set_for` and the `switch_p2p_blocked` warning (full tree, `GetNodeTopology`, `gxctl node topology --devices`, the node page); operator guide | netd tests on a fake sysfs and config space: bit 6 set on the given ports only, other bits untouched, values put back when a port leaves the set, the same set writes nothing, a port with ACS off or without the capability left alone and reported; rescan refused while held and on a host driver, and rebinding to `vfio-pci`. Unit tests: the port set (a pair in one VM, devices in two VMs, one end not trusted, a requester without ATS, nested switches, a shared port with another ATS function below), the warning's reasons, D0 implied. Controller tests: the set sent before launch and after exit. UI e2e for the pool form. On a host with a switch, a GPU and an ATS-capable NIC in a `switch_p2p` pool: `DirectTrans+` only on the expected ports while the VM runs, and `DirectTrans-` again after it stops; HT10 says `direct` with `set_for`; #527's read case passes in the VM. |
 
 HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
@@ -1108,6 +1181,8 @@ Validation, Request Redirect, Completion Redirect or Upstream
 Forwarding. The control plane asks netd each time it reads the full
 tree; without netd, or with an older one, the warning is left out. Its
 host check is not run yet.
+
+**HT11** is specified (H33–H35, §5.3b, issue #596); not built.
 
 **HT10** is built and tested: netd's `acs_above` also answers ATS for
 the given devices and Direct Translated P2P and Translation Blocking
