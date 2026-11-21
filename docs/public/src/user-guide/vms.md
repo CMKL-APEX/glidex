@@ -375,7 +375,7 @@ so). See [Images and disks](images-and-disks.md).
 `vfio_devices` passes host PCI devices (a GPU, a NIC) through to the
 guest. Give each as `/sys/bus/pci/devices/0000:41:00.0` or the bare
 address `0000:41:00.0`. Using one needs a grant from an administrator.
-See [PCI passthrough](../operator-guide/pci-passthrough.md).
+See [Switch-local peer-to-peer](../operator-guide/pci-passthrough.md#switch-local-peer-to-peer).
 
 A device is used by one VM at a time on its host, and it takes its
 IOMMU group with it (devices that the host can only pass through
@@ -864,7 +864,7 @@ NUMA policy:
 When a VM gets a GPU and a NIC from pools, the scheduler picks the pair
 that shares the deepest switch on the host. Whether peer-to-peer traffic
 between them (GPUDirect RDMA) works depends on the host as well: see
-[PCI passthrough](../operator-guide/pci-passthrough.md).
+[Switch-local peer-to-peer](../operator-guide/pci-passthrough.md#switch-local-peer-to-peer).
 
 <!-- TODO(verify): large-BAR GPUs (A100: 64 GiB of 64-bit MMIO each) across several PCI roots. G13's per-segment check refuses what Cloud Hypervisor can't place; confirm a 4-8 GPU VM boots on both hypervisors before promising it. -->
 

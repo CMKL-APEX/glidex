@@ -96,6 +96,57 @@ with `setpci` on the downstream ports is one way. The Linux IOMMU driver
 turns ATS on by itself for a device on `vfio-pci` when the IOMMU
 supports it.
 
+#### Setting it up for a ConnectX NIC and a GPU
+
+A ConnectX NIC reading a GPU's memory over GPUDirect RDMA (dma-buf) is
+the case this is for. On an A100 and a ConnectX-6 under one switch, that
+read took both devices off the bus while it went through the root
+complex; switch-local, it runs at about 190 Gb/s. As root on the host:
+
+1. **ATS in the NIC's firmware.** A ConnectX ships with it off, and
+   then exposes no ATS capability at all (`ats unsupported`):
+
+   ```bash
+   mlxconfig -d 0000:4b:00.0 query ATS_ENABLED
+   mlxconfig -d 0000:4b:00.0 set ATS_ENABLED=1
+   ```
+
+   Stop the VM using the NIC first. The setting takes effect after a
+   firmware reset of that NIC alone (`mlxfwreset -d 0000:4b:00.0
+   --level 3 --skip_driver reset`), or a host reboot.
+2. **Let the IOMMU see it.** The IOMMU decides about ATS when it probes
+   the device, so after a firmware reset remove and rescan it, then put
+   it back on `vfio-pci`:
+
+   ```bash
+   echo 1 > /sys/bus/pci/devices/0000:4b:00.0/remove
+   echo 1 > /sys/bus/pci/devices/0000:4a:00.0/rescan    # its port
+   ```
+
+   `lspci -vvv -s 4b:00.0` then shows `Address Translation Service
+   (ATS)`, and `ATSCtl: Enable+` once the device is in an IOMMU domain.
+3. **Keep the NIC out of power saving.** Give its pool `power_save:
+   false` ([Keep devices out of power saving](#keep-devices-out-of-power-saving)).
+   An idle NIC in D3hot after the reset made its root port log
+   `PME: Spurious native interrupt!` several times a second.
+4. **Direct Translated P2P** on the NIC's downstream port in each switch
+   it shares with a GPU, leaving ACS's other bits as they are:
+
+   ```bash
+   setpci -s 0000:4a:00.0 ECAP_ACS+0x6.w=0040:0040
+   ```
+
+   Run that from a boot unit ordered before `glidex-netd`: it doesn't
+   survive a reboot. Only the NIC's side is needed. A GPU without ATS
+   (the A100 has none) still sends its own requests through the root
+   complex, and reports that direction `via root complex`.
+5. **Check:** `gxctl node topology <node> --devices` shows the NIC `ats
+   on` and `p2p <nic> -> <gpu> … direct`. Give a VM that pair: a pool
+   pick prefers the GPU and NIC sharing the deepest switch.
+
+In the guest, Ubuntu's cloud kernel has the `mlx5` drivers in
+`linux-modules-extra-$(uname -r)`.
+
 ### Host kernel
 
 Before a VM starts, the hypervisor maps each passed-through device's
@@ -835,6 +886,7 @@ See [Device health and cordoning](host-resources.md#device-health-and-cordoning)
 | After a reboot, devices are back on their host drivers, or VFs are gone | Keep them with the installer's `--vfio-devices` and `--sriov`. `journalctl -u glidex-vfio-boot` shows what the boot unit did, and `journalctl -b \| grep 'glidex-netd: claim'` what the claim did. |
 | `glidex-vfio-boot`: `driver/unbind: Permission denied` for a GPU | The host driver was still starting on the card when the unit ran: a host installed before the claim. Run `glidex-install` again (it writes the claim), or run `glidex-netd --boot-devices` once the driver is idle. |
 | `… 64-bit BAR of … MiB doesn't fit PCI segment …'s window` (Cloud Hypervisor, Pylon) | The VM's GPUs on one NUMA node need more address space than the hypervisor gives that node's PCI segment: each large BAR is aligned to its own size. Give the VM fewer GPUs per NUMA node, shrink the GPUs' windows (a pool's `bar_mib`), or use QEMU. |
+| In a VM with a GPU and a ConnectX NIC, the NIC reading GPU memory (GPUDirect RDMA) hangs, then the guest logs `Xid 79` and mlx5 `PCI slot is unavailable`; on the host, a completion timeout can take the whole root port down | The reads go through the root complex, which doesn't complete them. Set up [switch-local peer-to-peer](#setting-it-up-for-a-connectx-nic-and-a-gpu) until `gxctl node topology <node> --devices` shows the pair `direct`, and keep to NIC writes into GPU memory until then. |
 | `vfio-pci …: Unable to change power state from D3cold to D0` in the kernel log, often with NVMe `no usable path` messages at the same moments | Idle passthrough devices are put in D3cold and fail to wake. Give their pool `power_save: false` ([Keep devices out of power saving](#keep-devices-out-of-power-saving)). |
 | `pool …: 1 of 2 free`, `no device pool …` | See [Host resources](host-resources.md#troubleshooting). |
 | A VM stays **Waiting for a node** with `PCI device …` in a node's reason | `no PCI device …`: the node doesn't report it. `… is used by VM …` or `… shares IOMMU group …`: every node with it has it taken. The VM is placed once a device is free. |
