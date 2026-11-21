@@ -668,6 +668,10 @@ default), but some do not (AlmaLinux sets `growpart` off in
   at once), or `202` with the disk (`deleting: true`) when an operation
   on it has to finish first.
 
+  In a cluster, a disk on a node-local datastore that no VM has placed
+  yet is bound to no node, so no node's controller acts on it, and it
+  has no file. The leader deletes its record.
+
 ### 6.6 Images: delete and inspect
 
 - `DELETE /images/{id}` is refused with `409 conflict` while a `Linked`

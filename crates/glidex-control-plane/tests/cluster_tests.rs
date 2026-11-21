@@ -2297,6 +2297,37 @@ async fn disk_edits_are_checked_on_the_disks_node() {
     assert_eq!(std::fs::metadata(&agent_path).unwrap().len(), size);
 }
 
+/// A node-local disk no VM has placed is bound to no node, so no node makes
+/// it; deleting it is the leader's, and the record goes (10-images.md
+/// §6.5). It used to stay `deleting` for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn an_unbound_disk_is_deleted_by_the_leader() {
+    let _one = serial().await;
+    let (server, _agent) = server_and_agent().await;
+    let (_, projects) = call(&server, "GET", "/projects", None, &[]).await;
+    let project = projects["projects"][0]["id"].as_str().unwrap().to_string();
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/disks",
+        Some(json!({ "name": "unbound", "project": project, "size_gib": 1 })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = v["disk"]["id"].as_str().unwrap().to_string();
+    let d = server.manager.images().get_disk(&id).unwrap();
+    assert!(d.node.is_none(), "{d:?}");
+    assert_eq!(d.phase, glidex_control_plane::images::DiskPhase::Pending);
+
+    let (s, v) = call(&server, "DELETE", &format!("/disks/{id}"), None, &[]).await;
+    assert!(s.is_success(), "{s} {v}");
+    wait_for("the unbound disk's record to go", || async {
+        server.manager.images().get_disk(&id).is_err()
+    })
+    .await;
+}
+
 /// A datastore on some nodes, at each one's own path: each node says what
 /// it finds there through the leader, and a VM whose disk is on it goes to
 /// a node that reaches it (spec/24-storage.md S2, S14).

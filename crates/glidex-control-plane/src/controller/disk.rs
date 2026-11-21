@@ -128,6 +128,29 @@ impl VmManager {
             )?;
             return Ok(Some(Duration::from_secs(1)));
         }
+        // A node-local disk no VM has placed yet is bound to no node, so no
+        // node acts on it, and it has no file anywhere: its file is made
+        // only once it is bound. Deleting it is the leader's, and only the
+        // record goes (10-images.md §6.5).
+        if disk.deletion_requested_at.is_some()
+            && disk.node.is_none()
+            && disk.phase == DiskPhase::Pending
+            && self.cluster().is_some()
+            && self.store.database().can_write()
+            && !self.images.is_shared(&disk)
+        {
+            if Self::disk_claimed_by(&*self.vms.read().await, &disk.id, None).is_some() {
+                return Ok(Some(Duration::from_secs(5)));
+            }
+            self.store.commit(Commit {
+                delete_disks: vec![disk.id.as_str()],
+                ..Default::default()
+            })?;
+            let _ = self.store.delete_events(&event_key("disk", &disk.id));
+            self.images.uncache_disk(&disk.id);
+            tracing::info!(disk = %disk.name, "disk deleted (never bound to a node)");
+            return Ok(None);
+        }
         if !self.is_local_disk(&disk) {
             return Ok(None);
         }
