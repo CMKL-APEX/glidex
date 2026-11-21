@@ -12,7 +12,10 @@ function portsAbove(d: PciFunction, all: Map<string, PciFunction>): string[] {
   const seen = new Set<string>();
   for (let p = d.parent ? all.get(d.parent) : undefined; p && !seen.has(p.address); p = p.parent ? all.get(p.parent) : undefined) {
     seen.add(p.address);
-    if (p.direct_translated) out.push(`${p.address} ${p.direct_translated}${p.translation_blocking ? " (translation blocking on)" : ""}`);
+    if (p.direct_translated)
+      out.push(
+        `${p.address} ${p.direct_translated}${p.direct_translated_set ? " (set by glidex)" : ""}${p.translation_blocking ? " (translation blocking on)" : ""}`,
+      );
   }
   return out;
 }
@@ -251,7 +254,7 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
         <div className="mt-4" data-testid="switch-local-p2p">
           <div className="text-sm font-medium text-gray-900">Switch-local P2P</div>
           <p className="text-xs text-gray-500">
-            Whether translated requests between devices on vfio-pci under one switch go straight across it. Glidex only reports this; see the operator guide.
+            Whether translated requests between devices on vfio-pci under one switch go straight across it. Glidex turns it on only for pools marked switch_p2p, while one VM holds both devices; see the operator guide.
           </p>
           <ul className="text-sm">
             {(t.p2p ?? []).flatMap((p) =>
@@ -273,6 +276,7 @@ export default function TopologyCard({ node, cordoned, manage, onChanged }: { no
                   ) : (
                     <Badge kind="warn">unknown</Badge>
                   )}
+                  {path?.set_for && <span className="text-xs text-gray-500">set by glidex for {path.set_for}</span>}
                   {path?.reason && <span className="text-xs text-gray-500">{path.reason}</span>}
                 </li>
               )),

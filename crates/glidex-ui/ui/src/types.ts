@@ -2344,6 +2344,8 @@ export interface PciFunction {
   /** A root or downstream port above one: ACS Direct Translated P2P, and Translation Blocking (H31). */
   direct_translated?: string;
   translation_blocking?: boolean;
+  /** Glidex turned this port's Direct Translated P2P on for a VM. */
+  direct_translated_set?: boolean;
 }
 
 /** One direction of a switch-local pair (spec/22-host-topology.md §5.2a). */
@@ -2352,6 +2354,8 @@ export interface P2pPath {
   route?: string;
   /** The first condition that failed. */
   reason?: string;
+  /** The VM glidex turned this direction's Direct Translated P2P on for. */
+  set_for?: string;
 }
 
 export interface P2pPair {
