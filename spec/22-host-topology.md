@@ -1182,26 +1182,31 @@ Forwarding. The control plane asks netd each time it reads the full
 tree; without netd, or with an older one, the warning is left out. Its
 host check is not run yet.
 
-**HT11** is in progress (H33–H35, §5.3b, issue #596). Built and
-tested: netd's `switch_p2p` op (bit 6 of ACS Control only, on switch
+**HT11** is built and tested (H33–H35, §5.3b, issue #596; #597, #598,
+#601): netd's `switch_p2p` op (bit 6 of ACS Control only, on switch
 downstream ports, the earlier value kept in `acs_dt` and put back; a
 port with ACS off, without the capability or not a downstream port left
-alone and reported) and `prepare_device` with `rescan` (refused unless
-the device is on `vfio-pci` and no VM holds its group). Built, with
-unit tests of the port set: `switch_p2p` on pools (setting, the proto's
-`PciPoolSpec`, `pci.overrides`) keeping them at D0; the set of ports
-from this node's VMs holding pairs (a pair in one VM, devices two VMs
-hold, a requester without ATS or with it off, ACS off, Translation
-Blocking, no capability, nested switches, a port with another ATS
-function below), sent to netd before a launch with VFIO devices, after
-such an exit and with each report; `direct_translated_set`, `set_for`
-and `switch_p2p_blocked` (full tree, `GetNodeTopology`, `gxctl node
-topology --devices`, and the node page: a port `on (set by glidex)`,
-a direction `set by glidex for <vm>`); `switch_p2p` in the device pools
-list (UI e2e `device-pools`, `host-p2p`); `prepare-device --rescan`
-(`?rescan=true`); the operator guide. Not yet: a controller test of the
-calls at launch and exit (the control plane's tests have no fake netd),
-and the host check.
+alone and reported) and `prepare_device` with `rescan`; `switch_p2p` on
+pools (setting, `PciPoolSpec`, `pci.overrides`, shown in the device pools
+list) keeping them at D0; the set of ports from this node's VMs holding
+pairs, sent to netd before a launch with VFIO devices, after such an
+exit and with each report; `direct_translated_set`, `set_for` and
+`switch_p2p_blocked` (full tree, `GetNodeTopology`, `gxctl node topology
+--devices`, the node page); `prepare-device --rescan`; the operator
+guide. Its host check passed (below). Not yet: a controller test of the
+calls at launch and exit (the control plane's tests have no fake netd);
+the host check showed them working.
+
+HT11's host check, on an HGX host of the test cluster, glidex `1402dea`
+(main at #601), with an A100 and a ConnectX-6 under one switch (the NIC
+on its own downstream port), no VM holding either at the start:
+
+| Date | Check | Result |
+|---|---|---|
+| 2026-11-21 | ATS turned on in the NIC's firmware (`mlxconfig`, a firmware reset of that NIC), then `gxctl node prepare-device <node> <nic> --rescan` | **pass**: before the rescan, the capability present with `ATSCtl: Enable-` and glidex `ats off`; after it, the NIC back on `vfio-pci` (it was probed on `mlx5_core`), `ATSCtl: Enable+`, `ats on` |
+| 2026-11-21 | The NIC's pool set to `switch_p2p: true`, no VM holding a pair | **pass**: each node report sent netd the empty set; every port above the GPUs and NICs kept Direct Translated P2P off |
+| 2026-11-21 | A Cloud Hypervisor VM given the NIC and the GPU, started, then stopped | **pass**: netd set the NIC's downstream port alone within a second of the create, before the guest ran; every other port stayed off. glidex showed the NIC → GPU direction `direct (set by glidex for <vm>)`, and the GPU's own `via root complex` (no ATS). At the stop, netd gave the port back its earlier value. |
+| 2026-11-21 | Issue #527's read in that VM (`ib_write_bw` with the GPU buffer on the sender, 3 s and 30 s; `ib_read_bw` from GPU memory) | **pass**: 192 Gb/s in each; no guest errors and no kernel messages on the host; every device under the root port answered after |
 
 **HT10** is built and tested: netd's `acs_above` also answers ATS for
 the given devices and Direct Translated P2P and Translation Blocking
