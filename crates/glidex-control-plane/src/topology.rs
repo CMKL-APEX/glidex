@@ -1184,7 +1184,7 @@ pub fn read_tree(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use glidex_ovs::tuning::{Cpu, Topology};
@@ -2148,17 +2148,22 @@ mod tests {
         assert!(!t.reserved_cpus.contains_key(&66));
     }
 
-    /// [`p2p_tree`] with netd's answer, every downstream port's Direct
-    /// Translated P2P supported and off, as before glidex sets any.
-    fn dt_off_tree() -> TopologyTree {
-        let mut t = p2p_tree();
+    /// netd's answer for [`p2p_tree`] before glidex sets any Direct
+    /// Translated P2P: every downstream port's supported and off.
+    pub(crate) fn dt_off_report() -> AcsReport {
         let mut r = p2p_report();
         for p in &mut r.ports {
             if p.direct_translated == Support::On {
                 p.direct_translated = Support::Off;
             }
         }
-        t.apply_p2p(&r);
+        r
+    }
+
+    /// [`p2p_tree`] with [`dt_off_report`].
+    pub(crate) fn dt_off_tree() -> TopologyTree {
+        let mut t = p2p_tree();
+        t.apply_p2p(&dt_off_report());
         t
     }
 

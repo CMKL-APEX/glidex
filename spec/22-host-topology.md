@@ -1193,9 +1193,10 @@ pairs, sent to netd before a launch with VFIO devices, after such an
 exit and with each report; `direct_translated_set`, `set_for` and
 `switch_p2p_blocked` (full tree, `GetNodeTopology`, `gxctl node topology
 --devices`, the node page); `prepare-device --rescan`; the operator
-guide. Its host check passed (below). Not yet: a controller test of the
-calls at launch and exit (the control plane's tests have no fake netd);
-the host check showed them working.
+guide. A controller test against a fake netd covers the calls: no
+`switch_p2p` pool, no call; the trusted NIC's port sent before launch
+and kept by a report while the VM runs; the empty set after its exit.
+Its host check passed (below).
 
 HT11's host check, on an HGX host of the test cluster, glidex `1402dea`
 (main at #601), with an A100 and a ConnectX-6 under one switch (the NIC

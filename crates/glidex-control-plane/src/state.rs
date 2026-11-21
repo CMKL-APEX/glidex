@@ -421,6 +421,10 @@ pub struct VmManager {
     pub(crate) meter_tasks: std::sync::Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pub(crate) metering_cfg: std::sync::Mutex<Option<crate::config::MeteringConfig>>,
     pub(crate) me: Weak<VmManager>,
+    /// A test's PCI tree, read in place of this host's sysfs when planning
+    /// switch-local P2P.
+    #[cfg(test)]
+    pub(crate) switch_p2p_tree: std::sync::OnceLock<crate::topology::TopologyTree>,
 }
 
 type RootBinding = (VolumeBinding, Disk);
@@ -619,6 +623,8 @@ impl VmManager {
             meter_tasks: std::sync::Mutex::new(Vec::new()),
             metering_cfg: std::sync::Mutex::new(None),
             me: me.clone(),
+            #[cfg(test)]
+            switch_p2p_tree: std::sync::OnceLock::new(),
         });
         if let Some(c) = cluster {
             mgr.attach_cluster(c);
@@ -5105,6 +5111,10 @@ impl VmManager {
             return;
         };
         let _ = tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(tree) = me.switch_p2p_tree.get() {
+                return me.set_switch_p2p(tree, &held);
+            }
             let summary = me
                 .nodes
                 .get(&me.local_node_id())
