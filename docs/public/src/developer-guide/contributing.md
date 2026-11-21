@@ -116,7 +116,7 @@ the [gxctl reference](../reference/gxctl.md).
 ```bash
 cargo test                                        # the whole workspace, no VMs
 cargo test -p glidex-control-plane --test datastore_tests   # one test binary
-cargo test -p glidex-raftstore                    # one crate
+cargo test -p glidex-api                          # one crate
 GLIDEX_CHECK_WRITE_SETS=1 cargo test              # as CI runs it
 ```
 
@@ -656,10 +656,15 @@ feature levels and protocol numbers, never from comparing versions.
 ## Publishing to crates.io
 
 The library crates are published to crates.io: `glidex-api`,
-`glidex-auth`, `glidex-hv-client`, `glidex-ovn`, `glidex-ovs`,
-`glidex-raftstore`, `glidex-tls` and `glidex-topology`, and `glidex`,
-which re-exports them, each behind a feature of its name; and `gxctl`,
-the CLI, so that `cargo install gxctl` installs it on any machine. The daemons, the
+`glidex-hv-client`, `glidex-ovn` and `glidex-ovs`. `glidex`, which
+re-exports them and the glidex-commons crates, each behind a feature of
+its name, and `gxctl`, the CLI (so that `cargo install gxctl` installs
+it on any machine), wait until glidex-commons is on crates.io too: they
+depend on it by git, which crates.io refuses, so the workflow leaves
+them out for now
+([#606](https://github.com/CMKL-APEX/glidex/issues/606)). The
+glidex-commons crates (`glidex-auth`, `glidex-raftstore`, `glidex-tls`,
+`glidex-topology`, ...) are published from their own repository. The daemons, the
 UI, the installer and the control plane have `publish = false`: they are
 installed by `glidex-install`, and the control plane depends on
 hyperstor's crates by git, which crates.io refuses.
@@ -669,7 +674,7 @@ publishable crate and builds it from its package, uploading nothing, on
 every pull request that changes a manifest or a crate. To check by hand:
 
 ```bash
-cargo publish --workspace --dry-run
+cargo publish --workspace --exclude glidex --exclude gxctl --dry-run
 ```
 
 A version on crates.io can be yanked but never removed or uploaded
@@ -684,8 +689,8 @@ Trusted Publishing is set per crate on crates.io, so a crate's first
 upload is by hand, by an owner: `cargo login` (it reads the token from
 standard input; never pass it as an argument), then
 `cargo publish -p <crate>` for each crate, `glidex-ovs` before
-`glidex-ovn`, and `glidex` and `gxctl` last (or `cargo publish --workspace`, which
-takes them in that order). Then, for each crate, add the repository and
+`glidex-ovn` (or `cargo publish --workspace --exclude glidex --exclude
+gxctl`, which takes them in that order). Then, for each crate, add the repository and
 `publish.yml` (environment `crates-io`) as a trusted publisher in its
 settings on crates.io, and add the other owners
 (`cargo owner --add github:CMKL-APEX:<team> <crate>`).
