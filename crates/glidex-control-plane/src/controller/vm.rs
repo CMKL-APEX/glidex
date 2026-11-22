@@ -390,6 +390,10 @@ impl VmManager {
         let now = crate::tenancy::now();
         status.observed_generation = read_gen;
         status.last_reconciled_at = cur.status.last_reconciled_at;
+        // The migration record has its own writers (`write_migration`, the
+        // leader's steps), which a round started before them mustn't undo
+        // (spec/32-live-migration.md §4).
+        status.migration = cur.status.migration.clone();
         if status.phase != cur.status.phase {
             status.phase_since = Some(now);
         }
@@ -434,22 +438,21 @@ impl VmManager {
             .map(|_| ())
     }
 
-    /// Set or clear `status.migration`, for tests of what reads it before
-    /// the leader's migration steps write it.
+    /// Set or clear `status.migration`, as the leader would, for tests of
+    /// the steps that follow.
     #[doc(hidden)]
     pub async fn __set_migration_for_tests(
         &self,
         id: &str,
         migration: Option<crate::models::Migration>,
     ) -> Result<(), VmManagerError> {
-        let Some(vm) = self.vm(id).await else {
+        let mut vms = self.vms.write().await;
+        let Some(mut vm) = vms.get(id).cloned() else {
             return Err(VmManagerError::VmNotFound(id.into()));
         };
-        let mut st = vm.status.clone();
-        st.migration = migration;
-        self.write_status(id, vm.generation, st, vec![])
-            .await
-            .map(|_| ())
+        vm.status.migration = migration;
+        vm.resource_version += 1;
+        self.put_locked(&mut vms, vm, vec![]).map(|_| ())
     }
 
     /// D12: `spec.power = Stopped` after an exit nobody asked for, unless

@@ -429,6 +429,16 @@ pub fn check_status_write(
                 let cur =
                     get(TableId::Vms, key)?.ok_or_else(|| format!("VM {key} does not exist"))?;
                 if !placed_on(&cur, node) {
+                    // A migration's target writes its steps into the record
+                    // (spec/32-live-migration.md decision 13).
+                    if let Op::Put { value, .. } = op
+                        && migration_of(&cur).is_some_and(|m| m.target == node)
+                    {
+                        let new: Value =
+                            serde_json::from_slice(value).map_err(|e| e.to_string())?;
+                        check_migration_target_write(&cur, &new)?;
+                        continue;
+                    }
                     return Err(format!("VM {key} is not placed on this node"));
                 }
                 match op {
@@ -444,6 +454,10 @@ pub fn check_status_write(
                         let new: Value =
                             serde_json::from_slice(value).map_err(|e| e.to_string())?;
                         check_vm_status_only(&cur, &new)?;
+                        crate::controller::migration::source_may_write(
+                            migration_of(&cur).as_ref(),
+                            migration_of(&new).as_ref(),
+                        )?;
                     }
                 }
             }
@@ -626,6 +640,40 @@ fn same_except(cur: &Value, new: &Value, except: &[&str]) -> Result<(), String> 
         }
     }
     Ok(())
+}
+
+fn migration_of(rec: &Value) -> Option<crate::models::Migration> {
+    serde_json::from_value(rec.pointer("/status/migration")?.clone()).ok()
+}
+
+/// A migration's target writes the VM's `status.migration`, and nothing
+/// else of it, as the target's steps allow
+/// ([`crate::controller::migration::target_may_write`]).
+fn check_migration_target_write(cur: &Value, new: &Value) -> Result<(), String> {
+    let rv = |v: &Value| {
+        v.pointer("/meta/resource_version")
+            .and_then(|x| x.as_u64())
+            .unwrap_or(0)
+    };
+    if rv(new) != rv(cur) + 1 {
+        return Err(format!(
+            "conflict: the VM changed (resource_version {} is not {}+1)",
+            rv(new),
+            rv(cur)
+        ));
+    }
+    let (mut c, mut n) = (cur.clone(), new.clone());
+    for v in [&mut c, &mut n] {
+        v["meta"]["resource_version"] = Value::Null;
+        v["status"]["migration"] = Value::Null;
+    }
+    if c != n {
+        return Err("a migration's target writes only the migration".into());
+    }
+    match (migration_of(cur), migration_of(new)) {
+        (Some(c), Some(n)) => crate::controller::migration::target_may_write(&c, &n),
+        _ => Err("only the leader starts or ends a migration".into()),
+    }
 }
 
 /// A node writes a VM's `status` (and, per D12, `spec.power = stopped` when

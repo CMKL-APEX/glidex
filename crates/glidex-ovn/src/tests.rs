@@ -170,6 +170,35 @@ fn a_vm_port_has_port_security_and_is_bound_to_its_node() {
     }
 }
 
+/// A migrating VM's port is bound to both hosts, and moves when the guest
+/// announces itself on the target (spec/32-live-migration.md §8).
+#[test]
+fn a_migrating_port_is_bound_to_both_chassis_with_rarp() {
+    let exec = RecordingExec::new();
+    exec.on("ovn-nbctl --db=", empty(r#"["name"]"#));
+    let d = Desired {
+        networks: vec![net("lab", NetKind::Isolated, "10.89.3.0/24")],
+        ports: vec![PortSpec {
+            network: "lab".into(),
+            lport: "gx1a2b3c4d-0".into(),
+            mac: "52:54:00:aa:bb:cc".into(),
+            ip: Some("10.89.3.7".parse().unwrap()),
+            vm_id: "vm1".into(),
+            nic: 0,
+            chassis: Some("n1,n2".into()),
+        }],
+        ..Default::default()
+    };
+    sync(&Nb::new(&exec, conn()), &d).unwrap();
+    let calls = exec.calls().join("\n");
+    assert!(
+        calls.contains(
+            "lsp-set-options gx1a2b3c4d-0 activation-strategy=rarp requested-chassis=n1,n2"
+        ),
+        "{calls}"
+    );
+}
+
 #[test]
 fn a_port_that_is_already_right_costs_nothing() {
     let exec = RecordingExec::new();

@@ -200,6 +200,18 @@ impl VmService for Svc {
         .await
     }
 
+    async fn cancel_migration(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CancelMigrationRequest>,
+    ) -> ServiceResult<CancelMigrationResponse> {
+        let req = req.to_owned_message();
+        unary(&self.app, &ctx, |c| async move {
+            svc::cancel_migration(&c.expect("authenticated operation"), req).await
+        })
+        .await
+    }
+
     async fn stop_vm(
         &self,
         ctx: RequestContext,

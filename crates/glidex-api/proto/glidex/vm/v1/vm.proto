@@ -90,6 +90,15 @@ service VmService {
       rest: "POST /vms/{id}/migrate"
     };
   }
+  // Cancels a live migration while the guest hasn't moved; once it has,
+  // the migration finishes (spec/32-live-migration.md §4).
+  rpc CancelMigration(CancelMigrationRequest) returns (CancelMigrationResponse) {
+    option (glidex.api.v1.op) = {
+      action: "migrateVm"
+      kind: KIND_WRITE
+      rest: "POST /vms/{id}/migrate/cancel"
+    };
+  }
   rpc StopVm(StopVmRequest) returns (StopVmResponse) {
     option (glidex.api.v1.op) = {
       action: "stopVm"
@@ -391,6 +400,39 @@ message Vm {
   optional uint32 min_vcpus = 45 [json_name = "min_vcpus"];
   optional uint32 max_vcpus = 46 [json_name = "max_vcpus"];
   optional uint32 cpu_weight = 47 [json_name = "cpu_weight"];
+  // A live migration in progress, or the last one, if it failed
+  // (spec/32-live-migration.md §4).
+  VmMigration migration = 48;
+}
+
+// A VM's live migration (spec/32-live-migration.md §4).
+message VmMigration {
+  // The node it moves to.
+  string target = 1;
+  MigrationPhase phase = 2;
+  // Unix seconds.
+  uint64 started_at = 3 [json_name = "started_at"];
+  uint64 updated_at = 4 [json_name = "updated_at"];
+  // The longest the guest may be paused at the switch.
+  uint32 downtime_ms = 5 [json_name = "downtime_ms"];
+  // Memory sent so far, the pass over the dirty pages, and the pages
+  // dirtied per second.
+  uint64 bytes = 6;
+  uint64 iteration = 7;
+  uint64 dirty_rate = 8 [json_name = "dirty_rate"];
+  // Why it failed or is being cancelled.
+  string reason = 9;
+}
+
+enum MigrationPhase {
+  MIGRATION_PHASE_UNSPECIFIED = 0;
+  MIGRATION_PHASE_CHECKING = 1;
+  MIGRATION_PHASE_PREPARING = 2;
+  MIGRATION_PHASE_COPYING = 3;
+  MIGRATION_PHASE_SWITCHING = 4;
+  MIGRATION_PHASE_COMMITTED = 5;
+  MIGRATION_PHASE_CANCELLING = 6;
+  MIGRATION_PHASE_FAILED = 7;
 }
 
 // How a VM boots (spec/23-kernel-boot.md).
@@ -683,6 +725,13 @@ message MigrationTarget {
   string name = 2;
   // Why the VM can't go there; empty when it can.
   repeated string reasons = 3;
+}
+
+message CancelMigrationRequest {
+  string id = 1;
+}
+message CancelMigrationResponse {
+  Vm vm = 1;
 }
 
 message StopVmRequest {

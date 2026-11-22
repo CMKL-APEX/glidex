@@ -233,6 +233,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
     .add("POST", "/vms/{id}/start", "startVm", post(vms::start))
     .add("POST", "/vms/{id}/place", "placeVm", post(vms::place))
     .add("POST", "/vms/{id}/migrate", "migrateVm", post(vms::migrate))
+    .add(
+        "POST",
+        "/vms/{id}/migrate/cancel",
+        "migrateVm",
+        post(vms::cancel_migration),
+    )
     .add("POST", "/vms/{id}/stop", "stopVm", post(vms::stop))
     .add("POST", "/vms/{id}/pause", "pauseVm", post(vms::pause))
     .add(

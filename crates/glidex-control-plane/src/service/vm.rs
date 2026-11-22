@@ -167,6 +167,34 @@ fn attachment_of(a: &pb::NetworkAttachment) -> m::NetworkAttachment {
 /// A VM as the API shows it, without the caller's view (its node's name,
 /// OVN addresses): for error details. The runtime paths stay private
 /// (spec/11-security.md §9).
+/// `status.migration` as the API shows it (spec/32-live-migration.md
+/// §10): the node-to-node fields stay inside the cluster.
+fn migration_pb(m: &m::Migration) -> pb::VmMigration {
+    use m::MigrationPhase as P;
+    use pb::MigrationPhase as Q;
+    pb::VmMigration {
+        target: m.target.clone(),
+        phase: match m.phase {
+            P::Checking => Q::MIGRATION_PHASE_CHECKING,
+            P::Preparing => Q::MIGRATION_PHASE_PREPARING,
+            P::Copying => Q::MIGRATION_PHASE_COPYING,
+            P::Switching => Q::MIGRATION_PHASE_SWITCHING,
+            P::Committed => Q::MIGRATION_PHASE_COMMITTED,
+            P::Cancelling => Q::MIGRATION_PHASE_CANCELLING,
+            P::Failed => Q::MIGRATION_PHASE_FAILED,
+        }
+        .into(),
+        started_at: m.started_at,
+        updated_at: m.updated_at,
+        downtime_ms: m.downtime_ms,
+        bytes: m.bytes,
+        iteration: m.iteration,
+        dirty_rate: m.dirty_rate,
+        reason: m.reason.clone(),
+        ..Default::default()
+    }
+}
+
 pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
     let config = vm.config();
     pb::Vm {
@@ -219,6 +247,7 @@ pub fn vm_pb_plain(vm: &Vm) -> pb::Vm {
         kernel: config.kernel_image.clone(),
         kernel_from_disk: config.kernel_from_disk.then_some(true),
         booted_kernel: vm.status.disk_kernel.as_ref().map(|k| k.image.clone()),
+        migration: vm.status.migration.as_ref().map(migration_pb).into(),
         previous_kernel: vm
             .status
             .disk_kernel
@@ -1092,6 +1121,25 @@ pub async fn migrate_vm(
             ..Default::default()
         }
         .into(),
+        ..Default::default()
+    })
+}
+
+/// `POST /vms/{id}/migrate/cancel` (spec/32-live-migration.md §4): the
+/// cancel of a migration whose guest hasn't moved; after that, the VM as it
+/// is, with the migration finishing.
+pub async fn cancel_migration(
+    call: &Call,
+    req: pb::CancelMigrationRequest,
+) -> ServiceResult<pb::CancelMigrationResponse> {
+    let (vm, _, _) = visible_vm(call, &req.id).await?;
+    let vm = call
+        .manager()
+        .cancel_migration(&vm.id, &call.actor())
+        .await
+        .map_err(manager_err)?;
+    Ok(pb::CancelMigrationResponse {
+        vm: vm_pb(call, &vm).into(),
         ..Default::default()
     })
 }
