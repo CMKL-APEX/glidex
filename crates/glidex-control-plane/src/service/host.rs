@@ -439,6 +439,7 @@ pub async fn install_ovs(
         profile,
         source_build: req.source_build,
         confirm: req.confirm,
+        no_packages: false,
     };
     let r: InstallReport = netd(call, move |n, who| n.call_as(Op::InstallOvs(args), who)).await?;
     Ok(pb::InstallOvsResponse {

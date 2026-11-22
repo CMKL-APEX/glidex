@@ -96,6 +96,11 @@ pub struct InstallRequest {
     pub source_build: bool,
     #[serde(default)]
     pub confirm: bool,
+    /// Install no packages: start and enable the Open vSwitch that is
+    /// there, for a host whose packages a provisioning tool manages
+    /// (spec/05-installer.md D2).
+    #[serde(default)]
+    pub no_packages: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -319,7 +324,7 @@ pub fn install(
 
     let mut output = Vec::new();
     let install_cmd = match plan.family {
-        _ if plan.packages.is_empty() => None,
+        _ if plan.packages.is_empty() || req.no_packages => None,
         Family::Debian => {
             let update = Cmd::new(Program::AptGet, ["update"])
                 .env("DEBIAN_FRONTEND", "noninteractive")
@@ -346,6 +351,7 @@ pub fn install(
     }
     if plan.family == Family::Debian
         && req.profile == Profile::Dpdk
+        && !req.no_packages
         && plan.packages.iter().any(|p| is_ovs_package(p))
     {
         // apt skips recommends of packages that are already installed, so
@@ -395,7 +401,11 @@ pub fn install(
     Ok(InstallReport {
         changed: true,
         method: "distro".into(),
-        packages: plan.packages,
+        packages: if req.no_packages {
+            Vec::new()
+        } else {
+            plan.packages
+        },
         ovs_version: after.ovs_version,
         warnings,
         output_tail: tail(&output),
@@ -953,6 +963,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Kernel,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -977,6 +988,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Dpdk,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -1003,6 +1015,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Kernel,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -1013,6 +1026,31 @@ mod tests {
         assert!(calls.contains(&"apt-get install -y --no-install-recommends openvswitch-switch dnsmasq-base nftables".to_string()), "{calls:?}");
         assert!(calls.contains(&"systemctl enable --now openvswitch-switch".to_string()));
         assert!(!calls.iter().any(|c| c.contains("update-alternatives")));
+    }
+
+    #[test]
+    fn no_packages_starts_the_ovs_that_is_there() {
+        let exec = RecordingExec::new();
+        not_installed(&exec);
+        installed_after(&exec, OVS_ROW);
+        let report = install(
+            &exec,
+            &ProbeOptions::default(),
+            &InstallRequest {
+                profile: Profile::Kernel,
+                source_build: false,
+                no_packages: true,
+                confirm: false,
+            },
+        )
+        .unwrap();
+        assert!(report.packages.is_empty(), "{report:?}");
+        let calls = exec.calls();
+        assert!(
+            !calls.iter().any(|c| c.starts_with("apt-get")),
+            "a provisioning tool installs the packages: {calls:?}"
+        );
+        assert!(calls.contains(&"systemctl enable --now openvswitch-switch".to_string()));
     }
 
     #[test]
@@ -1031,6 +1069,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Dpdk,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -1070,6 +1109,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Dpdk,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -1095,6 +1135,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Dpdk,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -1117,6 +1158,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Kernel,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -1144,6 +1186,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Dpdk,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )
@@ -1167,6 +1210,7 @@ mod tests {
                 &InstallRequest {
                     profile: Profile::Kernel,
                     source_build: false,
+                    no_packages: false,
                     confirm: false
                 }
             ),
@@ -1185,6 +1229,7 @@ mod tests {
             &InstallRequest {
                 profile: Profile::Kernel,
                 source_build: false,
+                no_packages: false,
                 confirm: false,
             },
         )

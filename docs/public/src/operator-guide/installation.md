@@ -124,11 +124,14 @@ cargo run -p glidex-install -- --no-qemu --ovs-profile dpdk
 | `--no-vfio-devices` | Stop both at boot, and remove the unit and its files (what is bound now stays so until the next boot). |
 | `--now` | Apply `--vfio-devices` and `--sriov` now as well, not only at the next boot. Never touches a device on `vfio-pci`, nor the VF count of a PF with a VF on `vfio-pci`. Not saved. |
 | `--prebuilt` | Install the binaries already in `target/release` (or `$CARGO_TARGET_DIR/release`) and the built UI in `crates/glidex-ui/ui/dist` (built on another host with the same OS) instead of installing Rust and Bun and building. Refused, naming what is missing, unless every binary and the UI are there. Not saved. Installing one build on several servers keeps their UI files the same, which a load balancer needs (see [Behind a load balancer or tunnel](clusters.md#behind-a-load-balancer-or-tunnel)). |
+| `--no-packages` | Install and upgrade no system packages, for a host whose packages a provisioning tool manages. Every dependency is checked first; if one is missing, the run stops before changing anything and names each missing package and how it was checked. Open vSwitch is started but not installed, and an OVN older than the cluster's is reported, not upgraded. Saved; `--packages` undoes it. See [Hosts managed by a provisioning tool](#hosts-managed-by-a-provisioning-tool). |
+| `--assets DIR` | Take Cloud Hypervisor, its UEFI firmware and the Pylon release from `DIR` instead of downloading them. Each file has its release name and is checked against the pinned SHA-256; a missing or different file stops the run before anything changes. Not saved. |
 | `-h`, `--help` | Show the options. |
 
 `/etc/glidex/install.conf` holds `qemu`, `networking`, `services`,
 `ovs_profile`, `pmd_cpu_mask`, `ovn`, and, once chosen,
-`tailscale_cert`, `with_pylon`, `vfio_devices` and `sriov`. The options
+`tailscale_cert`, `with_pylon`, `vfio_devices` and `sriov`, and
+`packages=false` after `--no-packages`. The options
 marked *not saved* above apply to the run they are given on only.
 
 Without `--datastore` or `--local-datastore`, an interactive run
@@ -170,6 +173,37 @@ on every re-run:
 
 An agent installs `ovn-host` only; servers and standalone hosts also get
 `ovn-central`.
+
+With `--no-packages`, step 2 doesn't upgrade: the installer stops with
+the OVN version to install.
+
+### Hosts managed by a provisioning tool
+
+On a host whose packages a provisioning tool installs, the installer can
+say what it needs and leave the installing to the tool:
+
+1. `glidex-install deps --json [options]` prints what an install with
+   those options needs, without changing anything or asking for sudo.
+   Give the options you will install with (`--prebuilt`, `--no-qemu`,
+   `--no-ovn`, `--with-pylon`, `--ovs-profile`), and `--role server`,
+   `agent` or `standalone` (default: this host's role if it is in a
+   cluster, else standalone). Without `--json` it prints a table.
+   - `dependencies`: each system package (`package` for this host's
+     package manager, and `packages` for apt, dnf and pacman), how the
+     installer checks it (`probe`: a `command`, a `pkg_config` module or
+     `any_file` of a list), whether it is for the `build` or at
+     `runtime`, and `min_version` (`null` while glidex needs no
+     particular version).
+   - `downloads`: each pinned file (Cloud Hypervisor, its firmware, the
+     Pylon release with `--with-pylon`) with its `name`, `url` and
+     `sha256`.
+2. The tool installs the packages and puts the downloads in a directory.
+   Installing OVN starts its services on Debian and Ubuntu; hold them off
+   for that run (`policy-rc.d`) and start again only those that were
+   running. glidex-netd starts what a cluster needs.
+3. Install with `--prebuilt --no-packages --assets DIR`. With
+   `--prebuilt` no build tools are needed (`clang`, `pkg-config`, the
+   OpenSSL headers, `unzip`), and the installer needs no internet access.
 
 ## What gets installed
 

@@ -151,6 +151,9 @@ fn main() -> Result<()> {
     if args.first().map(String::as_str) == Some("uninstall") {
         return uninstall::main(&args[1..]);
     }
+    if args.first().map(String::as_str) == Some("deps") {
+        return deps_main(&args[1..]);
+    }
     let saved = fs::read_to_string(INSTALL_CONF).ok();
     let opts = Options::parse(saved.as_deref(), &args)?;
     if opts.leave {
@@ -190,6 +193,8 @@ fn main() -> Result<()> {
     print_plan(&opts);
 
     install_system_packages(&opts, &platform)?;
+    // Before any change, like the packages check (D4).
+    check_assets(&opts, &platform)?;
     if opts.prebuilt {
         check_prebuilt(&opts)?;
         check_kvm();
@@ -207,14 +212,14 @@ fn main() -> Result<()> {
     if opts.services {
         ensure_service_user(user.as_deref())?;
     }
-    install_cloud_hypervisor(&platform)?;
+    install_cloud_hypervisor(&platform, opts.assets.as_deref())?;
     install_pylon(&opts, &platform, &mut changed)?;
     install_binaries(&opts, &user_home, &mut changed)?;
     install_ui_assets()?;
     // Our own home, not SUDO_USER's: a root run mustn't leave root-owned
     // files in the user's ~/.glidex.
     let own_home = dirs::home_dir().context("could not determine the home directory")?;
-    install_uefi_firmware(&platform, &own_home, opts.services)?;
+    install_uefi_firmware(&platform, &own_home, opts.services, opts.assets.as_deref())?;
     if opts.networking {
         setup_networking(&opts, &changed)?;
     }
@@ -247,7 +252,7 @@ fn main() -> Result<()> {
     // A member's OVN matches the cluster's ovn-northd: after a join, and on
     // every re-run (a server may have been upgraded since).
     if opts.networking && opts.ovn && cluster_identity().is_some() {
-        ensure_ovn_matches_cluster(opts.join.is_some())?;
+        ensure_ovn_matches_cluster(opts.join.is_some(), opts.packages)?;
     }
     let ts_domain = ts_node.and_then(|n| n.domains.into_iter().next());
     print_usage(&opts, tailscale_on.then_some(ts_domain).as_ref());
@@ -514,7 +519,7 @@ fn cluster_identity() -> Option<serde_json::Value> {
 
 /// Bring this member's OVN up to the cluster's ovn-northd (spec/05-installer.md
 /// §5a), from the distribution or else the Ubuntu Cloud Archive, OVN only.
-fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
+fn ensure_ovn_matches_cluster(just_joined: bool, packages: bool) -> Result<()> {
     use ovn_match::{CLUSTER_DIR, Plan};
     section("OVN version (to match the cluster)");
     if !command_exists("ovn-controller") {
@@ -590,12 +595,12 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
         );
         return Ok(());
     }
-    if package_manager() != Some("apt-get") {
+    // A provisioning tool manages the packages (D5); else only apt is
+    // upgraded here.
+    if !packages || package_manager() != Some("apt-get") {
         bail!(
-            "the cluster's ovn-northd is OVN {}, this host has {}: install OVN {} or newer here, then re-run the installer",
-            ovn_match::series_str(want),
-            local_v.trim(),
-            ovn_match::series_str(want)
+            "{}",
+            ovn_too_old(&ovn_match::series_str(want), local_v.trim())
         );
     }
     println!(
@@ -679,6 +684,14 @@ fn ensure_ovn_matches_cluster(just_joined: bool) -> Result<()> {
     }
     println!("{} {}", "OVN upgraded:".green(), after.trim());
     Ok(())
+}
+
+/// What to do when this host's OVN is older than the cluster's ovn-northd
+/// and the installer won't upgrade it.
+fn ovn_too_old(want: &str, local: &str) -> String {
+    format!(
+        "the cluster's ovn-northd is OVN {want}, this host has {local}: install OVN {want} or newer here, then re-run the installer"
+    )
 }
 
 /// (pocket, ovn-host version) for each Ubuntu Cloud Archive pocket of this
@@ -942,6 +955,13 @@ struct Options {
     /// `--pylon-from DIR`: install a local Pylon build instead, this run
     /// only (P12). Never saved.
     pylon_from: Option<PathBuf>,
+    /// Install and upgrade system packages. `--no-packages` (a host whose
+    /// packages a provisioning tool manages) only checks them and stops
+    /// before any change if one is missing (spec/05-installer.md D2).
+    packages: bool,
+    /// `--assets DIR`: take the pinned downloads from DIR instead of
+    /// GitHub (D4). Never saved.
+    assets: Option<PathBuf>,
 }
 
 /// `a,b , c` → `[a, b, c]`.
@@ -1033,6 +1053,8 @@ impl Default for Options {
             vfio_now: false,
             with_pylon: None,
             pylon_from: None,
+            packages: true,
+            assets: None,
         }
     }
 }
@@ -1054,6 +1076,7 @@ impl Options {
                 "ovn" => o.ovn = v == "true",
                 "tailscale_cert" => o.tailscale_cert = Some(v == "true"),
                 "with_pylon" => o.with_pylon = Some(v == "true"),
+                "packages" => o.packages = v == "true",
                 "vfio_devices" => o.vfio_devices = split_list(v),
                 "sriov" => {
                     o.sriov = split_list(v)
@@ -1091,6 +1114,9 @@ impl Options {
                 "--with-pylon" | "--pylon" => o.with_pylon = Some(true),
                 "--no-pylon" => o.with_pylon = Some(false),
                 "--pylon-from" => o.pylon_from = Some(PathBuf::from(value("--pylon-from")?)),
+                "--packages" => o.packages = true,
+                "--no-packages" => o.packages = false,
+                "--assets" => o.assets = Some(PathBuf::from(value("--assets")?)),
                 "--datastore" => o
                     .datastores
                     .push(DatastoreReg::parse(&value("--datastore")?, true)?),
@@ -1222,6 +1248,10 @@ impl Options {
         if let Some(w) = self.with_pylon {
             text.push_str(&format!("with_pylon={w}\n"));
         }
+        // Only when off, so existing files stay as they are.
+        if !self.packages {
+            text.push_str("packages=false\n");
+        }
         if !self.vfio_devices.is_empty() {
             text.push_str(&format!("vfio_devices={}\n", self.vfio_devices.join(",")));
         }
@@ -1287,6 +1317,15 @@ fn print_help() {
          \x20     --now                  also apply them now (never touches a device on vfio-pci)\n\
          \x20     --prebuilt             use the binaries already in target/release (and the\n\
          \x20                            built UI) instead of installing Rust and building\n\n\
+         A host whose packages a provisioning tool manages (spec/05-installer.md):\n\
+         \x20     --no-packages          install and upgrade no system packages: check them and\n\
+         \x20                            stop before any change if one is missing\n\
+         \x20     --packages             undo an earlier --no-packages\n\
+         \x20     --assets DIR           take Cloud Hypervisor, its firmware and Pylon from DIR\n\
+         \x20                            (release file names, checksums verified), not GitHub\n\
+         \x20     glidex-install deps [--json] [--role server|agent|standalone] [options]\n\
+         \x20                            list what an install with these options needs, and\n\
+         \x20                            the pinned downloads; changes nothing\n\n\
          Joining a cluster (spec/14-clustering.md §5.2); the token comes from\n\
          `gxctl cluster join-token` on a server, read from a file (mode 0600)\n\
          or standard input, never from the command line:\n\
@@ -1315,14 +1354,27 @@ fn print_plan(opts: &Options) {
     let on = |b: bool| if b { "yes".green() } else { "no".yellow() };
     println!();
     println!("{}", "Installing / updating:".cyan().bold());
-    println!("  - System packages (build tools, OpenSSL headers, disk and cloud-init tools)");
+    match (opts.packages, opts.prebuilt) {
+        (false, _) => println!("  - System packages: checked only, none installed (--no-packages)"),
+        (true, true) => println!("  - System packages (disk and cloud-init tools)"),
+        (true, false) => println!(
+            "  - System packages (build tools, OpenSSL headers, disk and cloud-init tools)"
+        ),
+    }
+    if !opts.prebuilt {
+        println!(
+            "  - Rust (rustup {} if missing), Bun {} (checksums verified)",
+            RUSTUP_VERSION, BUN_VERSION
+        );
+    }
     println!(
-        "  - Rust (rustup {} if missing), Bun {} (checksums verified)",
-        RUSTUP_VERSION, BUN_VERSION
-    );
-    println!(
-        "  - Cloud-Hypervisor {} and its UEFI firmware ({}) (checksums verified)",
-        CLOUD_HYPERVISOR_VERSION, EDK2_FIRMWARE_VERSION
+        "  - Cloud-Hypervisor {} and its UEFI firmware ({}) (checksums verified){}",
+        CLOUD_HYPERVISOR_VERSION,
+        EDK2_FIRMWARE_VERSION,
+        opts.assets
+            .as_ref()
+            .map(|d| format!(", from {}", d.display()))
+            .unwrap_or_default()
     );
     println!(
         "  - glidex binaries in {}, web UI in {}",
@@ -1504,6 +1556,104 @@ fn download_verified(url: &str, dest: &Path, sha256: &str) -> Result<()> {
     Ok(())
 }
 
+/// A pinned release file: its release asset name (the file name `--assets
+/// DIR` holds), where it is downloaded from, and its sha256.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PinnedAsset {
+    name: &'static str,
+    url: String,
+    sha256: &'static str,
+}
+
+fn cloud_hypervisor_pin(platform: &Platform) -> PinnedAsset {
+    let (name, sha256) = cloud_hypervisor_asset(platform);
+    PinnedAsset {
+        name,
+        url: format!(
+            "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/{CLOUD_HYPERVISOR_VERSION}/{name}"
+        ),
+        sha256,
+    }
+}
+
+fn firmware_pin(platform: &Platform) -> PinnedAsset {
+    let (name, sha256) = firmware_asset(platform);
+    PinnedAsset {
+        name,
+        url: format!(
+            "https://github.com/cloud-hypervisor/edk2/releases/download/{EDK2_FIRMWARE_VERSION}/{name}"
+        ),
+        sha256,
+    }
+}
+
+fn pylon_pin(name: &'static str, sha256: &'static str) -> PinnedAsset {
+    PinnedAsset {
+        name,
+        url: format!("https://github.com/CMKL-APEX/pylon/releases/download/{PYLON_VERSION}/{name}"),
+        sha256,
+    }
+}
+
+/// The pinned downloads an install with `opts` needs (D1, D4): Cloud
+/// Hypervisor and its firmware, and the Pylon release with `--with-pylon`
+/// (not with `--pylon-from`, a local build).
+fn pinned_assets(opts: &Options, platform: &Platform) -> Vec<PinnedAsset> {
+    let mut pins = vec![cloud_hypervisor_pin(platform), firmware_pin(platform)];
+    if opts.with_pylon == Some(true) && opts.pylon_from.is_none() && platform.arch == "x86_64" {
+        pins.extend(PYLON_ASSETS.iter().map(|(n, _, _, h)| pylon_pin(n, h)));
+    }
+    pins
+}
+
+/// `DIR/<name>`, checked against its sha256.
+fn asset_in(dir: &Path, a: &PinnedAsset) -> Result<PathBuf> {
+    let path = dir.join(a.name);
+    if !path.is_file() {
+        bail!(
+            "--assets: {} is missing ({} {})",
+            path.display(),
+            a.url,
+            a.sha256
+        );
+    }
+    let actual = file_sha256(&path)?;
+    if actual != a.sha256 {
+        bail!(
+            "--assets: {} has sha256 {actual}, not {} ({})",
+            path.display(),
+            a.sha256,
+            a.url
+        );
+    }
+    Ok(path)
+}
+
+/// With `--assets DIR`, check every pinned file there before anything
+/// changes, so a missing one doesn't stop the install half way.
+fn check_assets(opts: &Options, platform: &Platform) -> Result<()> {
+    let Some(dir) = &opts.assets else {
+        return Ok(());
+    };
+    for a in pinned_assets(opts, platform) {
+        asset_in(dir, &a)?;
+    }
+    Ok(())
+}
+
+/// Put pinned file `a` at `dest`: from `assets` (`--assets DIR`) or
+/// downloaded, checked against its sha256 either way. No download when a
+/// directory is given: the host may have no internet access.
+fn fetch_pinned(assets: Option<&Path>, a: &PinnedAsset, dest: &Path) -> Result<()> {
+    let Some(dir) = assets else {
+        return download_verified(&a.url, dest, a.sha256);
+    };
+    let src = asset_in(dir, a)?;
+    println!("Copying {}", src.display());
+    fs::copy(&src, dest).with_context(|| format!("copying {}", src.display()))?;
+    Ok(())
+}
+
 // --- Privilege ---
 
 static SUDO_READY: AtomicBool = AtomicBool::new(false);
@@ -1661,27 +1811,48 @@ enum Probe {
 struct Dep {
     probe: Probe,
     packages: [&'static str; 3],
+    /// Needed to build glidex, not to run it: not with `--prebuilt`.
+    build: bool,
+    /// The oldest version glidex works with, for a provisioning tool to
+    /// enforce (spec/05-installer.md D7). No dependency has one yet.
+    min_version: Option<&'static str>,
 }
 
 const fn dep(probe: Probe, packages: [&'static str; 3]) -> Dep {
-    Dep { probe, packages }
+    Dep {
+        probe,
+        packages,
+        build: false,
+        min_version: None,
+    }
 }
 
-/// Build tools (unzip for bun's installer, pkg-config and the OpenSSL
-/// headers for `openssl-sys`, clang), the cloud-init seed tools, and the
-/// tools the image and disk module shells out to (spec/10-images.md §9).
-const BASE_DEPS: &[Dep] = &[
-    dep(Probe::Cmd("curl"), ["curl", "curl", "curl"]),
-    dep(Probe::Cmd("unzip"), ["unzip", "unzip", "unzip"]),
-    dep(
+const fn build_dep(probe: Probe, packages: [&'static str; 3]) -> Dep {
+    Dep {
+        build: true,
+        ..dep(probe, packages)
+    }
+}
+
+/// Build tools: unzip for bun's installer, pkg-config and the OpenSSL
+/// headers for `openssl-sys`, clang. Not with `--prebuilt` (D3).
+const BUILD_DEPS: &[Dep] = &[
+    build_dep(Probe::Cmd("unzip"), ["unzip", "unzip", "unzip"]),
+    build_dep(
         Probe::PkgConfig("openssl"),
         ["libssl-dev", "openssl-devel", "openssl"],
     ),
-    dep(
+    build_dep(
         Probe::Cmd("pkg-config"),
         ["pkg-config", "pkgconfig", "pkgconf"],
     ),
-    dep(Probe::Cmd("clang"), ["clang", "clang", "clang"]),
+    build_dep(Probe::Cmd("clang"), ["clang", "clang", "clang"]),
+];
+
+/// curl (the installer's downloads), the cloud-init seed tools, and the
+/// tools the image and disk module shells out to (spec/10-images.md §9).
+const RUNTIME_DEPS: &[Dep] = &[
+    dep(Probe::Cmd("curl"), ["curl", "curl", "curl"]),
     dep(
         Probe::Cmd("mkdosfs"),
         ["dosfstools", "dosfstools", "dosfstools"],
@@ -1782,6 +1953,40 @@ const CONNTRACK_DEPS: &[Dep] = &[dep(
     ["conntrack", "conntrack-tools", "conntrack-tools"],
 )];
 
+/// Open vSwitch and its helpers for the kernel profile, as `glidex-ovs`
+/// installs them (`install::packages_for`). A hand install leaves them to
+/// `glidex-ovs`; they are listed for `deps` and checked by `--no-packages`
+/// (D1, D2).
+const OVS_DEPS: &[Dep] = &[
+    dep(
+        Probe::Cmd("ovs-vswitchd"),
+        ["openvswitch-switch", "openvswitch", "openvswitch"],
+    ),
+    dep(
+        Probe::Cmd("dnsmasq"),
+        ["dnsmasq-base", "dnsmasq", "dnsmasq"],
+    ),
+    dep(Probe::Cmd("nft"), ["nftables", "nftables", "nftables"]),
+];
+/// The DPDK build of ovs-vswitchd, for the dpdk profile.
+const OVS_DPDK_DEPS: &[Dep] = &[dep(
+    Probe::AnyFile(&["/usr/lib/openvswitch-switch-dpdk/ovs-vswitchd-dpdk"]),
+    ["openvswitch-switch-dpdk", "openvswitch", "openvswitch"],
+)];
+
+/// What `deps` lists and `--no-packages` checks: `wanted_deps` and, with
+/// networking, Open vSwitch for the profile.
+fn checked_deps(opts: &Options, platform: &Platform, role: Option<&str>) -> Vec<Dep> {
+    let mut deps = wanted_deps(opts, platform, role);
+    if opts.networking {
+        deps.extend_from_slice(OVS_DEPS);
+        if opts.ovs_profile == OvsProfile::Dpdk {
+            deps.extend_from_slice(OVS_DPDK_DEPS);
+        }
+    }
+    deps
+}
+
 /// The systemd units the OVN packages bring. A Debian/Ubuntu install starts
 /// them at once; on a host that isn't in a cluster they would only run empty
 /// databases, so they are stopped until netd starts what a cluster needs
@@ -1809,7 +2014,10 @@ fn ovn_units_to_quiesce(just_installed: &[&str], in_cluster: bool) -> Vec<&'stat
 /// `role`: the cluster role this host takes (`--join --role`) or already
 /// has (a re-run on a member); `None` on a standalone host.
 fn wanted_deps(opts: &Options, platform: &Platform, role: Option<&str>) -> Vec<Dep> {
-    let mut deps = BASE_DEPS.to_vec();
+    let mut deps = RUNTIME_DEPS.to_vec();
+    if !opts.prebuilt {
+        deps.extend_from_slice(BUILD_DEPS);
+    }
     // OVN on every node (servers also run its databases), unless --no-ovn.
     if opts.networking && opts.ovn {
         deps.extend_from_slice(OVN_HOST_DEPS);
@@ -1977,6 +2185,146 @@ fn package_commands(manager: &str, missing: &[&str], update: &[&str]) -> Vec<Vec
     }
 }
 
+/// `glidex-install deps [--json] [--role server|agent|standalone] [options]`
+/// (spec/05-installer.md D1): what an install with these options (and
+/// `install.conf`) needs. Changes nothing and never asks for sudo.
+fn deps_main(args: &[String]) -> Result<()> {
+    let mut json = false;
+    let mut role: Option<String> = None;
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--json" => json = true,
+            "--role" => {
+                let r = it.next().context("--role needs a value")?;
+                if !["server", "agent", "standalone"].contains(&r.as_str()) {
+                    bail!("--role is server, agent or standalone");
+                }
+                role = Some(r.clone());
+            }
+            _ => rest.push(a.clone()),
+        }
+    }
+    let saved = fs::read_to_string(INSTALL_CONF).ok();
+    let opts = Options::parse(saved.as_deref(), &rest)?;
+    let platform = detect_platform()?;
+    // A member's identity, when readable without root.
+    let role = role
+        .or_else(|| opts.join.as_ref().map(|j| j.role.clone()))
+        .or_else(|| {
+            let path = format!("{}/identity.json", ovn_match::CLUSTER_DIR);
+            let v: serde_json::Value =
+                serde_json::from_str(&fs::read_to_string(path).ok()?).ok()?;
+            v["role"].as_str().map(str::to_string)
+        })
+        .filter(|r| r != "standalone");
+    let report = deps_report(&opts, &platform, role.as_deref(), package_manager());
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    for d in report["dependencies"].as_array().into_iter().flatten() {
+        println!(
+            "{:<24} {:<8} {}",
+            d["package"]
+                .as_str()
+                .or(d["packages"]["apt"].as_str())
+                .unwrap_or_default(),
+            d["purpose"].as_str().unwrap_or_default(),
+            d["check"].as_str().unwrap_or_default()
+        );
+    }
+    println!("\nPinned downloads (sha256):");
+    for a in report["downloads"].as_array().into_iter().flatten() {
+        println!(
+            "  {}  {}",
+            a["sha256"].as_str().unwrap_or_default(),
+            a["url"].as_str().unwrap_or_default()
+        );
+    }
+    Ok(())
+}
+
+/// `deps --json`'s document. Fields are added, never renamed (`version`).
+fn deps_report(
+    opts: &Options,
+    platform: &Platform,
+    role: Option<&str>,
+    manager: Option<&str>,
+) -> serde_json::Value {
+    use serde_json::json;
+    let dependencies: Vec<_> = checked_deps(opts, platform, role)
+        .iter()
+        .map(|d| {
+            let probe = match d.probe {
+                Probe::Cmd(c) => json!({ "command": c }),
+                Probe::PkgConfig(m) => json!({ "pkg_config": m }),
+                Probe::AnyFile(f) => json!({ "any_file": f }),
+            };
+            json!({
+                "package": manager.map(|m| d.packages[manager_column(m)]),
+                "packages": {
+                    "apt": d.packages[0],
+                    "dnf": d.packages[1],
+                    "pacman": d.packages[2],
+                },
+                "probe": probe,
+                "check": probe_text(&d.probe),
+                "purpose": if d.build { "build" } else { "runtime" },
+                "min_version": d.min_version,
+            })
+        })
+        .collect();
+    let downloads: Vec<_> = pinned_assets(opts, platform)
+        .into_iter()
+        .map(|a| json!({ "name": a.name, "url": a.url, "sha256": a.sha256 }))
+        .collect();
+    json!({
+        "version": 1,
+        "platform": { "os": platform.os, "arch": platform.arch },
+        "role": role.unwrap_or("standalone"),
+        "package_manager": manager,
+        "options": {
+            "prebuilt": opts.prebuilt,
+            "qemu": opts.qemu,
+            "networking": opts.networking,
+            "ovn": opts.networking && opts.ovn,
+            "ovs_profile": opts.ovs_profile.name(),
+            "with_pylon": opts.with_pylon == Some(true) && opts.pylon_from.is_none(),
+        },
+        "dependencies": dependencies,
+        "downloads": downloads,
+    })
+}
+
+/// How `p` is checked, for people and for `deps`.
+fn probe_text(p: &Probe) -> String {
+    match p {
+        Probe::Cmd(c) => format!("command {c}"),
+        Probe::PkgConfig(m) => format!("pkg-config module {m}"),
+        Probe::AnyFile(files) => format!("one of {}", files.join(", ")),
+    }
+}
+
+/// One line per missing dependency: its package for `manager` (apt's
+/// without one) and how it was checked (D2).
+fn missing_report(
+    deps: &[Dep],
+    manager: Option<&str>,
+    present: impl Fn(&Probe) -> bool,
+) -> Vec<String> {
+    let col = manager.map_or(0, manager_column);
+    let mut lines: Vec<String> = Vec::new();
+    for d in deps.iter().filter(|d| !present(&d.probe)) {
+        let line = format!("  {} ({})", d.packages[col], probe_text(&d.probe));
+        if !lines.contains(&line) {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
 fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
     section("System packages");
     let member = cluster_identity();
@@ -1985,6 +2333,21 @@ fn install_system_packages(opts: &Options, platform: &Platform) -> Result<()> {
             .as_ref()
             .and_then(|m| m["role"].as_str().map(str::to_string))
     });
+    if !opts.packages {
+        let deps = checked_deps(opts, platform, role.as_deref());
+        let missing = missing_report(&deps, package_manager(), probe_present);
+        if missing.is_empty() {
+            println!(
+                "{}",
+                "Every dependency is present (--no-packages: none installed or upgraded).".green()
+            );
+            return Ok(());
+        }
+        bail!(
+            "--no-packages: these are missing; install them, then re-run (nothing was changed):\n{}",
+            missing.join("\n")
+        );
+    }
     let deps = wanted_deps(opts, platform, role.as_deref());
     let Some(manager) = package_manager() else {
         let missing: Vec<String> = deps
@@ -2307,7 +2670,7 @@ fn cloud_hypervisor_version(output: &str) -> Option<&str> {
 
 /// The pinned static Cloud-Hypervisor in /usr/local/bin. Running VMs keep
 /// their binary, so no service needs a restart for it.
-fn install_cloud_hypervisor(platform: &Platform) -> Result<()> {
+fn install_cloud_hypervisor(platform: &Platform, assets: Option<&Path>) -> Result<()> {
     section("Cloud-Hypervisor");
     let target = format!("{}/cloud-hypervisor", BIN_DIR);
     let current = run_capture(&target, &["--version"]).ok();
@@ -2322,15 +2685,9 @@ fn install_cloud_hypervisor(platform: &Platform) -> Result<()> {
         return Ok(());
     }
 
-    let (binary_name, sha256) = cloud_hypervisor_asset(platform);
-    let url = format!(
-        "https://github.com/cloud-hypervisor/cloud-hypervisor/releases/download/{}/{}",
-        CLOUD_HYPERVISOR_VERSION, binary_name
-    );
     let tmp = TempDir::new()?;
     let download_path = tmp.path().join("cloud-hypervisor");
-    println!("Downloading {}", url);
-    download_verified(&url, &download_path, sha256)?;
+    fetch_pinned(assets, &cloud_hypervisor_pin(platform), &download_path)?;
     install_if_changed(&download_path, &target, "0755")?;
     println!(
         "{} {} → {}",
@@ -2397,12 +2754,12 @@ fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> 
             println!("{} {} ({})", "Up to date:".green(), dst, PYLON_VERSION);
             continue;
         }
-        let url = format!(
-            "https://github.com/CMKL-APEX/pylon/releases/download/{}/{}",
-            PYLON_VERSION, asset
-        );
         let download_path = tmp.path().join(asset);
-        download_verified(&url, &download_path, sha256)?;
+        fetch_pinned(
+            opts.assets.as_deref(),
+            &pylon_pin(asset, sha256),
+            &download_path,
+        )?;
         install_if_changed(&download_path, dst, mode)?;
         println!("{} {} ({})", "Installed:".green(), dst, PYLON_VERSION);
         if dst.ends_with("/pylond") {
@@ -2503,7 +2860,12 @@ fn file_sha256(path: &Path) -> Result<String> {
 /// Download the EDK2 firmware Cloud-Hypervisor uses to boot UEFI disk
 /// images (distro cloud images) into `home`'s `.glidex` (for gxctl and
 /// interactive runs) and, with the services, the service user's.
-fn install_uefi_firmware(platform: &Platform, home: &Path, services: bool) -> Result<()> {
+fn install_uefi_firmware(
+    platform: &Platform,
+    home: &Path,
+    services: bool,
+    assets: Option<&Path>,
+) -> Result<()> {
     section("Cloud-Hypervisor UEFI Firmware");
     let (asset, sha256) = firmware_asset(platform);
     let glidex_dir = home.join(".glidex");
@@ -2513,13 +2875,9 @@ fn install_uefi_firmware(platform: &Platform, home: &Path, services: bool) -> Re
     if dest.exists() && file_sha256(&dest)? == sha256 {
         println!("{} {}", "Firmware is up to date:".green(), dest.display());
     } else {
-        let url = format!(
-            "https://github.com/cloud-hypervisor/edk2/releases/download/{}/{}",
-            EDK2_FIRMWARE_VERSION, asset
-        );
         // Download next to the destination so the final rename is atomic.
         let partial = glidex_dir.join(format!("{}.part", asset));
-        download_verified(&url, &partial, sha256)?;
+        fetch_pinned(assets, &firmware_pin(platform), &partial)?;
         fs::rename(&partial, &dest)?;
         println!("{} {}", "Installed:".green(), dest.display());
     }
@@ -3314,6 +3672,7 @@ fn setup_networking(opts: &Options, changed: &Changes) -> Result<()> {
         profile,
         source_build: false,
         confirm: opts.allow_ovs_restart,
+        no_packages: !opts.packages,
     };
     // An OVS already set to dpdk-init=true (earlier run, or the host
     // rebooted without the sysctl applied) aborts at start without
@@ -4923,28 +5282,29 @@ mod tests {
 
     #[test]
     fn package_plan_installs_missing_and_updates_the_rest() {
-        let (missing, update) = pkgs("apt-get", BASE_DEPS, &["clang", "sgdisk", "openssl"], &[]);
-        assert_eq!(missing, ["libssl-dev", "clang", "gdisk"]);
+        let base = [RUNTIME_DEPS, BUILD_DEPS].concat();
+        let (missing, update) = pkgs("apt-get", &base, &["clang", "sgdisk", "openssl"], &[]);
+        assert_eq!(missing, ["gdisk", "libssl-dev", "clang"]);
         assert_eq!(
             update,
             [
                 "curl",
-                "unzip",
-                "pkg-config",
                 "dosfstools",
                 "mtools",
                 "qemu-utils",
-                "cloud-guest-utils"
+                "cloud-guest-utils",
+                "unzip",
+                "pkg-config",
             ],
             "deduplicated (qemu-img and qemu-io share qemu-utils)"
         );
         // A tool installed some other way (no package) isn't touched.
-        let (missing, update) = pkgs("dnf", BASE_DEPS, &[], &["clang"]);
+        let (missing, update) = pkgs("dnf", &base, &[], &["clang"]);
         assert!(missing.is_empty());
         assert!(!update.contains(&"clang"));
         assert!(update.contains(&"cloud-utils-growpart"));
         // One missing tool of a shared package installs it, not updates it.
-        let (missing, update) = pkgs("pacman", BASE_DEPS, &["qemu-io"], &[]);
+        let (missing, update) = pkgs("pacman", &base, &["qemu-io"], &[]);
         assert_eq!(missing, ["qemu-img"]);
         assert!(!update.contains(&"qemu-img"));
         assert!(update.contains(&"gptfdisk"));
@@ -5876,7 +6236,7 @@ mod tests {
         let platform = detect_platform().unwrap();
         let (asset, sha256) = firmware_asset(&platform);
 
-        install_uefi_firmware(&platform, home.path(), false).unwrap();
+        install_uefi_firmware(&platform, home.path(), false, None).unwrap();
         let dest = home.path().join(".glidex").join(asset);
         assert_eq!(file_sha256(&dest).unwrap(), sha256);
         assert!(
@@ -5889,7 +6249,7 @@ mod tests {
 
         // Second run sees the verified file and does not re-download.
         let mtime = fs::metadata(&dest).unwrap().modified().unwrap();
-        install_uefi_firmware(&platform, home.path(), false).unwrap();
+        install_uefi_firmware(&platform, home.path(), false, None).unwrap();
         assert_eq!(fs::metadata(&dest).unwrap().modified().unwrap(), mtime);
     }
 
@@ -5902,5 +6262,188 @@ mod tests {
             file_sha256(&path).unwrap(),
             "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
         );
+    }
+
+    fn x86() -> Platform {
+        Platform {
+            os: "linux",
+            arch: "x86_64",
+        }
+    }
+
+    fn apt_names(deps: &[Dep]) -> Vec<&'static str> {
+        deps.iter().map(|d| d.packages[0]).collect()
+    }
+
+    #[test]
+    fn prebuilt_needs_no_build_tools() {
+        let built = apt_names(&wanted_deps(&Options::default(), &x86(), None));
+        for p in [
+            "clang",
+            "libssl-dev",
+            "pkg-config",
+            "unzip",
+            "curl",
+            "gdisk",
+        ] {
+            assert!(built.contains(&p), "{p} in {built:?}");
+        }
+        let prebuilt = Options::parse(None, &args(&["--prebuilt"])).unwrap();
+        let names = apt_names(&wanted_deps(&prebuilt, &x86(), None));
+        for p in ["clang", "libssl-dev", "pkg-config", "unzip"] {
+            assert!(!names.contains(&p), "{p} in {names:?}");
+        }
+        assert!(names.contains(&"qemu-utils") && names.contains(&"curl"));
+        assert!(BUILD_DEPS.iter().all(|d| d.build) && RUNTIME_DEPS.iter().all(|d| !d.build));
+    }
+
+    #[test]
+    fn open_vswitch_is_checked_not_installed_here() {
+        let all = Options::default();
+        assert!(!apt_names(&wanted_deps(&all, &x86(), None)).contains(&"openvswitch-switch"));
+        let names = apt_names(&checked_deps(&all, &x86(), None));
+        for p in ["openvswitch-switch", "dnsmasq-base", "nftables"] {
+            assert!(names.contains(&p), "{p} in {names:?}");
+        }
+        assert!(!names.contains(&"openvswitch-switch-dpdk"));
+        let dpdk = Options::parse(None, &args(&["--ovs-profile", "dpdk"])).unwrap();
+        assert!(apt_names(&checked_deps(&dpdk, &x86(), None)).contains(&"openvswitch-switch-dpdk"));
+        let none = Options::parse(None, &args(&["--no-networking"])).unwrap();
+        assert!(!apt_names(&checked_deps(&none, &x86(), None)).contains(&"openvswitch-switch"));
+    }
+
+    #[test]
+    fn no_packages_is_saved_and_assets_are_not() {
+        assert!(Options::default().packages);
+        assert!(!Options::default().render().contains("packages"));
+        let o = Options::parse(None, &args(&["--no-packages", "--assets", "/srv/pins"])).unwrap();
+        assert!(!o.packages);
+        assert_eq!(o.assets.as_deref(), Some(Path::new("/srv/pins")));
+        assert!(o.render().contains("packages=false\n"), "{}", o.render());
+        assert!(!o.render().contains("/srv/pins"), "{}", o.render());
+        let again = Options::parse(Some(&o.render()), &[]).unwrap();
+        assert!(!again.packages && again.assets.is_none());
+        let back = Options::parse(Some(&o.render()), &args(&["--packages"])).unwrap();
+        assert!(back.packages && !back.render().contains("packages"));
+    }
+
+    #[test]
+    fn missing_report_names_each_package_and_its_check() {
+        let deps = checked_deps(&Options::default(), &x86(), None);
+        let present = |p: &Probe| !matches!(p, Probe::Cmd("clang" | "ovs-vswitchd" | "qemu-io"));
+        assert_eq!(
+            missing_report(&deps, Some("apt-get"), present),
+            [
+                "  qemu-utils (command qemu-io)",
+                "  clang (command clang)",
+                "  openvswitch-switch (command ovs-vswitchd)",
+            ]
+        );
+        assert_eq!(
+            missing_report(&deps, Some("dnf"), present)[0],
+            "  qemu-img (command qemu-io)"
+        );
+        assert!(missing_report(&deps, None, |_| true).is_empty());
+        let ovmf = missing_report(&deps, None, |p| !matches!(p, Probe::AnyFile(_)));
+        assert!(
+            ovmf[0].starts_with("  ovmf (one of /usr/share/OVMF/"),
+            "{ovmf:?}"
+        );
+    }
+
+    #[test]
+    fn deps_report_lists_dependencies_and_downloads() {
+        let r = deps_report(&Options::default(), &x86(), None, Some("apt-get"));
+        assert_eq!(r["version"], 1);
+        assert_eq!(r["role"], "standalone");
+        assert_eq!(r["package_manager"], "apt-get");
+        let deps = r["dependencies"].as_array().unwrap();
+        let curl = deps.iter().find(|d| d["package"] == "curl").unwrap();
+        assert_eq!(curl["probe"], serde_json::json!({ "command": "curl" }));
+        assert_eq!(curl["purpose"], "runtime");
+        assert!(curl["min_version"].is_null());
+        assert_eq!(curl["packages"]["pacman"], "curl");
+        let clang = deps.iter().find(|d| d["package"] == "clang").unwrap();
+        assert_eq!(clang["purpose"], "build");
+        let ssl = deps.iter().find(|d| d["package"] == "libssl-dev").unwrap();
+        assert_eq!(ssl["probe"], serde_json::json!({ "pkg_config": "openssl" }));
+        assert!(deps.iter().any(|d| d["package"] == "ovn-central"));
+        let names: Vec<_> = r["downloads"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["name"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(names, ["cloud-hypervisor-static", "CLOUDHV.fd"]);
+        assert!(
+            r["downloads"][0]["url"]
+                .as_str()
+                .unwrap()
+                .ends_with(&format!(
+                    "/{CLOUD_HYPERVISOR_VERSION}/cloud-hypervisor-static"
+                ))
+        );
+
+        let agent = deps_report(&Options::default(), &x86(), Some("agent"), None);
+        assert_eq!(agent["role"], "agent");
+        let deps = agent["dependencies"].as_array().unwrap();
+        assert!(deps.iter().all(|d| d["package"].is_null()));
+        assert!(!deps.iter().any(|d| d["packages"]["apt"] == "ovn-central"));
+
+        let pylon = Options::parse(None, &args(&["--with-pylon", "--prebuilt"])).unwrap();
+        let r = deps_report(&pylon, &x86(), None, Some("apt-get"));
+        assert_eq!(
+            r["downloads"].as_array().unwrap().len(),
+            2 + PYLON_ASSETS.len()
+        );
+        assert!(
+            !r["dependencies"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|d| d["purpose"] == "build")
+        );
+        let local =
+            Options::parse(None, &args(&["--with-pylon", "--pylon-from", "/tmp/p"])).unwrap();
+        let r = deps_report(&local, &x86(), None, Some("apt-get"));
+        assert_eq!(
+            r["downloads"].as_array().unwrap().len(),
+            2,
+            "a local build isn't downloaded"
+        );
+    }
+
+    #[test]
+    fn assets_come_from_the_directory_and_are_checked() {
+        let dir = TempDir::new().unwrap();
+        let pin = PinnedAsset {
+            name: "cloud-hypervisor-static",
+            url: "https://example.com/cloud-hypervisor-static".into(),
+            // sha256("abc")
+            sha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+        };
+        let e = asset_in(dir.path(), &pin).unwrap_err().to_string();
+        assert!(e.contains("is missing") && e.contains(pin.sha256), "{e}");
+        fs::write(dir.path().join(pin.name), "abd").unwrap();
+        let e = asset_in(dir.path(), &pin).unwrap_err().to_string();
+        assert!(e.contains("has sha256"), "{e}");
+        fs::write(dir.path().join(pin.name), "abc").unwrap();
+        let out = TempDir::new().unwrap();
+        let dest = out.path().join("cloud-hypervisor");
+        fetch_pinned(Some(dir.path()), &pin, &dest).unwrap();
+        assert_eq!(fs::read_to_string(&dest).unwrap(), "abc");
+
+        // Every pinned file is checked before the install changes anything.
+        let o = Options::parse(None, &args(&["--assets", &dir.path().to_string_lossy()])).unwrap();
+        let e = check_assets(&o, &x86()).unwrap_err().to_string();
+        assert!(e.contains("has sha256"), "{e}");
+        assert!(check_assets(&Options::default(), &x86()).is_ok());
+    }
+
+    #[test]
+    fn an_old_ovn_names_the_release_to_install() {
+        let m = ovn_too_old(&ovn_match::series_str((26, 3)), "ovn-controller 24.03.8");
+        assert!(m.contains("install OVN 26.03 or newer here"), "{m}");
+        assert!(m.contains("24.03.8"), "{m}");
     }
 }
