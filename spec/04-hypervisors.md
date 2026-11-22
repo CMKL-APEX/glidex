@@ -102,8 +102,9 @@ serial port):
 `tty` makes the device CH's stdio, i.e. the shim's PTY; see
 [02-console.md](02-console.md#why-the-shim-owns-the-master).
 
-Command-line rules, verified against v53.0 (F1, F2) and again on the
-pinned v54.1 by the functional boot tests (32-live-migration.md LM1), and
+Command-line rules, verified against v53.0 (F1, F2) and again on v54.1
+and the pinned v55.0 by the functional boot tests (32-live-migration.md
+LM1 and decision 12), and
 pinned by unit tests in `cloud_hypervisor.rs`:
 
 - A value containing `,` is wrapped in double quotes

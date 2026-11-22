@@ -3,8 +3,8 @@
 //! API (`glidex-hv-client`).
 //!
 //! The command line is the `vm.create` payload of earlier releases, option
-//! for option. Verified against v53.0 (spec §4, F1/F2), and on the pinned
-//! v54.1 by the functional boot tests:
+//! for option. Verified against v53.0 (spec §4, F1/F2), and on v54.1 and
+//! the pinned v55.0 by the functional boot tests:
 //! `image_type=` takes lower-case names (`vhd`, not the API's `FixedVhd`),
 //! `mtu=` is accepted although `--help` does not list it, and a value
 //! containing `,` must be double-quoted.

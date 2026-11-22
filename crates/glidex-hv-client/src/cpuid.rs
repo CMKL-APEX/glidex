@@ -7,9 +7,11 @@
 //! has no `/dev/kvm`, reads the file into the node's status.
 //!
 //! Compatibility follows Cloud Hypervisor's own check on a migration's
-//! target (`CpuidFeatureEntry::checked_feature_entry_list` in v54.1): the
+//! target (`CpuidFeatureEntry::check_cpuid_compatibility` in v55.0): the
 //! same registers and the same comparisons, so glidex refuses what Cloud
 //! Hypervisor would and names the register before any memory is sent.
+//! Glidex runs every VM with nested virtualization (spec/32 decision 10),
+//! so the list includes the SVM leaf Cloud Hypervisor checks only then.
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -101,12 +103,45 @@ impl Reg {
 enum Check {
     /// Every bit the VM has, the target has.
     Subset,
+    /// [`Check::Subset`], but for these bits.
+    SubsetExcept(u32),
     Equal,
     /// The VM's value, as a number, is at most the target's.
     NotGreater,
+    /// AMD's leaf 0x8000_0021 EAX (v55's
+    /// `extended_feature_identification2_eax_compatible`): some bits must
+    /// be equal, "defeatures" the target may have only if the VM did, one
+    /// bit ignored, the rest a subset.
+    ExtendedFeatures2Eax,
 }
 
-/// Cloud Hypervisor v54.1's list: leaf, subleaf, register, comparison.
+/// Leaf 0x8000_0008 EBX bit 20, `EFER_LMSLE_UNSUPPORTED`: obsolete, ignored.
+const EFER_LMSLE_UNSUPPORTED: u32 = 1 << 20;
+
+impl Check {
+    fn holds(self, vm: u32, target: u32) -> bool {
+        match self {
+            Check::Subset => vm & !target == 0,
+            Check::SubsetExcept(ignored) => vm & !target & !ignored == 0,
+            Check::Equal => vm == target,
+            Check::NotGreater => vm <= target,
+            Check::ExtendedFeatures2Eax => {
+                // NullSelectClearsBase, OpcodeReclaim, and reserved bits.
+                const EQUAL: u32 = 1 << 6 | 1 << 16 | 1 << 4 | 1 << 25 | 1 << 26;
+                // FsGsBaseWriteNotSerializing, NoSmmCtlMsr.
+                const DEFEATURES: u32 = 1 << 1 | 1 << 9;
+                // L2TlbSizeX32.
+                const IGNORED: u32 = 1 << 14;
+                const SUBSET: u32 = !(EQUAL | DEFEATURES | IGNORED);
+                vm & EQUAL == target & EQUAL
+                    && target & DEFEATURES & !vm == 0
+                    && vm & SUBSET & !target == 0
+            }
+        }
+    }
+}
+
+/// Cloud Hypervisor v55.0's list: leaf, subleaf, register, comparison.
 const CHECKED: &[(u32, u32, Reg, Check)] = &[
     (0x1, 0, Reg::Ecx, Check::Subset),
     (0x1, 0, Reg::Edx, Check::Subset),
@@ -128,6 +163,15 @@ const CHECKED: &[(u32, u32, Reg, Check)] = &[
     (0x1e, 1, Reg::Eax, Check::Subset),
     (0x8000_0001, 0, Reg::Ecx, Check::Subset),
     (0x8000_0001, 0, Reg::Edx, Check::Subset),
+    (
+        0x8000_0008,
+        0,
+        Reg::Ebx,
+        Check::SubsetExcept(EFER_LMSLE_UNSUPPORTED),
+    ),
+    (0x8000_0021, 0, Reg::Ecx, Check::Subset),
+    // SVM: checked by Cloud Hypervisor only with nested virtualization.
+    (0x8000_000a, 0, Reg::Edx, Check::Subset),
     (0x4000_0000, 0, Reg::Eax, Check::NotGreater),
     (0x4000_0000, 0, Reg::Ebx, Check::Equal),
     (0x4000_0000, 0, Reg::Ecx, Check::Equal),
@@ -136,6 +180,7 @@ const CHECKED: &[(u32, u32, Reg, Check)] = &[
     (0x4000_0001, 0, Reg::Ebx, Check::Subset),
     (0x4000_0001, 0, Reg::Ecx, Check::Subset),
     (0x4000_0001, 0, Reg::Edx, Check::Subset),
+    (0x8000_0021, 0, Reg::Eax, Check::ExtendedFeatures2Eax),
 ];
 
 /// Bits Cloud Hypervisor sets in every guest on KVM, whatever KVM offers
@@ -211,27 +256,27 @@ impl Misfit {
 }
 
 /// Whether a VM that booted with `vm` can run where KVM offers `target`.
-/// A value absent from either side counts as zero; the bits Cloud
-/// Hypervisor sets itself ([`VMM_SET`]) count as set on both.
+/// A register the VM's record lacks was recorded under an older list and
+/// isn't compared: Cloud Hypervisor's own check on the target, which sees
+/// the VM's CPUID, decides it. One the target lacks counts as zero, as
+/// KVM not reporting the leaf does. The bits Cloud Hypervisor sets itself
+/// ([`VMM_SET`]) count as set on both.
 pub fn fits(vm: &[CpuidValue], target: &[CpuidValue]) -> Result<(), Misfit> {
     let get = |of: &[CpuidValue], leaf, subleaf, reg| {
+        of.iter()
+            .find(|v| v.leaf == leaf && v.subleaf == subleaf && v.reg == reg)
+            .map(|v| v.value)
+    };
+    for &(leaf, subleaf, reg, check) in CHECKED {
         let set = VMM_SET
             .iter()
             .find(|s| (s.0, s.1, s.2) == (leaf, subleaf, reg))
             .map_or(0, |s| s.3);
-        of.iter()
-            .find(|v| v.leaf == leaf && v.subleaf == subleaf && v.reg == reg)
-            .map_or(0, |v| v.value)
-            | set
-    };
-    for &(leaf, subleaf, reg, check) in CHECKED {
-        let (v, t) = (get(vm, leaf, subleaf, reg), get(target, leaf, subleaf, reg));
-        let ok = match check {
-            Check::Subset => v & !t == 0,
-            Check::Equal => v == t,
-            Check::NotGreater => v <= t,
+        let Some(v) = get(vm, leaf, subleaf, reg) else {
+            continue;
         };
-        if !ok {
+        let (v, t) = (v | set, get(target, leaf, subleaf, reg).unwrap_or(0) | set);
+        if !check.holds(v, t) {
             return Err(Misfit {
                 leaf,
                 subleaf,
@@ -433,9 +478,47 @@ mod tests {
         assert!(fits(&sig(0x4b4d564b), &sig(0x4b4d564b)).is_ok());
         assert!(fits(&sig(0x4b4d564b), &sig(0)).is_err());
         assert!(fits(&sig(0), &sig(0x4b4d564b)).is_err());
-        // A register nobody lists counts as zero on both sides.
+        // A register the target lacks counts as zero; one the VM's record
+        // lacks (recorded under an older list) isn't compared.
         assert!(fits(&[], &[]).is_ok());
         assert!(fits(&one(0x7, 0, Reg::Ebx, 1), &[]).is_err());
+        assert!(fits(&[], &one(0x7, 0, Reg::Ebx, 1)).is_ok());
+        assert!(fits(&[], &one(0x8000_0021, 0, Reg::Eax, 1 << 6)).is_ok());
+    }
+
+    /// v55's AMD leaves (spec/32 §9).
+    #[test]
+    fn amd_leaves_are_compared_as_cloud_hypervisor_v55_does() {
+        let one = |leaf, reg, value| {
+            vec![CpuidValue {
+                leaf,
+                subleaf: 0,
+                reg,
+                value,
+            }]
+        };
+        // 0x8000_0008 EBX: a subset, but for the obsolete LMSLE bit.
+        let ebx = |v| one(0x8000_0008, Reg::Ebx, v);
+        assert!(fits(&ebx(1 << 9), &ebx(0)).is_err());
+        assert!(fits(&ebx(1 << 20), &ebx(0)).is_ok());
+        // 0x8000_000a EDX (SVM, nested virtualization): a subset.
+        let svm = |v| one(0x8000_000a, Reg::Edx, v);
+        assert!(fits(&svm(0b11), &svm(0b01)).is_err());
+        assert!(fits(&svm(0b01), &svm(0b11)).is_ok());
+        // 0x8000_0021 EAX: bit 6 equal either way; defeature bit 1 not on
+        // the target alone; bit 14 ignored; others a subset.
+        let eax = |v| one(0x8000_0021, Reg::Eax, v);
+        assert!(fits(&eax(1 << 6), &eax(0)).is_err());
+        assert!(fits(&eax(0), &eax(1 << 6)).is_err());
+        assert!(fits(&eax(0), &eax(1 << 1)).is_err());
+        assert!(fits(&eax(1 << 1), &eax(0)).is_ok());
+        assert!(fits(&eax(1 << 14), &eax(0)).is_ok());
+        assert!(fits(&eax(1 << 0), &eax(0)).is_err());
+        assert!(fits(&eax(0), &eax(1 << 0)).is_ok());
+        // Cloud Hypervisor's own vectors: Zen 4 to Zen 5 fits, not back.
+        let (zen4, zen5) = (eax(0x1802_0367), eax(0x5912_0367));
+        assert!(fits(&zen4, &zen5).is_ok());
+        assert!(fits(&zen5, &zen4).is_err());
     }
 
     #[test]
