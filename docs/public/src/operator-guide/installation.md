@@ -246,7 +246,7 @@ own `~/.glidex/`, for a control plane you run by hand.
 With `--with-pylon`, the installer downloads `pylon-x86_64`,
 `pylond-x86_64` and `pylon-guest-agent-static` from the
 [Pylon release](https://github.com/CMKL-APEX/pylon/releases) this
-Glidex pins (`v0.0.8`), checks each against its pinned SHA-256, and
+Glidex pins (`v0.0.9-rc1`), checks each against its pinned SHA-256, and
 installs them as `/usr/local/bin/pylon`, `/usr/local/bin/pylond` and
 `/usr/local/share/glidex/pylon-guest-agent` (the agent Glidex puts in
 Pylon guests).
@@ -259,7 +259,10 @@ restarts `glidex-pylond`.
   `pylond` then refuses VMs started with the older `pylon`. Stop and
   start Pylon VMs once the installer has updated Pylon. From v0.0.8-rc4
   to v0.0.8 only the version they report changed, so VMs started with
-  rc4's `pylon` keep registering.
+  rc4's `pylon` keep registering. v0.0.9-rc1 shares the same page as
+  v0.0.8 (ABI version 3), so VMs started with v0.0.8's `pylon` keep
+  registering too; restart them to get v0.0.9-rc1's VMM (Cloud
+  Hypervisor v55.0).
 
 - **What it needs.** The release is built on Ubuntu 24.04: it needs
   glibc 2.38 or later, and `pylond` needs `libelf`, `zlib` and `zstd`
