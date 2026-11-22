@@ -171,7 +171,10 @@ impl VmManager {
     /// The VM's hyperstor disks, each with this node's driver for it. A
     /// disk on another datastore is refused: the check lets only hyperstor
     /// disks migrate (§5).
-    fn hyperstor_disks(&self, vm: &Vm) -> Result<Vec<(Disk, Arc<HyperstorDriver>)>, String> {
+    pub(crate) fn hyperstor_disks(
+        &self,
+        vm: &Vm,
+    ) -> Result<Vec<(Disk, Arc<HyperstorDriver>)>, String> {
         let me = self.local_node_id();
         let db = self.store.database();
         let c = vm.config();
@@ -430,29 +433,35 @@ impl VmManager {
                 }
             }
         }
-        {
-            let _ports = self.ports_lock.lock().await;
-            for i in 0..vm.config().networks.len() {
-                let netd = self.netd.clone();
-                let vm_id = vm.id.clone();
-                let r = blocking(move || {
-                    netd.call::<serde_json::Value>(glidex_netd::proto::Op::DetachVmPort {
-                        vm_id,
-                        nic_index: i as u8,
-                    })
-                })
-                .await;
-                if let Ok(Err(e)) = r {
-                    tracing::warn!(vm = %vm.name, nic = i, "removing a target's tap: {}", e);
-                }
-            }
-        }
+        self.remove_migration_taps(vm).await;
         for p in [
             paths.launch.clone(),
             paths.instance.clone(),
             std::path::PathBuf::from(&paths.cloud_init),
         ] {
             let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+impl VmManager {
+    /// VM `vm`'s taps on this node, without touching its record: a
+    /// migration's end that no longer has the guest (§4). Best-effort.
+    pub(crate) async fn remove_migration_taps(&self, vm: &Vm) {
+        let _ports = self.ports_lock.lock().await;
+        for i in 0..vm.config().networks.len() {
+            let netd = self.netd.clone();
+            let vm_id = vm.id.clone();
+            let r = blocking(move || {
+                netd.call::<serde_json::Value>(glidex_netd::proto::Op::DetachVmPort {
+                    vm_id,
+                    nic_index: i as u8,
+                })
+            })
+            .await;
+            if let Ok(Err(e)) = r {
+                tracing::warn!(vm = %vm.name, nic = i, "removing a migration's tap: {}", e);
+            }
         }
     }
 }

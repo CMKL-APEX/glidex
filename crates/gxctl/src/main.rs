@@ -605,6 +605,10 @@ fn help_text() -> String {
         "place <name|id> [--node N]".cyan()
     );
     line!(
+        "  {} - Live-migrate a running VM, and follow it",
+        "migrate <name|id> [--node N] [--downtime-ms MS] [--no-wait]".cyan()
+    );
+    line!(
         "  {} - Say whether a running VM can live-migrate, and where",
         "migrate <name|id> --check [--node N]".cyan()
     );

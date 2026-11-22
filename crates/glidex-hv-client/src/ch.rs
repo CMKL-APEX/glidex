@@ -221,6 +221,35 @@ impl ChClient {
         }
     }
 
+    /// Start sending this VMM's guest to `destination_url` (`unix:<path>`;
+    /// spec/32-live-migration.md §4). Cloud Hypervisor v55 answers once the
+    /// copy has started: the result is not in the answer. On success its
+    /// VMM exits; otherwise it resumes the guest. A copy that hasn't
+    /// converged after `timeout_s` is cancelled, keeping the guest here.
+    pub fn send_migration(
+        &self,
+        destination_url: &str,
+        downtime_ms: u32,
+        timeout_s: u64,
+    ) -> Result<(), HvError> {
+        let body = serde_json::json!({
+            "destination_url": destination_url,
+            "downtime_ms": downtime_ms,
+            "timeout_s": timeout_s,
+            "timeout_strategy": "Cancel",
+        })
+        .to_string();
+        self.expect_success("PUT", "/vm.send-migration", Some(&body))
+            .map(|_| ())
+    }
+
+    /// Ask the VMM to cancel the migration it is sending; a best effort,
+    /// which may come too late to stop it.
+    pub fn cancel_migration(&self) -> Result<(), HvError> {
+        self.expect_success("PUT", "/vm.cancel-migration", None)
+            .map(|_| ())
+    }
+
     /// Resize the running guest's active vCPU count to `desired`.
     pub fn resize_vcpus(&self, desired: u8) -> Result<(), HvError> {
         let body = serde_json::json!({ "desired_vcpus": desired }).to_string();
@@ -401,6 +430,51 @@ mod tests {
         assert!(
             matches!(err, HvError::Api(ref m) if m.contains("CPUID bad")),
             "{err}"
+        );
+    }
+
+    /// A send names its destination, the downtime and a timeout that
+    /// cancels; a cancel has no body.
+    #[test]
+    fn sending_a_migration_names_its_limits() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("api.sock");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        ChClient::new(sock.to_str().unwrap())
+            .send_migration("unix:/run/glidex/vms/v/migration-send.sock", 300, 900)
+            .unwrap();
+        let req = server.join().unwrap();
+        assert!(
+            req.starts_with("PUT /api/v1/vm.send-migration HTTP/1.1\r\n"),
+            "{req}"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "destination_url": "unix:/run/glidex/vms/v/migration-send.sock",
+                "downtime_ms": 300,
+                "timeout_s": 900,
+                "timeout_strategy": "Cancel",
+            })
+        );
+
+        let sock = dir.path().join("api2.sock");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        ChClient::new(sock.to_str().unwrap())
+            .cancel_migration()
+            .unwrap();
+        let req = server.join().unwrap();
+        assert!(
+            req.starts_with("PUT /api/v1/vm.cancel-migration HTTP/1.1\r\n"),
+            "{req}"
         );
     }
 

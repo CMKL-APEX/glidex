@@ -298,6 +298,8 @@ impl VmManager {
 pub const PREPARE_SECS: u64 = 120;
 pub const CANCEL_SECS: u64 = 120;
 pub const NODE_DOWN_SECS: u64 = 30;
+/// How long a guest the source has sent may take to run on the target.
+pub const RECEIVE_SECS: u64 = 120;
 /// `downtime_ms` when the request names none: Cloud Hypervisor's default.
 pub const DEFAULT_DOWNTIME_MS: u32 = 300;
 
@@ -325,8 +327,14 @@ pub fn leader_step(
         return (m.source_released || source_down).then_some(LeaderStep::Commit);
     }
     if m.moved() {
-        // Sent but not yet received: the target reports it, or its
-        // receive failed and nothing runs the guest; wait for the target.
+        // Sent but not yet received: the target reports it, unless its
+        // receive failed and nothing runs the guest (§11).
+        if now.saturating_sub(m.updated_at) >= RECEIVE_SECS {
+            return Some(LeaderStep::Fail(format!(
+                "the guest left node {source} but didn't start on node {} within {RECEIVE_SECS} s",
+                m.target
+            )));
+        }
         return None;
     }
     if source_down {
@@ -837,15 +845,20 @@ mod tests {
         );
 
         // Sent, not yet received: nothing to decide, even with a dead
-        // target or a cancel under way.
+        // target or a cancel under way, until the target's time is up.
         let mut sent = record("node-b", MigrationPhase::Switching);
         sent.sent = true;
+        sent.updated_at = 100;
         assert_eq!(
-            leader_step(&sent, "node-a", 10_000, down(&[("node-b", 99)])),
+            leader_step(&sent, "node-a", 101, down(&[("node-b", 99)])),
             None
         );
         sent.phase = MigrationPhase::Cancelling;
-        assert_eq!(leader_step(&sent, "node-a", 10_000, &ok), None);
+        assert_eq!(leader_step(&sent, "node-a", 101, &ok), None);
+        assert!(matches!(
+            leader_step(&sent, "node-a", 100 + RECEIVE_SECS, &ok),
+            Some(LeaderStep::Fail(r)) if r.contains("didn't start")
+        ));
 
         // Preparing too long; the target gone; the source gone.
         let mut prep = record("node-b", MigrationPhase::Preparing);

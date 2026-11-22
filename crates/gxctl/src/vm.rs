@@ -485,19 +485,24 @@ pub async fn start(client: &ApiClient, args: &[&str]) {
     }
 }
 
-/// `migrate <name|id> --check [--node N]`: whether a running VM can
-/// live-migrate, and to which nodes (spec/32-live-migration.md §5).
-/// `migrate <name|id> --cancel`: cancel one in progress (§4). The
-/// migration itself isn't served yet.
+/// `migrate <name|id> [--node N] [--downtime-ms MS] [--no-wait]`:
+/// live-migrate a running VM, and follow it to its end
+/// (spec/32-live-migration.md §4). `--check`: whether it can, and to which
+/// nodes, moving nothing (§5). `--cancel`: cancel one in progress.
 pub async fn migrate(client: &ApiClient, args: &[&str]) {
-    const USAGE: &str = "Usage: migrate <name|id> --check [--node N] | --cancel";
+    const USAGE: &str = "Usage: migrate <name|id> [--node N] [--downtime-ms MS] [--no-wait] | --check [--node N] | --cancel";
     let Some(vm_id) = resolve(client, args, USAGE).await else {
         return;
     };
     let cancel = has_flag(args, "--cancel");
-    if cancel == has_flag(args, "--check") {
-        return usage(&format!("{USAGE}\n(live migration itself isn't built yet)"));
+    if cancel && has_flag(args, "--check") {
+        return usage(USAGE);
     }
+    let downtime_ms = match crate::flag_value(args, "--downtime-ms").map(str::parse::<u32>) {
+        None => None,
+        Some(Ok(ms)) if ms > 0 => Some(ms),
+        Some(_) => return usage(USAGE),
+    };
     let t = match rpc(client).await {
         Ok(t) => t,
         Err(e) => return err(e),
@@ -516,6 +521,32 @@ pub async fn migrate(client: &ApiClient, args: &[&str]) {
             Err(e) => err(e),
         };
     }
+    if !has_flag(args, "--check") {
+        let r = t
+            .migrate_vm(MigrateVmRequest {
+                id: vm_id.clone(),
+                node: crate::flag_value(args, "--node").map(String::from),
+                downtime_ms,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned().vm.as_option().cloned());
+        let vm = match r {
+            Ok(Some(vm)) => vm,
+            Ok(None) => return,
+            Err(e) => return err(e),
+        };
+        let to = vm
+            .migration
+            .as_option()
+            .map(|m| m.target.clone())
+            .unwrap_or_default();
+        println!("{} {} to {}", "Migrating:".green(), vm.name, to);
+        if wait_secs(args).is_some() {
+            follow_migration(client, &vm_id).await;
+        }
+        return;
+    }
     let r = t
         .migrate_vm(MigrateVmRequest {
             id: vm_id,
@@ -532,6 +563,40 @@ pub async fn migrate(client: &ApiClient, args: &[&str]) {
     let check = r.check.as_option().cloned().unwrap_or_default();
     for line in migration_lines(&check) {
         println!("{line}");
+    }
+}
+
+/// Prints each phase a migration passes through, until it is committed
+/// (the record gone) or failed. A migration has its own time limits
+/// (decision 18), so this waits as long as the record lasts.
+async fn follow_migration(client: &ApiClient, vm_id: &str) {
+    let mut last = String::new();
+    loop {
+        let vm = match client.get_vm(vm_id).await {
+            Ok(vm) => vm,
+            Err(e) => return err(e),
+        };
+        let Some(m) = vm.migration.as_option() else {
+            println!(
+                "{} {} runs on {}",
+                "Migrated:".green(),
+                vm.name,
+                vm.node_name
+                    .as_deref()
+                    .or(vm.node.as_deref())
+                    .unwrap_or("?")
+            );
+            return;
+        };
+        let line = migration_line(m);
+        if line != last {
+            println!("  {line}");
+            last = line;
+        }
+        if m.phase.as_known() == Some(MigrationPhase::MIGRATION_PHASE_FAILED) {
+            return err(format!("the migration of {} failed: {}", vm.name, m.reason));
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(1)).await;
     }
 }
 

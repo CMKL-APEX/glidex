@@ -374,6 +374,10 @@ pub struct VmManager {
     /// Serializes "write `status.nics` + attach a port" with `sync_vms`, so
     /// a sync never detaches a port a reconcile is adding (D16).
     pub(crate) ports_lock: tokio::sync::Mutex<()>,
+    /// The live migrations this node is sending, and those whose cancel it
+    /// has asked of Cloud Hypervisor or whose delegates it has dropped
+    /// (spec/32-live-migration.md §4).
+    pub(crate) migration_sends: std::sync::Mutex<crate::controller::migration_source::Sends>,
     /// `(vm id, pid)` pairs with an exit watch running.
     pub(crate) watched: std::sync::Mutex<std::collections::HashSet<(String, u32)>>,
     pub(crate) orphans: std::sync::Mutex<Vec<Orphan>>,
@@ -599,6 +603,7 @@ impl VmManager {
             queue: Arc::new(WorkQueue::new()),
             changed,
             ports_lock: tokio::sync::Mutex::new(()),
+            migration_sends: Default::default(),
             watched: std::sync::Mutex::new(Default::default()),
             orphans: std::sync::Mutex::new(Vec::new()),
             netd_seen: std::sync::Mutex::new(None),

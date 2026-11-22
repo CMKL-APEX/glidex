@@ -11,8 +11,8 @@ use crate::hypervisor::{HypervisorError, HypervisorType, driver, vfio_device_id}
 use crate::images::ImageError;
 use crate::instance::{Liveness, Seen, liveness};
 use crate::models::{
-    Condition, ExitCause, ExitRecord, InstanceRef, NicBinding, NicStatus, PowerState,
-    RestartPolicy, Tristate, Vm, VmConfig, VmPhase, VmSpec, VmStatus,
+    Condition, ExitCause, ExitRecord, InstanceRef, MigrationPhase, NicBinding, NicStatus,
+    PowerState, RestartPolicy, Tristate, Vm, VmConfig, VmPhase, VmSpec, VmStatus,
 };
 use crate::network::NetError;
 use crate::state::{VmManager, VmManagerError, power_name};
@@ -504,7 +504,7 @@ impl VmManager {
             .into_owned()
     }
 
-    async fn observe(&self, vm: &Vm) -> Result<Seen, VmManagerError> {
+    pub(crate) async fn observe(&self, vm: &Vm) -> Result<Seen, VmManagerError> {
         let unit = self.runner().unit_active(&vm.id).await;
         let v = vm.clone();
         blocking(move || liveness(&v, unit)).await
@@ -518,6 +518,14 @@ impl VmManager {
         // Another node's VM: that node's controller owns it (spec/14-clustering.md §8.1).
         if !self.is_local(&vm) {
             return Ok(None);
+        }
+        // While a migration copies, or once the guest has left, the
+        // instance is the migration's: its exit isn't a stop or a crash
+        // (spec/32-live-migration.md §4).
+        if vm.status.migrating().is_some_and(|m| {
+            m.sent || matches!(m.phase, MigrationPhase::Copying | MigrationPhase::Switching)
+        }) {
+            return Ok(Some(Duration::from_secs(2)));
         }
         let generation = vm.generation;
         let mut st = vm.status.clone();
