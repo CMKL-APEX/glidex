@@ -80,7 +80,7 @@ Not in v1:
 | 15 | **Release order on each side.** On success, the target promotes each disk before it reports `received`, and the source detaches its disks only after it sees `received`. This is hyperstor's tested order: a promote, then the old holder's detach, fences nothing of the new holder's. On a cancel, the target detaches its standby disks (`detach --force`) before the source drops its delegates (`undelegate`), also as tested. | Two writers on a volume must never happen (decision 6). These are the orders the handover was checked in (the test cluster, 2026-11-20). |
 | 16 | **A migrating VM can't be stopped, restarted, re-placed or deleted.** Until the record is gone or `Failed`, the API answers `409` ("migrating; cancel it first"). Settled by the person steering, 2026-11-22. | Each would change what the source or the target is doing mid-step. A refusal changes nothing behind the caller's back, and cancelling is one call. |
 | 17 | **In v1, a VM with dedicated CPUs or a NUMA policy doesn't migrate** (settled 2026-11-22). The check gives the reason. A VM on the shared CPU pool migrates; after the commit, the target moves its threads onto the target's pool, as it does when the pool changes (`cpu_drift`). | Cloud Hypervisor's received configuration keeps the source's CPU affinity and memory binding. Those host CPUs and NUMA nodes may not be free, or may not exist, on the target. Pinned VMs need the target's own CPUs and NUMA nodes in the received configuration: `receive-migration`'s `zone_updates` for memory, and an affinity Cloud Hypervisor can't yet replace. That is a later milestone. |
-| 18 | **Time limits.** `send-migration` gets `timeout_s` 900 with `timeout_strategy: cancel`, and the request's `downtime_ms` (300 by default). The leader cancels a migration still `Preparing` after 120 s, and fails one still `Cancelling` after 120 s. If the source or the target isn't `Ready` for 30 s before the guest has moved, the migration fails. | A migration holds the target's CPU and memory, and the VM can't be stopped meanwhile (decision 16), so every phase must end. 900 s copies about 100 GiB at the test cluster's 1 Gb/s. |
+| 18 | **Time limits.** `send-migration` gets `timeout_s` 900 with `timeout_strategy: cancel`, and the request's `downtime_ms` (300 by default). The leader cancels a migration still `Preparing` after 120 s, and fails one still `Cancelling` after 120 s. Before the guest has moved, a target that isn't `Ready` for 30 s cancels the migration, and a source that isn't fails it. | A migration holds the target's CPU and memory, and the VM can't be stopped meanwhile (decision 16), so every phase must end. 900 s copies about 100 GiB at the test cluster's 1 Gb/s. |
 
 ## 3. LM0: the cold move
 
@@ -214,6 +214,9 @@ Who writes what (decision 13):
    `source_released`, one write:
    - sets `placement` to the record's (the target's);
    - sets the instance to the target's;
+   - binds the disks to the target, as a placement does;
+   - pins the VM to the target, if it was pinned (`spec.node`), as
+     `place` does (LM0);
    - clears `status.migration`;
    - records an event `Migrated`.
 
@@ -234,7 +237,9 @@ the target when preparing fails, the source when the send fails. Then:
   (`detach --force`), removes its taps and seed, and writes
   `target_released`;
 - the source then drops each delegate (`undelegate`), and writes
-  `Failed` with the reason (decision 15).
+  `Failed` with the reason (decision 15). It doesn't wait for the
+  target's release when the target hasn't been `Ready` for 30 s, and it
+  drops any delegates left when it finds the record `Failed`.
 
 If the source's Cloud Hypervisor has exited (`sent`), or the target
 has `received`, the migration doesn't cancel: it finishes forwards
@@ -244,9 +249,10 @@ has `received`, the migration doesn't cancel: it finishes forwards
 progress:
 - it commits a record with `received` and `source_released`, as in step 5;
 - it cancels a migration still `Preparing` after 120 s (decision 18);
-- it fails a migration still `Cancelling` after 120 s, or one whose
-  source or target hasn't been `Ready` for 30 s while the guest hasn't
-  moved.
+- before the guest has moved, it cancels a migration whose target hasn't
+  been `Ready` for 30 s, and fails one whose source hasn't, since no
+  one else can then cancel the send;
+- it fails a migration still `Cancelling` after 120 s.
 
 A new leader runs the same loop from the records, so nothing is kept
 only in a leader's memory.
@@ -426,7 +432,7 @@ glidex's side (LM3):
 | The target's Cloud Hypervisor refuses (CPUID, version) | Cloud Hypervisor resumes the source. `Failed` with its reason. |
 | The source node dies while Copying | The target's receive fails. The VM is the source's, which is down: it is `Lost` as today, and recovering it needs a fenced forget (S10, S23). After 30 s the leader writes `Failed`, and the target cleans up. |
 | The source node dies after the target has `received` | After 30 s the leader commits without `source_released` (§4). |
-| The target dies while Copying | The send fails, and the source resumes the guest. After 30 s the leader writes `Failed`; the target cleans up when it comes back and reads the record. |
+| The target dies while Copying | The send fails, and the source resumes the guest. After 30 s the leader writes `Cancelling`; the source drops its delegates and writes `Failed`. The target cleans up when it comes back and reads the record. |
 | The guest reboots during the copy | On v53 the source's Cloud Hypervisor stops with a fatal error, and the target aborts (§0 #9): the VM is `Failed` on the source, and glidex says why. **Verify** on v54.1. |
 | The leader changes | The new leader runs the same loop from the records (§4). A target running the guest has written `received`, so the leader commits; otherwise each time limit still holds. |
 | The target runs the VM, but the commit write fails | The target keeps it, and the leader retries the commit on its next round. The source's controller sees a migration in `Switching` and doesn't restart the VM. |
