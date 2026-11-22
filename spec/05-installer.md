@@ -37,7 +37,9 @@ by later runs (flags override the saved values):
 | `--tailscale-cert` / `--no-tailscale-cert` | serve the node's Tailscale certificate from the web UI, and grant `glidex-ui` `TS_PERMIT_CERT_UID` in a `tailscaled` drop-in (refused when another user holds it). **Opt-in**, unlike the other flags: without the flag or a saved choice, an interactive run asks once (default no, before the build; the answer is saved) when `tailscale status` reports certificate domains, and a non-interactive run leaves it off and unsaved. See [21-tailscale-tls.md](21-tailscale-tls.md) §4.6 |
 | `--vfio-devices LIST` / `--sriov PF=N` / `--no-vfio-devices` | devices bound to `vfio-pci` and SR-IOV VF counts at every boot, by `glidex-vfio-boot.service` ([27-gpu-vms.md](27-gpu-vms.md) §10). Saved as `vfio_devices=` and `sriov=`; recorded and enabled only, applied at the next boot |
 | `--now` | apply `--vfio-devices` / `--sriov` now as well, through netd's ops (never saved) |
-| `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build (never saved; the nested e2e test uses it) |
+| `--prebuilt` | use the release binaries and web UI already built in this checkout: no Rust or Bun toolchain, no build tools, no build (never saved; the nested e2e test uses it) |
+| `--no-packages` / `--packages` | check the system packages, install and upgrade none (saved as `packages=false`; D2) |
+| `--assets DIR` | take the pinned downloads from `DIR` (never saved; D4) |
 
 ## Inputs it discovers
 
@@ -59,7 +61,8 @@ by later runs (flags override the saved values):
 ## Steps, in order
 
 1. **System packages** — one transaction for every dependency
-   (`BASE_DEPS`, `QEMU_DEPS`, `NETWORKING_DEPS`; each maps to its apt,
+   (`RUNTIME_DEPS`, `BUILD_DEPS` unless `--prebuilt`, `QEMU_DEPS`,
+   `NETWORKING_DEPS`; each maps to its apt,
    dnf/yum and pacman package): `curl`; `unzip` (bun's installer);
    `pkg-config` and the OpenSSL headers (`openssl-sys`); `clang`;
    `dosfstools` + `mtools` for cloud-init seeds; `qemu-img`, `qemu-io`,
@@ -615,3 +618,73 @@ cluster's ovn-northd 26.03.0: re-run glidex-install on it"), and
 `GET /cluster/settings/ovn` reports it as `outdated` (spec/16-clustering-ui.md
 §8a).
 
+
+## Hosts managed by a provisioning tool
+
+A hand install lets the installer install and upgrade system packages and
+download its pinned releases from GitHub. A host managed by an external
+provisioning tool needs something else: package changes the tool plans and
+reviews beforehand, no compilers on production hosts, and no internet
+access at install time (glidex #612). The installer stays the authority on
+*what* glidex needs; the tool can do the installing.
+
+### Decisions
+
+- **D1 `deps --json`.** `glidex-install deps --json [flags]` prints, without
+  changing anything or asking for sudo, what an install with the same flags
+  (and the same `install.conf`) needs: each system dependency with its
+  package for apt, dnf/yum and pacman, the package for this host's manager,
+  how the installer checks it (the `Probe`: a command, a `pkg-config`
+  module, or any of some files), whether it is for the build or at run
+  time, and a minimum version (D7); and each pinned download with its URL,
+  file name and SHA-256 (D4). The role comes from `--role
+  server|agent|standalone`, else from this host's `identity.json` when it
+  can be read without root, else standalone. The list includes Open
+  vSwitch's packages for the OVS profile (`openvswitch-switch`,
+  `dnsmasq-base`, `nftables`; `openvswitch-switch-dpdk` for `dpdk`), which
+  a hand install takes from `glidex-ovs`. The JSON carries `"version": 1`;
+  fields are added, never renamed.
+- **D2 `--no-packages`.** Every dependency is checked with its probe before
+  any change. If one is missing, the run stops, naming each missing package
+  and its probe, before it touches anything. Nothing is installed or
+  upgraded: no system packages, no Open vSwitch package (`glidex-ovs`
+  starts and enables the installed OVS but runs no apt), and no OVN
+  upgrade (D5). Saved in `install.conf` (`packages=false`), like `--no-ovn`,
+  so a later run without the flag doesn't install packages on a managed
+  host; `--packages` undoes it.
+- **D3 No build tools with `--prebuilt`.** `BASE_DEPS` is split into
+  `BUILD_DEPS` (`unzip`, `pkg-config`, the OpenSSL headers, `clang`) and
+  `RUNTIME_DEPS` (`curl`, `dosfstools`, `mtools`, `qemu-utils`, `gdisk`,
+  `growpart`). A `--prebuilt` run neither installs nor checks the build
+  list. Rust and Bun were already skipped.
+- **D4 `--assets DIR`.** Cloud Hypervisor, its edk2 firmware and the Pylon
+  release are taken from `DIR`, under their release asset names (as `deps
+  --json` lists them), and checked against the same SHA-256s. A missing or
+  mismatched file stops the run; there is no fallback to downloading.
+  Never saved: the directory is this run's. Unlike `--pylon-from`, which
+  installs a local build, the files are the pinned release.
+- **D5 OVN as a check.** With `--no-packages`, matching the cluster's
+  ovn-northd (§ Matching the cluster's ovn-northd) stops at step 2: an
+  `ovn-controller` older than northd stops the run with the series needed
+  ("install OVN 26.03 or newer here"), instead of upgrading.
+- **D6 OVN units stay as they are.** The tool installs the OVN packages
+  with their units held off (`policy-rc.d`, for that apt run only), then
+  restarts only the units that were active before; netd keeps starting
+  what a cluster needs. The installer's own stop step (only when its run
+  installed OVN, on a host in no cluster) is unchanged, for hand installs;
+  with `--no-packages` the installer installs nothing, so it never runs.
+- **D7 Minimum versions.** Each entry of `deps --json` has `min_version`,
+  for a dependency whose version glidex needs; the tool refuses a host
+  setting below it. No entry has one yet (`null`); QEMU is the likely
+  first, once QEMU VMs live-migrate (both ends need compatible QEMUs).
+
+A hand install without these flags behaves as before. `setcap` on the VMMs
+and the unit files stay with the installer.
+
+### Status
+
+| | |
+|---|---|
+| Spec \| Code | D1–D7 |
+| Tests | Unit: the build/runtime split, `--prebuilt` without build deps, the OVS deps per profile, `--no-packages` and `--packages` saved and parsed, the missing-dependency report, `deps --json`'s shape, asset names and digests from `--assets`, the OVN check's message; `glidex-ovs` installs no packages with `no_packages` |
+| Not yet | A run on a host prepared by the provisioning tool (not run yet); the installer doesn't check `min_version` itself (no entry has one) |
