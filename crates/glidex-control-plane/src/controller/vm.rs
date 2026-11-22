@@ -173,7 +173,7 @@ fn launched_spec(paths: &crate::paths::VmPaths) -> Option<VmSpec> {
     serde_json::from_value(f.spec.get("spec")?.clone()).ok()
 }
 
-async fn blocking<T: Send + 'static>(
+pub(crate) async fn blocking<T: Send + 'static>(
     f: impl FnOnce() -> T + Send + 'static,
 ) -> Result<T, VmManagerError> {
     tokio::task::spawn_blocking(f)
@@ -182,7 +182,7 @@ async fn blocking<T: Send + 'static>(
 }
 
 /// One call on the VM's `shim.sock`.
-async fn shim_call<T: Send + 'static>(
+pub(crate) async fn shim_call<T: Send + 'static>(
     sock: String,
     f: impl FnOnce(&mut ShimClient) -> Result<T, glidex_vm_shim::client::ShimError> + Send + 'static,
 ) -> Result<T, String> {
@@ -196,7 +196,11 @@ async fn shim_call<T: Send + 'static>(
 
 /// Queue pairs for a NIC: the user's choice, else one per vCPU (up to 4)
 /// for vhost-user, where a single queue pins the NIC to one OVS PMD, else 1.
-fn nic_queue_pairs(requested: Option<u8>, kind: glidex_ovs::vm_port::VmPortKind, vcpus: u8) -> u8 {
+pub(crate) fn nic_queue_pairs(
+    requested: Option<u8>,
+    kind: glidex_ovs::vm_port::VmPortKind,
+    vcpus: u8,
+) -> u8 {
     requested.unwrap_or(match kind {
         glidex_ovs::vm_port::VmPortKind::VhostUser => {
             glidex_ovs::tuning::default_vhost_queue_pairs(vcpus as u32)
@@ -224,7 +228,7 @@ fn acted_on(s: &VmStatus) -> VmStatus {
 
 /// The port a NIC gets: on its network's bridge, or, on a cluster network,
 /// on `br-int` as the logical port OVN knows (spec/14-clustering.md §11.3, §11.5).
-fn port_spec(
+pub(crate) fn port_spec(
     vm_id: &str,
     net: &crate::network::Network,
     nic: u8,
@@ -1264,6 +1268,64 @@ impl VmManager {
         }
     }
 
+    /// Writes VM `vm`'s cloud-init seed for `config` at its runtime path:
+    /// at each launch, and on a migration's target, whose received guest
+    /// has the seed attached (spec/32-live-migration.md §4). Returns the
+    /// root disk whose growpart the seed carries, and its sequence.
+    pub(crate) async fn write_seed(
+        &self,
+        vm: &Vm,
+        config: &VmConfig,
+        root: Option<&crate::images::Disk>,
+    ) -> Result<(Option<String>, Option<u64>), VmManagerError> {
+        let paths = vm.paths();
+        let mut growpart_disk = None;
+        let mut growpart_seq = None;
+        let seed_path = paths.cloud_init.clone();
+        let mut seed = match &config.credential {
+            Some(username) => {
+                let cred = self.credentials.get(&vm.project, username)?;
+                cloud_init::SeedConfig::for_credential(&vm.id, &vm.name, &cred)
+            }
+            None => cloud_init::SeedConfig::for_vm(&vm.id, &vm.name),
+        };
+        seed.nic_macs = config
+            .networks
+            .iter()
+            .enumerate()
+            .map(|(i, a)| {
+                a.mac.clone().unwrap_or_else(|| {
+                    glidex_ovs::names::mac_address(&vm.id, i as u8).unwrap_or_default()
+                })
+            })
+            .collect();
+        seed.growpart = root.is_some_and(|d| d.pending_growpart);
+        if seed.growpart {
+            growpart_disk = root.map(|d| d.id.clone());
+            growpart_seq = root.map(|d| d.applied_extend_root_seq);
+        }
+        // The agent only where its first heartbeat may park vCPUs safely:
+        // with park=vmm the guest stalls on parked vCPUs (P18, P19).
+        if vm.hypervisor() == HypervisorType::Pylon
+            && crate::hypervisor::pylon::park_mode_here() == crate::hypervisor::pylon::Park::Kvm
+        {
+            let path = crate::hypervisor::pylon::PYLON_GUEST_AGENT;
+            seed.pylon_guest_agent = blocking(move || std::fs::read(path))
+                .await?
+                .ok()
+                .map(std::sync::Arc::new);
+            if seed.pylon_guest_agent.is_none() {
+                tracing::warn!(vm_id = %vm.id, path, "no Pylon guest agent on this host; pylond won't see the guest's demand");
+            }
+        }
+        if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
+            tracing::info!(vm_id = %vm.id, "VM has no login credential; the guest has no way to log in");
+        }
+        let s = seed.clone();
+        blocking(move || cloud_init::write_seed_image(&seed_path, &s)).await??;
+        Ok((growpart_disk, growpart_seq))
+    }
+
     async fn provision_and_start(
         &self,
         vm: &Vm,
@@ -1297,54 +1359,9 @@ impl VmManager {
         let mut growpart_disk = None;
         let mut growpart_seq = None;
         if config.generates_seed() {
-            let seed_path = paths.cloud_init.clone();
-            let mut seed = match &config.credential {
-                Some(username) => {
-                    let cred = self
-                        .credentials
-                        .get(&vm.project, username)
-                        .map_err(before_intent)?;
-                    cloud_init::SeedConfig::for_credential(&vm.id, &vm.name, &cred)
-                }
-                None => cloud_init::SeedConfig::for_vm(&vm.id, &vm.name),
-            };
-            seed.nic_macs = config
-                .networks
-                .iter()
-                .enumerate()
-                .map(|(i, a)| {
-                    a.mac.clone().unwrap_or_else(|| {
-                        glidex_ovs::names::mac_address(&vm.id, i as u8).unwrap_or_default()
-                    })
-                })
-                .collect();
-            seed.growpart = root.as_ref().is_some_and(|(_, d)| d.pending_growpart);
-            if seed.growpart {
-                growpart_disk = root.as_ref().map(|(_, d)| d.id.clone());
-                growpart_seq = root.as_ref().map(|(_, d)| d.applied_extend_root_seq);
-            }
-            // The agent only where its first heartbeat may park vCPUs safely:
-            // with park=vmm the guest stalls on parked vCPUs (P18, P19).
-            if vm.hypervisor() == HypervisorType::Pylon
-                && crate::hypervisor::pylon::park_mode_here() == crate::hypervisor::pylon::Park::Kvm
-            {
-                let path = crate::hypervisor::pylon::PYLON_GUEST_AGENT;
-                seed.pylon_guest_agent = blocking(move || std::fs::read(path))
-                    .await
-                    .map_err(before_intent)?
-                    .ok()
-                    .map(std::sync::Arc::new);
-                if seed.pylon_guest_agent.is_none() {
-                    tracing::warn!(vm_id = %vm.id, path, "no Pylon guest agent on this host; pylond won't see the guest's demand");
-                }
-            }
-            if seed.ssh_authorized_keys.is_empty() && seed.passwd_hash.is_none() {
-                tracing::info!(vm_id = %vm.id, "VM has no login credential; the guest has no way to log in");
-            }
-            let s = seed.clone();
-            blocking(move || cloud_init::write_seed_image(&seed_path, &s))
+            (growpart_disk, growpart_seq) = self
+                .write_seed(vm, &config, root.as_ref().map(|(_, d)| d))
                 .await
-                .map_err(before_intent)?
                 .map_err(before_intent)?;
             config.cloud_init_path = Some(paths.cloud_init.clone());
         }
