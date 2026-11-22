@@ -135,7 +135,8 @@ impl VmManager {
                     ip,
                     vm_id: vm.id.clone(),
                     nic: i,
-                    chassis: Some(requested_chassis(
+                    chassis: Some(port_chassis(
+                        vm,
                         p,
                         i,
                         vm.status
@@ -990,6 +991,22 @@ pub(crate) fn requested_chassis(
     }
 }
 
+/// A port's chassis: its node's, and while the VM migrates the target's
+/// too, so the port moves when the guest announces itself there
+/// (spec/32-live-migration.md §8). A migrating VM has no DPU NICs (§5).
+fn port_chassis(
+    vm: &crate::models::Vm,
+    p: &crate::models::Placement,
+    nic: u8,
+    reported: Option<glidex_dpu::Backend>,
+) -> String {
+    let here = requested_chassis(p, nic, reported);
+    match vm.status.migrating() {
+        Some(m) => format!("{here},{}", glidex_ovs::ovn::chassis_name(&m.target)),
+        None => here,
+    }
+}
+
 /// The glidex chassis (`node:<id>`, and its DPU's `node:<id>-dpu`,
 /// spec/31-dpu.md §8.3) whose node is a tombstone (removed, forgotten,
 /// departed), with the node's name. A chassis of a node the cluster doesn't
@@ -1041,6 +1058,31 @@ mod requested_chassis_tests {
                 .get("dpu_nics")
                 .is_none()
         );
+    }
+
+    /// While a VM migrates, its ports are bound to its node and the
+    /// target; a failed migration's record leaves them on its node
+    /// (spec/32-live-migration.md §8).
+    #[test]
+    fn a_migrating_vms_port_is_bound_to_both_nodes() {
+        use crate::models::{Migration, MigrationPhase, Vm};
+        let p: Placement =
+            serde_json::from_value(serde_json::json!({ "node": "n1", "at": 1 })).unwrap();
+        let config: crate::models::VmConfig = serde_json::from_value(serde_json::json!({
+            "vcpu_count": 1, "mem_size_mib": 512, "rootfs_path": "/r", "kernel_args": ""
+        }))
+        .unwrap();
+        let mut vm = Vm::new("vm1".into(), config);
+        vm.status.placement = Some(p.clone());
+        assert_eq!(super::port_chassis(&vm, &p, 0, None), "node:n1");
+        vm.status.migration = Some(Migration {
+            target: "n2".into(),
+            phase: MigrationPhase::Copying,
+            ..Default::default()
+        });
+        assert_eq!(super::port_chassis(&vm, &p, 0, None), "node:n1,node:n2");
+        vm.status.migration.as_mut().unwrap().phase = MigrationPhase::Failed;
+        assert_eq!(super::port_chassis(&vm, &p, 0, None), "node:n1");
     }
 }
 

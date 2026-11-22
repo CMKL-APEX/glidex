@@ -1,6 +1,7 @@
 use crate::hypervisor::HypervisorType;
 use glidex_ovs::vm_port::VmPortBinding;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::net::Ipv4Addr;
 use uuid::Uuid;
 
@@ -570,7 +571,7 @@ pub struct VmStatus {
 }
 
 /// `status.migration` (spec/32-live-migration.md §4).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Migration {
     /// The node it moves to.
     pub target: String,
@@ -589,12 +590,67 @@ pub struct Migration {
     /// Why it failed or is being cancelled.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub reason: String,
+    /// The longest the guest may be paused at the switch.
+    #[serde(default)]
+    pub downtime_ms: u32,
+    /// The target's placement, reserved by the leader at the start and
+    /// the VM's at the commit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placement: Option<Placement>,
+    /// Each hyperstor disk's delegate, by disk id, made by the source.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub delegates: BTreeMap<String, String>,
+    /// The source's Cloud Hypervisor exited after the send: the guest has
+    /// left it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub sent: bool,
+    /// The target's instance, running the guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received: Option<InstanceRef>,
+    /// The source has let go of the VM's disks, taps and instance.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub source_released: bool,
+    /// The target has let go of what it prepared, after a cancel.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_released: bool,
+    /// Someone asked for the cancel (`migrate/cancel`), rather than a
+    /// failure or a time limit.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub cancel_asked: bool,
+}
+
+impl Migration {
+    /// Preparing, copying, switching or cancelling: the VM can't be
+    /// stopped or moved otherwise, and the target's resources are held.
+    pub fn in_progress(&self) -> bool {
+        matches!(
+            self.phase,
+            MigrationPhase::Preparing
+                | MigrationPhase::Copying
+                | MigrationPhase::Switching
+                | MigrationPhase::Cancelling
+        )
+    }
+
+    /// The guest has left the source: the migration finishes forwards
+    /// (decision 14).
+    pub fn moved(&self) -> bool {
+        self.sent || self.received.is_some()
+    }
+}
+
+impl VmStatus {
+    /// The migration in progress, if any.
+    pub fn migrating(&self) -> Option<&Migration> {
+        self.migration.as_ref().filter(|m| m.in_progress())
+    }
 }
 
 /// `Checking` → `Preparing` → `Copying` → `Switching` → `Committed`, or
 /// `Cancelling` → `Failed` (spec/32-live-migration.md §4).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MigrationPhase {
+    #[default]
     Checking,
     Preparing,
     Copying,

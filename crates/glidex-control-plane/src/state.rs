@@ -76,6 +76,12 @@ pub enum VmManagerError {
         expected: u64,
         actual: u64,
     },
+    /// The VM is migrating: it can't be stopped, moved or deleted until
+    /// the migration ends or is cancelled (spec/32-live-migration.md,
+    /// decision 16).
+    Migrating(String),
+    /// A cancel for a VM with no migration in progress.
+    NotMigrating(String),
 }
 
 pub(crate) fn router_err(e: crate::router::RouterError) -> VmManagerError {
@@ -143,6 +149,10 @@ impl std::fmt::Display for VmManagerError {
                 )
             }
             VmManagerError::Deleting(name) => write!(f, "VM {} is being deleted", name),
+            VmManagerError::Migrating(name) => {
+                write!(f, "VM {name} is migrating; cancel the migration first")
+            }
+            VmManagerError::NotMigrating(name) => write!(f, "VM {name} isn't migrating"),
             VmManagerError::PreconditionFailed { expected, actual } => {
                 write!(f, "resource version is {}, not {}", actual, expected)
             }
@@ -1070,22 +1080,27 @@ impl VmManager {
     ) -> Vec<(crate::node::Node, crate::scheduler::Load)> {
         let nodes = self.nodes.list().unwrap_or_default();
         let others = vms.values().filter(|v| Some(v.id.as_str()) != except);
-        let mut loads = crate::scheduler::loads(others.filter_map(|v| {
+        // A migration in progress also holds its target's placement
+        // (spec/32-live-migration.md §4).
+        let held = others.flat_map(|v| {
+            let reserved = v.status.migrating().and_then(|m| m.placement.as_ref());
             v.status
                 .placement
-                .as_ref()
-                .map(|p| crate::scheduler::Placed {
-                    node: p.node.clone(),
-                    vcpus: v.config().vcpu_count as u64,
-                    mem_mib: v.config().mem_size_mib as u64,
-                    name: v.name.clone(),
-                    devices: Self::devices_held(v).cloned().collect(),
-                    page_kib: Self::counted_page_kib(v),
-                    numa_node: p.numa_node,
-                    cpus: p.cpus.clone(),
-                    numa: p.numa.clone(),
-                    dpu_vfs: p.dpu_nics.len() as u32,
-                })
+                .iter()
+                .chain(reserved)
+                .map(move |p| (v, p))
+        });
+        let mut loads = crate::scheduler::loads(held.map(|(v, p)| crate::scheduler::Placed {
+            node: p.node.clone(),
+            vcpus: v.config().vcpu_count as u64,
+            mem_mib: v.config().mem_size_mib as u64,
+            name: v.name.clone(),
+            devices: Self::devices_held(v).cloned().collect(),
+            page_kib: p.page_kib.unwrap_or_else(|| Self::counted_page_kib(v)),
+            numa_node: p.numa_node,
+            cpus: p.cpus.clone(),
+            numa: p.numa.clone(),
+            dpu_vfs: p.dpu_nics.len() as u32,
         }));
         nodes
             .into_iter()
@@ -1354,7 +1369,8 @@ impl VmManager {
 
     /// Datastore `ds`'s disks, each as its volume and the node its VM is
     /// placed on: `None` for a disk attached to no VM, to a VM not known
-    /// here, or to one placed nowhere (a VM starting is, S26). `None` in
+    /// here, to one placed nowhere (a VM starting is, S26), or to one
+    /// migrating. `None` in
     /// all until `initialize` has loaded the VMs.
     pub(crate) fn hold_nodes(&self, ds: &str) -> Option<Vec<(String, Option<String>)>> {
         use crate::datastore::hyperstor::volume_id;
@@ -1368,10 +1384,14 @@ impl VmManager {
                 .into_iter()
                 .filter(|d| d.datastore == ds)
                 .map(|d| {
+                    // A migrating VM's disks are held on its node, then
+                    // on the target before the commit: neither is stale
+                    // (spec/32-live-migration.md §4).
                     let node = d
                         .attached_to
                         .as_ref()
                         .and_then(|vm| vms.get(vm))
+                        .filter(|vm| vm.status.migrating().is_none())
                         .and_then(|vm| vm.status.placement.as_ref())
                         .map(|p| p.node.clone());
                     (volume_id(&d), node)
@@ -2238,6 +2258,9 @@ impl VmManager {
             .ok_or_else(|| VmManagerError::VmNotFound(id.to_string()))?;
         if vm.deletion_requested_at.is_some() {
             return Err(VmManagerError::Deleting(vm.name.clone()));
+        }
+        if vm.status.migrating().is_some() {
+            return Err(VmManagerError::Migrating(vm.name.clone()));
         }
         if let Some(expected) = if_match
             && expected != vm.resource_version
@@ -4167,6 +4190,9 @@ impl VmManager {
                 .clone();
             if cur.deletion_requested_at.is_some() {
                 return Ok(false);
+            }
+            if cur.status.migrating().is_some() {
+                return Err(VmManagerError::Migrating(cur.name.clone()));
             }
             for id in cur
                 .config()

@@ -2720,6 +2720,278 @@ async fn a_migration_check_says_why_not_and_moves_nothing() {
     assert_eq!(vm_of(&v)["desired_state"], "POWER_STATE_STOPPED", "{v}");
 }
 
+/// A migration's record (spec/32-live-migration.md §4, decision 13): the
+/// API shows it and refuses to stop, place or delete the VM meanwhile
+/// (decision 16); the target, an agent, writes its own steps through the
+/// leader, which refuses the rest; the leader commits once the target has
+/// the guest and the source has let go. A cancel ends in `Failed`, after
+/// which the VM can be stopped again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_migrations_record_is_written_by_its_nodes_and_committed_by_the_leader() {
+    use glidex_control_plane::models::{InstanceRef, Migration, MigrationPhase};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let server_id = server.manager.local_node_id();
+    let agent_id = agent.manager.local_node_id();
+    let mut ids = Vec::new();
+    for name in ["migrant", "cancelled"] {
+        let (s, v) = call(
+            &server,
+            "POST",
+            "/vms",
+            Some(vm_body(name, &server_id)),
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        ids.push(vm_of(&v)["id"].as_str().unwrap().to_string());
+    }
+    let (id, other) = (ids[0].clone(), ids[1].clone());
+    wait_for("the VMs placed", || async {
+        let mut placed = true;
+        for id in [&id, &other] {
+            let vm = server.manager.get_vm(id).await.unwrap();
+            placed &= vm.status.placement.is_some();
+        }
+        placed
+    })
+    .await;
+
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{id}/migrate/cancel"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CONFLICT, "{v}");
+    assert_eq!(v["error"], "not_migrating", "{v}");
+
+    // The leader's start, as `migrate` writes it (task 6 serves it).
+    let placement = server
+        .manager
+        .get_vm(&id)
+        .await
+        .unwrap()
+        .status
+        .placement
+        .unwrap();
+    let start = |id: &str| {
+        let mut p = placement.clone();
+        p.node = agent_id.clone();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let m = Migration {
+            target: agent_id.clone(),
+            phase: MigrationPhase::Preparing,
+            started_at: now,
+            updated_at: now,
+            downtime_ms: 300,
+            placement: Some(p),
+            ..Default::default()
+        };
+        let mgr = server.manager.clone();
+        let id = id.to_string();
+        async move { mgr.__set_migration_for_tests(&id, Some(m)).await.unwrap() }
+    };
+    start(&id).await;
+    start(&other).await;
+
+    let (s, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    let m = &vm_of(&v)["migration"];
+    assert_eq!(m["phase"], "MIGRATION_PHASE_PREPARING", "{v}");
+    assert_eq!(m["target"], agent_id.as_str(), "{v}");
+    assert_eq!(m["downtime_ms"], 300, "{v}");
+    assert!(
+        m.get("delegates").is_none() && m.get("placement").is_none(),
+        "{v}"
+    );
+
+    // Decision 16.
+    for (method, path) in [
+        ("POST", format!("/vms/{id}/stop")),
+        ("POST", format!("/vms/{id}/place")),
+        ("DELETE", format!("/vms/{id}")),
+    ] {
+        let body = (method == "POST").then(|| json!({}));
+        let (s, v) = call(&server, method, &path, body, &[]).await;
+        assert_eq!(s, StatusCode::CONFLICT, "{method} {path}: {v}");
+        assert_eq!(v["error"], "migrating", "{method} {path}: {v}");
+    }
+
+    // The target sees the record, and writes that it is ready.
+    wait_for("the target to see the record", || async {
+        agent
+            .manager
+            .get_vm(&id)
+            .await
+            .ok()
+            .and_then(|v| v.status.migration)
+            .is_some()
+    })
+    .await;
+    agent
+        .manager
+        .write_migration(&id, |m| m.phase = MigrationPhase::Copying)
+        .await
+        .expect("the target's ready");
+    // Not the source's step, nor the leader's.
+    let err = agent
+        .manager
+        .write_migration(&id, |m| m.sent = true)
+        .await
+        .expect_err("the target may not say the source sent");
+    assert!(err.to_string().contains("only its own steps"), "{err}");
+    let err = agent
+        .manager
+        .write_migration(&id, |m| m.phase = MigrationPhase::Failed)
+        .await
+        .expect_err("the target may not fail it");
+    assert!(err.to_string().contains("may not move"), "{err}");
+    let phase = |mgr: Arc<VmManager>, id: String| async move {
+        mgr.get_vm(&id)
+            .await
+            .unwrap()
+            .status
+            .migration
+            .map(|m| m.phase)
+    };
+    // The leader applied the write before answering it.
+    assert_eq!(
+        phase(server.manager.clone(), id.clone()).await,
+        Some(MigrationPhase::Copying)
+    );
+
+    // The guest moved: the source sends, the target receives, the source
+    // lets go, and the leader commits.
+    server
+        .manager
+        .write_migration(&id, |m| {
+            m.sent = true;
+            m.phase = MigrationPhase::Switching;
+        })
+        .await
+        .unwrap();
+    let inst: InstanceRef = serde_json::from_value(json!({
+        "instance_id": "received-1", "runner": { "kind": "detached" }, "boot_id": "b",
+        "launched_generation": 1, "launched_at": 5,
+    }))
+    .unwrap();
+    wait_for("the target to see Switching", || async {
+        phase(agent.manager.clone(), id.clone()).await == Some(MigrationPhase::Switching)
+    })
+    .await;
+    agent
+        .manager
+        .write_migration(&id, |m| m.received = Some(inst.clone()))
+        .await
+        .expect("the target's received");
+    wait_for("the source to see received", || async {
+        server
+            .manager
+            .get_vm(&id)
+            .await
+            .unwrap()
+            .status
+            .migration
+            .is_some_and(|m| m.received.is_some())
+    })
+    .await;
+    server
+        .manager
+        .write_migration(&id, |m| m.source_released = true)
+        .await
+        .unwrap();
+    wait_for("the commit", || async {
+        let vm = server.manager.get_vm(&id).await.unwrap();
+        vm.status.migration.is_none()
+            && vm.status.placement.as_ref().map(|p| p.node.as_str()) == Some(agent_id.as_str())
+    })
+    .await;
+    // The target's controller now owns it (here it finds no shim for the
+    // stand-in instance, and records that).
+    let vm = server.manager.get_vm(&id).await.unwrap();
+    assert_eq!(
+        vm.spec.node.as_deref(),
+        Some(agent_id.as_str()),
+        "pinned where it runs"
+    );
+    let (_, ev) = call(&server, "GET", &format!("/vms/{id}/events"), None, &[]).await;
+    assert!(ev.to_string().contains("Migrated"), "{ev}");
+
+    // A cancel: Cancelling, the target lets go, the source fails it.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{other}/migrate/cancel"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    assert_eq!(
+        vm_of(&v)["migration"]["phase"],
+        "MIGRATION_PHASE_CANCELLING",
+        "{v}"
+    );
+    wait_for("the target to see Cancelling", || async {
+        phase(agent.manager.clone(), other.clone()).await == Some(MigrationPhase::Cancelling)
+    })
+    .await;
+    agent
+        .manager
+        .write_migration(&other, |m| m.target_released = true)
+        .await
+        .expect("the target's release");
+    wait_for("the source to see the target's release", || async {
+        server
+            .manager
+            .get_vm(&other)
+            .await
+            .unwrap()
+            .status
+            .migration
+            .is_some_and(|m| m.target_released)
+    })
+    .await;
+    server
+        .manager
+        .write_migration(&other, |m| m.phase = MigrationPhase::Failed)
+        .await
+        .unwrap();
+    let (_, v) = call(&server, "GET", &format!("/vms/{other}"), None, &[]).await;
+    assert_eq!(
+        vm_of(&v)["migration"]["phase"],
+        "MIGRATION_PHASE_FAILED",
+        "{v}"
+    );
+    assert!(
+        vm_of(&v)["migration"]["reason"]
+            .as_str()
+            .unwrap()
+            .starts_with("cancelled by"),
+        "{v}"
+    );
+    let (_, ev) = call(&server, "GET", &format!("/vms/{other}/events"), None, &[]).await;
+    assert!(ev.to_string().contains("MigrationCancelled"), "{ev}");
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{other}/stop"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert!(
+        s.is_success(),
+        "a failed migration doesn't hold the VM: {s} {v}"
+    );
+}
+
 /// A migration's relay (spec/32-live-migration.md §6): the source's
 /// control plane takes the sending hypervisor's connection and streams it
 /// over the peer connection to the target, which joins it to its
@@ -2750,10 +3022,7 @@ async fn a_migrations_stream_is_relayed_to_its_target_while_copying() {
         phase,
         started_at: 1,
         updated_at: 1,
-        bytes: 0,
-        iteration: 0,
-        dirty_rate: 0,
-        reason: String::new(),
+        ..Default::default()
     };
     let tmp = tempfile::tempdir().unwrap();
     let source_sock = tmp.path().join("source-migration.sock");

@@ -231,6 +231,14 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
             StatusCode::CONFLICT,
             Json(ApiError::new("conflict", error.to_string())),
         ),
+        VmManagerError::Migrating(_) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("migrating", error.to_string())),
+        ),
+        VmManagerError::NotMigrating(_) => (
+            StatusCode::CONFLICT,
+            Json(ApiError::new("not_migrating", error.to_string())),
+        ),
         VmManagerError::PreconditionFailed { actual, .. } => (
             StatusCode::PRECONDITION_FAILED,
             Json(

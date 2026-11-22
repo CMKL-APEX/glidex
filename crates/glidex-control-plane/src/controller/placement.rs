@@ -152,6 +152,9 @@ impl VmManager {
             if cur.deletion_requested_at.is_some() {
                 return Err(VmManagerError::Deleting(cur.name.clone()));
             }
+            if cur.status.migrating().is_some() {
+                return Err(VmManagerError::Migrating(cur.name.clone()));
+            }
             // Lost: its node was forgotten, so it runs nowhere (§5.6).
             let old = cur.status.placement.as_ref().map(|p| p.node.clone());
             let lost = old.as_ref().is_some_and(|n| {

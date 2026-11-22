@@ -170,11 +170,20 @@ impl VmManager {
         // capacity change (a pass is cheap when nothing waits).
         let me = self.arc();
         let m2 = me.clone();
+        let m3 = me.clone();
         vec![
             tokio::spawn(async move {
                 loop {
                     tokio::time::sleep(Duration::from_secs(3)).await;
                     me.place_pending().await;
+                }
+            }),
+            // Live migrations' commits, time limits and dead nodes
+            // (spec/32-live-migration.md §4).
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(2)).await;
+                    m3.migration_round().await;
                 }
             }),
             // The cluster network controller (§11): OVN's northbound database.
@@ -298,11 +307,17 @@ impl VmManager {
     /// everything (e.g. a scratch instance next to the real one).
     pub(crate) async fn sync_netd_ports(&self) {
         let _ports = self.ports_lock.lock().await;
+        let me = self.local_node_id();
+        // A migration's target keeps the taps it made for the guest
+        // (spec/32-live-migration.md §4).
+        let ours = |vm: &crate::models::Vm| {
+            self.is_local(vm) || vm.status.migrating().is_some_and(|m| m.target == me)
+        };
         let (running, networked) = {
             let vms = self.vms.read().await;
             let running: Vec<String> = vms
                 .values()
-                .filter(|vm| self.is_local(vm) && !vm.status.nics.is_empty())
+                .filter(|vm| ours(vm) && !vm.status.nics.is_empty())
                 .map(|vm| vm.id.clone())
                 .collect();
             let networked = vms.values().any(|vm| {

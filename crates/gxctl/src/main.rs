@@ -609,6 +609,10 @@ fn help_text() -> String {
         "migrate <name|id> --check [--node N]".cyan()
     );
     line!(
+        "  {} - Cancel a live migration before the guest has moved",
+        "migrate <name|id> --cancel".cyan()
+    );
+    line!(
         "  {} - Shut a VM down via its power button (default wait 60 s), then stop it",
         "stop <name|id> --graceful [secs]".cyan()
     );

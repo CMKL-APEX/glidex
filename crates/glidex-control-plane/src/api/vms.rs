@@ -218,6 +218,14 @@ pub async fn place(
     Ok(Proto(StatusCode::OK, svc::place_vm(&c, req).await?).into_response())
 }
 
+pub async fn cancel_migration(c: Caller, Path(id): Path<String>) -> Result<Response, ApiErr> {
+    let req = pb::CancelMigrationRequest {
+        id,
+        ..Default::default()
+    };
+    Ok(Proto(StatusCode::OK, svc::cancel_migration(&c, req).await?).into_response())
+}
+
 pub async fn migrate(
     c: Caller,
     Path(id): Path<String>,

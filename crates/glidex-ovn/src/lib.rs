@@ -233,7 +233,10 @@ pub struct PortSpec {
     pub ip: Option<Ipv4Addr>,
     pub vm_id: String,
     pub nic: u8,
-    /// Where the VM runs: binds the port there (§11.5).
+    /// Where the VM runs: binds the port there (§11.5). Two chassis,
+    /// `a,b`, while the VM migrates from `a` to `b`: the port is bound to
+    /// both, and moves to `b` when the guest announces itself there
+    /// (`activation-strategy=rarp`; spec/32-live-migration.md §8).
     pub chassis: Option<String>,
 }
 
@@ -1203,6 +1206,10 @@ fn ensure_network(
     Ok(())
 }
 
+/// A port bound to two chassis moves to the new one when the guest
+/// announces itself there (OVN's multi-chassis binding).
+const ACTIVATION: &str = "activation-strategy";
+
 fn ensure_port(
     nb: &Nb,
     p: &PortSpec,
@@ -1216,15 +1223,20 @@ fn ensure_port(
         Some(ip) => format!("{} {}", p.mac, ip),
         None => p.mac.clone(),
     };
-    let want_opts: BTreeMap<String, String> = p
+    let mut want_opts: BTreeMap<String, String> = p
         .chassis
         .iter()
         .map(|c| ("requested-chassis".to_string(), c.clone()))
         .collect();
+    if p.chassis.as_ref().is_some_and(|c| c.contains(',')) {
+        want_opts.insert(ACTIVATION.to_string(), "rarp".to_string());
+    }
     let up_to_date = have.is_some_and(|r| {
+        let opts = r.map("options");
         r.set("addresses") == vec![addr.clone()]
             && r.set("port_security") == vec![addr.clone()]
-            && r.map("options").get("requested-chassis") == want_opts.get("requested-chassis")
+            && opts.get("requested-chassis") == want_opts.get("requested-chassis")
+            && opts.get(ACTIVATION) == want_opts.get(ACTIVATION)
     });
     if up_to_date {
         return Ok(());
@@ -1242,19 +1254,24 @@ fn ensure_port(
         ]
         .concat(),
     ];
-    match &p.chassis {
-        Some(c) => cmds.push(vec![
-            s("lsp-set-options"),
-            p.lport.clone(),
-            format!("requested-chassis={c}"),
-        ]),
-        None => cmds.push(vec![
+    if want_opts.is_empty() {
+        cmds.push(vec![
             s("remove"),
             s("Logical_Switch_Port"),
             p.lport.clone(),
             s("options"),
             s("requested-chassis"),
-        ]),
+            s(ACTIVATION),
+        ]);
+    } else {
+        // Sets the whole map: a strategy left from a migration goes.
+        cmds.push(
+            [
+                vec![s("lsp-set-options"), p.lport.clone()],
+                want_opts.iter().map(|(k, v)| format!("{k}={v}")).collect(),
+            ]
+            .concat(),
+        );
     }
     // The network's DHCP options, by the UUID of its row.
     if let (Some(_), Some(n)) = (p.ip, net)

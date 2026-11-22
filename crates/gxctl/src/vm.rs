@@ -355,6 +355,9 @@ pub async fn get(client: &ApiClient, args: &[&str]) {
             e.instance_id
         );
     }
+    if let Some(line) = vm.migration.as_option().map(migration_line) {
+        println!("  Migration:  {line}");
+    }
     println!("  Hypervisor: {}", storage::hypervisor_name(&vm.hypervisor));
     if let Some(c) = vm.conditions.iter().find(|c| {
         c.kind == "PylonManaged"
@@ -483,20 +486,36 @@ pub async fn start(client: &ApiClient, args: &[&str]) {
 }
 
 /// `migrate <name|id> --check [--node N]`: whether a running VM can
-/// live-migrate, and to which nodes (spec/32-live-migration.md §5). Only
-/// the check is built.
+/// live-migrate, and to which nodes (spec/32-live-migration.md §5).
+/// `migrate <name|id> --cancel`: cancel one in progress (§4). The
+/// migration itself isn't served yet.
 pub async fn migrate(client: &ApiClient, args: &[&str]) {
-    const USAGE: &str = "Usage: migrate <name|id> --check [--node N]";
+    const USAGE: &str = "Usage: migrate <name|id> --check [--node N] | --cancel";
     let Some(vm_id) = resolve(client, args, USAGE).await else {
         return;
     };
-    if !has_flag(args, "--check") {
+    let cancel = has_flag(args, "--cancel");
+    if cancel == has_flag(args, "--check") {
         return usage(&format!("{USAGE}\n(live migration itself isn't built yet)"));
     }
     let t = match rpc(client).await {
         Ok(t) => t,
         Err(e) => return err(e),
     };
+    if cancel {
+        let r = t
+            .cancel_migration(CancelMigrationRequest {
+                id: vm_id,
+                ..Default::default()
+            })
+            .await
+            .map(|r| r.into_owned().vm.as_option().cloned());
+        return match r {
+            Ok(Some(vm)) => println!("{}", cancel_line(&vm)),
+            Ok(None) => {}
+            Err(e) => err(e),
+        };
+    }
     let r = t
         .migrate_vm(MigrateVmRequest {
             id: vm_id,
@@ -513,6 +532,43 @@ pub async fn migrate(client: &ApiClient, args: &[&str]) {
     let check = r.check.as_option().cloned().unwrap_or_default();
     for line in migration_lines(&check) {
         println!("{line}");
+    }
+}
+
+/// A VM's migration in one line: where to, its phase, and why it failed.
+fn migration_line(m: &VmMigration) -> String {
+    let phase = match m.phase.as_known() {
+        Some(MigrationPhase::MIGRATION_PHASE_PREPARING) => "preparing".to_string(),
+        Some(MigrationPhase::MIGRATION_PHASE_COPYING) => "copying".to_string(),
+        Some(MigrationPhase::MIGRATION_PHASE_SWITCHING) => "switching".to_string(),
+        Some(MigrationPhase::MIGRATION_PHASE_CANCELLING) => "cancelling".yellow().to_string(),
+        Some(MigrationPhase::MIGRATION_PHASE_FAILED) => "failed".red().to_string(),
+        _ => "-".to_string(),
+    };
+    if m.reason.is_empty() {
+        format!("to {} ({phase})", m.target)
+    } else {
+        format!("to {} ({phase}: {})", m.target, m.reason)
+    }
+}
+
+/// What a cancel left: cancelling, or finishing because the guest had
+/// already moved.
+fn cancel_line(vm: &Vm) -> String {
+    let phase = vm
+        .migration
+        .as_option()
+        .map(|m| m.phase.as_known())
+        .unwrap_or_default();
+    match phase {
+        Some(MigrationPhase::MIGRATION_PHASE_CANCELLING) => {
+            format!("{} {}", "Cancelling:".yellow(), vm.name)
+        }
+        _ => format!(
+            "{} {}: the guest has already moved, so the migration finishes",
+            "Not cancelled:".yellow(),
+            vm.name
+        ),
     }
 }
 

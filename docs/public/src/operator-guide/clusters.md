@@ -297,7 +297,14 @@ node's (no room, CPU features it lacks, a DPDK `br-int`, an older
 `hyperstor-vhost`). Moving a running VM's hyperstor disks needs
 hyperstor's `hyperstor-vhost` protocol 3 (its `live_migration` feature)
 on both nodes: the datastore's page shows it per node. It needs
-`migrateVm`, a cluster operator's permission, as placing does.
+`migrateVm`, a cluster operator's permission, as placing does. The
+check also refuses a VM with dedicated CPUs or a NUMA policy.
+
+While a VM migrates, `gxctl vm <vm>` and `GET /vms/{id}` show its
+`migration`: the target and the phase. Stopping, pausing, changing,
+placing or deleting the VM answers `409 migrating` until it ends.
+`gxctl migrate <vm> --cancel` cancels it while the guest is still on its
+node; once the guest has moved, the migration finishes.
 
 ## Node lifecycle
 
