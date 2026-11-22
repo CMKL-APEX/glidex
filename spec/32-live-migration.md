@@ -1,6 +1,6 @@
 # Migration: starting a stopped VM on another host, then moving a running one
 
-**Status: LM0 built; the rest is design** (tracked in #573). LM0, the cold move, comes first: it needs only
+**Status: LM0–LM3 and LM4 tasks 1–3 built; the rest is design** (tracked in #573). LM0, the cold move, comes first: it needs only
 glidex, and most of it exists. Live migration (LM1–LM6) needs hyperstor
 work first, which its issues track (§7). §0 records what was checked
 while writing this. Items marked **(verify)** are checked on hosts in
@@ -75,6 +75,12 @@ Not in v1:
 | 10 | **Cloud Hypervisor v54.1 before LM4, with nested virtualization kept on.** The installer's pin moves from v53.0, and `--cpus` gets `nested=on`. In a cluster, both ends of a migration must run the same release, or the target a newer one within two releases. | v54 has `cancel-migration`, migration events, and the n-2 guarantee. Going back to an older release isn't supported upstream. v54 turned nested off by default (§0 #10); keeping it on means the upgrade changes nothing a guest sees. On by default was settled on 2026-11-19 (§13 O5); a per-VM or per-project switch to turn it off can come later. |
 | 11 | **A root step at boot reads KVM's CPUID** (O6, settled 2026-11-19). `glidex-kvm-cpuid.service`, a oneshot run as root before the control plane (and again by each install), runs `glidex-vm-shim --kvm-cpuid`: it calls `KVM_GET_SUPPORTED_CPUID` and writes `/run/glidex/kvm-cpuid.json`, with the host's CPU and kernel. The control plane reads the file for each node report, and at each launch records the same registers as the VM's `boot_cpuid`. Without the file the node's CPU is unknown, and live migration to it is refused; cold moves don't need it. | The control plane runs as `glidex`, outside the `kvm` group, and `/dev/kvm` would let it create VMs, which only the shim does. What KVM offers changes only with the kernel or microcode, which needs a reboot, so a file written at boot doesn't go stale. Its own unit, not `glidex-vfio-boot.service`, which exists only on hosts with boot devices. The shim already holds the KVM code; netd is for networking. |
 | 12 | **Cloud Hypervisor v55.0** (asked by the person steering, 2026-11-22). The installer's pin moves from v54.1, with `nested=on` kept (decision 10). The fit check compares v55's 32 registers (§0 #11, §9). | Before live migration ships, so the first release that migrates runs the release that fixes hangs on an unresponsive peer and checks AMD's leaves. A v55 target receives from v54 and v53 (n-2), so a cluster is upgraded host by host and migrates from a not-yet-upgraded node to an upgraded one, not back. Host kernels must be 6.8 or later. |
+| 13 | **Each step is written into the record by the node that did it** (§4). The leader writes the start, the target's reserved placement, the commit, and the cancels and failures it decides. The source writes its delegates, that it sent the guest, and its own release. The target writes that it is ready, that it received the guest, and its own release. A node may write a VM's `status.migration`, and nothing else of the VM, when the record names it as the target. The leader checks that each such write moves the record only as §4 allows. | A node acts on what only it can see: its `hyperstor-vhost`, its netd and its Cloud Hypervisor. The record is all a new leader has (decision 5), so each step's result must be in it. Only the leader writes placement, so only the leader commits. |
+| 14 | **The target's guest decides the outcome, not the source's send.** Cloud Hypervisor v55's `send-migration` answers once the copy has started, and reports the result only in its events. The target's `receive-migration` answers when the guest runs there, or fails. So the migration has succeeded when the target reports its instance running (`received`). On the source, Cloud Hypervisor exiting after the send is its own sign that the guest has left. Once either is seen, the migration finishes forwards, even if a cancel was asked for. | glidex already polls every instance's shim, the target's included. Reading Cloud Hypervisor's event monitor on the source would be a second channel for the same answer. |
+| 15 | **Release order on each side.** On success, the target promotes each disk before it reports `received`, and the source detaches its disks only after it sees `received`. This is hyperstor's tested order: a promote, then the old holder's detach, fences nothing of the new holder's. On a cancel, the target detaches its standby disks (`detach --force`) before the source drops its delegates (`undelegate`), also as tested. | Two writers on a volume must never happen (decision 6). These are the orders the handover was checked in (the test cluster, 2026-11-20). |
+| 16 | **A migrating VM can't be stopped, restarted, re-placed or deleted.** Until the record is gone or `Failed`, the API answers `409` ("migrating; cancel it first"). Settled by the person steering, 2026-11-22. | Each would change what the source or the target is doing mid-step. A refusal changes nothing behind the caller's back, and cancelling is one call. |
+| 17 | **In v1, a VM with dedicated CPUs or a NUMA policy doesn't migrate** (settled 2026-11-22). The check gives the reason. A VM on the shared CPU pool migrates; after the commit, the target moves its threads onto the target's pool, as it does when the pool changes (`cpu_drift`). | Cloud Hypervisor's received configuration keeps the source's CPU affinity and memory binding. Those host CPUs and NUMA nodes may not be free, or may not exist, on the target. Pinned VMs need the target's own CPUs and NUMA nodes in the received configuration: `receive-migration`'s `zone_updates` for memory, and an affinity Cloud Hypervisor can't yet replace. That is a later milestone. |
+| 18 | **Time limits.** `send-migration` gets `timeout_s` 900 with `timeout_strategy: cancel`, and the request's `downtime_ms` (300 by default). The leader cancels a migration still `Preparing` after 120 s, and fails one still `Cancelling` after 120 s. If the source or the target isn't `Ready` for 30 s before the guest has moved, the migration fails. | A migration holds the target's CPU and memory, and the VM can't be stopped meanwhile (decision 16), so every phase must end. 900 s copies about 100 GiB at the test cluster's 1 Gb/s. |
 
 ## 3. LM0: the cold move
 
@@ -134,50 +140,127 @@ LM0 adds (**built**):
 ## 4. Live migration, step by step
 
 The migration record `status.migration` holds:
-- `target`;
-- `phase`;
-- `started_at`;
-- `updated_at`;
-- progress: `bytes`, `iteration`, `dirty_rate`;
-- `reason` when it fails.
+- `target`, `phase`, `started_at`, `updated_at`;
+- `downtime_ms`, from the request;
+- `placement`: the target's placement, reserved by the leader. The
+  scheduler counts it on the target while the migration is in progress;
+- `delegates`: each hyperstor disk's delegate id, from the source;
+- `received`: the target's instance, once the guest runs there;
+- `sent`: the source's Cloud Hypervisor has exited after the send;
+- `source_released` and `target_released`: each side has let go of its
+  part;
+- progress: `bytes`, `iteration`, `dirty_rate` (not filled in v1:
+  Cloud Hypervisor v55 reports them only as events);
+- `reason`, when it fails or is cancelled.
 
 Phases: `Checking` → `Preparing` → `Copying` → `Switching` →
-`Committed`, or `Cancelling` → `Failed`.
+`Committed`, or `Cancelling` → `Failed`. `Checking` and `Committed` are
+never stored: the check runs inside the request, and the commit clears
+the record. A migration is **in progress** while its phase is
+`Preparing`, `Copying`, `Switching` or `Cancelling`. A `Failed` record
+stays, with its reason, until the next migration replaces it.
 
-1. **Checking (leader).** The checks of §5. The leader reserves the
-   target's CPU and memory as the scheduler does for a placement, and
-   writes the record.
-2. **Preparing (target).** The target node:
-   - attaches each disk as a delegate (decision 6);
-   - creates the taps and binds the ports with `requested-chassis` naming
-     both hosts (§8);
-   - writes the cloud-init seed;
-   - starts the shim in **receive mode**: `cloud-hypervisor
-     --api-socket` with no VM, then `vm.receive-migration
-     unix:<vm_dir>/migration.sock`.
+Who writes what (decision 13):
 
-   It then reports itself ready in the record.
-3. **Copying (source).** The source's control plane opens the stream to
-   the target (§6) and calls `vm.send-migration unix:<vm_dir>/migration.sock`
-   with `downtime_ms`, `timeout_s` and `timeout_strategy=cancel`.
-   Progress is written to the record at most once every 2 s.
+| Step | Node | Writes |
+|---|---|---|
+| Start | Leader | the record: `Preparing`, `target`, `placement`; event `MigrationStarted` |
+| Delegates | Source | `delegates` |
+| Ready | Target | `Copying` |
+| Sent | Source | `sent`, and `Switching` |
+| Received | Target | `received` |
+| Source released | Source | `source_released` |
+| Commit | Leader | the VM's placement and instance; the record cleared; event `Migrated` |
+| Cancel | Leader, source or target | `Cancelling` and `reason` |
+| Target released | Target | `target_released` |
+| Failed | Source, or leader | `Failed`; event `MigrationFailed` or `MigrationCancelled` |
+
+1. **Checking (leader).** The checks of §5. The leader picks the
+   target's placement as the scheduler does for a new VM, and writes the
+   record in `Preparing`.
+2. **Preparing.**
+   - The source makes each hyperstor disk's delegate (`delegate`) and
+     writes their ids.
+   - Then the target:
+     - attaches each disk as a delegate, standing by (decision 6);
+     - creates the taps (§8);
+     - writes the cloud-init seed;
+     - starts the shim in **receive mode**: `cloud-hypervisor
+       --api-socket` with no VM, then `vm.receive-migration
+       unix:<vm_dir>/migration.sock`.
+
+     It then writes `Copying`. A step that fails writes `Cancelling`
+     with its reason.
+   - Meanwhile, the leader binds each port to both hosts (§8).
+3. **Copying (source).** The source's control plane binds
+   `<vm_dir>/migration.sock` and relays it to the target (§6). It calls
+   `vm.send-migration unix:<vm_dir>/migration.sock` with `downtime_ms`,
+   `timeout_s` and `timeout_strategy` (decision 18). Then it waits for
+   one of these:
+   - its Cloud Hypervisor exits: the guest has left, so it writes `sent`
+     and `Switching`;
+   - the relay ends and Cloud Hypervisor still runs the guest: the send
+     failed, so it writes `Cancelling` with the reason.
 4. **Switching.** Cloud Hypervisor pauses the guest, sends the last
    dirty pages and the device state, and resumes the guest on the
-   target. hyperstor hands the lease to the delegate. The source's
-   Cloud Hypervisor exits.
-5. **Committed (leader).** On the target's report that the VM is
-   running, one write sets:
-   - `placement.node` to the target;
-   - the target's instance;
-   - the disks' `worker` to the target;
-   - `status.migration` cleared;
-   - an event `Migrated`.
+   target. The target's receive answers, and its shim reports the
+   instance running. The target then promotes each disk (decision 15)
+   and writes `received`. When the source sees `received`, it:
+   - detaches its disks;
+   - removes its taps;
+   - releases its shim's instance;
+   - writes `source_released`.
+5. **Committed (leader).** When the record has `received` and
+   `source_released`, one write:
+   - sets `placement` to the record's (the target's);
+   - sets the instance to the target's;
+   - clears `status.migration`;
+   - records an event `Migrated`.
 
-   Then:
-   - the source's netd removes its taps;
-   - the ports' `requested-chassis` becomes the target alone;
-   - the source's metering ledger closes the VM at the switch time;
-   - open consoles reconnect through the relay to the target.
+   The target's VM controller then owns the VM. It finds its own
+   instance running, and puts the threads on its CPU pool (decision 17).
+   The leader binds the ports to the target alone (§8).
+
+If the source is down for 30 s after `received`, the leader commits
+without `source_released`. Its hyperstor hold is let go by S26 when the
+source comes back.
+
+**Cancelling.** Any node may write `Cancelling` while the guest hasn't
+moved: the leader on `POST /vms/{id}/migrate/cancel` or a time limit,
+the target when preparing fails, the source when the send fails. Then:
+- the source asks its Cloud Hypervisor to cancel the send
+  (`vm.cancel-migration`), if one is running;
+- the target stops its receiving shim, detaches its standby disks
+  (`detach --force`), removes its taps and seed, and writes
+  `target_released`;
+- the source then drops each delegate (`undelegate`), and writes
+  `Failed` with the reason (decision 15).
+
+If the source's Cloud Hypervisor has exited (`sent`), or the target
+has `received`, the migration doesn't cancel: it finishes forwards
+(decision 14).
+
+**The leader's loop** runs every 2 s over the VMs with a migration in
+progress:
+- it commits a record with `received` and `source_released`, as in step 5;
+- it cancels a migration still `Preparing` after 120 s (decision 18);
+- it fails a migration still `Cancelling` after 120 s, or one whose
+  source or target hasn't been `Ready` for 30 s while the guest hasn't
+  moved.
+
+A new leader runs the same loop from the records, so nothing is kept
+only in a leader's memory.
+
+**Both nodes' controllers.**
+- The source's VM controller treats the VM as usual while it is
+  `Preparing` or `Copying`. From `Switching` on, it doesn't restart it
+  or record its exit as a crash: the guest runs elsewhere.
+- The target runs the receiving instance outside its VM controller
+  (decision 8), from the record, which an agent receives (§6).
+- Each node's netd keeps a migrating VM's taps after a netd restart, on
+  both nodes.
+- Neither node's hyperstor probe lets go of the disks of a VM with a
+  migration in progress (S26).
 
 ## 5. What can migrate
 
@@ -190,10 +273,10 @@ without moving anything. The VM:
   cloud-init seed on a host path;
 - has no PCI devices (`vfio_devices` or pool devices), no DPU NICs and no
   vhost-user-net NICs, and no `scope: node` network;
+- has no dedicated CPUs and no NUMA policy (decision 17);
 - has a target that is `Ready`, whose CPU fits the VM (§9), with a
   Cloud Hypervisor release the source can send to (decision 10), and
-  room for the VM's CPU and memory (hugepages too, when the VM uses them)
-  and its NUMA policy.
+  room for the VM's CPU and memory (hugepages too, when the VM uses them).
 
 ## 6. The relay
 
@@ -261,8 +344,13 @@ glidex's side (LM3):
 - the S26 probe lets go only of holds: a disk `list`ed with `"role":
   "delegate"` (a target standing by) is left alone. From the promotion
   until the commit the target holds a disk whose VM is still placed on
-  the source, so the probe must also skip the disks of a VM with
-  `status.migration`; that comes with `status.migration` in LM4 task 4;
+  the source, so the probe also skips the disks of a VM with a
+  migration in progress (§4);
+- the guest resumes on the target before glidex sees the receive end
+  and promotes the disks (§4, step 4), so for that moment its disk
+  requests reach a volume still standing by. hyperstor holds them until
+  the promotion, or the guest sees errors (**verify** in LM6, and ask
+  hyperstor if they fail);
 - each node reports, per hyperstor datastore, `live_migration` from its
   `hyperstor-vhost`'s `hello` (the datastore's node rows), and the check
   of §5 wants it on the source and the target.
@@ -271,11 +359,13 @@ glidex's side (LM3):
 
 - **Before the copy.** The target's netd creates the taps (with the same
   names; they are on another host) and plugs them into `br-int` with the
-  same `iface-id`. The leader sets each port's `requested-chassis` to
-  `<source>,<target>` and `options:activation-strategy=rarp`.
-- **After the commit.** The leader sets `requested-chassis` to the
-  target alone and clears the strategy. The source's netd removes its
-  taps (`detach_vm_port`).
+  same `iface-id`. While a migration is in progress, the leader sets each
+  port's `requested-chassis` to `<source>,<target>` and
+  `options:activation-strategy=rarp`.
+- **After the guest moves.** The source's netd removes its taps
+  (`detach_vm_port`) when the source releases (§4, step 4). At the
+  commit, the leader sets `requested-chassis` to the target alone and
+  clears the strategy. After a cancel, it goes back to the source alone.
 - **The guest's announcement.** Cloud Hypervisor's virtio-net announces
   the guest after resume only when the guest negotiated
   `VIRTIO_NET_F_GUEST_ANNOUNCE`. Without it, OVN's `rarp` activation
@@ -306,6 +396,14 @@ glidex's side (LM3):
 - **gxctl:** `start <vm> --node N`, `migrate <vm> [--node N] [--check]
   [--downtime-ms MS]`, `migrate <vm> --cancel`. It follows progress, as
   `start --wait` does.
+- **The record** is `status.migration` in the VM (REST and RPC
+  `Vm.status.migration`): the target, the phase, its times and the
+  reason. The node-to-node fields of §4 (delegates, the reserved
+  placement, the instances) aren't in the API.
+- **While a migration is in progress**, `stop`, `restart`, `place`,
+  `start --node` and `delete` answer `409 migrating` (decision 16), and a
+  second `migrate` answers `409` too. `migrate/cancel` on a VM with no
+  migration in progress answers `409 not_migrating`.
 - **UI:** "Migrate…" on a running VM's page, for those with
   `migrateVm`: a node list with each node's reason when it can't take
   the VM, the downtime, then progress and a Cancel button.
@@ -321,14 +419,18 @@ glidex's side (LM3):
 | When | What happens |
 |---|---|
 | A check fails | Nothing starts. The answer names the reason. |
-| Preparing fails (delegate, taps, shim) | The target cleans up. The record goes `Failed`. The VM never stopped. |
-| The copy doesn't converge in `timeout_s`, the relay breaks, or someone cancels | `vm.cancel-migration` on the source (decision 10). The guest keeps running there. The target cleans up, and the delegate is dropped. `Failed` or `Cancelled`. |
+| Preparing fails (delegate, taps, shim) | `Cancelling` with the reason. The target cleans up, the source drops the delegates, and the record goes `Failed`. The VM never stopped. |
+| Preparing takes over 120 s | The leader writes `Cancelling`, and the same follows. |
+| The copy doesn't converge in `timeout_s`, the relay breaks, or someone cancels | `vm.cancel-migration` on the source (decision 10). The guest keeps running there. The target cleans up, and the delegate is dropped. `Failed`, with event `MigrationCancelled` for a cancel asked for, `MigrationFailed` otherwise. |
+| A cancel after the guest has moved | Ignored: the migration finishes forwards (decision 14). |
 | The target's Cloud Hypervisor refuses (CPUID, version) | Cloud Hypervisor resumes the source. `Failed` with its reason. |
-| The source node dies while Copying | The target's receive fails. The VM is the source's, which is down: it is `Lost` as today, and recovering it needs a fenced forget (S10, S23). The target cleans up. |
-| The target dies while Copying | The send fails, and the source resumes the guest. |
+| The source node dies while Copying | The target's receive fails. The VM is the source's, which is down: it is `Lost` as today, and recovering it needs a fenced forget (S10, S23). After 30 s the leader writes `Failed`, and the target cleans up. |
+| The source node dies after the target has `received` | After 30 s the leader commits without `source_released` (§4). |
+| The target dies while Copying | The send fails, and the source resumes the guest. After 30 s the leader writes `Failed`; the target cleans up when it comes back and reads the record. |
 | The guest reboots during the copy | On v53 the source's Cloud Hypervisor stops with a fatal error, and the target aborts (§0 #9): the VM is `Failed` on the source, and glidex says why. **Verify** on v54.1. |
-| The leader changes | The new leader reads the record and asks the target whether the VM is running there. If it is, the leader commits. If not, it cancels. |
-| The target runs the VM, but the commit write fails | The target keeps it, and the leader retries the commit. The source's controller sees a migration in `Switching` and doesn't restart the VM. |
+| The leader changes | The new leader runs the same loop from the records (§4). A target running the guest has written `received`, so the leader commits; otherwise each time limit still holds. |
+| The target runs the VM, but the commit write fails | The target keeps it, and the leader retries the commit on its next round. The source's controller sees a migration in `Switching` and doesn't restart the VM. |
+| A node restarts mid-way | It reads the record and carries on from its phase: each step checks what is already done (a delegate made, a disk attached, a shim running) before doing it. |
 
 ## 12. Milestones
 
@@ -338,15 +440,17 @@ glidex's side (LM3):
 | **LM1** Spike and versions | Cloud Hypervisor v54.1 in the installer, with `nested=on` (decision 10). By hand on node-a and node-b: a migration of a VM booted from a kernel and initramfs with no disk, over a unix socket bridged between the hosts and over TCP. | Findings in §0 #7–#10 (spike run 2026-11-19 on v53.0). The functional tests on v54.1. Not yet: the relay against TCP with a guest that writes its memory, a tap NIC, and the spike on v54.1. |
 | **LM2** CPU compatibility | `cpu` in node status (KVM's CPUID and the host's CPU and kernel), `boot_cpuid` on VMs, the fit check; the host page and `node show` | Unit tests: the superset check on recorded CPUID. Host: node-b's CPUID fits node-a, and node-a's doesn't fit node-b, as §0 #7 found. |
 | **LM3** hyperstor | The driver's delegate calls; S26's probe leaves a target standing by alone; the feature check (§7) | Unit tests with a fake vhost control socket. hyperstor's issues are done (#399, #400). |
-| **LM4** The migration | `status.migration`, the leader's steps, receive mode in the shim, the relay, OVN two-chassis binding, the commit, cancel and recovery; the API, RPC and gxctl | Cluster tests with fake hypervisors: each phase, cancel, each failure in §11, a leader change mid-way. |
+| **LM4** The migration | `status.migration`, the leader's steps, receive mode in the shim, the relay, OVN two-chassis binding, the commit, cancel and recovery; the API, RPC and gxctl | Cluster tests: the record's steps and who may write them, cancel, each time limit, a leader change mid-way; a migration end to end with a fake Cloud Hypervisor. |
 | **LM5** UI, metering, docs | The Migrate dialog, progress, events; metering's split; operator docs | UI e2e. Unit tests of the ledger split. |
 | **LM6** Host checks | On the test cluster, node-a ↔ node-b: an idle guest; a guest under memory and disk load (`fio` with verify); a ping across the move (the loss is reported); cancel; the target's control plane killed mid-copy | Results in this spec's status, with the date, the build and pass/fail. |
 
 LM4's tasks, one PR each:
-1. **The checks**: `MigrateVm` with `check` (§5), the Cedar action `migrateVm`, `gxctl migrate --check`. Without `check` the API answers `501` until task 4.
-2. **Receive mode**: the shim starts Cloud Hypervisor with no VM and calls `vm.receive-migration` (`launch.json` `receive`, phase `receiving`, exit cause `migration_failed`; 12-reconciliation.md §8.1). Also the Cloud Hypervisor client's call, the receiving command line and the VM's `migration.sock`. The target's preparing and starting that instance, which belongs to the migration and not the VM's controller (decision 8), is task 4's Preparing step.
+1. **The checks**: `MigrateVm` with `check` (§5), the Cedar action `migrateVm`, `gxctl migrate --check`. Without `check` the API answers `501` until task 6.
+2. **Receive mode**: the shim starts Cloud Hypervisor with no VM and calls `vm.receive-migration` (`launch.json` `receive`, phase `receiving`, exit cause `migration_failed`; 12-reconciliation.md §8.1). Also the Cloud Hypervisor client's call, the receiving command line and the VM's `migration.sock`. The target's preparing and starting that instance, which belongs to the migration and not the VM's controller (decision 8), is task 5.
 3. **The relay** (§6): the stream endpoint and both ends.
-4. **The leader's steps**: `status.migration`, Preparing to Committed, OVN's two-chassis binding (§8), cancel and recovery (§11), and `migrate` without `check`.
+4. **The record and the leader** (§4): the record's fields, `status.migration` in the API, and the target's writes to it, checked by the leader (decision 13). The leader's start (the reserved target placement, counted by the scheduler), its loop (the commit, the time limits, the dead nodes), and `migrate/cancel` (REST, RPC `CancelMigration`, `gxctl migrate --cancel`). OVN's two-chassis binding (§8). The `409` while migrating (decision 16), the check for dedicated CPUs and NUMA (decision 17), and S26 and netd keeping a migrating VM's disks and taps. `migrate` without `check` still answers `501`, because no node acts on the record yet.
+5. **The target's steps**: preparing (delegate attachments, taps, seed, the receiving shim), `Copying`, the promotion and `received`, and its cleanup on a cancel or failure (`target_released`).
+6. **The source's steps and the whole migration**: the delegates, the relay and `send-migration` (the Cloud Hypervisor client's `send_migration` and `cancel_migration`), `sent` and `Switching`, the source's release; its VM controller leaving a sent VM alone; `migrate` without `check`; and a migration end to end in a cluster test with a fake Cloud Hypervisor.
 
 Dependencies: LM0 needs nothing. LM1 → LM2 → LM4. LM3 needs hyperstor's
 issues. LM4 needs LM2 and LM3. LM5 and LM6 need LM4.
@@ -373,6 +477,6 @@ issues. LM4 needs LM2 and LM3. LM5 and LM6 need LM4.
 
 | | |
 |---|---|
-| **Spec \| Code** | LM0 built: `start` with a node (API, RPC, gxctl, the UI's **Place and start**, docs). LM1: the spike run (§0 #7–#10); Cloud Hypervisor pinned at v54.1 with `nested=on`. LM2 built: `glidex-kvm-cpuid.service` and `glidex-vm-shim --kvm-cpuid` (decision 11); `cpu` in node status (REST, RPC `NodeCpu`, `gxctl node <id>`, the host page's CPU and Kernel rows); `boot_cpuid` on VMs at each launch; the fit check (`node::cpu_fits`), which LM4 will call. LM4 task 1 built: `POST /vms/{id}/migrate {check: true}` (RPC `MigrateVm`, Cedar `migrateVm` in `node.drain` and `host-scoped`, `gxctl migrate --check`), with every check of §5 but the Cloud Hypervisor release; without `check` it answers `501`. Cloud Hypervisor v55.0 pinned (decision 12), and the fit check on v55's list. LM4 task 3 built (§6): `status.migration` (the record of §4, not yet in the API), the relay endpoint on the target and `VmManager::relay_migration` on the source, and agents receiving the VMs migrating to them. LM4 task 2 built: the shim's receive mode (`launch.json` `receive`; instance phase `receiving`; exit cause `migration_failed`, RPC `EXIT_CAUSE_MIGRATION_FAILED`), `ChClient::receive_migration`, `CloudHypervisorDriver::receive_args` and the VM's `migration.sock`. LM3 built (§7): the hyperstor driver's `delegate`, `attach_delegate`, `promote`, `release_delegate` and `detach_forced`; `held_volumes` for S26, which leaves a delegate alone; `live_migration` in a hyperstor datastore's node rows (REST, RPC `DatastoreNode.live_migration`), from `hello`, which the migration check wants on both ends. LM4 task 4, LM5 and LM6 are design. |
+| **Spec \| Code** | LM0 built: `start` with a node (API, RPC, gxctl, the UI's **Place and start**, docs). LM1: the spike run (§0 #7–#10); Cloud Hypervisor pinned at v54.1 with `nested=on`. LM2 built: `glidex-kvm-cpuid.service` and `glidex-vm-shim --kvm-cpuid` (decision 11); `cpu` in node status (REST, RPC `NodeCpu`, `gxctl node <id>`, the host page's CPU and Kernel rows); `boot_cpuid` on VMs at each launch; the fit check (`node::cpu_fits`), which LM4 will call. LM4 task 1 built: `POST /vms/{id}/migrate {check: true}` (RPC `MigrateVm`, Cedar `migrateVm` in `node.drain` and `host-scoped`, `gxctl migrate --check`), with every check of §5 but the Cloud Hypervisor release; without `check` it answers `501`. Cloud Hypervisor v55.0 pinned (decision 12), and the fit check on v55's list. LM4 task 3 built (§6): `status.migration` (the record of §4, not yet in the API), the relay endpoint on the target and `VmManager::relay_migration` on the source, and agents receiving the VMs migrating to them. LM4 task 2 built: the shim's receive mode (`launch.json` `receive`; instance phase `receiving`; exit cause `migration_failed`, RPC `EXIT_CAUSE_MIGRATION_FAILED`), `ChClient::receive_migration`, `CloudHypervisorDriver::receive_args` and the VM's `migration.sock`. LM3 built (§7): the hyperstor driver's `delegate`, `attach_delegate`, `promote`, `release_delegate` and `detach_forced`; `held_volumes` for S26, which leaves a delegate alone; `live_migration` in a hyperstor datastore's node rows (REST, RPC `DatastoreNode.live_migration`), from `hello`, which the migration check wants on both ends. LM4 tasks 4–6 (§4, decisions 13–18), LM5 and LM6 are design. |
 | **Tests** | LM0: a cluster test (start on the other node; a node-local disk refused) and a security test (`placeVm` needed). LM1: on node-b with v54.1 (2026-11-19), the Cloud Hypervisor functional boot tests passed: firmware and cloud-init, catalog image with root growth, extracted kernel, guest kernel updates, NAT network, mixed hypervisors on one network, and a VM surviving a control-plane restart. LM2: unit tests of each comparison, of one-way compatibility with the spike's registers, of the bits Cloud Hypervisor sets itself not being compared (#585, with node-a's and node-b's leaf 0x1), of the file and of `cpu_fits`. `glidex-vm-shim --kvm-cpuid` run by hand on node-b: 59 entries, leaf 0x7 EDX `0xa8000000`, as the spike found. LM4 task 1: a cluster test (a stopped VM on a shared-directory disk: its reasons, each node's, one node by name, `501` without `check`, nothing moved) and a security test (a project owner is refused `migrate`, check or not). Cloud Hypervisor v55.0: on node-b (2026-11-22) the same functional boot tests as v54.1's passed (seven; `numa_placement_e2e` needs two GPUs and didn't run); unit tests of the four new registers' comparisons, with Cloud Hypervisor's own Zen 4 and Zen 5 values of leaf 0x8000_0021 EAX (Zen 4 fits Zen 5, not back), and of a VM recorded under the older list. LM4 task 3: a cluster test (a server and an agent: bytes relayed both ways between a stand-in sender and receiver, counted; refused when the VM isn't migrating or isn't copying; `503` when nothing receives) and unit tests of who may relay and of an agent receiving a VM migrating to it. LM4 task 2: the shim against a fake Cloud Hypervisor (`receiving`, then `running` when the receive succeeds; a refused receive stops the VMM with `migration_failed` and Cloud Hypervisor's error; a stop while receiving ends it at once); unit tests of the client's request, the launch file's `receive` and the receiving command line. LM3: unit tests against a fake `hyperstor-vhost` control socket (each call's request, the standby not a hold, the probe's `live_migration`) and of `hello`'s feature. |
-| **Not yet** | LM0's host check on the test cluster (not run yet). Cloud Hypervisor v55.0: `numa_placement_e2e` and the vhost-user, LVM and hyperstor functional tests (not run: they need GPUs, OVS-DPDK, a volume group or a hyperstor token), and the nested e2e (not run); after the rollout, whether the test cluster's KVMs differ in the AMD leaves v55 compares (§0 #11). LM1: the spike on v54.1, a guest that writes its memory, a tap NIC; `numa_placement_e2e` and the QEMU, vhost-user, LVM and hyperstor functional tests on v54.1 (not run: they need GPUs, OVS-DPDK, a volume group or a hyperstor token). The nested e2e on v54.1 (not run). LM2: the Cloud Hypervisor release in node status; the host check, node-b's CPUID fitting node-a and not the reverse, from the nodes' reports (not run yet: it needs a rollout). LM4's check of the Cloud Hypervisor release; LM3: the S26 probe skipping a migrating VM's disks (needs `status.migration`, LM4 task 4), and the handover against a real `hyperstor-vhost` (needs a hyperstor release with #399 and #400 on the test cluster; LM6). LM4 task 2 against a real Cloud Hypervisor (it needs a source, task 3's relay or a socket by hand); what a received VM's configuration carries from the source (its paths are the same on every node; `core_scheduling`, chosen by the source's `sched_ext`, and the CPU affinity are the source's) is for task 4. The relay's throughput against Cloud Hypervisor's direct TCP (§6, LM6). LM4 task 4, LM5, LM6. |
+| **Not yet** | LM0's host check on the test cluster (not run yet). Cloud Hypervisor v55.0: `numa_placement_e2e` and the vhost-user, LVM and hyperstor functional tests (not run: they need GPUs, OVS-DPDK, a volume group or a hyperstor token), and the nested e2e (not run); after the rollout, whether the test cluster's KVMs differ in the AMD leaves v55 compares (§0 #11). LM1: the spike on v54.1, a guest that writes its memory, a tap NIC; `numa_placement_e2e` and the QEMU, vhost-user, LVM and hyperstor functional tests on v54.1 (not run: they need GPUs, OVS-DPDK, a volume group or a hyperstor token). The nested e2e on v54.1 (not run). LM2: the Cloud Hypervisor release in node status; the host check, node-b's CPUID fitting node-a and not the reverse, from the nodes' reports (not run yet: it needs a rollout). LM4's check of the Cloud Hypervisor release; LM3: the S26 probe skipping a migrating VM's disks (LM4 task 4), and the handover against a real `hyperstor-vhost` (needs a hyperstor release with #399 and #400 on the test cluster; LM6). LM4 task 2 against a real Cloud Hypervisor (it needs a source, task 3's relay or a socket by hand); what a received VM's configuration carries from the source: its paths are the same on every node, and its CPU affinity is the source's, which decision 17 handles; its `core_scheduling` is the source's too, so a target whose `sched_ext` state differs may refuse the guest, which cancels the migration (verify in LM6). The relay's throughput against Cloud Hypervisor's direct TCP (§6, LM6). LM4 task 4, LM5, LM6. |
