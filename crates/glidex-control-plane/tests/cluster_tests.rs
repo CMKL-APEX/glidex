@@ -2720,6 +2720,134 @@ async fn a_migration_check_says_why_not_and_moves_nothing() {
     assert_eq!(vm_of(&v)["desired_state"], "POWER_STATE_STOPPED", "{v}");
 }
 
+/// A migration's relay (spec/32-live-migration.md §6): the source's
+/// control plane takes the sending hypervisor's connection and streams it
+/// over the peer connection to the target, which joins it to its
+/// receiving hypervisor's `migration.sock`; both ways, bytes unread. The
+/// target refuses a stream for a VM not migrating to it, or not copying,
+/// and says so when nothing receives there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_migrations_stream_is_relayed_to_its_target_while_copying() {
+    use glidex_control_plane::controller::migration::stream_path;
+    use glidex_control_plane::models::{Migration, MigrationPhase};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let _one = serial().await;
+    let (server, agent) = server_and_agent().await;
+    let server_id = server.manager.local_node_id();
+    let agent_id = agent.manager.local_node_id();
+    let (s, v) = call(
+        &server,
+        "POST",
+        "/vms",
+        Some(vm_body("migrant", &server_id)),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let id = vm_of(&v)["id"].as_str().unwrap().to_string();
+    let record = |phase| Migration {
+        target: agent_id.clone(),
+        phase,
+        started_at: 1,
+        updated_at: 1,
+        bytes: 0,
+        iteration: 0,
+        dirty_rate: 0,
+        reason: String::new(),
+    };
+    let tmp = tempfile::tempdir().unwrap();
+    let source_sock = tmp.path().join("source-migration.sock");
+    let listen = || {
+        let _ = std::fs::remove_file(&source_sock);
+        tokio::net::UnixListener::bind(&source_sock).unwrap()
+    };
+    let to_agent = glidex_control_plane::cluster::net::Target::node(agent_id.clone(), agent.addr);
+    let open = || {
+        let (c, to, path) = (cluster(&server), to_agent.clone(), stream_path(&id));
+        async move { c.client.upgrade(to, &path).await.map(|_| ()) }
+    };
+    let agent_sees = |phase: Option<MigrationPhase>| {
+        let (agent, id) = (&agent, id.clone());
+        async move {
+            agent
+                .manager
+                .get_vm(&id)
+                .await
+                .is_ok_and(|v| v.status.migration.map(|m| m.phase) == phase)
+        }
+    };
+
+    // Not migrating: neither end relays.
+    let err = server
+        .manager
+        .relay_migration(&id, listen())
+        .await
+        .unwrap_err();
+    assert!(err.contains("isn't migrating"), "{err}");
+    let err = open().await.expect_err("refused").to_string();
+    assert!(err.contains("409"), "{err}");
+
+    // Preparing: not yet.
+    server
+        .manager
+        .__set_migration_for_tests(&id, Some(record(MigrationPhase::Preparing)))
+        .await
+        .unwrap();
+    wait_for("the agent's copy", || {
+        agent_sees(Some(MigrationPhase::Preparing))
+    })
+    .await;
+    let err = server
+        .manager
+        .relay_migration(&id, listen())
+        .await
+        .unwrap_err();
+    assert!(err.contains("isn't copying"), "{err}");
+    let err = open().await.expect_err("refused").to_string();
+    assert!(err.contains("409"), "{err}");
+
+    // Copying, but no hypervisor receives on the target.
+    server
+        .manager
+        .__set_migration_for_tests(&id, Some(record(MigrationPhase::Copying)))
+        .await
+        .unwrap();
+    wait_for("the agent's copy", || {
+        agent_sees(Some(MigrationPhase::Copying))
+    })
+    .await;
+    let target_sock = glidex_control_plane::paths::vm_paths(&id).migration_socket;
+    glidex_control_plane::paths::ensure_vm_dir(&id).unwrap();
+    let _ = std::fs::remove_file(&target_sock);
+    let err = open().await.expect_err("refused").to_string();
+    assert!(err.contains("503"), "{err}");
+
+    // Copying, received: the bytes go through both ways.
+    let receiver = tokio::net::UnixListener::bind(&target_sock).unwrap();
+    let received = tokio::spawn(async move {
+        let (mut c, _) = receiver.accept().await.unwrap();
+        let mut got = Vec::new();
+        c.read_to_end(&mut got).await.unwrap();
+        c.write_all(b"ok").await.unwrap();
+        c.shutdown().await.unwrap();
+        got
+    });
+    let relay = {
+        let (m, id, l) = (server.manager.clone(), id.clone(), listen());
+        tokio::spawn(async move { m.relay_migration(&id, l).await })
+    };
+    let mut sender = tokio::net::UnixStream::connect(&source_sock).await.unwrap();
+    sender.write_all(b"memory pages").await.unwrap();
+    sender.shutdown().await.unwrap();
+    let mut answer = Vec::new();
+    sender.read_to_end(&mut answer).await.unwrap();
+    assert_eq!(answer, b"ok");
+    assert_eq!(received.await.unwrap(), b"memory pages");
+    let relayed = relay.await.unwrap().unwrap();
+    assert_eq!((relayed.to_target, relayed.from_target), (12, 2));
+    let _ = std::fs::remove_file(&target_sock);
+}
+
 /// A VM whose disks are on a shared datastore is placed again: when
 /// stopped, on another node; when its node is forgotten (Lost), on one that
 /// is left. One with a node-local disk can't go (spec/24-storage.md S10).

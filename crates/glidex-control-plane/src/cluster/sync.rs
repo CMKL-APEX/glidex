@@ -133,6 +133,18 @@ fn placed_on(rec: &Value, node: &str) -> bool {
         == Some(node)
 }
 
+/// Whether a VM record is `node`'s to see: placed on it, or migrating to
+/// it (spec/32-live-migration.md §4: the target prepares from the record
+/// and relays only for it). A failed migration's last write the target
+/// sees says `Failed`; its copy goes at its next list.
+fn vm_is_nodes(rec: &Value, node: &str) -> bool {
+    placed_on(rec, node)
+        || rec
+            .pointer("/status/migration/target")
+            .and_then(|n| n.as_str())
+            == Some(node)
+}
+
 /// Ids of the VMs placed on `node`.
 pub fn node_vms(db: &Db, node: &str) -> Vec<(String, Value)> {
     let Ok(txn) = db.begin_read() else {
@@ -209,7 +221,7 @@ pub fn filter_for(db: &Db, node: &str, ws: &WriteSet) -> WriteSet {
         } else {
             match (t, op) {
                 (TableId::Vms, Op::Put { value, .. }) => serde_json::from_slice::<Value>(value)
-                    .map(|v| placed_on(&v, node))
+                    .map(|v| vm_is_nodes(&v, node))
                     .unwrap_or(false),
                 (TableId::Vms, Op::Delete { .. }) => true,
                 // A shared disk goes to every node: when the leader moves its
@@ -932,6 +944,17 @@ mod tests {
         );
         assert!(
             filter_for(&db, "n2", &ws(vec![put(TableId::Vms, "vm1", &vm)]))
+                .ops
+                .is_empty()
+        );
+        // Migrating to n2 (spec/32 §4): n2 sees it, with its credential.
+        let mut migrating = vm.clone();
+        migrating["status"]["migration"] = serde_json::json!({ "target": "n2" });
+        let f = filter_for(&db, "n2", &ws(vec![put(TableId::Vms, "vm1", &migrating)]));
+        let tables: Vec<TableId> = f.ops.iter().map(|o| o.table()).collect();
+        assert_eq!(tables, [TableId::Credentials, TableId::Vms]);
+        assert!(
+            filter_for(&db, "n3", &ws(vec![put(TableId::Vms, "vm1", &migrating)]))
                 .ops
                 .is_empty()
         );

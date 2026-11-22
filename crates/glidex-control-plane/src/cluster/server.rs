@@ -51,6 +51,7 @@ pub fn router(c: Arc<Cluster>) -> Router {
         .route(crate::api::metad::LEADER_PATH, post(metadata))
         .route("/cluster/v1/ledger", post(ledger_ship))
         .route("/cluster/v1/vms/{id}/console", get(relay_console))
+        .route("/cluster/v1/migrations/{id}/stream", get(relay_migration))
         .route("/cluster/v1/vms/{id}/console-log", get(relay_console_log))
         .route("/cluster/v1/vms/{id}/stats", get(relay_stats))
         .route("/cluster/v1/images/{id}/file", get(image_file))
@@ -1668,6 +1669,84 @@ async fn relay_console(
         .header("upgrade", "glidex-stream")
         .body(Body::empty())
         .unwrap()
+}
+
+/// A migration's stream, from its source's control plane (spec/32 §6):
+/// joined to the receiving Cloud Hypervisor's `migration.sock` here.
+async fn relay_migration(
+    State(c): Ctx,
+    p: Option<Extension<PeerCert>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    mut req: Request,
+) -> Response {
+    let from = match peer(&c, p, false) {
+        Ok(p) => p,
+        Err(r) => return r,
+    };
+    let (placed, migration) = get_vm_migration(&c.db, &id);
+    if let Err(why) = crate::controller::migration::may_relay(
+        placed.as_deref(),
+        migration.as_ref(),
+        &c.identity.node_id,
+        &from.node_id,
+    ) {
+        return fail(StatusCode::CONFLICT, "not_migrating", why);
+    }
+    let Some(on) = req.extensions_mut().remove::<hyper::upgrade::OnUpgrade>() else {
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "bad_request",
+            "this endpoint upgrades the connection",
+        );
+    };
+    // Before answering: the source learns now if nothing receives here.
+    let sock = crate::paths::vm_paths(&id).migration_socket;
+    let mut hv = match tokio::net::UnixStream::connect(&sock).await {
+        Ok(s) => s,
+        Err(e) => {
+            return fail(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "not_receiving",
+                format!("no hypervisor receives the VM here: {e}"),
+            );
+        }
+    };
+    tokio::spawn(async move {
+        let Ok(up) = on.await else { return };
+        let mut up = hyper_util::rt::TokioIo::new(up);
+        if let Err(e) = tokio::io::copy_bidirectional(&mut up, &mut hv).await {
+            tracing::warn!(vm = %id, "relaying a migration: {e}");
+        }
+    });
+    Response::builder()
+        .status(StatusCode::SWITCHING_PROTOCOLS)
+        .header("connection", "upgrade")
+        .header("upgrade", "glidex-stream")
+        .body(Body::empty())
+        .unwrap()
+}
+
+/// A VM's node and its migration record, as this node's copy has them.
+fn get_vm_migration(
+    db: &crate::store::Db,
+    id: &str,
+) -> (Option<String>, Option<crate::models::Migration>) {
+    let read = || -> Option<serde_json::Value> {
+        let txn = db.begin_read().ok()?;
+        let t = txn.open_table(TableId::Vms.definition()).ok()?;
+        serde_json::from_slice(t.get(id).ok()??.value()).ok()
+    };
+    let Some(v) = read() else {
+        return (None, None);
+    };
+    let placed = v
+        .pointer("/status/placement/node")
+        .and_then(|n| n.as_str())
+        .map(String::from);
+    let migration = v
+        .pointer("/status/migration")
+        .and_then(|m| serde_json::from_value(m.clone()).ok());
+    (placed, migration)
 }
 
 #[derive(Deserialize)]

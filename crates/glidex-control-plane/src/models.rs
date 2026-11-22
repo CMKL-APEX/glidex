@@ -563,6 +563,45 @@ pub struct VmStatus {
     /// replaces it. `None` when the node had no record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub boot_cpuid: Option<Vec<glidex_hv_client::cpuid::CpuidValue>>,
+    /// A live migration under way (spec/32-live-migration.md §4): until
+    /// its commit the VM is the source's, and this says how far it got.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub migration: Option<Migration>,
+}
+
+/// `status.migration` (spec/32-live-migration.md §4).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Migration {
+    /// The node it moves to.
+    pub target: String,
+    pub phase: MigrationPhase,
+    pub started_at: u64,
+    pub updated_at: u64,
+    /// Memory sent so far.
+    #[serde(default)]
+    pub bytes: u64,
+    /// Which pass over the dirty pages.
+    #[serde(default)]
+    pub iteration: u64,
+    /// Pages dirtied per second, as Cloud Hypervisor last reported.
+    #[serde(default)]
+    pub dirty_rate: u64,
+    /// Why it failed or is being cancelled.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub reason: String,
+}
+
+/// `Checking` → `Preparing` → `Copying` → `Switching` → `Committed`, or
+/// `Cancelling` → `Failed` (spec/32-live-migration.md §4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MigrationPhase {
+    Checking,
+    Preparing,
+    Copying,
+    Switching,
+    Committed,
+    Cancelling,
+    Failed,
 }
 
 /// The kernel a `kernel_from_disk` VM boots, and where it came from.
