@@ -2767,12 +2767,14 @@ async fn a_migration_check_says_why_not_and_moves_nothing() {
 /// (decision 16); the target, an agent, writes its own steps through the
 /// leader, which refuses the rest; the leader commits once the target has
 /// the guest and the source has let go. A cancel ends in `Failed`, after
-/// which the VM can be stopped again.
+/// which the VM can be stopped again. The target's controllers don't run:
+/// the test writes its steps, which its own loop would race.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_migrations_record_is_written_by_its_nodes_and_committed_by_the_leader() {
     use glidex_control_plane::models::{InstanceRef, Migration, MigrationPhase};
     let _one = serial().await;
-    let (server, agent) = server_and_agent().await;
+    let (server, _other) = server_and_agent().await;
+    let agent = idle_agent(&server, "agent2").await;
     let server_id = server.manager.local_node_id();
     let agent_id = agent.manager.local_node_id();
     let mut ids = Vec::new();
@@ -3034,6 +3036,40 @@ async fn a_migrations_record_is_written_by_its_nodes_and_committed_by_the_leader
     );
 }
 
+/// Points `GLIDEX_VM_SHIM` at the workspace's built shim, for tests that
+/// run real shims. Cargo may put a test binary deep under `target/`
+/// (`target/debug/build/<crate>/<hash>/out/`), so the runner's own search
+/// next to the executable doesn't find it there: this looks in each
+/// directory above. Without a shim or `/usr/bin/python3` the test is
+/// skipped, except on CI (`CI` set), where it fails.
+fn shim_for_tests() -> bool {
+    let found = std::env::var_os("GLIDEX_VM_SHIM")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            let exe = std::env::current_exe().ok()?;
+            exe.ancestors()
+                .skip(1)
+                .map(|d| d.join("glidex-vm-shim"))
+                .find(|p| p.is_file())
+        });
+    let python = std::path::Path::new("/usr/bin/python3").exists();
+    match (found, python) {
+        (Some(shim), true) => {
+            // SAFETY: the cluster tests run one at a time (`serial`).
+            unsafe { std::env::set_var("GLIDEX_VM_SHIM", shim) };
+            true
+        }
+        _ if std::env::var_os("CI").is_some() => {
+            panic!("needs /usr/bin/python3 and a built glidex-vm-shim (cargo build first)")
+        }
+        _ => {
+            eprintln!("skipped: needs /usr/bin/python3 and a built glidex-vm-shim");
+            false
+        }
+    }
+}
+
 /// A stand-in Cloud Hypervisor for a migration's target: its API answers
 /// `vmm.ping`, and `vm.receive-migration` listens on the receiver URL's
 /// socket and answers when the "source" there says how it ended (`ok`, or
@@ -3096,9 +3132,7 @@ async fn a_migrations_target_receives_the_guest_or_lets_go() {
     use glidex_control_plane::models::{Migration, MigrationPhase};
     use std::os::unix::fs::PermissionsExt;
     let _one = serial().await;
-    let shim = glidex_control_plane::instance::runner::shim_binary();
-    if !std::path::Path::new("/usr/bin/python3").exists() || shim.is_none() {
-        eprintln!("skipped: needs /usr/bin/python3 and a built glidex-vm-shim");
+    if !shim_for_tests() {
         return;
     }
     let (server, target) = server_and_agent().await;
@@ -3343,9 +3377,7 @@ async fn a_migrations_source_sends_the_guest_or_keeps_it() {
     use std::io::{BufRead, Write};
     use std::os::unix::fs::PermissionsExt;
     let _one = serial().await;
-    let shim = glidex_control_plane::instance::runner::shim_binary();
-    if !std::path::Path::new("/usr/bin/python3").exists() || shim.is_none() {
-        eprintln!("skipped: needs /usr/bin/python3 and a built glidex-vm-shim");
+    if !shim_for_tests() {
         return;
     }
     let bin = tempfile::tempdir().unwrap();
