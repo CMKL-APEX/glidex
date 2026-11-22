@@ -288,8 +288,13 @@ node-local one) keeps its VM on that node; move it to a shared datastore
 first. See
 [Placing a stopped or lost VM again](datastores.md#placing-a-stopped-or-lost-vm-again).
 
-Live migration of a running VM isn't built yet. `gxctl migrate <vm>
---check [--node N]` says what would stop it, without moving anything:
+`gxctl migrate <vm> [--node N] [--downtime-ms MS]` live-migrates a
+running VM to `N`, or to the node the scheduler picks among those that
+fit, and follows it to its end. The guest pauses for about the downtime
+(300 ms by default) at the switch, and keeps its addresses, disks and
+console. Live migration is new: try it on a VM you can lose before you
+rely on it. `gxctl migrate <vm> --check [--node N]` says what would stop
+a migration, without moving anything:
 the VM's own reasons (not running, not on Cloud Hypervisor, PCI devices,
 DPU or vhost-user NICs, a node network, disks not on hyperstor, a
 `hyperstor-vhost` on its node too old to hand a disk over), then each
@@ -300,7 +305,7 @@ on both nodes: the datastore's page shows it per node. It needs
 `migrateVm`, a cluster operator's permission, as placing does. The
 check also refuses a VM with dedicated CPUs or a NUMA policy.
 
-While a VM migrates, `gxctl vm <vm>` and `GET /vms/{id}` show its
+While a VM migrates, `gxctl get <vm>` and `GET /vms/{id}` show its
 `migration`: the target and the phase. Stopping, pausing, changing,
 placing or deleting the VM answers `409 migrating` until it ends.
 `gxctl migrate <vm> --cancel` cancels it while the guest is still on its

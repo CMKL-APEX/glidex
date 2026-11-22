@@ -1085,19 +1085,24 @@ pub async fn place_vm(call: &Call, req: pb::PlaceVmRequest) -> ServiceResult<pb:
     })
 }
 
-/// `POST /vms/{id}/migrate` (spec/32-live-migration.md §10). Only
-/// `check` is served yet: what may move where (§5), moving nothing.
+/// `POST /vms/{id}/migrate` (spec/32-live-migration.md §10): with `check`,
+/// what may move where (§5), moving nothing; without, the migration's
+/// start (§4), answered with the VM and its record.
 pub async fn migrate_vm(
     call: &Call,
     req: pb::MigrateVmRequest,
 ) -> ServiceResult<pb::MigrateVmResponse> {
     let (vm, _, _) = visible_vm(call, &req.id).await?;
     if !req.check {
-        return Err(ServiceError::new(
-            StatusCode::NOT_IMPLEMENTED,
-            "not_implemented",
-            "live migration isn't built yet; `check` says what would stop it",
-        ));
+        let vm = call
+            .manager()
+            .start_migration(&vm.id, req.node.as_deref(), req.downtime_ms, &call.actor())
+            .await
+            .map_err(manager_err)?;
+        return Ok(pb::MigrateVmResponse {
+            vm: vm_pb(call, &vm).into(),
+            ..Default::default()
+        });
     }
     let check = call
         .manager()

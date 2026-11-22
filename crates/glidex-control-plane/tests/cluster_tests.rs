@@ -2742,7 +2742,7 @@ async fn a_migration_check_says_why_not_and_moves_nothing() {
     assert_eq!(s, StatusCode::OK, "{v}");
     assert_eq!(v["check"]["targets"].as_array().unwrap().len(), 1, "{v}");
 
-    // Without `check`: not built yet, and nothing moved.
+    // Without `check`: refused with the reasons, and nothing moved.
     let (s, v) = call(
         &server,
         "POST",
@@ -2751,7 +2751,12 @@ async fn a_migration_check_says_why_not_and_moves_nothing() {
         &[],
     )
     .await;
-    assert_eq!(s, StatusCode::NOT_IMPLEMENTED, "{v}");
+    assert_eq!(s, StatusCode::BAD_REQUEST, "{v}");
+    assert!(
+        v["message"].as_str().unwrap().contains("not running"),
+        "{v}"
+    );
+    assert!(v["vm"].is_null(), "{v}");
     let (_, v) = call(&server, "GET", &format!("/vms/{id}"), None, &[]).await;
     assert_eq!(vm_of(&v)["node"], agent_id.as_str(), "{v}");
     assert_eq!(vm_of(&v)["desired_state"], "POWER_STATE_STOPPED", "{v}");
@@ -2762,12 +2767,14 @@ async fn a_migration_check_says_why_not_and_moves_nothing() {
 /// (decision 16); the target, an agent, writes its own steps through the
 /// leader, which refuses the rest; the leader commits once the target has
 /// the guest and the source has let go. A cancel ends in `Failed`, after
-/// which the VM can be stopped again.
+/// which the VM can be stopped again. The target's controllers don't run:
+/// the test writes its steps, which its own loop would race.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_migrations_record_is_written_by_its_nodes_and_committed_by_the_leader() {
     use glidex_control_plane::models::{InstanceRef, Migration, MigrationPhase};
     let _one = serial().await;
-    let (server, agent) = server_and_agent().await;
+    let (server, _other) = server_and_agent().await;
+    let agent = idle_agent(&server, "agent2").await;
     let server_id = server.manager.local_node_id();
     let agent_id = agent.manager.local_node_id();
     let mut ids = Vec::new();
@@ -3029,6 +3036,40 @@ async fn a_migrations_record_is_written_by_its_nodes_and_committed_by_the_leader
     );
 }
 
+/// Points `GLIDEX_VM_SHIM` at the workspace's built shim, for tests that
+/// run real shims. Cargo may put a test binary deep under `target/`
+/// (`target/debug/build/<crate>/<hash>/out/`), so the runner's own search
+/// next to the executable doesn't find it there: this looks in each
+/// directory above. Without a shim or `/usr/bin/python3` the test is
+/// skipped, except on CI (`CI` set), where it fails.
+fn shim_for_tests() -> bool {
+    let found = std::env::var_os("GLIDEX_VM_SHIM")
+        .map(std::path::PathBuf::from)
+        .filter(|p| p.is_file())
+        .or_else(|| {
+            let exe = std::env::current_exe().ok()?;
+            exe.ancestors()
+                .skip(1)
+                .map(|d| d.join("glidex-vm-shim"))
+                .find(|p| p.is_file())
+        });
+    let python = std::path::Path::new("/usr/bin/python3").exists();
+    match (found, python) {
+        (Some(shim), true) => {
+            // SAFETY: the cluster tests run one at a time (`serial`).
+            unsafe { std::env::set_var("GLIDEX_VM_SHIM", shim) };
+            true
+        }
+        _ if std::env::var_os("CI").is_some() => {
+            panic!("needs /usr/bin/python3 and a built glidex-vm-shim (cargo build first)")
+        }
+        _ => {
+            eprintln!("skipped: needs /usr/bin/python3 and a built glidex-vm-shim");
+            false
+        }
+    }
+}
+
 /// A stand-in Cloud Hypervisor for a migration's target: its API answers
 /// `vmm.ping`, and `vm.receive-migration` listens on the receiver URL's
 /// socket and answers when the "source" there says how it ended (`ok`, or
@@ -3091,9 +3132,7 @@ async fn a_migrations_target_receives_the_guest_or_lets_go() {
     use glidex_control_plane::models::{Migration, MigrationPhase};
     use std::os::unix::fs::PermissionsExt;
     let _one = serial().await;
-    let shim = glidex_control_plane::instance::runner::shim_binary();
-    if !std::path::Path::new("/usr/bin/python3").exists() || shim.is_none() {
-        eprintln!("skipped: needs /usr/bin/python3 and a built glidex-vm-shim");
+    if !shim_for_tests() {
         return;
     }
     let (server, target) = server_and_agent().await;
@@ -3257,6 +3296,318 @@ async fn a_migrations_target_receives_the_guest_or_lets_go() {
     unsafe {
         std::env::set_var("PATH", &old_path);
         std::env::remove_var("GLIDEX_VM_SHIM_ALLOW");
+    }
+}
+
+/// A stand-in Cloud Hypervisor running a guest, for a migration's source:
+/// it answers the shim and the controller, and `vm.send-migration` answers
+/// at once, then connects to the destination, sends a line of "guest" and
+/// exits when the other end answers `ok` (the guest has left), as v55's
+/// does. `vm.cancel-migration` drops the connection, keeping the guest.
+const FAKE_SENDER: &str = r#"#!/usr/bin/python3
+import json, os, socket, sys, threading
+path = [a for a in sys.argv if a.startswith("path=")][0][len("path="):]
+conns = []
+def answer(c, code, body=b""):
+    reason = {200: "OK", 204: "No Content", 500: "Internal Server Error"}[code]
+    c.sendall(b"HTTP/1.1 %d %s\r\nContent-Length: %d\r\n\r\n" % (code, reason.encode(), len(body)) + body)
+def send(where):
+    d = socket.socket(socket.AF_UNIX)
+    d.connect(where)
+    conns.append(d)
+    d.sendall(b"guest\n")
+    said = d.makefile().readline().strip()
+    if said == "ok":
+        os._exit(0)
+def serve(c):
+    data = b""
+    while b"\r\n\r\n" not in data:
+        chunk = c.recv(4096)
+        if not chunk:
+            return
+        data += chunk
+    head, body = data.split(b"\r\n\r\n", 1)
+    lines = head.decode().split("\r\n")
+    n = 0
+    for l in lines[1:]:
+        if l.lower().startswith("content-length:"):
+            n = int(l.split(":")[1])
+    while len(body) < n:
+        body += c.recv(4096)
+    url = lines[0].split()[1]
+    if url.endswith("/vmm.ping"):
+        answer(c, 200, b"{}")
+    elif url.endswith("/vm.info"):
+        answer(c, 200, b'{"state": "Running", "config": {}}')
+    elif url.endswith("/vm.send-migration"):
+        where = json.loads(body)["destination_url"][len("unix:"):]
+        answer(c, 204)
+        threading.Thread(target=send, args=(where,), daemon=True).start()
+    elif url.endswith("/vm.cancel-migration"):
+        answer(c, 204)
+        for d in conns:
+            d.shutdown(socket.SHUT_RDWR)
+            d.close()
+        conns.clear()
+    elif url.endswith("/vmm.shutdown") or url.endswith("/vm.shutdown") or url.endswith("/vm.power-button"):
+        answer(c, 204)
+        os._exit(0)
+    else:
+        answer(c, 500, b"not in the stand-in")
+    c.close()
+s = socket.socket(socket.AF_UNIX)
+s.bind(path)
+s.listen(8)
+while True:
+    c, _ = s.accept()
+    threading.Thread(target=serve, args=(c,), daemon=True).start()
+"#;
+
+/// A migration's source (spec/32-live-migration.md §4, task 6): with a
+/// running guest (the real shim, a stand-in Cloud Hypervisor), it sends
+/// over the relay once the target is ready; when its hypervisor exits it
+/// writes `sent`, and once the target has the guest it lets go, and the
+/// leader commits. A cancel mid-copy asks Cloud Hypervisor to cancel, the
+/// guest stays, and after the target's release the source fails the
+/// migration. The target here is an agent whose controllers don't run,
+/// and the test plays its part.
+#[tokio::test(flavor = "multi_thread", worker_threads = 6)]
+async fn a_migrations_source_sends_the_guest_or_keeps_it() {
+    use glidex_control_plane::models::{InstanceRef, Migration, MigrationPhase};
+    use std::io::{BufRead, Write};
+    use std::os::unix::fs::PermissionsExt;
+    let _one = serial().await;
+    if !shim_for_tests() {
+        return;
+    }
+    let bin = tempfile::tempdir().unwrap();
+    let ch = bin.path().join("cloud-hypervisor");
+    std::fs::write(&ch, FAKE_SENDER).unwrap();
+    std::fs::set_permissions(&ch, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let old_path = std::env::var_os("PATH").unwrap_or_default();
+    let joined = std::env::join_paths(
+        std::iter::once(bin.path().to_path_buf()).chain(std::env::split_paths(&old_path)),
+    )
+    .unwrap();
+    // SAFETY: the cluster tests run one at a time (`serial`).
+    unsafe {
+        std::env::set_var("PATH", &joined);
+        std::env::set_var("GLIDEX_VM_SHIM_ALLOW", &ch);
+        std::env::remove_var("INVOCATION_ID");
+        // No LVM here: a host's own glidex-stord isn't this test's.
+        std::env::set_var("GLIDEX_STORD_SOCKET", bin.path().join("no-stord.sock"));
+    }
+    let (server, source) = server_and_agent().await;
+    let target = idle_agent(&server, "agent2").await;
+    let source_id = source.manager.local_node_id();
+    let target_id = target.manager.local_node_id();
+
+    let mut ids = Vec::new();
+    for name in ["sent", "kept"] {
+        let (s, v) = call(
+            &server,
+            "POST",
+            "/vms",
+            Some(vm_body(name, &source_id)),
+            &[],
+        )
+        .await;
+        assert_eq!(s, StatusCode::CREATED, "{v}");
+        ids.push(vm_of(&v)["id"].as_str().unwrap().to_string());
+    }
+    let (id, other) = (ids[0].clone(), ids[1].clone());
+    let record = |id: String| {
+        let m = server.manager.clone();
+        async move { m.get_vm(&id).await.unwrap().status.migration }
+    };
+    let running = |id: String| {
+        let m = server.manager.clone();
+        async move {
+            m.get_vm(&id).await.unwrap().status.phase
+                == glidex_control_plane::models::VmPhase::Running
+        }
+    };
+    for id in [&id, &other] {
+        let (s, v) = call(
+            &server,
+            "POST",
+            &format!("/vms/{id}/start"),
+            Some(json!({})),
+            &[],
+        )
+        .await;
+        assert!(s.is_success(), "{s} {v}");
+    }
+    for id in [&id, &other] {
+        wait_for("the guest running on the source", || running(id.clone())).await;
+        let mut p = server
+            .manager
+            .get_vm(id)
+            .await
+            .unwrap()
+            .status
+            .placement
+            .unwrap();
+        p.node = target_id.clone();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        server
+            .manager
+            .__set_migration_for_tests(
+                id,
+                Some(Migration {
+                    target: target_id.clone(),
+                    phase: MigrationPhase::Preparing,
+                    started_at: now,
+                    updated_at: now,
+                    downtime_ms: 300,
+                    placement: Some(p),
+                    ..Default::default()
+                }),
+            )
+            .await
+            .unwrap();
+    }
+    // The target's receiving end, and its ready.
+    let receive = |id: &str| {
+        let sock = glidex_control_plane::paths::vm_paths(id).migration_socket;
+        glidex_control_plane::paths::ensure_vm_dir(id).unwrap();
+        let _ = std::fs::remove_file(&sock);
+        std::os::unix::net::UnixListener::bind(&sock).unwrap()
+    };
+    let (here, kept_here) = (receive(&id), receive(&other));
+    for id in [&id, &other] {
+        wait_for("the target to see the record", || async {
+            target
+                .manager
+                .get_vm(id)
+                .await
+                .ok()
+                .and_then(|v| v.status.migration)
+                .is_some()
+        })
+        .await;
+        target
+            .manager
+            .write_migration(id, |m| m.phase = MigrationPhase::Copying)
+            .await
+            .unwrap();
+    }
+
+    // The guest arrives, and the target says so.
+    let (mut c, _) = tokio::task::spawn_blocking(move || here.accept().unwrap())
+        .await
+        .unwrap();
+    let mut got = String::new();
+    std::io::BufReader::new(c.try_clone().unwrap())
+        .read_line(&mut got)
+        .unwrap();
+    assert_eq!(got, "guest\n");
+    writeln!(c, "ok").unwrap();
+    wait_for("the source's sent", || async {
+        record(id.clone())
+            .await
+            .is_some_and(|m| m.sent && m.phase == MigrationPhase::Switching)
+    })
+    .await;
+    let inst: InstanceRef = serde_json::from_value(json!({
+        "instance_id": "received-1", "runner": { "kind": "detached" }, "boot_id": "b",
+        "launched_generation": 1, "launched_at": 5,
+    }))
+    .unwrap();
+    wait_for("the target to see Switching", || async {
+        target
+            .manager
+            .get_vm(&id)
+            .await
+            .unwrap()
+            .status
+            .migration
+            .is_some_and(|m| m.sent)
+    })
+    .await;
+    target
+        .manager
+        .write_migration(&id, |m| m.received = Some(inst))
+        .await
+        .unwrap();
+    wait_for("the source's release and the commit", || async {
+        let vm = server.manager.get_vm(&id).await.unwrap();
+        vm.status.migration.is_none()
+            && vm.status.placement.as_ref().map(|p| p.node.as_str()) == Some(target_id.as_str())
+    })
+    .await;
+    let (_, ev) = call(&server, "GET", &format!("/vms/{id}/events"), None, &[]).await;
+    assert!(ev.to_string().contains("Migrated"), "{ev}");
+
+    // The other: cancelled while copying; the guest stays.
+    let (c, _) = tokio::task::spawn_blocking(move || kept_here.accept().unwrap())
+        .await
+        .unwrap();
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{other}/migrate/cancel"),
+        None,
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{v}");
+    drop(c);
+    wait_for("the target to see Cancelling", || async {
+        target
+            .manager
+            .get_vm(&other)
+            .await
+            .unwrap()
+            .status
+            .migration
+            .is_some_and(|m| m.phase == MigrationPhase::Cancelling)
+    })
+    .await;
+    target
+        .manager
+        .write_migration(&other, |m| m.target_released = true)
+        .await
+        .unwrap();
+    wait_for("the source to fail it", || async {
+        record(other.clone())
+            .await
+            .is_some_and(|m| m.phase == MigrationPhase::Failed)
+    })
+    .await;
+    let m = record(other.clone()).await.unwrap();
+    assert!(!m.sent, "{m:?}");
+    assert!(m.reason.starts_with("cancelled by"), "{m:?}");
+    wait_for("the guest still running on the source", || {
+        running(other.clone())
+    })
+    .await;
+    let vm = server.manager.get_vm(&other).await.unwrap();
+    assert_eq!(vm.status.placement.unwrap().node, source_id);
+
+    // Stop it.
+    let (s, v) = call(
+        &server,
+        "POST",
+        &format!("/vms/{other}/stop"),
+        Some(json!({})),
+        &[],
+    )
+    .await;
+    assert!(s.is_success(), "{s} {v}");
+    wait_for("the kept guest stopped", || async {
+        server.manager.get_vm(&other).await.unwrap().status.phase
+            == glidex_control_plane::models::VmPhase::Stopped
+    })
+    .await;
+    // SAFETY: as above.
+    unsafe {
+        std::env::set_var("PATH", &old_path);
+        std::env::remove_var("GLIDEX_VM_SHIM_ALLOW");
+        std::env::remove_var("GLIDEX_STORD_SOCKET");
     }
 }
 

@@ -96,6 +96,10 @@ pub struct VmPaths {
     /// on it, the source's sends to it, and the relay joins the two
     /// (spec/32-live-migration.md §4, §6).
     pub migration_socket: String,
+    /// The source's end: its control plane listens here, and its Cloud
+    /// Hypervisor sends to it. A name of its own, so the two ends' files
+    /// never meet.
+    pub migration_send_socket: String,
 }
 
 impl VmPaths {
@@ -117,6 +121,7 @@ pub fn vm_paths(vm_id: &str) -> VmPaths {
         instance: dir.join(glidex_vm_shim::INSTANCE_FILE),
         shim_socket: p(glidex_vm_shim::SHIM_SOCKET),
         migration_socket: p("migration.sock"),
+        migration_send_socket: p("migration-send.sock"),
         dir,
     }
 }
