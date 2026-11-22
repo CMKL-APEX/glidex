@@ -15,7 +15,7 @@ mod uninstall;
 
 /// Cloud Hypervisor release, verified against `cloud_hypervisor_asset`
 /// (the digests GitHub lists for the release's assets). Bump together.
-const CLOUD_HYPERVISOR_VERSION: &str = "v54.1";
+const CLOUD_HYPERVISOR_VERSION: &str = "v55.0";
 /// Release tag of <https://github.com/cloud-hypervisor/edk2/releases> to fetch
 /// the UEFI firmware from. Bump together with the digests in
 /// `firmware_asset`.
@@ -2092,17 +2092,18 @@ fn rustup_url(platform: &Platform) -> String {
     )
 }
 
-/// Bun's release zip name (without `.zip`) and its sha256 for `BUN_VERSION`.
+/// Cloud Hypervisor's static binary and its sha256 for
+/// `CLOUD_HYPERVISOR_VERSION`.
 fn cloud_hypervisor_asset(platform: &Platform) -> (&'static str, &'static str) {
     if platform.arch == "x86_64" {
         (
             "cloud-hypervisor-static",
-            "f9ffb9646783233d1f0fb09e77db1fca66499d1041e63bc011b90683c0d49933",
+            "ce7133bf535ed5a4e2a63ea1f26025445a5b1241f73ddfb81ff2fbcb2e803a59",
         )
     } else {
         (
             "cloud-hypervisor-static-aarch64",
-            "96ef17679a4a75be8eefa1956dd645a57f7974ec50565090ea9298f9bbb761ad",
+            "446de7552dacc83bc86d1137e7ffa7c2d204cdda4850eac4f2d2666d63c0f697",
         )
     }
 }

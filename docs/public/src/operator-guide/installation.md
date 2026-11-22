@@ -6,8 +6,10 @@ changes what is missing or outdated.
 
 ## Requirements
 
-- Linux on x86_64 or aarch64, with KVM enabled (`/dev/kvm`). QEMU is
-  installed on x86_64 only; on aarch64 VMs run on Cloud Hypervisor.
+- Linux on x86_64 or aarch64, with KVM enabled (`/dev/kvm`), kernel 6.8
+  or later: the pinned Cloud Hypervisor, v55.0, supports no older host
+  kernel. QEMU is installed on x86_64 only; on aarch64 VMs run on Cloud
+  Hypervisor.
 - systemd, for the services. Without it the installer still builds and
   installs the binaries, and you start them by hand.
 - A package manager the installer knows: `apt-get`, `dnf`, `yum` or
