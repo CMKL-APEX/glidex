@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use crate::datastore::record::NodeRow;
 use crate::hypervisor::HypervisorType;
-use crate::models::{PowerState, VmPhase};
+use crate::models::{Migration, MigrationPhase, PowerState, VmPhase};
 use crate::state::{VmManager, VmManagerError};
 
 /// Why a VM can't migrate, and each target's answer (§5).
@@ -181,5 +181,153 @@ impl VmManager {
         }
         out.targets.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+}
+
+/// The path of a migration's stream from its source to its target (§6).
+pub fn stream_path(vm: &str) -> String {
+    format!("/cluster/v1/migrations/{vm}/stream")
+}
+
+/// Whether node `caller` may relay a migration's stream for a VM placed on
+/// `placed_on` to node `me` (§6): only from the VM's node, to the target
+/// its migration record names, while it copies.
+pub fn may_relay(
+    placed_on: Option<&str>,
+    migration: Option<&Migration>,
+    me: &str,
+    caller: &str,
+) -> Result<(), &'static str> {
+    let Some(m) = migration else {
+        return Err("the VM isn't migrating");
+    };
+    if m.target != me {
+        return Err("the VM isn't migrating to this node");
+    }
+    if placed_on != Some(caller) {
+        return Err("only the VM's node sends its migration");
+    }
+    if m.phase != MigrationPhase::Copying {
+        return Err("the migration isn't copying");
+    }
+    Ok(())
+}
+
+/// What a migration's relay carried each way.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Relayed {
+    pub to_target: u64,
+    pub from_target: u64,
+}
+
+impl VmManager {
+    /// The source's end of a migration's relay (§6): accept the sending
+    /// Cloud Hypervisor's connection on `listener` (bound at the VM's
+    /// `migration.sock` before `send-migration`), open the stream to the
+    /// migration's target over the peer connection, and copy both ways
+    /// until either side closes. The bytes are Cloud Hypervisor's; the
+    /// relay doesn't read them.
+    pub async fn relay_migration(
+        &self,
+        vm_id: &str,
+        listener: tokio::net::UnixListener,
+    ) -> Result<Relayed, String> {
+        let vm = self.get_vm(vm_id).await.map_err(|e| e.to_string())?;
+        let me = self.local_node_id();
+        let m = vm
+            .status
+            .migration
+            .as_ref()
+            .ok_or("the VM isn't migrating")?;
+        let placed = vm.status.placement.as_ref().map(|p| p.node.as_str());
+        if placed != Some(me.as_str()) {
+            return Err("the VM isn't on this node".into());
+        }
+        if m.phase != MigrationPhase::Copying {
+            return Err("the migration isn't copying".into());
+        }
+        let cluster = self.cluster().ok_or("not in a cluster")?;
+        let addr = self
+            .nodes()
+            .get(&m.target)
+            .ok()
+            .flatten()
+            .and_then(|n| n.status.advertise)
+            .ok_or_else(|| format!("node {} has no address", m.target))?;
+        let target = crate::cluster::net::Target::node(m.target.clone(), addr);
+        let (mut hv, _) = listener
+            .accept()
+            .await
+            .map_err(|e| format!("the sending hypervisor: {e}"))?;
+        let mut up = cluster
+            .client
+            .upgrade(target, &stream_path(vm_id))
+            .await
+            .map_err(|e| format!("the target's stream: {e}"))?;
+        let (to_target, from_target) = tokio::io::copy_bidirectional(&mut hv, &mut up)
+            .await
+            .map_err(|e| format!("relaying the migration: {e}"))?;
+        Ok(Relayed {
+            to_target,
+            from_target,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn record(target: &str, phase: MigrationPhase) -> Migration {
+        Migration {
+            target: target.into(),
+            phase,
+            started_at: 1,
+            updated_at: 1,
+            bytes: 0,
+            iteration: 0,
+            dirty_rate: 0,
+            reason: String::new(),
+        }
+    }
+
+    /// The target relays a stream only from the VM's node, for a migration
+    /// to it, while it copies (§6).
+    #[test]
+    fn only_the_source_relays_to_the_target_while_copying() {
+        let copying = record("node-b", MigrationPhase::Copying);
+        assert_eq!(
+            may_relay(Some("node-a"), Some(&copying), "node-b", "node-a"),
+            Ok(())
+        );
+        assert!(may_relay(Some("node-a"), None, "node-b", "node-a").is_err());
+        assert!(
+            may_relay(Some("node-a"), Some(&copying), "node-c", "node-a").is_err(),
+            "not the target"
+        );
+        assert!(
+            may_relay(Some("node-a"), Some(&copying), "node-b", "node-c").is_err(),
+            "not the source"
+        );
+        assert!(may_relay(None, Some(&copying), "node-b", "node-a").is_err());
+        for p in [
+            MigrationPhase::Checking,
+            MigrationPhase::Preparing,
+            MigrationPhase::Switching,
+            MigrationPhase::Committed,
+            MigrationPhase::Cancelling,
+            MigrationPhase::Failed,
+        ] {
+            assert!(
+                may_relay(
+                    Some("node-a"),
+                    Some(&record("node-b", p)),
+                    "node-b",
+                    "node-a"
+                )
+                .is_err(),
+                "{p:?}"
+            );
+        }
     }
 }

@@ -434,6 +434,24 @@ impl VmManager {
             .map(|_| ())
     }
 
+    /// Set or clear `status.migration`, for tests of what reads it before
+    /// the leader's migration steps write it.
+    #[doc(hidden)]
+    pub async fn __set_migration_for_tests(
+        &self,
+        id: &str,
+        migration: Option<crate::models::Migration>,
+    ) -> Result<(), VmManagerError> {
+        let Some(vm) = self.vm(id).await else {
+            return Err(VmManagerError::VmNotFound(id.into()));
+        };
+        let mut st = vm.status.clone();
+        st.migration = migration;
+        self.write_status(id, vm.generation, st, vec![])
+            .await
+            .map(|_| ())
+    }
+
     /// D12: `spec.power = Stopped` after an exit nobody asked for, unless
     /// the user changed the spec since it was observed.
     async fn stop_spec_after_exit(

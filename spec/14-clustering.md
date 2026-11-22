@@ -968,7 +968,10 @@ with no extra fencing needed for the store.
     offline departure bundle (§5.8.3), so a node cut off for good can
     still leave with consistent records. A credential written before
     any VM of the node names it isn't sent then; a VM placed on the node
-    brings the credential it names in the same write set, ahead of it;
+    brings the credential it names in the same write set, ahead of it.
+    A VM migrating to the node (its `status.migration.target`) is sent
+    too, with its credential: the target prepares from it
+    (32-live-migration.md §6);
   - an **outbox** of status writes not yet acknowledged;
   - its metering accumulators (§13).
 - It lists, then watches from the last revision (§6.5). The cache is
