@@ -11,6 +11,7 @@ pub mod extract;
 pub mod image;
 pub mod image_cache;
 pub mod migration;
+pub mod migration_target;
 pub mod network;
 pub mod ovn;
 pub mod placement;
@@ -125,6 +126,15 @@ impl VmManager {
                 let m2 = m.clone();
                 let _ = tokio::task::spawn_blocking(move || m2.probe_datastores()).await;
                 tokio::time::sleep(Duration::from_secs(60)).await;
+            }
+        }));
+        // The migrations naming this node as their target
+        // (spec/32-live-migration.md §4).
+        let m = me.clone();
+        tasks.push(tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                m.migration_target_round().await;
             }
         }));
         // Pools with `prepare: true`: their devices here, once at start.
