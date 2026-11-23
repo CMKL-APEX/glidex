@@ -94,6 +94,9 @@ See [Logging in](../user-guide/logging-in.md).
 | `start <vm> [--no-wait]` | Start or resume; waits up to 60 s for the VM to run |
 | `stop <vm> [--graceful [secs]] [--no-wait]` | Stop. `--graceful` presses the power button and stops it hard after `secs` (default 60) |
 | `pause <vm> [--no-wait]` | Pause |
+| `migrate <vm> [--node N] [--downtime-ms MS] [--no-wait]` | Live-migrate a running VM to `N`, or where it fits best, and follow it to `Migrated` or the reason it failed (cluster operators, `migrateVm`) |
+| `migrate <vm> --check [--node N]` | Whether a running VM can live-migrate, and to which nodes, moving nothing |
+| `migrate <vm> --cancel` | Cancel a live migration while the guest hasn't moved |
 | `service-account <vm> [--set <account> \| --none]` | Show or change the VM's service account, the identity its guest gets glidex tokens for (from its next token) |
 | `kernel <vm> [--set <kernel image>] [--follow on\|off] [--extract]` | Show a kernel-boot VM's kernel (and the booted and previous ones when following the guest); change it from the next start; take the kernel on its disk |
 | `rename <vm> <new-name>` | Rename a VM, and the root disk it made from an image; the guest's hostname follows at the next start |
