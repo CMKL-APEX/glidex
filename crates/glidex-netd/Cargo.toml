@@ -24,7 +24,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 redb = "4.5"
-nix = { version = "0.31", features = ["socket", "user", "signal", "fs", "process"] }
+nix = { version = "0.32", features = ["socket", "user", "signal", "fs", "process"] }
 
 [dev-dependencies]
 tempfile = "3"

@@ -33,7 +33,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 thiserror = "2"
 tower-http = { version = "0.7", features = ["trace"] }
-nix = { version = "0.31", features = ["term", "fs", "process"] }
+nix = { version = "0.32", features = ["term", "fs", "process"] }
 libc = "0.2"
 redb = "4.5"
 smallvec = "1"
