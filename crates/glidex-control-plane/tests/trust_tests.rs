@@ -760,6 +760,38 @@ async fn the_feed_brings_a_trusted_directorys_people_to_the_cluster() {
             .unwrap(),
         "304 the second time"
     );
+    // Every object in the snapshot has its keys in order, so a reader that
+    // parses objects into sorted maps (hyperstor-meta, built without
+    // serde_json's `preserve_order`) hashes the text it was sent.
+    {
+        fn in_order(v: &Value) -> bool {
+            match v {
+                Value::Object(m) => {
+                    m.keys().zip(m.keys().skip(1)).all(|(a, b)| a < b) && m.values().all(in_order)
+                }
+                Value::Array(a) => a.iter().all(in_order),
+                _ => true,
+            }
+        }
+        let dir = issuer.trim_end_matches('/').rsplit("/d/").next().unwrap();
+        let c = acme
+            .app
+            .auth
+            .trust
+            .cluster(dir, &north_id)
+            .unwrap()
+            .expect("north among acme's trusted clusters");
+        let snap = glidex_control_plane::api::trust::snapshot_for(&acme.app, dir, &c).unwrap();
+        assert!(!snap.rows.is_empty());
+        assert!(in_order(&snap.jwks), "{}", snap.jwks);
+        for r in &snap.rows {
+            assert!(in_order(&r.value), "{} {}: {}", r.table, r.key, r.value);
+        }
+        assert_eq!(
+            snap.revision,
+            glidex_control_plane::trust::revision_of(&snap.jwks, &snap.rows, &snap.ended_sids)
+        );
+    }
     let u = north
         .app
         .auth

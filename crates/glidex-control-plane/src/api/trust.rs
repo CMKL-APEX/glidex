@@ -521,12 +521,34 @@ pub fn snapshot_for(
         .refresh_tokens
         .ended_since(dir, &client, now().saturating_sub(op::ENDED_KEEP_SECS))
         .map_err(|e| e.to_string())?;
+    for r in &mut rows {
+        r.value = sorted(std::mem::take(&mut r.value));
+    }
+    let jwks = sorted(jwks);
     Ok(trust::Snapshot {
         revision: trust::revision_of(&jwks, &rows, &ended_sids),
         jwks,
         rows,
         ended_sids,
     })
+}
+
+/// `v` with every object's keys in order. A snapshot's revision is a hash
+/// of its JSON text, and a reader built without serde_json's
+/// `preserve_order` (hyperstor-meta) parses objects into sorted maps; this
+/// build keeps the order fields were written in. Sent sorted, every reader
+/// hashes the text it was sent: hyperstor-meta refused each changed feed
+/// otherwise.
+fn sorted(v: Value) -> Value {
+    match v {
+        Value::Object(m) => {
+            let mut kv: Vec<(String, Value)> = m.into_iter().collect();
+            kv.sort_by(|a, b| a.0.cmp(&b.0));
+            Value::Object(kv.into_iter().map(|(k, v)| (k, sorted(v))).collect())
+        }
+        Value::Array(a) => Value::Array(a.into_iter().map(sorted).collect()),
+        v => v,
+    }
 }
 
 /// The rows of `snap` as this cluster keeps them for trusted directory
