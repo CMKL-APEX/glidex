@@ -8752,6 +8752,105 @@ async fn a_server_joining_from_a_snapshot_follows_the_ovn_setting() {
     .await;
 }
 
+/// glidex#631: a server forgotten while down, whose control plane then
+/// starts again and runs its old runtime alone, rejoins through its API with
+/// its Raft state intact: the rejoin reopens the same Raft log, so the old
+/// runtime must have let go of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
+    use glidex_control_plane::cluster::Cluster;
+    let _one = serial().await;
+    let cps = form(3).await;
+    let lead = leader_index(&cps, &[0, 1, 2]).await;
+    // A voter: alone, it stands for election.
+    let learner = (0..3).find(|i| *i != lead).unwrap();
+    let lname = cluster(&cps[learner]).identity.name.clone();
+
+    // It goes silent and is forgotten.
+    cluster(&cps[learner]).stop().await;
+    wait_until("the node to be reported unreachable", || async {
+        node_json(&cps[lead], &lname).await["status"]["ready"] != READY
+    })
+    .await;
+    let (s, r) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/forget"),
+        Some(json!({ "fenced": true, "force": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{r}");
+
+    // Its control plane starts again, as at boot: its old identity, its
+    // Raft state, nobody to talk to.
+    cps[learner].manager.detach_cluster().await.unwrap();
+    let cfg = test_config();
+    let files =
+        glidex_control_plane::cluster::identity::Files::beside(cps[learner].manager.db_path());
+    let id = files.load_identity().unwrap().unwrap();
+    let c = Cluster::start(
+        cps[learner].manager.database(),
+        files,
+        id,
+        cfg.cluster.clone(),
+        cps[learner].addr,
+    )
+    .await
+    .unwrap();
+    cps[learner].manager.attach_cluster(c);
+    // Long enough for its controllers to retry writes it can't make.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let (s, t) = call(
+        &cps[lead],
+        "POST",
+        &format!("/nodes/{lname}/rejoin-token"),
+        Some(json!({ "raft_intact": true })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{t}");
+    // Through its own API, as `gxctl cluster rejoin` does, with its
+    // cluster listener where this test has it (the config's).
+    let mut api_cfg = test_config();
+    api_cfg.cluster.listen = cps[learner].addr;
+    let api = Cp {
+        manager: cps[learner].manager.clone(),
+        router: glidex_control_plane::api::router(Arc::new(glidex_control_plane::api::App {
+            manager: cps[learner].manager.clone(),
+            auth: glidex_control_plane::auth::AuthService::disabled_with(
+                cps[learner].manager.database(),
+                api_cfg,
+            )
+            .unwrap(),
+        })),
+        addr: cps[learner].addr,
+        secrets: None,
+        _dir: tempfile::tempdir().unwrap(),
+    };
+    let (s, out) = call(
+        &api,
+        "POST",
+        "/cluster/rejoin",
+        Some(json!({
+            "server": cps[lead].addr.to_string(),
+            "token": t["token"],
+            "advertise": cps[learner].addr.to_string(),
+        })),
+        &[],
+    )
+    .await;
+    assert_eq!(s, StatusCode::OK, "{out}");
+    wait_until("the rejoined server to be a member again", || async {
+        let c = cluster(&cps[lead]);
+        let rid = cluster(&cps[learner]).identity.raft_id;
+        let l = c.node.as_ref().unwrap();
+        l.voters().contains(&rid) || l.learners().contains(&rid)
+    })
+    .await;
+}
+
 /// D37: an agent whose host moved rejoins at its new address, with its
 /// control plane stopped (it serves no API of its own). The cluster records
 /// the new address, and the tunnel address follows it.
@@ -8821,7 +8920,7 @@ async fn an_agent_rejoins_at_a_new_address() {
     };
 
     // The control plane stops; the offline rejoin changes only its files.
-    agent.manager.detach_cluster().await;
+    agent.manager.detach_cluster().await.unwrap();
     let db = agent.manager.db_path().to_path_buf();
     let (name, at) = manage::rejoin_offline(&db, &cfg, opts(t["token"].as_str().unwrap()))
         .await
