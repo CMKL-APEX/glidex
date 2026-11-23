@@ -812,6 +812,8 @@ pub struct PeerCert {
     pub node_id: String,
     pub server: bool,
     pub serial: String,
+    /// The certificate itself (DER), for checks that need its issuer.
+    pub der: Arc<Vec<u8>>,
 }
 
 /// Serve `router` on `listener` over TLS until `stop` fires. Every request
@@ -848,11 +850,15 @@ pub async fn serve(
                 .1
                 .peer_certificates()
                 .and_then(|c| c.first())
-                .and_then(|c| super::pki::inspect_node_cert(c.as_ref()).ok())
-                .map(|c| PeerCert {
-                    node_id: c.node_id,
-                    server: c.server,
-                    serial: c.serial,
+                .and_then(|der| {
+                    super::pki::inspect_node_cert(der.as_ref())
+                        .ok()
+                        .map(|c| PeerCert {
+                            node_id: c.node_id,
+                            server: c.server,
+                            serial: c.serial,
+                            der: Arc::new(der.as_ref().to_vec()),
+                        })
                 });
             let svc = hyper::service::service_fn(move |mut req: Request<Incoming>| {
                 let router = router.clone();

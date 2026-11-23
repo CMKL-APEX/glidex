@@ -1592,6 +1592,11 @@ old one stopped:
    every current peer's certificate, so the newer state could never
    reach the node (glidex#631). The node keeps the bundle the rejoin gave
    it, and doesn't renew against that state either, until it catches up.
+   An installed bundle that doesn't hold the CA of the node's own
+   certificate is mended instead. The node fetches the CA from a server
+   without trusting the connection, and installs only the one CA
+   certificate whose key signed its own certificate, so an answer can't
+   add another CA (glidex#638).
 3. **Re-issue.** Every node renews its node certificate, and netd its OVN
    certificates, by CSR. They are signed with the new CA and recorded in
    `issued_certs`. Nodes report their certificates' issuer in their
@@ -1605,7 +1610,13 @@ old one stopped:
 
 **During the window**, glidex's own port (:8842) accepts a leaf
 certificate only if its serial is in `issued_certs` and not in
-`node_denylist`. A departed server can sign certificates with the old
+`node_denylist`. There is one exception: a certificate whose serial
+isn't in the node's `issued_certs` but whose CA (by the installed bundle)
+signed none of the certificates listed there. That registry is older
+than the CA, as on a server rejoined after its forget rotated the CA, so
+it can't judge the certificate. Only a holder of that CA's key can have
+issued it, and a server that left never had the key of the CA its leave
+started. The deny list still applies (glidex#638). A departed server can sign certificates with the old
 key, but none of them is in the registry, so they don't work on :8842,
 even before step 4. OVN's SSL connections check only the CA, so for OVN
 the window stays open until step 4. SB role-based access limits a

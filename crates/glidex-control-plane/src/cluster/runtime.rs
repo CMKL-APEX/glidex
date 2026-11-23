@@ -548,6 +548,16 @@ impl Cluster {
         if let Ok(t) = txn.open_table(crate::store::TableId::IssuedCerts.definition()) {
             let empty = t.is_empty().unwrap_or(true);
             if !empty && t.get(peer.serial.as_str()).ok().flatten().is_none() {
+                // Nor can it judge a certificate from a CA it has never
+                // recorded one from: the replica is older than that CA, as on
+                // a server rejoined after its forget rotated the CA
+                // (glidex#638). Only a holder of that CA's key can have
+                // issued it, and a server that left never had the key of
+                // the CA its leave started (D20); the handshake has checked
+                // it against the installed bundle.
+                if self.registry_predates_issuer(&t, peer) {
+                    return Ok(());
+                }
                 return Err("certificate was not issued by this cluster");
             }
             if !empty && peer.server && !Self::is_current_server(&txn, &peer.node_id) {
@@ -555,6 +565,29 @@ impl Cluster {
             }
         }
         Ok(())
+    }
+
+    /// No certificate in the registry `t` comes from the CA that signed
+    /// `peer`'s, by the installed bundle.
+    fn registry_predates_issuer(
+        &self,
+        t: &redb::ReadOnlyTable<&'static str, &'static [u8]>,
+        peer: &PeerCert,
+    ) -> bool {
+        use redb::ReadableTable;
+        let Some(issuer) = self
+            .files
+            .read(self.files.trust())
+            .ok()
+            .and_then(|trust| super::pki::issuer_of(&peer.der, &trust))
+        else {
+            return false;
+        };
+        let Ok(rows) = t.iter() else { return false };
+        !rows.flatten().any(|(_, v)| {
+            serde_json::from_slice::<serde_json::Value>(v.value())
+                .is_ok_and(|v| v["issuer"].as_str() == Some(issuer.as_str()))
+        })
     }
 
     /// `node` is listed as a server and isn't a tombstone. Removing or

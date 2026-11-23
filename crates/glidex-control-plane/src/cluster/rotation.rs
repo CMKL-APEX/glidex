@@ -54,6 +54,16 @@ fn state_behind_cert(cert_der: &[u8], trust_pem: &str) -> bool {
     pki::issuer_of(cert_der, trust_pem).is_none()
 }
 
+/// The certificate (PEM) of the CA in `bundle` that signed `cert_der`, and no
+/// other: what a node may take from an answer it couldn't authenticate.
+fn issuer_cert(cert_der: &[u8], bundle: &str) -> Option<String> {
+    pki::pem_bundle_ders(bundle)
+        .ok()?
+        .into_iter()
+        .map(|d| pki::pem_of(&d))
+        .find(|pem| pki::issuer_of(cert_der, pem).is_some())
+}
+
 /// Whether `cert_der` comes from a CA the state still trusts but no longer
 /// signs with (a rotation's step 3). A certificate from a CA the state
 /// doesn't know at all is newer than the state, not stale.
@@ -369,6 +379,60 @@ impl Cluster {
                 let _ = std::fs::remove_file(old);
             }
         }
+    }
+
+    /// Mend an installed bundle that doesn't hold the CA of this node's own
+    /// certificate (glidex#638). Such a node refuses every peer, so it can't
+    /// learn a newer bundle from its replica, and #634 keeps what is
+    /// installed. The CA is fetched without trusting the connection, from
+    /// the cluster's servers, and only the one CA certificate whose key
+    /// signed this node's certificate is installed: an answer can't add
+    /// another CA. Returns whether the bundle was replaced.
+    pub async fn repair_trust(&self) -> bool {
+        let Some(der) = self.own_cert_der() else {
+            return false;
+        };
+        let have = self.files.read(self.files.trust()).unwrap_or_default();
+        if pki::issuer_of(&der, &have).is_some() {
+            return false;
+        }
+        let mut addrs = self.identity.seeds.clone();
+        addrs.extend(self.leader_addr());
+        addrs.extend(
+            NodeStore::new(self.db.clone())
+                .list()
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|n| n.spec.role == NodeRole::Server && n.meta.id != self.identity.node_id)
+                .filter_map(|n| n.status.advertise.map(|a| a.to_string())),
+        );
+        let mut seen = std::collections::HashSet::new();
+        addrs.retain(|a| seen.insert(a.clone()));
+        for addr in addrs {
+            let Ok(bundle) = super::net::fetch_ca_untrusted(&addr).await else {
+                continue;
+            };
+            let Some(ca) = issuer_cert(&der, &bundle) else {
+                continue;
+            };
+            match pki::write_private(&self.files.trust(), ca.as_bytes())
+                .map_err(other)
+                .and_then(|_| self.reload_tls())
+            {
+                Ok(()) => {
+                    tracing::warn!(
+                        from = %addr,
+                        "the installed CA bundle didn't hold the CA of this node's certificate: installed that CA"
+                    );
+                    return true;
+                }
+                Err(e) => {
+                    tracing::warn!("installing the CA of this node's certificate: {}", e);
+                    return false;
+                }
+            }
+        }
+        false
     }
 
     /// Step 3 (every node): get a certificate from the signing CA when ours is
@@ -721,6 +785,7 @@ impl Cluster {
                 tokio::select! { _ = tick.tick() => {}, _ = stop.changed() => return }
                 // A stop cancels work in flight: a runtime being replaced must let go of its files.
                 let round = async {
+                    me.repair_trust().await;
                     let c = me.clone();
                     let _ = tokio::task::spawn_blocking(move || c.trust_sync()).await;
                     if let Err(e) = me.renew_if_needed().await {
@@ -776,5 +841,30 @@ mod tests {
         assert!(!state_behind_cert(&before, &both));
         assert!(issued_by_retiring_ca(&before, &both, &new_fp));
         assert!(!issued_by_retiring_ca(&before, &old.cert_pem, &old_fp));
+    }
+
+    #[test]
+    fn only_the_ca_of_the_node_certificate_is_taken_from_an_unauthenticated_answer() {
+        let old = Ca::generate("c1").unwrap();
+        let new = Ca::generate("c1").unwrap();
+        let other = Ca::generate("c1").unwrap();
+        let mine = cert_from(&new);
+        let fp = |pem: &str| pki::public_key_fingerprint(pem).unwrap();
+
+        // glidex#638: the installed bundle is the pre-rotation CA, so it
+        // doesn't hold the CA of this node's certificate.
+        assert!(pki::issuer_of(&mine, &old.cert_pem).is_none());
+
+        // The answer holds that CA among others: only it is taken.
+        let answer = format!("{}{}{}", other.cert_pem, new.cert_pem, old.cert_pem);
+        let got = issuer_cert(&mine, &answer).unwrap();
+        assert_eq!(pki::pem_bundle_ders(&got).unwrap().len(), 1);
+        assert_eq!(fp(&got), new.public_key_fingerprint().unwrap());
+        assert!(pki::issuer_of(&mine, &got).is_some());
+
+        // An answer without it (another cluster, or someone in the middle)
+        // gives nothing to install.
+        assert!(issuer_cert(&mine, &format!("{}{}", other.cert_pem, old.cert_pem)).is_none());
+        assert!(issuer_cert(&mine, "").is_none());
     }
 }
