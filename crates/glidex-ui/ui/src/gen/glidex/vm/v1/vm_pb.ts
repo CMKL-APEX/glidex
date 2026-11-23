@@ -4972,8 +4972,9 @@ export const VmService: GenService<{
   },
   /**
    * Live-migrate a running VM to `node`, or to a node whose CPU and room
-   * fit (spec/32-live-migration.md). With `check`, only says whether it
-   * can, and where, without moving anything; only `check` is served yet.
+   * fit (spec/32-live-migration.md): answers the VM with its `migration`.
+   * With `check`, only says whether it can, and where, without moving
+   * anything.
    *
    * @generated from rpc glidex.vm.v1.VmService.MigrateVm
    */

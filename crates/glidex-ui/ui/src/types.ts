@@ -119,6 +119,50 @@ export interface VmResponse {
   root_disk?: string;
   data_disks?: string[];
   warnings?: string[];
+  /** A live migration in progress, or the last one if it failed
+   * (spec/32-live-migration.md §4). */
+  migration?: VmMigration;
+}
+
+export type MigrationPhase =
+  | "MIGRATION_PHASE_UNSPECIFIED"
+  | "MIGRATION_PHASE_CHECKING"
+  | "MIGRATION_PHASE_PREPARING"
+  | "MIGRATION_PHASE_COPYING"
+  | "MIGRATION_PHASE_SWITCHING"
+  | "MIGRATION_PHASE_COMMITTED"
+  | "MIGRATION_PHASE_CANCELLING"
+  | "MIGRATION_PHASE_FAILED";
+
+/** `Vm.migration`: 64-bit numbers come as strings. */
+export interface VmMigration {
+  /** The node id it moves to. */
+  target: string;
+  phase?: MigrationPhase;
+  /** Unix seconds. */
+  started_at?: string;
+  updated_at?: string;
+  downtime_ms?: number;
+  reason?: string;
+}
+
+const MIGRATION_PHASES: Partial<Record<MigrationPhase, string>> = {
+  MIGRATION_PHASE_PREPARING: "preparing the target",
+  MIGRATION_PHASE_COPYING: "copying memory",
+  MIGRATION_PHASE_SWITCHING: "switching to the target",
+  MIGRATION_PHASE_CANCELLING: "cancelling",
+  MIGRATION_PHASE_FAILED: "failed",
+};
+
+/** A migration phase in words. */
+export function migrationPhase(m: VmMigration): string {
+  return (m.phase && MIGRATION_PHASES[m.phase]) ?? "in progress";
+}
+
+/** The VM's migration while it is in progress; a failed one is `null`. */
+export function migrating(vm: VmResponse): VmMigration | null {
+  const m = vm.migration;
+  return m && m.phase !== "MIGRATION_PHASE_FAILED" ? m : null;
 }
 
 export type Vm = VmResponse;
@@ -924,6 +968,8 @@ export function settled(vm: VmResponse): boolean {
  * §7.4), or `null` once it has converged. */
 export function vmActivity(vm: VmResponse): string | null {
   if (vm.deleting) return "Deleting";
+  const m = migrating(vm);
+  if (m) return `Migrating (${migrationPhase(m)})`;
   const desired = desiredState(vm);
   if (!desired) return null;
   const state = vmState(vm);
