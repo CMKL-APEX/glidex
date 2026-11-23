@@ -220,7 +220,7 @@ say what it needs and leave the installing to the tool:
 | `/usr/local/bin/cloud-hypervisor` | The pinned Cloud Hypervisor. |
 | `/usr/local/bin/pylon`, `/usr/local/bin/pylond` | Pylon and its core arbiter, with `--with-pylon`. |
 | `/usr/local/share/glidex/pylon-guest-agent` | Pylon's guest agent, with `--with-pylon`, for Pylon VMs' seed disks. |
-| `/usr/local/share/glidex/ui/` | The built web UI. |
+| `/usr/local/share/glidex/ui/` | The built web UI. After an update, its `assets/` also holds the previous build's files, for pages opened before the update (see [Updating](#updating)). |
 | `/etc/systemd/system/glidex-*.service`, `glidex-authd.socket`, `glidex-vm@.service`, `glidex-vms.slice` | The systemd units (see [Operator guide](README.md#components)). |
 | `/etc/systemd/system/glidex-ui.service.d/50-tailscale-cert.conf`, `/etc/systemd/system/tailscaled.service.d/50-glidex-cert.conf` | With `--tailscale-cert`: the drop-ins that turn the UI's Tailscale certificate on and let `glidex-ui` fetch it. |
 | `/etc/polkit-1/rules.d/50-glidex-vm.rules` | Lets the `glidex` user start and stop its own `glidex-vm@` units. |
@@ -385,6 +385,10 @@ On Ubuntu, `needrestart` only lists the services that use an upgraded
 library (such as Open vSwitch or a QEMU VM's unit); the installer
 doesn't let it restart them, so restart them yourself when it suits.
 Reload web UI tabs that were open before the update to get the new UI.
+Until you do, they keep working: the installer keeps the previous UI
+build's files beside the new one until the next update, and a tab that
+asks for a file that is gone (open across two updates) reloads itself
+once.
 
 With the kernel profile saved, the installer also turns off DPDK it
 finds on in `ovs-vswitchd`, for example after `gxctl ovs dpdk-init` or

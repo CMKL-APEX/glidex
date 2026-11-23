@@ -155,6 +155,7 @@ capability checks stay in glidex.
 ui/src/
 ├── App.tsx                 # SessionProvider + <Routes> for the pages
 ├── main.tsx                # ReactDOM.createRoot entrypoint
+├── staleBuild.ts           # A build file that fails to load (a page opened two updates ago): reload once a minute at most
 ├── api.ts                  # Typed fetch wrappers: cookies, CSRF, 401 handling
 ├── session.tsx             # whoami, project selection, host capabilities, useCan()
 ├── live.tsx                # LiveProvider: one EventSource on /api/watch; useLive(), useLiveRefresh()
