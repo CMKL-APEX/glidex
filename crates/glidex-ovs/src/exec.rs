@@ -38,6 +38,10 @@ pub enum Program {
     /// Loading `vfio-pci` before a device is bound to it (spec/27-gpu-vms.md G17).
     Modprobe,
     Systemctl,
+    /// Joining a server's OVN databases to the cluster's (spec/14-clustering.md §5.7).
+    OvsdbTool,
+    /// Moving stale OVN database files aside before that.
+    Mv,
     Dnsmasq,
     Ping,
     Ss,
@@ -73,6 +77,8 @@ impl Program {
             Program::Getcap => "getcap",
             Program::Modprobe => "modprobe",
             Program::Systemctl => "systemctl",
+            Program::OvsdbTool => "ovsdb-tool",
+            Program::Mv => "mv",
             Program::Dnsmasq => "dnsmasq",
             Program::Ping => "ping",
             Program::Ss => "ss",

@@ -168,6 +168,7 @@ fn two_servers_form_the_ovn_database_clusters_with_glidex_options() {
             local_ip: *ip,
             join: (i > 0).then(|| ips[0]),
             servers: ips.to_vec(),
+            rejoin: false,
         };
         let line = central_opts(&spec, &d.join("certs"));
         let opts = line

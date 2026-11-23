@@ -488,13 +488,19 @@ impl VmManager {
             .map(|n| n.spec.br_int_datapath)
             .unwrap_or_default();
         let dpu_remotes = sb_remotes.clone();
+        // A server that joined, or rejoined after a forget, joins OVN's
+        // databases afresh (glidex#641).
+        let rejoin = cluster.files.ovn_join_pending().exists();
+        let central_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let done = central_done.clone();
         let res = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
             use glidex_netd::proto::{EnsureOvnCentralArgs, EnsureOvnChassisArgs, Op};
             if is_server {
                 let join = first.as_ref().filter(|(id, _)| *id != me).map(|(_, ip)| *ip);
                 let local = cluster_local_ip(&all_ips, own_ip);
-                let spec = glidex_ovs::ovn::CentralSpec { local_ip: local, join, servers: all_ips.clone() };
+                let spec = glidex_ovs::ovn::CentralSpec { local_ip: local, join, servers: all_ips.clone(), rejoin };
                 netd.call::<serde_json::Value>(Op::EnsureOvnCentral(EnsureOvnCentralArgs { spec, certs: certs.clone() })).map_err(|e| e.to_string())?;
+                done.store(true, std::sync::atomic::Ordering::Relaxed);
             }
             // `br-int`'s datapath: the node's setting; `auto` is userspace
             // where DPDK runs (vhost-user needs it), else the kernel's.
@@ -510,6 +516,12 @@ impl VmManager {
             Ok(st.datapath)
         })
         .await;
+        if rejoin && central_done.load(std::sync::atomic::Ordering::Relaxed) {
+            match cluster.files.mark_ovn_join(false) {
+                Ok(()) => tracing::info!("this server's OVN databases joined the cluster's"),
+                Err(e) => tracing::warn!("recording that OVN's databases joined: {}", e),
+            }
+        }
         match res {
             Ok(Ok(datapath)) => {
                 // The scheduler needs to know where vhost-user NICs can go (§9.1).

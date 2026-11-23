@@ -625,6 +625,12 @@ pub struct JoinResponse {
     pub role: Option<NodeRole>,
     #[serde(default)]
     pub raft_id: Option<u64>,
+    /// A server joining, or rejoining after a forget (which kicked it from
+    /// OVN's NB and SB clusters): its OVN databases join the cluster's
+    /// afresh, whatever files it has (glidex#641). The node keeps this in a
+    /// local file, which no replicated write can undo.
+    #[serde(default)]
+    pub ovn_join: bool,
 }
 
 /// §5.2 step 3: check the token, sign the certificate, record the node.
@@ -753,6 +759,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
             name: None,
             role: None,
             raft_id: None,
+            ovn_join: server,
         })
         .into_response(),
         Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
@@ -910,6 +917,7 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
             name: Some(name),
             role: Some(role),
             raft_id,
+            ovn_join: server && was_forgotten,
         })
         .into_response(),
         Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),

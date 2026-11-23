@@ -8777,6 +8777,27 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
     let old_fp = cluster(&cps[lead]).signing_fp();
     let lc = cluster(&cps[lead]);
     let old_bundle = lc.files.read(lc.files.trust()).unwrap();
+    // Servers that joined join OVN's databases afresh (glidex#641); the
+    // cluster's first server, which made them, doesn't. The mark is a file
+    // of the node's own, which no replicated write can undo.
+    let pending = |i: usize| cluster(&cps[i]).files.ovn_join_pending().exists();
+    let first = cps[lead]
+        .manager
+        .nodes()
+        .list()
+        .unwrap()
+        .into_iter()
+        .min_by_key(|n| n.meta.created_at)
+        .unwrap()
+        .meta
+        .id;
+    for (i, cp) in cps.iter().enumerate() {
+        let is_first = cluster(cp).identity.node_id == first;
+        assert_eq!(pending(i), !is_first, "server {i} (first: {is_first})");
+    }
+    // As if its ovn-central had joined: the node removes it.
+    cluster(&cps[learner]).files.mark_ovn_join(false).unwrap();
+    assert!(!pending(learner));
 
     // It goes silent and is forgotten.
     cluster(&cps[learner]).stop().await;
@@ -8880,6 +8901,8 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
         l.voters().contains(&rid) || l.learners().contains(&rid)
     })
     .await;
+    // Its forget kicked it from OVN's NB and SB clusters: it joins them afresh.
+    assert!(pending(learner), "a forgotten server that rejoined");
     // It trusts the CA of its new certificate, and catches up: its replica
     // learns the rotation only from the leader.
     assert_eq!(issuer(&cps[learner]).as_deref(), Some(new_fp.as_str()));

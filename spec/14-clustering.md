@@ -384,7 +384,20 @@ the leader first removes the old voter, then adds the node back as a
 **learner**, promoted after catching up (§5.2). OVN is treated the same
 way: a server whose NB or SB database file is lost is kicked
 (`cluster/kick`) and re-added with `ovsdb-tool join-cluster`, never
-restarted with an empty file. If the node's advertise or tunnel address
+restarted with an empty file. A server forgotten and then rejoined was
+kicked from both at its forget (§5.6), but its files survive: started as
+they are, they are a member the clusters no longer have, campaigning on
+their own. So the answer to that rejoin, as to any server's join, says
+`ovn_join`, and the node keeps it in a local file
+(`cluster/ovn-join-pending`). It isn't in the replicated node record,
+which the node's own status writes, made from its stale replica before it
+catches up, would overwrite. A marked server stops `ovn-central`, moves
+its NB and SB files aside (`.before-rejoin`) and joins new ones to every
+other server with `ovsdb-tool join-cluster`, then removes the file. It does none
+of this if both databases already report `Status: cluster member`, which
+would add it twice. A marked server never makes the databases, so "the
+oldest server makes OVN's databases" holds only for the cluster's first
+server (glidex#641). If the node's advertise or tunnel address
 changed, the leader updates the Raft member address, the chassis
 encapsulation IP and `gx_nodes` in the same change.
 

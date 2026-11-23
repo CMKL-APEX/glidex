@@ -419,6 +419,9 @@ pub async fn join(
     }
     files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;
     files.save_identity(&identity)?;
+    if resp.ovn_join {
+        files.mark_ovn_join(true).map_err(other)?;
+    }
     crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
     crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
     let db = manager.database();
@@ -677,6 +680,9 @@ pub async fn rejoin(
     manager.detach_cluster().await.map_err(other)?;
     files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;
     files.save_identity(&identity)?;
+    if resp.ovn_join {
+        files.mark_ovn_join(true).map_err(other)?;
+    }
     crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
     crate::authz::set_local_account_scope((!ccfg.shared_local_accounts).then(|| node_id.clone()));
     let db = manager.database();
