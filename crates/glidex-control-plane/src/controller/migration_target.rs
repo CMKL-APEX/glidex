@@ -377,6 +377,7 @@ impl VmManager {
             launched_max_vcpus: None,
             applied_cpu_policy: None,
             device_errors: Default::default(),
+            received_usage: None,
         });
         inst.instance_id = f.instance_id.clone();
         inst.runner = self.runner().record(&vm.id);
@@ -391,6 +392,21 @@ impl VmManager {
         inst.cpu_affinity = launch.cpu_affinity;
         inst.vfio_devices.clear();
         inst.device_errors.clear();
+        // What the receive used, metered as the migration's (decision 19).
+        inst.received_usage = self.meter().and_then(|m| {
+            let u = m.instance_usage(&inst)?;
+            Some(crate::models::ReceivedUsage {
+                since: f.launched_at * 1000,
+                at: crate::metering::now_ms(),
+                cpu_usec: u.cpu_usec,
+                io: u.io.map(|io| crate::models::ReceivedIo {
+                    read_bytes: io.read_bytes,
+                    write_bytes: io.write_bytes,
+                    read_ops: io.read_ops,
+                    write_ops: io.write_ops,
+                }),
+            })
+        });
         Ok(inst)
     }
 

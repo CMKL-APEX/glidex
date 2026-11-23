@@ -37,6 +37,9 @@ const USAGE_METERS: [string, string][] = [
   // Host-side, after the page cache (capacity; spec/13-metering.md D4).
   ["vmio.read_bytes", "Host disk I/O read"],
   ["vmio.write_bytes", "Host disk I/O write"],
+  // A live migration's receive, billed apart from the guest's own
+  // (spec/32-live-migration.md decision 19).
+  ["migration.cpu.used", "CPU used by live migrations"],
 ];
 const NETWORK_METERS: [string, string][] = [
   ["bridge.bytes", "Traffic through the network"],

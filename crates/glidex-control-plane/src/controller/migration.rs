@@ -437,6 +437,7 @@ pub fn source_may_write(cur: Option<&Migration>, new: Option<&Migration>) -> Res
         m.reason.clear();
         m.delegates.clear();
         m.sent = false;
+        m.sent_at = 0;
         m.source_released = false;
         m.bytes = 0;
         m.iteration = 0;

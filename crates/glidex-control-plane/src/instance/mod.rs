@@ -136,6 +136,7 @@ mod tests {
             launched_max_vcpus: None,
             applied_cpu_policy: None,
             device_errors: Default::default(),
+            received_usage: None,
         }
     }
 

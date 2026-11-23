@@ -203,8 +203,10 @@ impl VmManager {
                 Ok(())
             }
             SourceStep::Sent => {
+                let at = crate::metering::now_ms();
                 self.source_writes(vm, |m| {
                     m.sent = true;
+                    m.sent_at = at;
                     m.phase = MigrationPhase::Switching;
                 })
                 .await
@@ -361,6 +363,14 @@ impl VmManager {
     /// removed, its shim released. Best-effort; what fails is logged.
     async fn release_source(&self, vm: &Vm, disks: &[(Disk, Arc<HyperstorDriver>)]) {
         let paths = vm.paths();
+        // The last reading of this node's part, its runs ended when the
+        // guest left, before the instance and its cgroup go (decision 19).
+        if let Some(meter) = self.meter() {
+            let (v, all) = (vm.clone(), self.images.list_disks());
+            if let Ok(Err(e)) = blocking(move || meter.sample_vm_now(&v, &all)).await {
+                tracing::warn!(vm = %vm.name, "metering a migrated VM's last reading: {}", e);
+            }
+        }
         let _ = shim_call(paths.shim_socket.clone(), |c| c.release()).await;
         for (d, driver) in disks {
             let name = d.name.clone();
