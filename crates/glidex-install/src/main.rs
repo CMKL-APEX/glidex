@@ -24,7 +24,7 @@ const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
 /// `PYLON_ASSETS` (the release's SHA256SUMS, and GitHub's digest for the
 /// guest agent, which SHA256SUMS doesn't list). Bump together. Installed
 /// only with `--with-pylon` (spec/30-pylon.md P10, P11, P19).
-const PYLON_VERSION: &str = "v0.0.9-rc3";
+const PYLON_VERSION: &str = "v0.0.9";
 /// Where the guest agent goes: the control plane puts it in Pylon VMs'
 /// seed disks (spec/30-pylon.md P19).
 const PYLON_GUEST_AGENT: &str = "/usr/local/share/glidex/pylon-guest-agent";
@@ -35,19 +35,19 @@ const PYLON_ASSETS: [(&str, &str, &str, &str); 3] = [
         "pylon-x86_64",
         "/usr/local/bin/pylon",
         "0755",
-        "1ca6729c0f937086a30b1951c7dfb9001ba8ef1a549d6be91084770320c759a5",
+        "d90ba50aba4711e44c30b87205a09548f9810148a793fb3f1b2f0bd2fed79b1b",
     ),
     (
         "pylond-x86_64",
         "/usr/local/bin/pylond",
         "0755",
-        "fd6f4e275dc55461b299ffebf53b54a5425f3b000469f82de2d8543a0f6e52ae",
+        "ccac75acc09126c405761bcad896d31d7bf4b07c995579df57169a42691c3227",
     ),
     (
         "pylon-guest-agent-static",
         PYLON_GUEST_AGENT,
         "0644",
-        "b47195d5e23e41a48c63e2b7791186afdd361628b30241f184ec179f0a5d7741",
+        "a6286c9244ec89afa0149f0a37ea9f811f91ba9de88365cb19ebe12c17ee770f",
     ),
 ];
 /// rustup-init from `static.rust-lang.org/rustup/archive/<version>/<target>/`,
