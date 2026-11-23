@@ -210,9 +210,8 @@ are in `tests/`; the Cedar schema and shipped policies in `policies/`.
 
 `crates/gxctl` is the CLI, meant for crates.io (`cargo install
 gxctl`), so it depends only on publishable crates: `glidex-api`, and
-`glidex-tls` and `glidex-topology` from glidex-commons (by git until
-glidex-commons is on crates.io, so `gxctl` is not published until then,
-[#606](https://github.com/CMKL-APEX/glidex/issues/606)); its tests serve a real control plane
+`glidex-tls` and `glidex-topology` from glidex-commons (the release tag
+when built here, crates.io's same version when published); its tests serve a real control plane
 (a dev-dependency). `src/main.rs` holds the interactive shell (rustyline) and the
 dispatch; each area has its own file (`vm.rs`, `storage.rs`,
 `network.rs`, `access.rs`, `cluster.rs`, `host.rs`, `directory.rs`,

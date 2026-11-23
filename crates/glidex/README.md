@@ -13,8 +13,6 @@ This crate gathers Glidex's libraries under one name, each behind a feature:
 | `client` | `glidex::api` | The RPC API's generated clients |
 | `auth` | `glidex::auth` | Secrets, session and token rules, a Cedar engine, OIDC login |
 | `hv-client` | `glidex::hv_client` | Cloud Hypervisor's HTTP API and QEMU's QMP |
-| `ovn` | `glidex::ovn` | The OVN northbound database as Glidex uses it |
-| `ovs` | `glidex::ovs` | Host networking: Open vSwitch, NAT, VM ports |
 | `raftstore` | `glidex::raftstore` | A replicated ReDB store on openraft |
 | `tls` | `glidex::tls` | HTTPS listeners, certificates and client trust |
 | `topology` | `glidex::topology` | A host's NUMA, PCIe and network ports from sysfs |
