@@ -488,11 +488,9 @@ impl VmManager {
             .map(|n| n.spec.br_int_datapath)
             .unwrap_or_default();
         let dpu_remotes = sb_remotes.clone();
-        // A server that (re)joined joins OVN's databases afresh (glidex#641).
-        let rejoin = nodes
-            .iter()
-            .find(|n| n.meta.id == me)
-            .is_some_and(|n| n.status.ovn_join_pending);
+        // A server that joined, or rejoined after a forget, joins OVN's
+        // databases afresh (glidex#641).
+        let rejoin = cluster.files.ovn_join_pending().exists();
         let central_done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let done = central_done.clone();
         let res = tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
@@ -519,16 +517,9 @@ impl VmManager {
         })
         .await;
         if rejoin && central_done.load(std::sync::atomic::Ordering::Relaxed) {
-            let me = self.local_node_id();
-            if let Ok(Some(mut n)) = self.nodes().get(&me)
-                && n.status.ovn_join_pending
-            {
-                n.status.ovn_join_pending = false;
-                n.meta.resource_version += 1;
-                match self.nodes().put(&n) {
-                    Ok(()) => tracing::info!("this server's OVN databases joined the cluster's"),
-                    Err(e) => tracing::warn!("recording that OVN's databases joined: {}", e),
-                }
+            match cluster.files.mark_ovn_join(false) {
+                Ok(()) => tracing::info!("this server's OVN databases joined the cluster's"),
+                Err(e) => tracing::warn!("recording that OVN's databases joined: {}", e),
             }
         }
         match res {

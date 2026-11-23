@@ -8776,16 +8776,9 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
     let lc = cluster(&cps[lead]);
     let old_bundle = lc.files.read(lc.files.trust()).unwrap();
     // Servers that joined join OVN's databases afresh (glidex#641); the
-    // cluster's first server, which made them, doesn't.
-    let pending = |name: &str| {
-        let n = cps[lead].manager.nodes().list().unwrap();
-        n.iter()
-            .find(|n| n.spec.name == name)
-            .unwrap()
-            .status
-            .ovn_join_pending
-    };
-    assert!(pending(&lname), "a joined server");
+    // cluster's first server, which made them, doesn't. The mark is a file
+    // of the node's own, which no replicated write can undo.
+    let pending = |i: usize| cluster(&cps[i]).files.ovn_join_pending().exists();
     let first = cps[lead]
         .manager
         .nodes()
@@ -8793,19 +8786,16 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
         .unwrap()
         .into_iter()
         .min_by_key(|n| n.meta.created_at)
-        .unwrap();
-    assert!(!first.status.ovn_join_pending, "the first server");
-    // As if its ovn-central had joined: the node clears it.
-    let mut n = cps[lead]
-        .manager
-        .nodes()
-        .get(&cluster(&cps[learner]).identity.node_id)
         .unwrap()
-        .unwrap();
-    n.status.ovn_join_pending = false;
-    n.meta.resource_version += 1;
-    cps[lead].manager.nodes().put(&n).unwrap();
-    assert!(!pending(&lname));
+        .meta
+        .id;
+    for (i, cp) in cps.iter().enumerate() {
+        let is_first = cluster(cp).identity.node_id == first;
+        assert_eq!(pending(i), !is_first, "server {i} (first: {is_first})");
+    }
+    // As if its ovn-central had joined: the node removes it.
+    cluster(&cps[learner]).files.mark_ovn_join(false).unwrap();
+    assert!(!pending(learner));
 
     // It goes silent and is forgotten.
     cluster(&cps[learner]).stop().await;
@@ -8910,7 +8900,7 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
     })
     .await;
     // Its forget kicked it from OVN's NB and SB clusters: it joins them afresh.
-    assert!(pending(&lname), "a forgotten server that rejoined");
+    assert!(pending(learner), "a forgotten server that rejoined");
     // It trusts the CA of its new certificate, and catches up: its replica
     // learns the rotation only from the leader.
     assert_eq!(issuer(&cps[learner]).as_deref(), Some(new_fp.as_str()));

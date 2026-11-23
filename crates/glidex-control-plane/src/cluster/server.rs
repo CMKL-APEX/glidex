@@ -625,6 +625,12 @@ pub struct JoinResponse {
     pub role: Option<NodeRole>,
     #[serde(default)]
     pub raft_id: Option<u64>,
+    /// A server joining, or rejoining after a forget (which kicked it from
+    /// OVN's NB and SB clusters): its OVN databases join the cluster's
+    /// afresh, whatever files it has (glidex#641). The node keeps this in a
+    /// local file, which no replicated write can undo.
+    #[serde(default)]
+    pub ovn_join: bool,
 }
 
 /// §5.2 step 3: check the token, sign the certificate, record the node.
@@ -732,9 +738,6 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         n.status.advertise = Some(rec.advertise);
         n.status.tunnel_ip = rec.tunnel_ip.or(Some(rec.advertise.ip()));
         n.status.raft_id = (rec.role == NodeRole::Server).then_some(rec.raft_id);
-        // Whatever OVN database files the host has, they aren't this
-        // cluster's member: a server joins OVN afresh (glidex#641).
-        n.status.ovn_join_pending = rec.role == NodeRole::Server;
         db.write(Origin::Api, |tx| -> Result<(), JoinWriteError> {
             tx.open_table(TableId::Nodes.definition())?.insert(&n.meta.id, serde_json::to_vec(&n)?.as_slice())?;
             tx.open_table(TableId::IssuedCerts.definition())?
@@ -756,6 +759,7 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
             name: None,
             role: None,
             raft_id: None,
+            ovn_join: server,
         })
         .into_response(),
         Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),
@@ -871,9 +875,6 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     if was_forgotten {
         rec.status.phase = crate::node::NodePhase::Active;
         rec.spec.unschedulable = false;
-        // Its forget kicked it from OVN's NB and SB clusters (§5.6), so its
-        // database files are a member they no longer have (glidex#641).
-        rec.status.ovn_join_pending = server;
     }
     rec.status.advertise = Some(req.advertise);
     rec.status.tunnel_ip = req.tunnel_ip.or(rec.status.tunnel_ip);
@@ -916,6 +917,7 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
             name: Some(name),
             role: Some(role),
             raft_id,
+            ovn_join: server && was_forgotten,
         })
         .into_response(),
         Ok(Err(e)) => fail(StatusCode::CONFLICT, "conflict", e),

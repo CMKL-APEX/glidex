@@ -51,6 +51,24 @@ impl Files {
     pub fn trust(&self) -> PathBuf {
         crate::paths::file_in(&self.dir, "ca.crt")
     }
+    /// Present while this server's OVN databases must join the cluster's
+    /// afresh (glidex#641): written at a join or a rejoin after a forget,
+    /// removed once `ovn-central` has done so.
+    pub fn ovn_join_pending(&self) -> PathBuf {
+        crate::paths::file_in(&self.dir, "ovn-join-pending")
+    }
+    /// Mark (or not) that this server's OVN databases join afresh.
+    pub fn mark_ovn_join(&self, pending: bool) -> std::io::Result<()> {
+        let p = self.ovn_join_pending();
+        if pending {
+            std::fs::write(p, b"")
+        } else {
+            match std::fs::remove_file(p) {
+                Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                _ => Ok(()),
+            }
+        }
+    }
     /// Servers only (D20).
     pub fn ca_key(&self) -> PathBuf {
         crate::paths::file_in(&self.dir, "ca.key")
