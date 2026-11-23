@@ -5,6 +5,8 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# Glidex's own host machinery, not a library for other projects.
+publish = false
 description = "Host-network management for glidex: Open vSwitch, NAT, VM ports"
 
 [dependencies]

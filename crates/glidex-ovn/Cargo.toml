@@ -5,10 +5,12 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# Glidex's own host machinery, not a library for other projects.
+publish = false
 description = "OVN northbound management for glidex cluster networks"
 
 [dependencies]
-glidex-ovs = { workspace = true }
+glidex-ovs = { path = "../glidex-ovs" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
