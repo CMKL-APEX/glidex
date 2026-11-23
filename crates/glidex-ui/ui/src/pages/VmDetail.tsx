@@ -24,6 +24,7 @@ import VmActions, { type VmAction, VM_ALLOW_ACTIONS, vmAllow } from "../componen
 import DeleteVmDialog from "../components/DeleteVmDialog";
 import VmDisks from "../components/VmDisks";
 import PlaceVm from "../components/PlaceVm";
+import MigrateVm, { MigrationStatus } from "../components/MigrateVm";
 import VmStateBadge from "../components/VmStateBadge";
 import VmUsage from "../components/VmUsage";
 import VmKernel from "../components/VmKernel";
@@ -198,6 +199,7 @@ export default function VmDetail() {
               )}
             </div>
           )}
+          <MigrationStatus vm={vm} onDone={fetchVm} />
           {nodeUnreachable(vm) ? (
             <div className="mb-6 p-3 bg-gray-50 border border-gray-300 rounded-lg text-sm text-gray-800">
               Its node, <NodeName id={vm.node} name={vm.node_name} />, stopped reporting. The VM may still be running; what is shown is its
@@ -377,6 +379,7 @@ export default function VmDetail() {
                 allow={vmAllow(allowed)}
               />
               <PlaceVm vm={vm} stopped={["stopped", "created", "failed"].includes(vmState(vm)) && desiredState(vm) === "stopped"} onDone={fetchVm} />
+              <MigrateVm vm={vm} running={vmState(vm) === "running" && desiredState(vm) === "running" && !vm.deleting} onDone={fetchVm} />
               {!nodeUnreachable(vm) && may("openConsole") && (
               <Link
                 to={`/vms/${vm.id}/console`}

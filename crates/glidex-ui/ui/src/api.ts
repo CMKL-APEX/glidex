@@ -762,6 +762,25 @@ const WAIT_SECS = 60;
 export const placeVm = (id: string, node?: string) =>
   rpc(VmService.method.placeVm, { id, node }).then((r) => r.vm as VmResponse);
 
+/** Whether a running VM can live-migrate, and to which nodes
+ * (spec/32-live-migration.md §5): its own reasons, then each node's. */
+export interface MigrationCheck {
+  reasons?: string[];
+  targets?: { node: string; name: string; reasons?: string[] }[];
+}
+
+export const checkMigration = (id: string) =>
+  rpc(VmService.method.migrateVm, { id, check: true }).then((r) => (r.check ?? {}) as MigrationCheck);
+
+/** Start a live migration to `node`, or where it fits best; answers the VM
+ * with its `migration` (§4). */
+export const migrateVm = (id: string, node?: string, downtimeMs?: number) =>
+  rpc(VmService.method.migrateVm, { id, node, downtime_ms: downtimeMs }).then((r) => r.vm as VmResponse);
+
+/** Cancel a migration whose guest hasn't moved; after that it finishes. */
+export const cancelMigration = (id: string) =>
+  rpc(VmService.method.cancelMigration, { id }).then((r) => r.vm as VmResponse);
+
 /** Start a VM; with `node`, a stopped one placed elsewhere is placed
  * again there first (spec/32-live-migration.md LM0; needs `placeVm`). */
 export const startVm = (id: string, node?: string) =>
