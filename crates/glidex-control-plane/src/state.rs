@@ -418,6 +418,10 @@ pub struct VmManager {
     /// Held while a probe round does the leader's hyperstor upkeep, so
     /// rounds that overlap don't each renew, refresh and collect.
     hyperstor_upkeep: std::sync::Mutex<()>,
+    /// When each waiting disk's next create attempt may run, and the wait
+    /// that set it (the disk controller's own writes would otherwise run
+    /// it again at once).
+    pub(crate) disk_retry: std::sync::Mutex<HashMap<String, (std::time::Instant, Duration)>>,
     nodes: crate::node::NodeStore,
     roles: std::sync::Mutex<crate::node::Roles>,
     db_path: PathBuf,
@@ -625,6 +629,7 @@ impl VmManager {
             ovn_file: ArcSwap::from_pointee(Default::default()),
             ovn_file_warned: std::sync::atomic::AtomicBool::new(false),
             hyperstor_upkeep: std::sync::Mutex::new(()),
+            disk_retry: std::sync::Mutex::new(HashMap::new()),
             nodes,
             roles: std::sync::Mutex::new(crate::node::Roles::STANDALONE),
             db_path,

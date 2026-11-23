@@ -14,6 +14,11 @@ use std::time::Duration;
 
 type Next = Result<Option<Duration>, VmManagerError>;
 
+/// A disk that can't be made yet is tried again after this, then twice as
+/// long each time, up to [`NOT_READY_MAX`].
+const NOT_READY_FIRST: Duration = Duration::from_secs(3);
+const NOT_READY_MAX: Duration = Duration::from_secs(60);
+
 impl VmManager {
     fn put_disk_with_event(
         &self,
@@ -104,6 +109,7 @@ impl VmManager {
     /// One round for disk `id`.
     pub async fn reconcile_disk(&self, id: &str) -> Next {
         let Ok(disk) = self.images.get_disk(id) else {
+            self.disk_retry.lock().unwrap().remove(id);
             return Ok(None);
         };
         // A shared disk's worker is the leader's to choose (S6).
@@ -279,6 +285,30 @@ impl VmManager {
     }
 
     /// Pending → Creating → Ready, once the source image is ready.
+    /// How long disk `id` still waits before its next create attempt.
+    fn disk_retry_left(&self, id: &str) -> Option<Duration> {
+        let m = self.disk_retry.lock().unwrap();
+        let (at, _) = *m.get(id)?;
+        let left = at.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            // Keep the wait it had: the next one doubles it.
+            return None;
+        }
+        Some(left)
+    }
+
+    /// Hold disk `id`'s next create attempt off: `first`, then twice the
+    /// last wait, up to `max`, while it keeps waiting.
+    fn disk_retry_after(&self, id: &str, first: Duration, max: Duration) -> Duration {
+        let mut m = self.disk_retry.lock().unwrap();
+        let wait = match m.get(id) {
+            Some((_, last)) => (*last * 2).min(max).max(first),
+            None => first,
+        };
+        m.insert(id.to_string(), (std::time::Instant::now() + wait, wait));
+        wait
+    }
+
     async fn create_round(&self, mut disk: Disk) -> Next {
         if let DiskOrigin::Image { image_id, .. } = &disk.origin {
             let waiting = match self.images.get_image(image_id) {
@@ -318,6 +348,12 @@ impl VmManager {
                 return Ok(Some(Duration::from_secs(if stuck { 30 } else { 3 })));
             }
         }
+        // A disk that waits (its project not linked yet, a full datastore)
+        // is tried again when its wait is up, not each time its own record
+        // changes: each attempt writes it, and that write queues it again.
+        if let Some(left) = self.disk_retry_left(&disk.id) {
+            return Ok(Some(left));
+        }
         // Its VM is being deleted: no new attempt; the VM's deletion waits
         // for one already running, then deletes the disk (S29).
         {
@@ -353,6 +389,7 @@ impl VmManager {
         let latest = self.images.get_disk(&disk.id).unwrap_or(disk.clone());
         match result {
             Ok(out) => {
+                self.disk_retry.lock().unwrap().remove(&disk.id);
                 let mut d = out.disk;
                 d.attached_to = latest.attached_to.clone();
                 d.deletion_requested_at = latest.deletion_requested_at;
@@ -383,6 +420,13 @@ impl VmManager {
                     self.queue.add(Key::Image(image_id.clone()));
                 }
                 let mut d = latest;
+                let new = !d
+                    .conditions
+                    .iter()
+                    .any(|c| c.kind == "Ready" && c.message == m);
+                if new {
+                    tracing::warn!(disk = %d.name, "disk waits: {m}");
+                }
                 d.phase = DiskPhase::Pending;
                 set_cond(
                     &mut d.conditions,
@@ -392,7 +436,11 @@ impl VmManager {
                     m,
                 );
                 self.images.put_disk(&d)?;
-                Ok(Some(Duration::from_secs(3)))
+                Ok(Some(self.disk_retry_after(
+                    &d.id,
+                    NOT_READY_FIRST,
+                    NOT_READY_MAX,
+                )))
             }
             Err(e @ ImageError::InsufficientStorage { .. }) => {
                 // A hyperstor pool that filled up (S30): wait for space,
@@ -419,7 +467,8 @@ impl VmManager {
                     )
                 });
                 self.put_disk_with_event(&d, event)?;
-                Ok(Some(Duration::from_secs(60)))
+                let wait = Duration::from_secs(60);
+                Ok(Some(self.disk_retry_after(&d.id, wait, wait)))
             }
             Err(e @ (ImageError::InvalidDisk { .. } | ImageError::InvalidImage(_))) => {
                 let mut d = latest;
