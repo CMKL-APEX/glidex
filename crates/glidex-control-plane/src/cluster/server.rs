@@ -732,6 +732,9 @@ async fn join(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
         n.status.advertise = Some(rec.advertise);
         n.status.tunnel_ip = rec.tunnel_ip.or(Some(rec.advertise.ip()));
         n.status.raft_id = (rec.role == NodeRole::Server).then_some(rec.raft_id);
+        // Whatever OVN database files the host has, they aren't this
+        // cluster's member: a server joins OVN afresh (glidex#641).
+        n.status.ovn_join_pending = rec.role == NodeRole::Server;
         db.write(Origin::Api, |tx| -> Result<(), JoinWriteError> {
             tx.open_table(TableId::Nodes.definition())?.insert(&n.meta.id, serde_json::to_vec(&n)?.as_slice())?;
             tx.open_table(TableId::IssuedCerts.definition())?
@@ -868,6 +871,9 @@ async fn rejoin(State(c): Ctx, Json(req): Json<JoinRequest>) -> Response {
     if was_forgotten {
         rec.status.phase = crate::node::NodePhase::Active;
         rec.spec.unschedulable = false;
+        // Its forget kicked it from OVN's NB and SB clusters (§5.6), so its
+        // database files are a member they no longer have (glidex#641).
+        rec.status.ovn_join_pending = server;
     }
     rec.status.advertise = Some(req.advertise);
     rec.status.tunnel_ip = req.tunnel_ip.or(rec.status.tunnel_ip);

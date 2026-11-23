@@ -675,17 +675,93 @@ pub struct CentralSpec {
     pub join: Option<IpAddr>,
     /// Every server's address: northd talks to all of them.
     pub servers: Vec<IpAddr>,
+    /// Join the cluster afresh: this server's database files may be a
+    /// member that was kicked from both clusters (a server forgotten, then
+    /// rejoined: glidex#641), so they are moved aside and joined to the other
+    /// servers with `ovsdb-tool join-cluster`, unless both databases already
+    /// report themselves cluster members.
+    #[serde(default)]
+    pub rejoin: bool,
+}
+
+/// Where Debian's `ovn-ctl` keeps the clustered databases.
+pub const NB_DB_FILE: &str = "/var/lib/ovn/ovnnb_db.db";
+pub const SB_DB_FILE: &str = "/var/lib/ovn/ovnsb_db.db";
+
+fn ssl_addr(ip: IpAddr, port: u16) -> String {
+    match ip {
+        IpAddr::V4(a) => format!("ssl:{a}:{port}"),
+        IpAddr::V6(a) => format!("ssl:[{a}]:{port}"),
+    }
 }
 
 fn remote_list(servers: &[IpAddr], port: u16) -> String {
     servers
         .iter()
-        .map(|ip| match ip {
-            IpAddr::V4(a) => format!("ssl:{a}:{port}"),
-            IpAddr::V6(a) => format!("ssl:[{a}]:{port}"),
-        })
+        .map(|ip| ssl_addr(*ip, port))
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Both of this server's databases say `Status: cluster member`.
+fn central_is_member(exec: &dyn Exec) -> bool {
+    [(NB_CTL, "OVN_Northbound"), (SB_CTL, "OVN_Southbound")]
+        .iter()
+        .all(|(ctl, db)| {
+            exec.run(&Cmd::new(
+                Program::OvsAppctl,
+                ["-t", ctl, "cluster/status", db],
+            ))
+            .is_ok_and(|o| {
+                o.status == 0
+                    && String::from_utf8_lossy(&o.stdout)
+                        .lines()
+                        .any(|l| l.trim() == "Status: cluster member")
+            })
+        })
+}
+
+/// Stop `ovn-central`, move its database files aside (`<file>.before-rejoin`)
+/// and join new ones to the other servers. `ovn-ctl` then starts them as
+/// they are: it joins only when a file is missing, so it would otherwise
+/// start a kicked member again.
+fn rejoin_central(exec: &dyn Exec, spec: &CentralSpec) -> Result<(), OvsError> {
+    let others: Vec<IpAddr> = spec
+        .servers
+        .iter()
+        .copied()
+        .filter(|ip| *ip != spec.local_ip)
+        .collect();
+    if others.is_empty() {
+        return Err(OvsError::invalid(
+            "rejoining OVN needs another server to join",
+        ));
+    }
+    exec.check(&Cmd::new(Program::Systemctl, ["stop", "ovn-central"]))?;
+    for (file, schema, port) in [
+        (NB_DB_FILE, "OVN_Northbound", NB_RAFT_PORT),
+        (SB_DB_FILE, "OVN_Southbound", SB_RAFT_PORT),
+    ] {
+        if exec.exists(Path::new(file)) {
+            exec.check(&Cmd::new(
+                Program::Mv,
+                [
+                    "-f".to_string(),
+                    file.to_string(),
+                    format!("{file}.before-rejoin"),
+                ],
+            ))?;
+        }
+        let mut args = vec![
+            "join-cluster".to_string(),
+            file.to_string(),
+            schema.to_string(),
+            ssl_addr(spec.local_ip, port),
+        ];
+        args.extend(others.iter().map(|ip| ssl_addr(*ip, port)));
+        exec.check(&Cmd::new(Program::OvsdbTool, args))?;
+    }
+    Ok(())
 }
 
 /// The `OVN_CTL_OPTS` line for `spec`, with certificates under `dir`.
@@ -807,6 +883,10 @@ pub fn ensure_central(
             changed = true;
         }
     }
+    if spec.rejoin && !central_is_member(exec) {
+        rejoin_central(exec, spec)?;
+        changed = true;
+    }
     let opts = central_opts(spec, dir);
     if exec.read_file(Path::new(CENTRAL_DEFAULTS)).ok().as_deref() != Some(opts.as_str()) {
         exec.write_file(Path::new(CENTRAL_DEFAULTS), opts.as_bytes())?;
@@ -843,7 +923,112 @@ mod central_tests {
             local_ip: "192.0.2.12".parse().unwrap(),
             join: join.map(|j| j.parse().unwrap()),
             servers: vec!["192.0.2.11".parse().unwrap(), "192.0.2.12".parse().unwrap()],
+            rejoin: false,
         }
+    }
+
+    fn rejoining() -> CentralSpec {
+        CentralSpec {
+            rejoin: true,
+            servers: vec![
+                "192.0.2.11".parse().unwrap(),
+                "192.0.2.12".parse().unwrap(),
+                "192.0.2.13".parse().unwrap(),
+            ],
+            ..spec(None)
+        }
+    }
+
+    const NB_STATUS: &str = "ovs-appctl -t /var/run/ovn/ovnnb_db.ctl cluster/status OVN_Northbound";
+    const SB_STATUS: &str = "ovs-appctl -t /var/run/ovn/ovnsb_db.ctl cluster/status OVN_Southbound";
+
+    #[test]
+    fn a_kicked_server_moves_its_databases_aside_and_joins_the_others() {
+        // glidex#641: the files are the member forgotten servers are kicked as.
+        let exec = RecordingExec::new();
+        exec.file(NB_DB_FILE, "stale");
+        exec.file(SB_DB_FILE, "stale");
+        let kicked = "Name: OVN_Northbound\nRole: candidate\nStatus: disconnected from the cluster (election timeout)\n";
+        exec.on(NB_STATUS, Output::ok(kicked));
+        exec.on(SB_STATUS, Output::ok(kicked));
+        assert!(
+            ensure_central(&exec, &rejoining(), &certs(), Path::new("/etc/glidex/ovn")).unwrap()
+        );
+        let calls = exec.calls();
+        let at = |c: &str| {
+            calls
+                .iter()
+                .position(|x| x == c)
+                .unwrap_or_else(|| panic!("{c} not in {calls:#?}"))
+        };
+        let stop = at("systemctl stop ovn-central");
+        let mv = at("mv -f /var/lib/ovn/ovnnb_db.db /var/lib/ovn/ovnnb_db.db.before-rejoin");
+        // The other servers, never this one, as the remotes.
+        let nb = at(
+            "ovsdb-tool join-cluster /var/lib/ovn/ovnnb_db.db OVN_Northbound ssl:192.0.2.12:6643 ssl:192.0.2.11:6643 ssl:192.0.2.13:6643",
+        );
+        let sb = at(
+            "ovsdb-tool join-cluster /var/lib/ovn/ovnsb_db.db OVN_Southbound ssl:192.0.2.12:6644 ssl:192.0.2.11:6644 ssl:192.0.2.13:6644",
+        );
+        assert!(calls.contains(
+            &"mv -f /var/lib/ovn/ovnsb_db.db /var/lib/ovn/ovnsb_db.db.before-rejoin".to_string()
+        ));
+        let start = calls
+            .iter()
+            .rposition(|x| {
+                x == "systemctl start ovn-central" || x == "systemctl restart ovn-central"
+            })
+            .expect("started again");
+        assert!(stop < mv && mv < nb && nb < sb && sb < start, "{calls:#?}");
+    }
+
+    #[test]
+    fn a_member_is_left_as_it_is_and_a_server_without_files_just_joins() {
+        // Already a member of both (say the marker's clearing failed and
+        // this runs again): nothing is reset, or it would join twice.
+        let exec = RecordingExec::new();
+        exec.file(NB_DB_FILE, "member");
+        exec.file(SB_DB_FILE, "member");
+        let member = "Name: OVN_Northbound\nRole: follower\nStatus: cluster member\n";
+        exec.on(NB_STATUS, Output::ok(member));
+        exec.on(SB_STATUS, Output::ok(member));
+        ensure_central(&exec, &rejoining(), &certs(), Path::new("/etc/glidex/ovn")).unwrap();
+        assert!(
+            !exec.calls().iter().any(|c| c.starts_with("ovsdb-tool")
+                || c.starts_with("mv ")
+                || c == "systemctl stop ovn-central"),
+            "{:#?}",
+            exec.calls()
+        );
+
+        // No files (a reinstalled host): nothing to move, the same join.
+        let exec = RecordingExec::new();
+        exec.on(NB_STATUS, Output::failed(1, "cannot connect"));
+        exec.on(SB_STATUS, Output::failed(1, "cannot connect"));
+        ensure_central(&exec, &rejoining(), &certs(), Path::new("/etc/glidex/ovn")).unwrap();
+        let calls = exec.calls();
+        assert!(!calls.iter().any(|c| c.starts_with("mv ")), "{calls:#?}");
+        assert!(
+            calls
+                .iter()
+                .any(|c| c.starts_with("ovsdb-tool join-cluster /var/lib/ovn/ovnnb_db.db")),
+            "{calls:#?}"
+        );
+
+        // The only server can't rejoin anyone.
+        let alone = CentralSpec {
+            servers: vec!["192.0.2.12".parse().unwrap()],
+            ..rejoining()
+        };
+        assert!(
+            ensure_central(
+                &RecordingExec::new(),
+                &alone,
+                &certs(),
+                Path::new("/etc/glidex/ovn")
+            )
+            .is_err()
+        );
     }
 
     fn certs() -> ChassisCerts {

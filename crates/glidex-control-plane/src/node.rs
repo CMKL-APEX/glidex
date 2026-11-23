@@ -355,6 +355,12 @@ pub struct NodeStatus {
     pub advertise: Option<SocketAddr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_ip: Option<IpAddr>,
+    /// A server that joined, or rejoined after it was forgotten: its OVN
+    /// databases join the cluster's afresh, whatever files it has
+    /// (glidex#641). Set by the server that takes the (re)join, cleared by
+    /// the node once `ovn-central` has done so.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub ovn_join_pending: bool,
     /// A server's web UI address (spec/28-host-page.md W3); agents publish none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_url: Option<String>,
@@ -486,6 +492,7 @@ impl Node {
                 raft_id: None,
                 advertise: None,
                 tunnel_ip: None,
+                ovn_join_pending: false,
                 ui_url: None,
                 api_pin: None,
                 api_pin_pending: None,
