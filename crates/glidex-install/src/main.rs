@@ -3087,34 +3087,122 @@ fn world_readable_dir(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_dir() && m.permissions().mode() & 0o005 == 0o005)
 }
 
+/// The list, in the installed UI, of the files in its `assets/` that are
+/// its own build's, one name a line. The others were kept from the build
+/// before it.
+const UI_OWN_ASSETS: &str = ".build-assets";
+
+/// The names of the files in `dir`; none if it can't be read.
+fn file_names(dir: &Path) -> std::collections::BTreeSet<String> {
+    fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .collect()
+}
+
+/// Whether `installed` holds the build in `dist`: each of its files, with
+/// the same contents, and the list of its own assets. The previous build's
+/// assets beside them don't count.
+fn holds_build(dist: &Path, installed: &Path) -> bool {
+    fn same_tree(src: &Path, dst: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(src) else {
+            return false;
+        };
+        entries.flatten().all(|e| {
+            let (s, d) = (e.path(), dst.join(e.file_name()));
+            match e.file_type() {
+                Ok(t) if t.is_dir() => same_tree(&s, &d),
+                Ok(_) => same_file(&s, &d),
+                Err(_) => false,
+            }
+        })
+    }
+    let own = fs::read_to_string(installed.join(UI_OWN_ASSETS)).unwrap_or_default();
+    same_tree(dist, installed) && own == own_assets_list(&file_names(&dist.join("assets")))
+}
+
+fn own_assets_list(names: &std::collections::BTreeSet<String>) -> String {
+    names.iter().map(|n| format!("{n}\n")).collect()
+}
+
+/// Which files of the installed `assets/` (`present`) to keep for pages
+/// loaded before the upgrade: the installed build's own (as its list says;
+/// every file, when it has none: installed before lists were kept), less
+/// those the new build has. So the build before is kept, not older ones.
+fn assets_to_keep(
+    own_list: Option<&str>,
+    present: &std::collections::BTreeSet<String>,
+    new: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let own: Option<std::collections::BTreeSet<&str>> =
+        own_list.map(|l| l.lines().filter(|n| !n.is_empty()).collect());
+    present
+        .iter()
+        .filter(|n| !new.contains(*n))
+        .filter(|n| own.as_ref().is_none_or(|o| o.contains(n.as_str())))
+        .cloned()
+        .collect()
+}
+
 /// Swap the built UI into `UI_ASSET_DIR` when it changed. The files are
 /// root-owned and world-readable, so the `glidex-ui` user can serve them.
+/// The installed build's own assets are kept beside the new ones: a page
+/// loaded before the upgrade still names them, and loads its lazy pages
+/// and the console's terminal from them. The next upgrade drops them.
 fn install_ui_assets() -> Result<()> {
     let dist = workspace_root().join("crates/glidex-ui/ui/dist");
-    let parent = Path::new(UI_ASSET_DIR)
-        .parent()
-        .unwrap()
-        .to_string_lossy()
-        .into_owned();
-    let readable =
-        world_readable_dir(Path::new(&parent)) && world_readable_dir(Path::new(UI_ASSET_DIR));
-    if readable && succeeds("diff", &["-rq", &dist.to_string_lossy(), UI_ASSET_DIR]) {
+    let installed = Path::new(UI_ASSET_DIR);
+    let parent = installed.parent().unwrap().to_string_lossy().into_owned();
+    let readable = world_readable_dir(Path::new(&parent)) && world_readable_dir(installed);
+    if readable && holds_build(&dist, installed) {
         println!("{} {}", "Up to date:".green(), UI_ASSET_DIR);
         return Ok(());
     }
+    let new = file_names(&dist.join("assets"));
+    let keep = if readable {
+        let own = fs::read_to_string(installed.join(UI_OWN_ASSETS)).ok();
+        assets_to_keep(own.as_deref(), &file_names(&installed.join("assets")), &new)
+    } else {
+        Vec::new()
+    };
     let staging = format!("{}.new", UI_ASSET_DIR);
-    for cmd in [
+    let mut cmds = vec![
         argv(&["rm", "-rf", &staging]),
         argv(&[
             "install", "-d", "-m", "0755", "-o", "root", "-g", "root", &parent,
         ]),
         argv(&["cp", "-r", &dist.to_string_lossy(), &staging]),
+    ];
+    if !keep.is_empty() {
+        let mut cp = argv(&["cp", "-p", "--"]);
+        cp.extend(keep.iter().map(|n| format!("{UI_ASSET_DIR}/assets/{n}")));
+        cp.push(format!("{staging}/assets/"));
+        cmds.push(cp);
+    }
+    for cmd in cmds {
+        sudo(&cmd)?;
+    }
+    sudo_write(
+        &format!("{staging}/{UI_OWN_ASSETS}"),
+        &own_assets_list(&new),
+    )?;
+    for cmd in [
         argv(&["chown", "-R", "root:root", &staging]),
         argv(&["chmod", "-R", "u=rwX,go=rX", &staging]),
         argv(&["rm", "-rf", UI_ASSET_DIR]),
         argv(&["mv", &staging, UI_ASSET_DIR]),
     ] {
         sudo(&cmd)?;
+    }
+    if !keep.is_empty() {
+        println!(
+            "{} {} files of the previous web UI, for pages loaded before this upgrade",
+            "Kept:".green(),
+            keep.len()
+        );
     }
     println!("{} {}", "Updated:".green(), UI_ASSET_DIR);
     Ok(())
@@ -4729,6 +4817,59 @@ fn print_usage(opts: &Options, tailscale: Option<&Option<String>>) {
 
 #[cfg(test)]
 mod tests {
+    fn names(v: &[&str]) -> std::collections::BTreeSet<String> {
+        v.iter().map(|s| s.to_string()).collect()
+    }
+
+    /// The installed build's own assets are kept, less what the new build
+    /// has; those it kept from the build before are not (one build back).
+    #[test]
+    fn the_installed_build_s_own_assets_are_kept_one_build_back() {
+        let present = names(&[
+            "app-1.js",
+            "app-1.js.br",
+            "term-1.js",
+            "app-0.js",
+            "same.wasm",
+        ]);
+        let new = names(&["app-2.js", "app-2.js.br", "same.wasm"]);
+        let own = "app-1.js\napp-1.js.br\nterm-1.js\nsame.wasm\n";
+        assert_eq!(
+            super::assets_to_keep(Some(own), &present, &new),
+            ["app-1.js", "app-1.js.br", "term-1.js"]
+        );
+        // Installed before the list was kept: all of it, once.
+        assert_eq!(
+            super::assets_to_keep(None, &present, &new),
+            ["app-0.js", "app-1.js", "app-1.js.br", "term-1.js"]
+        );
+        // A name the list has but the directory doesn't: not copied.
+        assert_eq!(
+            super::assets_to_keep(Some("gone.js\n"), &names(&[]), &new),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The build counts as installed with the previous build's assets
+    /// beside it, not when a file differs or its list is missing.
+    #[test]
+    fn a_build_is_installed_with_the_previous_one_s_assets_beside_it() {
+        let dist = tempfile::tempdir().unwrap();
+        let inst = tempfile::tempdir().unwrap();
+        for d in [dist.path(), inst.path()] {
+            std::fs::create_dir(d.join("assets")).unwrap();
+            std::fs::write(d.join("index.html"), "<html>2</html>").unwrap();
+            std::fs::write(d.join("assets/app-2.js"), "two").unwrap();
+        }
+        assert!(!super::holds_build(dist.path(), inst.path()), "no list");
+        std::fs::write(inst.path().join(super::UI_OWN_ASSETS), "app-2.js\n").unwrap();
+        assert!(super::holds_build(dist.path(), inst.path()));
+        std::fs::write(inst.path().join("assets/app-1.js"), "one").unwrap();
+        assert!(super::holds_build(dist.path(), inst.path()), "kept assets");
+        std::fs::write(inst.path().join("index.html"), "<html>1</html>").unwrap();
+        assert!(!super::holds_build(dist.path(), inst.path()), "changed");
+    }
+
     #[test]
     fn the_join_waits_for_the_socket_to_accept_not_to_exist() {
         use std::os::unix::net::UnixListener;
