@@ -24,7 +24,7 @@ const EDK2_FIRMWARE_VERSION: &str = "ch-811ce5ea35";
 /// `PYLON_ASSETS` (the release's SHA256SUMS, and GitHub's digest for the
 /// guest agent, which SHA256SUMS doesn't list). Bump together. Installed
 /// only with `--with-pylon` (spec/30-pylon.md P10, P11, P19).
-const PYLON_VERSION: &str = "v0.0.9-rc2";
+const PYLON_VERSION: &str = "v0.0.9-rc3";
 /// Where the guest agent goes: the control plane puts it in Pylon VMs'
 /// seed disks (spec/30-pylon.md P19).
 const PYLON_GUEST_AGENT: &str = "/usr/local/share/glidex/pylon-guest-agent";
@@ -41,7 +41,7 @@ const PYLON_ASSETS: [(&str, &str, &str, &str); 3] = [
         "pylond-x86_64",
         "/usr/local/bin/pylond",
         "0755",
-        "ebdda9f53f973ce66e7ce775ef65a8d1131f317f8c39380efbad485920b68a0a",
+        "fd6f4e275dc55461b299ffebf53b54a5425f3b000469f82de2d8543a0f6e52ae",
     ),
     (
         "pylon-guest-agent-static",
