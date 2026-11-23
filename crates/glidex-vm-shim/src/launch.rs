@@ -7,6 +7,16 @@ use std::path::{Path, PathBuf};
 
 pub const LAUNCH_VERSION: u32 = 1;
 
+/// How long past `ready_timeout_secs` the shim asks systemd to wait for it
+/// each time it spawns the hypervisor (`EXTEND_TIMEOUT_USEC`;
+/// spec/12-reconciliation.md D22): time to stop a hypervisor that missed
+/// its deadline and report why.
+pub const START_MARGIN_SECS: u64 = 30;
+
+/// How many times a launch spawns a hypervisor at most: its command line,
+/// then its fallback's.
+pub const MAX_SPAWNS: u64 = 2;
+
 /// Which hypervisor `argv` runs: decides how the shim checks it is up and
 /// how it presses the power button.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

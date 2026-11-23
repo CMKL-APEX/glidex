@@ -19,6 +19,18 @@ const MANAGER_PATH: &str = "/org/freedesktop/systemd1";
 const MANAGER: &str = "org.freedesktop.systemd1.Manager";
 const UNIT: &str = "org.freedesktop.systemd1.Unit";
 
+/// How long the start job of a `glidex-vm@` unit can last: the unit's
+/// `TimeoutStartSec` (60 s), or what the shim extends it to at each
+/// hypervisor spawn (spec/12-reconciliation.md D22), plus a little for the
+/// job's end to reach us. systemd ends the job itself; this only bounds a
+/// lost signal.
+fn start_job_secs(ready_timeout_secs: u64) -> u64 {
+    use glidex_vm_shim::launch::{MAX_SPAWNS, START_MARGIN_SECS};
+    let extended =
+        MAX_SPAWNS.saturating_mul(ready_timeout_secs.max(1).saturating_add(START_MARGIN_SECS));
+    extended.max(60).saturating_add(15)
+}
+
 /// The run directory the `glidex-vm@` template unit points at.
 pub const SYSTEMD_RUN_DIR: &str = "/run/glidex-cp";
 
@@ -136,10 +148,16 @@ impl Runner {
         }
     }
 
-    /// Start the shim for `vm_id` (its `launch.json` is written).
-    pub async fn start(&self, vm_id: &str, paths: &VmPaths) -> Result<(), RunnerError> {
+    /// Start the shim for `vm_id` (its `launch.json` is written, with
+    /// `ready_timeout_secs`).
+    pub async fn start(
+        &self,
+        vm_id: &str,
+        paths: &VmPaths,
+        ready_timeout_secs: u64,
+    ) -> Result<(), RunnerError> {
         match self {
-            Runner::Systemd(s) => s.start(vm_id, paths).await,
+            Runner::Systemd(s) => s.start(vm_id, paths, ready_timeout_secs).await,
             Runner::Detached(d) => d.start(vm_id, paths),
         }
     }
@@ -263,7 +281,12 @@ impl SystemdRunner {
         }
     }
 
-    async fn start(&self, vm_id: &str, paths: &VmPaths) -> Result<(), RunnerError> {
+    async fn start(
+        &self,
+        vm_id: &str,
+        paths: &VmPaths,
+        ready_timeout_secs: u64,
+    ) -> Result<(), RunnerError> {
         if paths.dir != unit_run_dir().join("vms").join(vm_id) {
             return Err(RunnerError::Failed(format!(
                 "the systemd runner needs the run directory {} (it is {})",
@@ -299,8 +322,12 @@ impl SystemdRunner {
             }
             None
         };
-        // TimeoutStartSec of the unit is 60 s.
-        match tokio::time::timeout(Duration::from_secs(75), wait).await {
+        match tokio::time::timeout(
+            Duration::from_secs(start_job_secs(ready_timeout_secs)),
+            wait,
+        )
+        .await
+        {
             Ok(Some(r)) if r == "done" => Ok(()),
             Ok(Some(r)) => Err(RunnerError::Failed(format!(
                 "starting {} ended with '{}'",
@@ -467,5 +494,17 @@ mod tests {
         assert!(!in_control_plane_unit(
             "0::/system.slice/glidex-vm@abc.service\n"
         ));
+    }
+
+    #[test]
+    fn the_start_job_wait_covers_the_shims_extensions() {
+        // A VM without passthrough (30 s).
+        assert_eq!(start_job_secs(30), 2 * (30 + 30) + 15);
+        assert_eq!(start_job_secs(1), 2 * (1 + 30) + 15);
+        // A 32 GiB VM with an A100 and a ConnectX (95 s): both spawns.
+        assert_eq!(start_job_secs(95), 2 * (95 + 30) + 15);
+        // The 15-minute cap, and no overflow.
+        assert_eq!(start_job_secs(900), 2 * 930 + 15);
+        assert_eq!(start_job_secs(u64::MAX), u64::MAX);
     }
 }

@@ -296,7 +296,7 @@ impl VmManager {
             .write(&paths.launch)
             .map_err(|e| format!("its launch file: {e}"))?;
         self.runner()
-            .start(&vm.id, &paths)
+            .start(&vm.id, &paths, RECEIVE_READY_SECS)
             .await
             .map_err(|e| format!("starting the receiving shim: {e}"))?;
         let deadline = tokio::time::Instant::now() + Duration::from_secs(RECEIVE_READY_SECS + 5);

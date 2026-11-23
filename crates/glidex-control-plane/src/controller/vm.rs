@@ -1604,7 +1604,7 @@ impl VmManager {
 
         // 5.5 start the shim, and wait for it to leave `launching`.
         runner
-            .start(&vm.id, &paths)
+            .start(&vm.id, &paths, ready_timeout)
             .await
             .map_err(|e| LaunchFailure {
                 error: Box::new(
