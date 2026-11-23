@@ -30,7 +30,7 @@ http-body-util = "0.1"
 hyper = { version = "1", features = ["client", "http1", "http2"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 libc = "0.2"
-nix = { version = "0.31", features = ["term", "fs", "process", "user"] }
+nix = { version = "0.32", features = ["term", "fs", "process", "user"] }
 percent-encoding = "2"
 rustls-pki-types = { version = "1", features = ["std"] }
 rustyline = "19"
