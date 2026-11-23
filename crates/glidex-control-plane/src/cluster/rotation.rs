@@ -16,6 +16,7 @@ use redb::ReadableTable;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 
 const STATE_KEY: &str = "state";
@@ -45,6 +46,19 @@ pub struct CaState {
 
 fn other(e: impl std::fmt::Display) -> ClusterError {
     ClusterError::Other(e.to_string())
+}
+
+/// Whether the CA state whose bundle is `trust_pem` is older than the node
+/// certificate `cert_der`: none of its CAs signed it.
+fn state_behind_cert(cert_der: &[u8], trust_pem: &str) -> bool {
+    pki::issuer_of(cert_der, trust_pem).is_none()
+}
+
+/// Whether `cert_der` comes from a CA the state still trusts but no longer
+/// signs with (a rotation's step 3). A certificate from a CA the state
+/// doesn't know at all is newer than the state, not stale.
+fn issued_by_retiring_ca(cert_der: &[u8], trust_pem: &str, signing_fp: &str) -> bool {
+    pki::issuer_of(cert_der, trust_pem).is_some_and(|fp| fp != signing_fp)
 }
 
 fn normalize(pem: &str) -> String {
@@ -129,6 +143,12 @@ impl Cluster {
     }
 
     /// When the state names the staged CA as the signing one, switch to it.
+    /// This node's certificate, DER; `None` when it can't be read.
+    fn own_cert_der(&self) -> Option<Vec<u8>> {
+        let pem = self.files.read(self.files.cert()).ok()?;
+        pki::pem_bundle_ders(&pem).ok()?.into_iter().next()
+    }
+
     fn activate_next(&self, st: &CaState) {
         let current = self
             .signing_ca()
@@ -313,6 +333,25 @@ impl Cluster {
         if self.node.is_some() {
             self.activate_next(&st);
         }
+        // A state that doesn't know the CA of our own certificate is older
+        // than the certificate: a rejoined node whose replica predates the
+        // rotation its forget started. Installing that bundle would refuse
+        // every current peer, so replication could never bring the newer
+        // state (glidex#631). Wait for it instead.
+        if let Some(der) = self.own_cert_der()
+            && state_behind_cert(&der, &st.trust_pem)
+        {
+            if !self.ca_state_behind.swap(true, Ordering::Relaxed) {
+                tracing::warn!(
+                    "the replicated CA bundle doesn't hold the CA of this node's certificate: \
+                     keeping the installed bundle until this node catches up"
+                );
+            }
+            return;
+        }
+        if self.ca_state_behind.swap(false, Ordering::Relaxed) {
+            tracing::info!("the replicated CA bundle has caught up with this node's certificate");
+        }
         let have = self.files.read(self.files.trust()).unwrap_or_default();
         if normalize(&have) != normalize(&st.trust_pem) {
             if let Err(e) = pki::write_private(&self.files.trust(), st.trust_pem.as_bytes())
@@ -342,9 +381,9 @@ impl Cluster {
             .ok_or_else(|| other("no certificate"))?;
         let info = pki::inspect_node_cert(&der)?;
         let trust = self.files.read(self.files.trust())?;
-        let signing = self.signing_fp();
-        let stale_issuer = self.ca_state().is_some()
-            && pki::issuer_of(&der, &trust).is_some_and(|fp| fp != signing);
+        let stale_issuer = self
+            .ca_state()
+            .is_some_and(|st| issued_by_retiring_ca(&der, &st.trust_pem, &st.signing_fp));
         if !stale_issuer && pki::seconds_left(&info) > RENEW_BEFORE_SECS {
             return Ok(false);
         }
@@ -692,5 +731,50 @@ impl Cluster {
                 tokio::select! { _ = round => {}, _ = stop.changed() => return }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A node certificate from `ca`, as DER.
+    fn cert_from(ca: &Ca) -> Vec<u8> {
+        let key = NodeKey::generate().unwrap();
+        let csr = key.csr(&[], &[]).unwrap();
+        let (pem, _) = ca.sign_node(&csr, "n1", true, 1, &[]).unwrap();
+        pki::pem_bundle_ders(&pem).unwrap().remove(0)
+    }
+
+    #[test]
+    fn a_ca_state_older_than_the_node_certificate_is_not_acted_on() {
+        // After a rotation both CAs carry the cluster's name: only the key
+        // tells them apart.
+        let old = Ca::generate("c1").unwrap();
+        let new = Ca::generate("c1").unwrap();
+        let (old_fp, new_fp) = (
+            old.public_key_fingerprint().unwrap(),
+            new.public_key_fingerprint().unwrap(),
+        );
+        let both = format!("{}{}", old.cert_pem, new.cert_pem);
+
+        // glidex#631: a rejoined node holds a new-CA certificate, while its
+        // replica still has the state from before the rotation: {old},
+        // signing with old. Neither its bundle nor a renewal may follow it.
+        let rejoined = cert_from(&new);
+        assert!(state_behind_cert(&rejoined, &old.cert_pem));
+        assert!(!issued_by_retiring_ca(&rejoined, &old.cert_pem, &old_fp));
+
+        // Caught up: {new}, or {old, new} during the window, is installed.
+        assert!(!state_behind_cert(&rejoined, &new.cert_pem));
+        assert!(!state_behind_cert(&rejoined, &both));
+        assert!(!issued_by_retiring_ca(&rejoined, &both, &new_fp));
+
+        // A rotation's step 3 as before: an old-CA certificate, under
+        // {old, new} signing with new, is renewed, and the bundle installed.
+        let before = cert_from(&old);
+        assert!(!state_behind_cert(&before, &both));
+        assert!(issued_by_retiring_ca(&before, &both, &new_fp));
+        assert!(!issued_by_retiring_ca(&before, &old.cert_pem, &old_fp));
     }
 }
