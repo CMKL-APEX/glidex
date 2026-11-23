@@ -1894,7 +1894,7 @@ async fn oidc_rejects_bad_tokens() {
                 jsonwebtoken::encode(
                     &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::HS256),
                     &claims(&mock, n),
-                    &jsonwebtoken::EncodingKey::from_secret(b"test-client-secret"),
+                    &jsonwebtoken::EncodingKey::from_secret(b"test-client-secret").unwrap(),
                 )
                 .unwrap()
             }),

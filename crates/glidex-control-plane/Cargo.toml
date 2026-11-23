@@ -55,7 +55,7 @@ tempfile = "3"
 cedar-policy = "4.13"
 arc-swap = "1"
 zeroize = { version = "1", features = ["serde"] }
-jsonwebtoken = { version = "11", features = ["aws_lc_rs"] }
+jsonwebtoken = { version = "12", features = ["aws_lc_rs"] }
 base64 = "0.23"
 glidex-authd = { workspace = true }
 glidex-tls = { workspace = true }
