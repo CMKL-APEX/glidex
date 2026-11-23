@@ -45,6 +45,7 @@ Administrators can change these.
 | `mem.used` | VM | MiB-hours | Memory the VM's processes held × time. |
 | `mem.peak` | VM | MiB | Most memory held in the hour. |
 | `vmio.read_bytes`, `vmio.write_bytes` | VM | GiB | Disk I/O on the host side, after the host's page cache. |
+| `migration.cpu.used`, `migration.vmio.*` | VM | core-hours, GiB | What a live migration's target spent receiving the VM, before the guest ran there: kept apart from the VM's own `cpu.used` and `vmio.*`. |
 | `disk.alloc` | disk | GiB-hours | Provisioned size × time, attached or not, running or not. |
 | `disk.stored` | disk | GiB-hours | Space the disk file takes on the host × time. |
 | `image.stored` | image | GiB-hours | Space an image takes × time (host-wide). |
@@ -155,6 +156,13 @@ In a cluster, the charts get the current hour from the VM's host, along
 with the current rates. If the host doesn't answer within 2 seconds,
 the current rates are empty and the charts end at the last full hour
 until the next refresh. The 95th percentile covers full hours only.
+
+A VM that live-migrated is metered by each node for its part: the old
+node up to when the guest left it, the new one from when the guest
+started running there. The hour of the move has both nodes' parts, and
+its rates show the two together. What the new node spent receiving the
+VM is shown as **CPU used by live migrations**, not as the VM's own CPU,
+so it doesn't count in the VM's utilization or peaks.
 
 ## gxctl
 

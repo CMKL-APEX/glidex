@@ -311,6 +311,28 @@ placing or deleting the VM answers `409 migrating` until it ends.
 `gxctl migrate <vm> --cancel` cancels it while the guest is still on its
 node; once the guest has moved, the migration finishes.
 
+In the web UI, a running VM's page has **Migrate…** for those with
+`migrateVm`. The dialog lists each node: one that can't take the VM
+shows why and can't be chosen, and **Where it fits best** leaves the
+choice to the scheduler. It asks for the longest pause at the switch.
+While the VM migrates, its page shows the phase and the target, with
+**Cancel migration** until the guest has moved; a migration that failed
+shows its reason until the next one. The VM's events record each
+migration: `MigrationStarted`, then `Migrated`, `MigrationFailed` or
+`MigrationCancelled`.
+
+A migration that fails leaves the guest running where it was, with the
+reason in `migration.reason`:
+
+| Reason says | What happened | Do |
+|---|---|---|
+| `on the target: attaching disk … as a delegate` | The target's `hyperstor-vhost` refused the standby attachment: an older hyperstor on the storage nodes, or the volume busy. | Check `hyperstorctl status` and the target's hyperstor version. |
+| `on the target: starting the receiving shim` | The target couldn't start Cloud Hypervisor to receive. | The target's control-plane journal has the error. |
+| `on the target:` and Cloud Hypervisor's words | The target's Cloud Hypervisor refused the guest: its CPU check, or a release it can't receive from. | `gxctl migrate <vm> --check --node N`; see the target's `console.log` in the VM's runtime directory. |
+| `on the source: the copy ended and the guest is still here` | The copy didn't finish: the network between the nodes broke, or it didn't converge within the time limit (900 s). | Retry with a larger downtime, or when the guest writes less memory. |
+| `node … stopped reporting` | The source or the target went down during the move. | Check the node; the VM is where the record's phase said. |
+| `the guest left node … but didn't start on node …` | The source sent the guest, but the target never ran it. The VM is stopped. | Start it again; report it with both nodes' journals. |
+
 ## Node lifecycle
 
 Each node has a phase: `Active`, `Draining`, `Departing` (a detach in

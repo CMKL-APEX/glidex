@@ -784,8 +784,9 @@ disk on the default datastore) and when a disk is moved to it.
 
 ## Limits
 
-- No live migration: a VM moves only while stopped, and only when you
-  ask.
+- A running VM moves only by live migration, and only when you ask
+  ([Placement](clusters.md#placement)): on Cloud Hypervisor, with its
+  disks on hyperstor and no PCI devices. Others move while stopped.
 - A node that leaves the cluster with its VMs
   ([detach](clusters.md#detach-a-node-with-its-vms)) can't take its disks
   on node-local datastores other than `local` along: move them to
