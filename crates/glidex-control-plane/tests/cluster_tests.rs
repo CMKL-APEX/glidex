@@ -8756,6 +8756,12 @@ async fn a_server_joining_from_a_snapshot_follows_the_ovn_setting() {
 /// starts again and runs its old runtime alone, rejoins through its API with
 /// its Raft state intact: the rejoin reopens the same Raft log, so the old
 /// runtime must have let go of it.
+///
+/// glidex#638: the forget rotated the CA and the other servers' certificates
+/// were re-issued, so the rejoined server's replica knows neither the new CA
+/// nor their certificates. It must still catch up: keep the bundle its
+/// rejoin gave it, and take the leader's messages. And a bundle that lost
+/// the CA of its own certificate (as an older release left one) is mended.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
     use glidex_control_plane::cluster::Cluster;
@@ -8764,7 +8770,11 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
     let lead = leader_index(&cps, &[0, 1, 2]).await;
     // A voter: alone, it stands for election.
     let learner = (0..3).find(|i| *i != lead).unwrap();
+    let other = (0..3).find(|i| *i != lead && *i != learner).unwrap();
     let lname = cluster(&cps[learner]).identity.name.clone();
+    let old_fp = cluster(&cps[lead]).signing_fp();
+    let lc = cluster(&cps[lead]);
+    let old_bundle = lc.files.read(lc.files.trust()).unwrap();
 
     // It goes silent and is forgotten.
     cluster(&cps[learner]).stop().await;
@@ -8781,6 +8791,25 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
     )
     .await;
     assert_eq!(s, StatusCode::OK, "{r}");
+    // Forgetting a server rotates the CA; the servers left renew onto it.
+    let issuer = |cp: &Cp| {
+        let c = cluster(cp);
+        let der = glidex_control_plane::cluster::pki::pem_bundle_ders(
+            &c.files.read(c.files.cert()).unwrap(),
+        )
+        .unwrap()
+        .remove(0);
+        glidex_control_plane::cluster::pki::issuer_of(&der, &c.files.read(c.files.trust()).unwrap())
+    };
+    wait_until("the remaining servers to renew onto the new CA", || async {
+        let new_fp = cluster(&cps[lead]).signing_fp();
+        new_fp != old_fp
+            && [lead, other]
+                .iter()
+                .all(|i| issuer(&cps[*i]).as_deref() == Some(new_fp.as_str()))
+    })
+    .await;
+    let new_fp = cluster(&cps[lead]).signing_fp();
 
     // Its control plane starts again, as at boot: its old identity, its
     // Raft state, nobody to talk to.
@@ -8849,6 +8878,24 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
         l.voters().contains(&rid) || l.learners().contains(&rid)
     })
     .await;
+    // It trusts the CA of its new certificate, and catches up: its replica
+    // learns the rotation only from the leader.
+    assert_eq!(issuer(&cps[learner]).as_deref(), Some(new_fp.as_str()));
+    wait_until("the rejoined server to catch up", || async {
+        cluster(&cps[learner])
+            .ca_state()
+            .is_some_and(|st| st.signing_fp == new_fp)
+    })
+    .await;
+
+    // A bundle that lost the CA of its own certificate is mended from a
+    // server: only that CA comes back.
+    let c = cluster(&cps[learner]);
+    std::fs::write(c.files.trust(), &old_bundle).unwrap();
+    assert_eq!(issuer(&cps[learner]), None);
+    assert!(c.repair_trust().await);
+    assert_eq!(issuer(&cps[learner]).as_deref(), Some(new_fp.as_str()));
+    assert!(!c.repair_trust().await, "nothing to mend any more");
 }
 
 /// D37: an agent whose host moved rejoins at its new address, with its
