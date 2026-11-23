@@ -1895,21 +1895,39 @@ impl VmManager {
     }
 
     /// Stop this host's cluster runtime and forget it (a rejoin starts a new one).
-    pub async fn detach_cluster(&self) {
-        if let Some(c) = self.cluster.swap(None) {
-            self.images.set_node_id(&crate::authz::node_id());
-            c.stop().await;
-            // Its Raft log is open until every holder lets go: wait for them, so a
-            // runtime started next can open the same files.
-            let weak = Arc::downgrade(&c);
-            drop(c);
-            for _ in 0..100 {
-                if weak.strong_count() == 0 {
-                    break;
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-            }
+    ///
+    /// A server's Raft log stays open until every holder of its Raft member
+    /// lets go. This waits for them, so a runtime started next can open the
+    /// same files, and returns an error if one still holds it after
+    /// `DETACH_WAIT` rather than leave the next open to fail (glidex#631).
+    /// Other holders of the runtime (an agent's link) are waited for as
+    /// long, but don't hold any file.
+    pub async fn detach_cluster(&self) -> Result<(), String> {
+        const DETACH_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+        let Some(c) = self.cluster.swap(None) else {
+            return Ok(());
+        };
+        self.images.set_node_id(&crate::authz::node_id());
+        c.stop().await;
+        let runtime = Arc::downgrade(&c);
+        let member = c.node.as_ref().map(Arc::downgrade);
+        drop(c);
+        let member_held = || member.as_ref().is_some_and(|n| n.strong_count() > 0);
+        let until = std::time::Instant::now() + DETACH_WAIT;
+        while (member_held() || runtime.strong_count() > 0) && std::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
+        if member_held() {
+            tracing::error!(
+                runtime = runtime.strong_count(),
+                "the old cluster runtime's Raft member is still held"
+            );
+            return Err(format!(
+                "the old cluster runtime still holds its Raft log after {}s; restart the control plane and try again",
+                DETACH_WAIT.as_secs()
+            ));
+        }
+        Ok(())
     }
 
     /// Keep `vms` equal to the `vms` table as entries are applied (a

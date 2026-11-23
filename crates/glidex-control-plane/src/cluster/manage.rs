@@ -674,7 +674,7 @@ pub async fn rejoin(
     let role = identity.role;
     let node_id = identity.node_id.clone();
     // The old runtime goes before its files change.
-    manager.detach_cluster().await;
+    manager.detach_cluster().await.map_err(other)?;
     files.save_node_cert(&resp.cert_pem, &key.key_pem(), &resp.trust_pem)?;
     files.save_identity(&identity)?;
     crate::authz::set_identity(&identity.cluster_id, &identity.node_id);
@@ -1074,9 +1074,11 @@ pub async fn leave(manager: &Arc<VmManager>) -> Result<Value, ClusterError> {
         })
         .await;
     }
-    manager.detach_cluster().await;
-    let files = Files::beside(manager.db_path());
     let name = c.identity.name.clone();
+    // Our own handle too, or the detach waits for it.
+    drop(c);
+    manager.detach_cluster().await.map_err(other)?;
+    let files = Files::beside(manager.db_path());
     files.delete_all();
     Ok(
         json!({ "left": name, "restart": "restart the control plane: it starts again as a standalone host" }),

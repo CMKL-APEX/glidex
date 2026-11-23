@@ -149,6 +149,9 @@ fn unavailable(code: &str, msg: &str) -> Response {
     r
 }
 
+/// The runtime (`cluster`) is let go before the handler runs: a handler may
+/// replace it (`cluster rejoin`), which waits for every holder of the old
+/// one to let go of its Raft log (glidex#631).
 pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next) -> Response {
     let Some(cluster) = app.manager.cluster() else {
         return next.run(req).await;
@@ -160,6 +163,7 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
         .unwrap_or(Listener::Tcp);
     // The leader executing a request a server forwarded, or a node's own host.
     if listener == Listener::Cluster || cluster.node.is_none() {
+        drop(cluster);
         return next.run(req).await;
     }
     let path = req.uri().path().to_string();
@@ -167,6 +171,7 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
         || super::rpc::is_local(&path)
         || req.headers().get(header::UPGRADE).is_some()
     {
+        drop(cluster);
         return next.run(req).await;
     }
     // An RPC is always a POST: its operation says whether it reads or
@@ -178,6 +183,7 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
         && !is_idp_login(&path);
     if read {
         if needs_no_barrier(&path) {
+            drop(cluster);
             return next.run(req).await;
         }
         let local = req
@@ -193,6 +199,7 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
                 ),
             );
         }
+        drop(cluster);
         let mut resp = next.run(req).await;
         if let Ok(v) = HeaderValue::from_str(&app.manager.database().revision().to_string()) {
             resp.headers_mut().insert(REVISION_HEADER, v);
@@ -200,6 +207,7 @@ pub async fn cluster_gate(State(app): State<AppState>, req: Request, next: Next)
         return resp;
     }
     if cluster.is_leader() {
+        drop(cluster);
         return next.run(req).await;
     }
     forward(&app, cluster, req).await
