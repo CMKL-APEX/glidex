@@ -23,7 +23,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-redb = "4.5"
+redb = "5.0"
 nix = { version = "0.32", features = ["socket", "user", "signal", "fs", "process"] }
 
 [dev-dependencies]
