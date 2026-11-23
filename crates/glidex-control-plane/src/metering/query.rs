@@ -496,7 +496,7 @@ pub fn derive(m: &mut BTreeMap<String, u64>, secs: u64) {
 pub fn present(meter: &str, raw: u64) -> (f64, &'static str) {
     let r = raw as f64;
     let (v, unit) = match meter {
-        "cpu.used" => (r / 3.6e9, "core-hours"),
+        "cpu.used" | "migration.cpu.used" => (r / 3.6e9, "core-hours"),
         "cpu.alloc" => (r / 3600.0, "vCPU-hours"),
         "mem.used" | "mem.alloc" => (r / 3600.0, "MiB-hours"),
         "mem.peak" => (r, "MiB"),

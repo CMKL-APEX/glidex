@@ -3616,14 +3616,16 @@ async fn a_migrations_source_sends_the_guest_or_keeps_it() {
 /// over the peer connection to the target, which joins it to its
 /// receiving hypervisor's `migration.sock`; both ways, bytes unread. The
 /// target refuses a stream for a VM not migrating to it, or not copying,
-/// and says so when nothing receives there.
+/// and says so when nothing receives there. The target's controllers
+/// don't run: the test sets each phase, which its own loop would move on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_migrations_stream_is_relayed_to_its_target_while_copying() {
     use glidex_control_plane::controller::migration::stream_path;
     use glidex_control_plane::models::{Migration, MigrationPhase};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let _one = serial().await;
-    let (server, agent) = server_and_agent().await;
+    let (server, _other) = server_and_agent().await;
+    let agent = idle_agent(&server, "agent2").await;
     let server_id = server.manager.local_node_id();
     let agent_id = agent.manager.local_node_id();
     let (s, v) = call(

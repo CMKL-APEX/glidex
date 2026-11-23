@@ -133,6 +133,16 @@ fn sample_vm(
     };
     let run = inst.instance_id.as_str();
     let launched = inst.launched_at * 1000;
+    // A migration's source after the guest left (spec/32 decision 19):
+    // its runs end when it left, and the target's begin there.
+    let left = st
+        .migration
+        .as_ref()
+        .filter(|m| m.sent && m.sent_at > 0)
+        .map(|m| m.sent_at.min(now));
+    let now_or_left = left.unwrap_or(now);
+    // Once ended there, a later round mustn't start them again.
+    let ended = left.is_some() && round.gauge_run_of(&s, "vm.running")?.is_none();
     round.mark_run(&s, run);
     // The exit time of the run before this one, if it is the one recorded.
     let prev_end = st.last_exit.as_ref().map(|e| e.at * 1000);
@@ -144,26 +154,25 @@ fn sample_vm(
         ("cpu.alloc", if running { c.vcpu_count as u64 } else { 0 }),
         ("mem.alloc", c.mem_size_mib as u64),
     ];
-    for (m, level) in levels {
-        round.gauge_run(&s, m, run, launched, level, since, now, prev_end)?;
+    for (m, level) in levels.into_iter().filter(|_| !ended) {
+        round.gauge_run(&s, m, run, launched, level, since, now_or_left, prev_end)?;
     }
     // Held while paused too: nobody else can have them.
-    for (pool, level) in pool_levels(vm) {
+    for (pool, level) in pool_levels(vm).into_iter().filter(|_| !ended) {
         let m = format!("{DEVICE_ALLOC}{pool}");
-        round.gauge_run(&s, &m, run, launched, level, since, now, prev_end)?;
+        round.gauge_run(&s, &m, run, launched, level, since, now_or_left, prev_end)?;
+    }
+    if let Some(at) = left.filter(|_| !ended) {
+        for m in VM_GAUGES {
+            round.gauge_end_at(&s, m, at)?;
+        }
+        round.gauge_end_at(&s, "pylon.cores_allocated", at)?;
+        for pool in pool_levels(vm).keys() {
+            round.gauge_end_at(&s, &format!("{DEVICE_ALLOC}{pool}"), at)?;
+        }
     }
 
-    let usage = match &inst.runner {
-        Runner::Systemd { unit } => inst
-            .shim_pid
-            .and_then(|pid| host.cgroup_of(pid))
-            // The shim's cgroup must be this VM's unit (pid reuse check).
-            .filter(|cg| cg.file_name().is_some_and(|n| n.to_string_lossy() == *unit))
-            .and_then(|cg| host.cgroup_usage(&cg)),
-        Runner::Detached => inst
-            .hypervisor_pid
-            .and_then(|pid| host.proc_usage(pid, inst.hypervisor_starttime)),
-    };
+    let usage = instance_usage(host, inst);
     if let Some((ids, stats)) = host.block_stats(&vm.id, run) {
         record_disk_io(round, vm, &ids, &stats, disks, launched, run, now)?;
     }
@@ -174,13 +183,40 @@ fn sample_vm(
         Runner::Systemd { .. } => format!("{run}/{}", inst.shim_starttime.unwrap_or(0)),
         Runner::Detached => format!("{run}/{}", inst.hypervisor_starttime.unwrap_or(0)),
     };
+    // A migration's target: what the receive used goes to `migration.*`,
+    // once, and the guest's own counters start from it (decision 19).
+    let received = inst.received_usage.as_ref();
+    let origin = |before: Option<u64>| match (received, before) {
+        (Some(r), Some(v)) => Origin::ValueAt { value: v, at: r.at },
+        _ => Origin::ZeroAt(launched),
+    };
+    if let Some(r) = received {
+        round.counter(
+            &s,
+            "migration.cpu.used",
+            &reset_key,
+            r.cpu_usec,
+            r.at,
+            Origin::ZeroAt(r.since),
+        )?;
+        if let Some(io) = &r.io {
+            for (m, v) in [
+                ("migration.vmio.read_bytes", io.read_bytes),
+                ("migration.vmio.write_bytes", io.write_bytes),
+                ("migration.vmio.read_ops", io.read_ops),
+                ("migration.vmio.write_ops", io.write_ops),
+            ] {
+                round.counter(&s, m, &reset_key, v, r.at, Origin::ZeroAt(r.since))?;
+            }
+        }
+    }
     if let Some(d) = round.counter(
         &s,
         "cpu.used",
         &reset_key,
         u.cpu_usec,
         now,
-        Origin::ZeroAt(launched),
+        origin(received.map(|r| r.cpu_usec)),
     )? {
         // µs of CPU per second of wall time = % of one core × 10⁴; per vCPU.
         if let Some(usec_per_s) = d.rate(1) {
@@ -250,17 +286,28 @@ fn sample_vm(
         } else {
             0
         };
-    round.gauge_run(&s, "mem.used", run, launched, used_mib, now, now, prev_end)?;
+    if left.is_none() {
+        round.gauge_run(&s, "mem.used", run, launched, used_mib, now, now, prev_end)?;
+    }
     round.max(&s, "mem.peak", used_mib, now);
     // Host-side I/O (D4): for capacity, next to the guest-level disk.*.
     if let Some(io) = u.io {
-        for (m, v) in [
-            ("vmio.read_bytes", io.read_bytes),
-            ("vmio.write_bytes", io.write_bytes),
-            ("vmio.read_ops", io.read_ops),
-            ("vmio.write_ops", io.write_ops),
+        let before = received.and_then(|r| r.io.as_ref());
+        for (m, v, b) in [
+            (
+                "vmio.read_bytes",
+                io.read_bytes,
+                before.map(|b| b.read_bytes),
+            ),
+            (
+                "vmio.write_bytes",
+                io.write_bytes,
+                before.map(|b| b.write_bytes),
+            ),
+            ("vmio.read_ops", io.read_ops, before.map(|b| b.read_ops)),
+            ("vmio.write_ops", io.write_ops, before.map(|b| b.write_ops)),
         ] {
-            round.counter(&s, m, &reset_key, v, now, Origin::ZeroAt(launched))?;
+            round.counter(&s, m, &reset_key, v, now, origin(b))?;
         }
     }
     round.live(&s, "mem_used_mib", used_mib as f64);
@@ -275,6 +322,25 @@ fn sample_vm(
         round.flag(&s, now, Flag::SourceProc);
     }
     Ok(())
+}
+
+/// The counters of instance `inst`'s cgroup (its unit's, checked against
+/// the shim's pid) or, detached, of its hypervisor's process.
+pub fn instance_usage(
+    host: &Host,
+    inst: &crate::models::InstanceRef,
+) -> Option<super::sources::VmUsage> {
+    match &inst.runner {
+        Runner::Systemd { unit } => inst
+            .shim_pid
+            .and_then(|pid| host.cgroup_of(pid))
+            // The shim's cgroup must be this VM's unit (pid reuse check).
+            .filter(|cg| cg.file_name().is_some_and(|n| n.to_string_lossy() == *unit))
+            .and_then(|cg| host.cgroup_usage(&cg)),
+        Runner::Detached => inst
+            .hypervisor_pid
+            .and_then(|pid| host.proc_usage(pid, inst.hypervisor_starttime)),
+    }
 }
 
 /// The tail since the last sample, from the shim's exit snapshot (D12,
@@ -518,6 +584,61 @@ mod tests {
 
     fn totals(l: &Ledger) -> std::collections::BTreeMap<String, u64> {
         combine(&l.scan(0, u64::MAX / 10, None).unwrap())
+    }
+
+    /// A migrated VM (spec/32 decision 19): on the source its runs end
+    /// when the guest left, with the last reading's CPU; on the target the
+    /// receive's CPU is `migration.cpu.used`, once, and `cpu.used` counts
+    /// only what came after it.
+    #[test]
+    fn a_migrated_vm_is_divided_at_the_switch() {
+        // The source: launched at T0, the guest left at +45 s, read at +60 s.
+        let (_dir, l, host) = setup();
+        let launched = T0 / 1000;
+        let sent = serde_json::json!({ "migration": {
+            "target": "node-b", "phase": "Switching", "started_at": launched, "updated_at": launched,
+            "sent": true, "sent_at": T0 + 45_000,
+        }});
+        cgroup(&host, 0, 512 * MIB);
+        let v = vm("running", instance("i1", launched), serde_json::json!({}));
+        let mut r = l.begin_round(T0 + 30_000).unwrap();
+        sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, T0 + 30_000).unwrap();
+        l.commit(r).unwrap();
+        cgroup(&host, 2_000_000, 512 * MIB);
+        let v = vm("running", instance("i1", launched), sent);
+        for at in [T0 + 60_000, T0 + 90_000] {
+            let mut r = l.begin_round(at).unwrap();
+            sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, at).unwrap();
+            l.commit(r).unwrap();
+        }
+        let t = totals(&l);
+        assert_eq!(t["vm.running"], 45, "ended when the guest left");
+        assert_eq!(t["cpu.alloc"], 2 * 45);
+        assert_eq!(t["cpu.used"], 2_000_000, "the last reading counted");
+
+        // The target: receiving from +20 s, the guest there from +45 s.
+        let (_dir, l, host) = setup();
+        let mut inst = instance("i2", launched + 45);
+        inst["received_usage"] =
+            serde_json::json!({ "since": T0 + 20_000, "at": T0 + 45_000, "cpu_usec": 300_000 });
+        let v = vm(
+            "running",
+            inst,
+            serde_json::json!({ "phase_since": launched + 45 }),
+        );
+        for (at, cpu) in [(T0 + 60_000, 800_000), (T0 + 90_000, 1_300_000)] {
+            cgroup(&host, cpu, 512 * MIB);
+            let mut r = l.begin_round(at).unwrap();
+            sample_vms(&mut r, std::slice::from_ref(&v), &[], &host, at).unwrap();
+            l.commit(r).unwrap();
+        }
+        let t = totals(&l);
+        assert_eq!(t["migration.cpu.used"], 300_000, "the receive, once");
+        assert_eq!(
+            t["cpu.used"], 1_000_000,
+            "the guest's own, after the switch"
+        );
+        assert_eq!(t["vm.running"], 45, "from the switch");
     }
 
     #[test]

@@ -109,6 +109,23 @@ impl Meter {
         &self.cfg
     }
 
+    /// A round of VM `vm` alone, now: a migration's source takes its last
+    /// reading this way before it lets the instance go (spec/32 decision
+    /// 19). Blocking.
+    pub fn sample_vm_now(&self, vm: &Vm, disks: &[Disk]) -> Result<(), MeteringError> {
+        let _one = self.round_lock.lock().unwrap_or_else(|e| e.into_inner());
+        let now = now_ms();
+        let mut round = self.writer().begin_round(now)?;
+        sampler::sample_vms(&mut round, std::slice::from_ref(vm), disks, &self.host, now)?;
+        self.writer().commit(round)?;
+        Ok(())
+    }
+
+    /// The counters of an instance's cgroup now, as metering reads them.
+    pub fn instance_usage(&self, inst: &crate::models::InstanceRef) -> Option<sources::VmUsage> {
+        sampler::instance_usage(&self.host, inst)
+    }
+
     /// One sampling round over a snapshot (blocking: sysfs, `/proc` and
     /// the database).
     pub fn sample(&self, snap: &Snapshot, now: u64) -> Result<(), MeteringError> {

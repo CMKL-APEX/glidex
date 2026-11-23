@@ -105,6 +105,7 @@ Records store integers in the base unit. Hour figures such as
 | `disk.read_kBps_peak` / `disk.write_kBps_peak` / `disk.kBps_peak` | max | disk | kB/s (10³ B/s) | MB/s | same, for throughput |
 | `vmio.read_bytes` / `vmio.write_bytes` | counter | VM | bytes | GiB | cgroup `io.stat` `rbytes`/`wbytes`, host side, for capacity only (D4, §5.1; M3) |
 | `vmio.read_ops` / `vmio.write_ops` | counter | VM | ops | ops | cgroup `io.stat` `rios`/`wios` (D4, §5.1; M3) |
+| `migration.cpu.used`, `migration.vmio.*` | counter | VM | as `cpu.used`, `vmio.*` | as those | a live migration's target: the receiving instance's `cpu.used` and `vmio.*` up to when the guest began running there (`received_usage`), counted once; the guest's own meters count from there (spec/32-live-migration.md decision 19) |
 | `net.rx_bytes` / `net.tx_bytes` | counter | NIC | bytes | GiB | the VM's bridge port, OVSDB `Interface.statistics` |
 | `net.rx_packets` / `net.tx_packets` | counter | NIC | packets | packets, avg/peak pps | the VM's bridge port, OVSDB `Interface.statistics` |
 | `net.pps_peak` | max | NIC | packets/s ×1000 | pps | max (rx+tx) rate over one sample interval |
@@ -727,7 +728,7 @@ rows reach the replicated store, each once (14-clustering.md §13.1,
 | `usage_hourly` | `<hour:010>/<project>/<subject_kind>/<subject_id>/<seq:04>` | `UsageRecord` (§7.2) |
 | `usage_daily` | `<day>/<project>/<subject_kind>/<subject_id>` | `UsageRecord` summed (M2; written when a day closes) |
 | `usage_monthly_rates` | `<YYYY-MM>/<project>/<subject_kind>/<subject_id>` | `BandwidthMonth`: final p95/avg/peak for a billing month (§8.5) |
-| `rate_5m` | `<hour:010>/<project>/<subject_kind>/<subject_id>` | `SlotRow`: the hour's twelve 5-minute slots (§8.5) |
+| `rate_5m` | `<hour:010>/<project>/<subject_kind>/<subject_id>`; in a cluster's ledger, with `@<node>` after it, one row per node that sampled the subject (a VM that live-migrated within the hour has two, which the readers add; spec/32-live-migration.md decision 19) | `SlotRow`: the hour's twelve 5-minute slots (§8.5) |
 | `meter_meta` | `schema`, `last_round`, `retention_done` | small values |
 
 `hour` is the hour's start in Unix seconds, zero-padded so that keys

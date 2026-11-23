@@ -260,6 +260,10 @@ pub enum Origin {
     /// launch. Counted in full if that is after metering started;
     /// otherwise only a baseline is taken (no backfill, §15.1).
     ZeroAt(u64),
+    /// The counter was `value` at `at` (unix ms): what came before is
+    /// someone else's, e.g. a migration's receive (spec/32 decision 19).
+    /// `ZeroAt(t)` is `ValueAt { value: 0, at: t }`.
+    ValueAt { value: u64, at: u64 },
     /// Unknown: take a baseline, count from the next reading.
     Unknown,
 }
@@ -499,10 +503,16 @@ impl Round {
             Some(c) => match origin {
                 // A new run of the counter: it counted from 0 since `t`.
                 Origin::ZeroAt(t) => (value, t.max(c.at), false),
+                Origin::ValueAt { value: v, at: t } => {
+                    (value.saturating_sub(v), t.max(c.at), false)
+                }
                 Origin::Unknown => (value, c.at, false),
             },
             None => match origin {
                 Origin::ZeroAt(t) if t >= self.started_at => (value, t, false),
+                Origin::ValueAt { value: v, at: t } if t >= self.started_at => {
+                    (value.saturating_sub(v), t, false)
+                }
                 // Baseline: usage from before metering is not billed.
                 _ => (0, at, false),
             },
@@ -907,6 +917,11 @@ fn ranges(
 
 fn slot_key(hour: u64, subject: &Subject) -> String {
     format!("{hour:010}/{}/{}", subject.project_key(), subject.key())
+}
+
+/// A slot row's key on the leader: the node's key with the node after it.
+fn slot_key_of_node(key: &str, node: &str) -> String {
+    format!("{key}@{node}")
 }
 
 fn hour_key(hour: u64, project: &str, subject_key: &str, seq: u16) -> String {
@@ -1830,7 +1845,13 @@ impl Ledger {
                 |tx| -> Result<(), MeteringError> {
                     let mut slots = tx.open_table(RATE5)?;
                     for ((k, value), _) in chunk {
-                        slots.insert(k.as_str(), value.as_slice())?;
+                        // Each node's row of a subject apart: a VM that
+                        // moved within the hour has one from each node
+                        // (spec/32 decision 19), and the readers add them.
+                        // The same node's row replaces its own. A row from
+                        // before rows were kept by node goes.
+                        slots.remove(k.as_str())?;
+                        slots.insert(slot_key_of_node(k, node).as_str(), value.as_slice())?;
                     }
                     Ok(())
                 },
@@ -2333,6 +2354,75 @@ mod tests {
         let mut e = export(vec![("a", row(1)), ("b", row(3))], 11);
         assert!(shipped.trim(&mut e).unwrap().is_some());
         assert!(e.slots.is_empty());
+    }
+
+    /// A counter seen first at a known value (a migration's target, past
+    /// its receive) counts only what came after it (spec/32 decision 19).
+    #[test]
+    fn a_counter_from_a_known_value_counts_only_the_rest() {
+        let (_d, l) = ledger();
+        let s = Subject::new(SubjectKind::Vm, "vm-a", "vm-a", Some("p1".into()));
+        let mut r = l.begin_round(T0 + 60_000).unwrap();
+        let d = r
+            .counter(
+                &s,
+                "cpu.used",
+                "run",
+                5_000,
+                T0 + 60_000,
+                Origin::ValueAt {
+                    value: 2_000,
+                    at: T0 + 30_000,
+                },
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!((d.amount, d.from, d.to), (3_000, T0 + 30_000, T0 + 60_000));
+        l.commit(r).unwrap();
+    }
+
+    /// Two nodes' 5-minute rows of one subject and hour (a VM that moved
+    /// within it) are both kept on the leader and both read; a node's
+    /// later row replaces its own, and a row from before rows were kept
+    /// by node goes (spec/32 decision 19).
+    #[test]
+    fn each_nodes_slot_rows_are_kept_apart() {
+        let central_dir = tempfile::TempDir::new().unwrap();
+        let central_db = Arc::new(Db::create(central_dir.path().join("c.db")).unwrap());
+        let central = Ledger::attach(central_db.clone());
+        let s = Subject::new(SubjectKind::Vm, "vm-m", "vm-m", Some("p1".into()));
+        let hour = T0 / 1000;
+        let key = slot_key(hour, &s);
+        let row = |cpu: u64| {
+            let mut series = BTreeMap::new();
+            let mut v = [0u64; SLOTS_PER_HOUR];
+            v[0] = cpu;
+            series.insert("cpu.used".to_string(), v);
+            SlotRow {
+                subject: Some(s.clone()),
+                present: 1,
+                interpolated: 0,
+                series,
+            }
+        };
+        let export = |cpu: u64| Export {
+            started_at_ms: 1,
+            closed_through: 0,
+            hourly: vec![],
+            slots: vec![(key.clone(), row(cpu))],
+            more: false,
+        };
+        // A row as an older leader stored it, then each node's.
+        central.put_slots_for_test(0, &[(hour, row(999))]);
+        central.import("a", &export(100)).unwrap();
+        central.import("b", &export(40)).unwrap();
+        central.import("a", &export(120)).unwrap();
+        let rows = central
+            .scan_slots(0, u64::MAX / 10, None, |_| true)
+            .unwrap();
+        let mut cpu: Vec<u64> = rows.iter().map(|(_, r)| r.series["cpu.used"][0]).collect();
+        cpu.sort();
+        assert_eq!(cpu, [40, 120]);
     }
 
     #[test]

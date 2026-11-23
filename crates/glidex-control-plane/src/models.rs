@@ -604,6 +604,10 @@ pub struct Migration {
     /// left it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub sent: bool,
+    /// When the source saw its hypervisor exit (unix ms): where metering
+    /// divides the source's part from the target's (decision 19).
+    #[serde(default, skip_serializing_if = "is_zero_u64")]
+    pub sent_at: u64,
     /// The target's instance, running the guest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub received: Option<InstanceRef>,
@@ -617,6 +621,10 @@ pub struct Migration {
     /// failure or a time limit.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub cancel_asked: bool,
+}
+
+fn is_zero_u64(n: &u64) -> bool {
+    *n == 0
 }
 
 impl Migration {
@@ -741,6 +749,30 @@ pub struct InstanceRef {
     /// (address → count, spec/22-host-topology.md §5.4).
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub device_errors: std::collections::BTreeMap<String, u64>,
+    /// A migration's target: what the receive used before the guest ran
+    /// here (spec/32-live-migration.md decision 19), metered as
+    /// `migration.*` and not as the guest's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub received_usage: Option<ReceivedUsage>,
+}
+
+/// The receiving instance's counters when the guest began running on a
+/// migration's target, and when its receive began (unix ms).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceivedUsage {
+    pub since: u64,
+    pub at: u64,
+    pub cpu_usec: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub io: Option<ReceivedIo>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReceivedIo {
+    pub read_bytes: u64,
+    pub write_bytes: u64,
+    pub read_ops: u64,
+    pub write_ops: u64,
 }
 
 /// The running guest's applied CPU policy parameters.

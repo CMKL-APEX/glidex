@@ -711,6 +711,7 @@ impl VmManager {
             launched_max_vcpus: Some(c.effective_max_vcpus()),
             applied_cpu_policy: None,
             device_errors: device_errors_now(&c.vfio_devices),
+            received_usage: None,
         }
     }
 
@@ -1582,6 +1583,7 @@ impl VmManager {
                 weight: config.effective_cpu_weight(),
             }),
             device_errors: device_errors_now(&config.vfio_devices),
+            received_usage: None,
         });
         st.never_started = false;
         // What the guest may now use, until its next boot (spec/32 §9).
