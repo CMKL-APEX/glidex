@@ -493,3 +493,66 @@ async fn storage_services_over_connect_and_grpc() {
             .is_none()
     );
 }
+
+/// A disk that can't be made yet waits between attempts. Each attempt
+/// writes the disk, and that write queues it again; it used to run again at
+/// once, about ten times a second, each with two store writes and a call to
+/// the datastore (a hyperstor project not linked yet, S34).
+#[tokio::test(flavor = "multi_thread")]
+async fn a_disk_that_cant_be_made_yet_waits_between_attempts() {
+    use glidex_control_plane::store::{Origin, TableId};
+    let dir = TempDir::new().unwrap();
+    let manager = common::with_db_path(dir.path().join("glidex.db")).unwrap();
+    // An image the catalog says is ready, whose file this host hasn't got.
+    let id = "img-elsewhere";
+    let img = json!({
+        "id": id, "name": "elsewhere", "kind": "disk",
+        "source": { "kind": "url", "url": "http://example.invalid/x", "expected_sha256": "00" },
+        "status": { "state": "ready" }, "format": "qcow2", "virtual_size_bytes": 64 << 20,
+        "file_size_bytes": 1, "sha256": "00", "arch": "x86_64", "created_at": 1,
+    });
+    manager
+        .database()
+        .write(
+            Origin::Api,
+            |tx| -> Result<(), glidex_control_plane::store::StoreError> {
+                tx.open_table(TableId::Images.definition())?
+                    .insert(id, img.to_string().as_bytes())?;
+                Ok(())
+            },
+        )
+        .unwrap();
+    manager
+        .images()
+        .sync_keys(TableId::Images, &[id.to_string()]);
+    let disk = manager
+        .create_disk(glidex_control_plane::images::CreateDiskRequest {
+            name: "later".into(),
+            image: Some(id.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+    let wait = manager.reconcile_disk(&disk.id).await.unwrap();
+    assert!(wait.is_some_and(|w| !w.is_zero()), "{wait:?}");
+    let d = manager.images().get_disk(&disk.id).unwrap();
+    assert!(
+        d.conditions
+            .iter()
+            .any(|c| c.reason == "ImageNotReady" && c.message.contains("copied")),
+        "{:?}",
+        d.conditions
+    );
+    // Queued again at once (its own write did that): it doesn't try yet.
+    let rev = manager.database().revision();
+    for _ in 0..5 {
+        let again = manager.reconcile_disk(&disk.id).await.unwrap();
+        assert!(again.is_some_and(|w| !w.is_zero()), "{again:?}");
+    }
+    assert_eq!(
+        manager.database().revision(),
+        rev,
+        "no writes while it waits"
+    );
+}
