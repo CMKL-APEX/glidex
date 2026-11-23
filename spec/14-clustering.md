@@ -1585,6 +1585,13 @@ old one stopped:
    `ovn-northd`). The OVN processes are restarted if they don't reload
    CA files on their own **(verify)**: ovn-controller keeps forwarding
    on installed flows across a restart (§14).
+   A node installs the bundle only when it holds the CA that signed the
+   node's own certificate. Otherwise its copy of `ca_bundle` is older
+   than that certificate: a server forgotten and rejoined, whose replica
+   predates the rotation its forget started. Installing it would refuse
+   every current peer's certificate, so the newer state could never
+   reach the node (glidex#631). The node keeps the bundle the rejoin gave
+   it, and doesn't renew against that state either, until it catches up.
 3. **Re-issue.** Every node renews its node certificate, and netd its OVN
    certificates, by CSR. They are signed with the new CA and recorded in
    `issued_certs`. Nodes report their certificates' issuer in their

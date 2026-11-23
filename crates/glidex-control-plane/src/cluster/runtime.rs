@@ -123,6 +123,9 @@ pub struct Cluster {
     /// Without it the tick, finding no plan, discarded the pending database
     /// a dissolve was writing.
     pub(crate) departure_files: tokio::sync::Mutex<()>,
+    /// The replicated CA bundle was last seen older than this node's own
+    /// certificate (`trust_sync`): logged once, not every tick.
+    pub(crate) ca_state_behind: std::sync::atomic::AtomicBool,
 }
 
 /// Raft messages over mTLS HTTP/2.
@@ -294,6 +297,7 @@ impl Cluster {
             handlers: OnceLock::new(),
             ca_op: tokio::sync::Mutex::new(None),
             departure_files: tokio::sync::Mutex::new(()),
+            ca_state_behind: Default::default(),
         });
         // A runtime that was just stopped may still hold the port for a moment.
         let mut bound = tokio::net::TcpListener::bind(listen).await;
