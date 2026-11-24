@@ -879,8 +879,11 @@ topology refresh`.
 Reserved pages are memory nothing else can use: not page cache, not
 ordinary VM memory (§8a.2 takes them out of `allocatable.memory_mib`).
 Reserve on the NUMA nodes that hold the GPUs, about what their VMs
-need. Hugepages don't speed up mapping a device's BARs, which Cloud
-Hypervisor also does before it answers (D22 of 12-reconciliation.md).
+need. Reserved hugepages back guest RAM only: they don't speed up
+mapping a device's BARs, which Cloud Hypervisor also does before it
+answers (D22 of 12-reconciliation.md). How fast that is depends on the
+host kernel and its transparent hugepages setting (the PCI passthrough
+guide, "Host kernel").
 
 ## 9. Pools and classes
 
