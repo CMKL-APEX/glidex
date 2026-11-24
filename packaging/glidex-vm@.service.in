@@ -19,6 +19,9 @@ SupplementaryGroups=@GROUPS@
 Environment=HOME=@HOME@
 WorkingDirectory=@HOME@
 ExecStart=@BIN@ --vm %i --dir /run/glidex-cp/vms/%i
+# The shim's own start. READY=1 waits for the hypervisor, and the shim
+# extends this to its launch deadline (EXTEND_TIMEOUT_USEC;
+# spec/12-reconciliation.md D22).
 TimeoutStartSec=60
 # SIGTERM goes to the shim only: it presses the power button, waits
 # host_shutdown_grace_secs, then stops the hypervisor. Anything left is

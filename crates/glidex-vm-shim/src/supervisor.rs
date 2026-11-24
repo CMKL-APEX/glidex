@@ -332,8 +332,11 @@ impl Supervisor {
                     return;
                 }
             }
-            let deadline =
-                Instant::now() + Duration::from_secs(self.launch.ready_timeout_secs.max(1));
+            let wait = self.launch.ready_timeout_secs.max(1);
+            let deadline = Instant::now() + Duration::from_secs(wait);
+            // READY=1 waits for the hypervisor; systemd's 60 s must not
+            // end the launch before our own deadline does.
+            crate::sd::extend_start_timeout(wait + crate::launch::START_MARGIN_SECS);
             loop {
                 if TERM.load(Ordering::SeqCst) {
                     self.hard_kill();

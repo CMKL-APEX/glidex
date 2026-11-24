@@ -960,7 +960,10 @@ impl VmManager {
         .write(&paths.launch)
         .map_err(|e| e.to_string())?;
         let runner = self.runner();
-        runner.start(id, &paths).await.map_err(|e| e.to_string())?;
+        runner
+            .start(id, &paths, 5)
+            .await
+            .map_err(|e| e.to_string())?;
 
         let deadline = tokio::time::Instant::now() + timeout;
         let shim = std::path::PathBuf::from(&paths.shim_socket);

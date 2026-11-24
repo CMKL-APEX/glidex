@@ -12,6 +12,21 @@ pub fn notify_ready() -> bool {
     notify(&path.to_string_lossy(), b"READY=1")
 }
 
+/// Ask systemd to wait `secs` more for `READY=1` (`EXTEND_TIMEOUT_USEC`):
+/// the unit's `TimeoutStartSec` only bounds the shim's own start, and a
+/// passthrough hypervisor can take minutes to answer (spec/12-reconciliation.md
+/// D22). Returns whether a notification was sent.
+pub fn extend_start_timeout(secs: u64) -> bool {
+    let Some(path) = std::env::var_os("NOTIFY_SOCKET") else {
+        return false;
+    };
+    notify(&path.to_string_lossy(), &extend_message(secs))
+}
+
+fn extend_message(secs: u64) -> Vec<u8> {
+    format!("EXTEND_TIMEOUT_USEC={}", secs.saturating_mul(1_000_000)).into_bytes()
+}
+
 /// Send `msg` to a notify socket path (`@name` = abstract namespace).
 pub fn notify(path: &str, msg: &[u8]) -> bool {
     let Ok(sock) = UnixDatagram::unbound() else {
@@ -59,6 +74,15 @@ mod tests {
         let mut buf = [0u8; 16];
         let n = rx.recv(&mut buf).unwrap();
         assert_eq!(&buf[..n], b"READY=1");
+    }
+
+    #[test]
+    fn extending_names_microseconds() {
+        assert_eq!(extend_message(95), b"EXTEND_TIMEOUT_USEC=95000000");
+        assert_eq!(
+            extend_message(u64::MAX),
+            format!("EXTEND_TIMEOUT_USEC={}", u64::MAX).into_bytes()
+        );
     }
 
     #[test]
