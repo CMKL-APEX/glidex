@@ -59,7 +59,7 @@ and pools for GPUs, DPUs and NICs.
 | H16 | Whole cores | Whether `dedicated` takes whole SMT cores is a per-cluster switch, `cluster.scheduler.dedicated_whole_cores`, default `true` (§6). A standalone host reads the same key from its config. |
 | H17 | Pool scope | Two levels. The operator defines **cluster pools** (§9.1) and grants them to tenants and projects. A tenant granted a cluster pool can define **tenant pools** on top of it (§9.1a), splitting its share among its projects. A tenant pool never names more than its tenant's grant on the cluster pool. |
 | H18 | Device health | Each node reports device errors (AER counters, link changes, reset failures, devices gone from the bus) and shows them on the device and on the VM holding it (§5.4). Reporting only: the scheduler does not refuse a device for its error history. An operator can cordon a device by hand. |
-| H19 | Hugepages | Hugepages are accounted as their own resource, per page size and NUMA node: what the node reserved, what OVS-DPDK takes, and what placed VMs hold. They are never overcommitted and don't count as ordinary memory. The scheduler, not the node at start, decides when a vhost-user VM gets hugepages implicitly (§8a). |
+| H19 | Hugepages | Hugepages are accounted as their own resource, per page size and NUMA node: what the node reserved, what OVS-DPDK takes, and what placed VMs hold. They are never overcommitted and don't count as ordinary memory. The scheduler, not the node at start, decides when a vhost-user VM, or a passthrough VM (H36), gets hugepages implicitly (§8a). |
 | H14 | Refresh | A node reads its topology at start, on a udev `pci`/`vfio` event batch (debounced 5 s), on `gxctl node topology refresh`, and every ten minutes with the rest of node status. A status write happens only when the summary changes. |
 | H20 | Where pools live | Cluster pools and grants (`pci.allow`, by pool and by address) are a **replicated cluster setting** (`Meta` key `pci_settings`, §9.1), written through the API, gxctl and the UI, so every server answers a request the same way. A server's `control-plane.json` keeps only what concerns that host (H23). The leader copies a file's `pci.pools` and `pci.allow` into the setting once; after that, file pools and grants are ignored with a warning. | The user's call (2026-11-09). HT4 read pools and grants from each server's file, so a pool set up on one server was unknown when another server led (`gpus: no device pool r9700` on the R9700 host with the single-A100 host leading, 27-gpu-vms.md §12). The same migration as the OVN setting (16-clustering-ui.md §8a). |
 | H21 | Discovered pools | Devices of class `gpu` or `accelerator` that no defined pool covers and no host excludes form a **discovered pool** per vendor and device id, across every node that has one, named `<vendor>-<device>` (`amd-7551`, `nvidia-2330`; §9.1b). Discovery only groups devices: it never binds a driver, and a device is ready as before (§5). NVMe drives and DPUs aren't discovered: they are mostly the host's own (NICs are, since H24). Nor are BMCs' display controllers (ASPEED `0x1a03`, Matrox `0x102b`): the server's console. | The user's call (2026-11-09): a GPU should be usable without writing config first. The slug is stable and unique, unlike a marketing name from `pci.ids`, which depends on the host's copy. |
@@ -77,6 +77,9 @@ and pools for GPUs, DPUs and NICs.
 | H33 | Trusted pools get switch-local P2P | A pool with `switch_p2p: true` (default `false`; in the pool and in a host's `pci.overrides`, and shown in the device pools list) says the operator trusts its devices' ATS. On each node, netd turns on ACS Direct Translated P2P (bit 6 of ACS Control, nothing else) on the switch downstream ports above such a device, for the pairs and at the times H34 gives (§5.3b), and puts each port's previous value back when no pair needs it. Glidex never turns on ATS, never changes another ACS bit, and never sets a port whose ACS is off (H30), that lacks Direct Translated P2P, or below which a function with ATS on isn't part of the same pair. A `switch_p2p` pool's devices are also kept at D0, as with `power_save: false` (H28). | The user's call (2026-11-21, issue #596). Issue #527 showed it works: a NIC reading GPU memory in a VM took both devices and the root port down through the root complex, and ran at 192 Gb/s once the read stayed in the switch. Set up by hand, it rests on port addresses written into a boot script, which nothing ties to a pool, and which a moved card or a renumbered bus silently breaks. The trust stays the operator's (H32's reason): opt-in per pool, only the ports above its devices. An idle ConnectX on `vfio-pci` in D3hot made its root port log spurious PME interrupts, hence D0. |
 | H34 | Only while one VM holds the pair | Direct Translated P2P is on above a trusted device only while one VM on the node holds both that device and a peer device under the switch they share: from just before that VM launches until its hypervisor has exited. The control plane sends netd the whole set of ports each time (op `switch_p2p`): before each launch of a VM with VFIO devices, after each such VM stops, and with each node report, so a clear that was missed is undone within two minutes. | The user's call (2026-11-21). The bit is never on for idle devices, or between devices that two VMs, or two projects, hold. The exposure lasts as long as the VM that holds both ends. |
 | H35 | ATS: report and rescan | Glidex doesn't turn ATS on in device firmware. A device whose ATS capability is present but not enabled reads `ats off`, with a hint: the IOMMU enables ATS only when it probes a device, so a capability that appears after a firmware change needs the device removed and rescanned. `prepare-device --rescan` does that through netd and binds the device back to `vfio-pci` (§5.3). A trusted device that a VM holds with a peer, but whose direction can't be made direct, gets the `switch_p2p_blocked` warning, with the reason. | The user's call (2026-11-21). On #527's host, after `ATS_ENABLED=1` and a firmware reset, the NIC's ATS stayed off until it was removed and rescanned, and the rescan bound it to `mlx5_core`, not `vfio-pci`. |
+| H36 | Passthrough VMs get hugepages without asking | A VM with VFIO devices (pool devices, `gpus`, or `vfio` paths) that doesn't set `hugepages` gets them when its NUMA node has them, as a vhost-user VM does (H19): the scheduler decides and the placement records the size. It takes **1 GiB** pages when the node has enough free and the memory is a whole number of GiB, else 2 MiB pages under the vhost-user rule (RAM plus a quarter, at least 256 MiB, to spare), else ordinary memory. `hugepages: false` set on the VM keeps ordinary memory. No node is refused or preferred for lacking them. | Cloud Hypervisor and QEMU pin all of a passthrough VM's memory before it runs. With 4 KiB pages that is 8.4 million pages per 32 GiB, and on a host whose NUMA node is short of free memory the kernel reclaims page cache while pinning: a 32 GiB VM with an A100 and a ConnectX-6 took more than 60 s to answer on an HGX host (2026-11-24, D22 of 12-reconciliation.md) and about 38 s on its twin. 1 GiB pages make that 32 pages, reserved before memory fragments, and also cut IOTLB misses for device DMA. Falling back keeps every VM that starts today starting. |
+| H37 | 1 GiB pages are reserved at boot, per NUMA node, by the installer | `glidex-install --vm-hugepages 1G=<node>:<count>[,<node>:<count>…]` writes the kernel command line `hugepagesz=1G hugepages=<node>:<count>,…` (the per-node form, Linux 5.16 and later) to a GRUB drop-in (`/etc/default/grub.d/glidex-hugepages.cfg`) and runs `update-grub`. It takes effect at the next reboot; the installer says so and doesn't reboot. `--vm-hugepages none` removes the drop-in. The installer doesn't size the reservation: the operator, or the deployment's host tooling, chooses the counts (typically the memory of the GPU VMs each GPU's NUMA node should hold). Glidex still never changes `nr_hugepages` at run time (§8a.6). | 1 GiB pages need physically contiguous, aligned gigabytes; on a host that has run for weeks, run-time allocation fails or only partly succeeds (the same fragmentation that made pinning slow). The kernel's per-node boot format reserves them before anything else uses memory. A per-node count, rather than host-wide, puts the pages where the GPUs are. Sizing is policy, so it belongs with whoever plans the cluster's hosts. |
+| H38 | A reservation short of its count is a warning | The node reads the drop-in's counts with its topology (H14) and compares them with `nr_hugepages` per NUMA node. Fewer pages than asked gives the warning `hugepages_short` (`NUMA node 5: 1G 20 of 32`), which also covers "not rebooted yet". Not a readiness condition: the node runs VMs on ordinary memory meanwhile (H36). | The operator sees why passthrough VMs still start slowly, without a reboot being forced. |
 
 ## 3. Model
 
@@ -326,6 +329,8 @@ acted on:
   (a GPU idles at Gen1 to save power, so only warned for non-GPUs);
 - `hugepages_unbalanced`: hugepages on some NUMA nodes and not others
   while devices sit on the ones without;
+- `hugepages_short`: a NUMA node has fewer 1 GiB pages than
+  glidex-install's reservation asks for, e.g. before the reboot (H38);
 - `pmd_without_devices`: OVS-DPDK PMDs on a NUMA node whose NICs are on
   another (09-networking.md §3);
 - `power_save_on`: a device to keep at D0 (H28, §5.3a) that reads
@@ -818,6 +823,15 @@ so a hugepage is counted once.
   hugepages, the placement records them. Otherwise the VM gets 4 KiB
   shared memory, as today's fallback. The 25% / 256 MiB headroom stays,
   applied to allocatable rather than free pages.
+- **Implicit hugepages for passthrough** (H36): a VM with VFIO devices
+  and no `hugepages` set takes 1 GiB pages when its NUMA node (each
+  share, for `aligned`) has them free for all of its memory and the
+  memory is a whole number of GiB; else 2 MiB pages under the
+  vhost-user rule; else 4 KiB pages. `hugepages: false` keeps 4 KiB
+  pages. The scheduler's `Request` gains `passthrough` next to
+  `vhost_user`; `page_kib` and `fit_on_numa` try 1 GiB first for it.
+  The 1 GiB case needs no headroom: those pages are reserved for such
+  VMs (H37).
 - `status.placement` gains `hugepages: {size_kib, pages, numa_node?}`,
   which is what the scheduler counted. The node launches with exactly
   that: Cloud Hypervisor `hugepage_size=`, QEMU `hugetlbsize=`. A VM
@@ -850,13 +864,23 @@ and gets `HugepagesUnavailable` with the counts. Pages used outside
 glidex (DPDK beyond `socket-mem`, another process) make the observed free
 count fall below what the accounting expects. The node then shows the
 warning `hugepages_in_use_outside` with the difference (§5.2).
+The reservation glidex-install asked for (H37) is compared with the
+pool per NUMA node too: fewer pages gives `hugepages_short` (H38).
 
 ### 8a.6 Reservation
 
 Glidex does not change `nr_hugepages` at run time. The installer
-reserves them (today for DPDK only; §13 sizes them for VMs per NUMA
-node). The pool is read again on each refresh (H14), so an operator's
-change shows up within ten minutes or on `gxctl node topology refresh`.
+reserves them: 2 MiB pages host-wide for the dpdk profile (a sysctl),
+and 1 GiB pages per NUMA node for VMs on the kernel command line, at
+the next boot (H37). The pool is read again on each refresh (H14), so
+an operator's change shows up within ten minutes or on `gxctl node
+topology refresh`.
+
+Reserved pages are memory nothing else can use: not page cache, not
+ordinary VM memory (§8a.2 takes them out of `allocatable.memory_mib`).
+Reserve on the NUMA nodes that hold the GPUs, about what their VMs
+need. Hugepages don't speed up mapping a device's BARs, which Cloud
+Hypervisor also does before it answers (D22 of 12-reconciliation.md).
 
 ## 9. Pools and classes
 
@@ -1114,9 +1138,9 @@ is a device of class `dpu`:
   types and counts per parent.
 - **SR-IOV VF networking:** VLAN, MAC, trust and spoof check from the
   VM's network (09-networking.md).
-- **Hugepage reservation per NUMA node** by the installer, sized from
-  pools and policy (today the installer reserves hugepages for DPDK
-  only). §8a accounts for whatever is reserved.
+- **Sizing the hugepage reservation from pools:** the installer
+  reserves what it is given (H37); deriving the counts from pools'
+  `per_device` memory is left to whoever plans the hosts.
 - **Topology-aware DPDK:** `glidex_ovs::tuning` consuming the same model
   and placing PMDs on the NUMA nodes of the NICs rather than of the
   hugepages.
@@ -1156,6 +1180,7 @@ is a device of class `dpu`:
 | **HT9** ACS above a VFIO device | H30, §5.2: netd's read-only `acs_above` (the ports above given devices, read from their configuration space); the `acs_off` warning in the full tree, `GetNodeTopology`, `gxctl node topology` and the node page; docs | Unit tests: the ACS parser on byte fixtures (controls supported and off, a control the port lacks, no ACS, a short read, a looping capability list), root and downstream ports read and upstream ports skipped, the warning per device and port. netd test: the op reports the port, writes nothing and refuses anything but a PCI address. On a host with devices on `vfio-pci`: the warnings match the `ACSCtl` that `lspci -vvv` shows for the ports above them. |
 | **HT10** Switch-local P2P | H31, H32, §5.2a: netd's `acs_above` also answers ATS for the given devices and Direct Translated P2P and Translation Blocking for the ports above them (additive fields; an older netd's answer has none); `ats`, `direct_translated`, `translation_blocking` on functions and the tree's `p2p` pairs (full tree, `GetNodeTopology`, `gxctl node topology --devices`, the node page); docs | Unit tests: the ATS parser and the two new ACS bits on byte fixtures (no ATS, ATS off and on, DT and TB on and off), the pairs on fixture trees (a switch with two devices: each condition failing in turn, nested switches, a pair under a root port only not listed, a port netd couldn't read giving unknown), an older netd's answer giving no fields and no pairs. netd test: the op still writes nothing. UI e2e for the node page's list. On a host with a switch and two devices on `vfio-pci`: ATS and the ACS bits match `lspci -vvv` (`ATSCtl`, `ACSCtl` `DirectTrans`, `TransBlk`). |
 | **HT11** Switch-local P2P for trusted pools | H33–H35, §5.3b: netd's `switch_p2p` op (bit 6 of ACS Control only, the previous value kept in `acs_dt` and put back) and `prepare` with `rescan: true`; `switch_p2p` on pools (setting, `pci.overrides`, `gxctl pci pool set`, shown in the device pools list) implying D0; the set of ports from the VMs holding pairs, sent before a launch, after an exit and with each report; `direct_translated_set`, `set_for` and the `switch_p2p_blocked` warning (full tree, `GetNodeTopology`, `gxctl node topology --devices`, the node page); operator guide | netd tests on a fake sysfs and config space: bit 6 set on the given ports only, other bits untouched, values put back when a port leaves the set, the same set writes nothing, a port with ACS off or without the capability left alone and reported; rescan refused while held and on a host driver, and rebinding to `vfio-pci`. Unit tests: the port set (a pair in one VM, devices in two VMs, one end not trusted, a requester without ATS, nested switches, a shared port with another ATS function below), the warning's reasons, D0 implied. Controller tests: the set sent before launch and after exit. UI e2e for the pools list and the node page. On a host with a switch, a GPU and an ATS-capable NIC in a `switch_p2p` pool: `DirectTrans+` only on the expected ports while the VM runs, and `DirectTrans-` again after it stops; HT10 says `direct` with `set_for`; #527's read case passes in the VM. |
+| **HT12** Hugepages for passthrough VMs | H36–H38, §8a.3, §8a.6: `passthrough` in the scheduler's request, 1 GiB then 2 MiB then 4 KiB in `page_kib` and `fit_on_numa`; `glidex-install --vm-hugepages` (GRUB drop-in, `none` to remove, "takes effect at the next reboot"); the node reads the drop-in's counts and warns `hugepages_short`; the PCI passthrough guide and the installer's help | Scheduler unit tests: a passthrough VM takes 1 GiB pages on a node that has them, 2 MiB or 4 KiB when it doesn't or when its memory isn't whole GiB, 4 KiB with `hugepages: false`, per share for `aligned`; a VM without devices is unchanged. Installer tests for the drop-in's text, its removal and a bad argument. A fixture test for `hugepages_short`. Host check (not run yet): on an HGX host with 1 GiB pages reserved on a GPU's node, a 32 GiB VM with that GPU and a NIC gets `page_kib` 1 GiB in its placement, `hugepages=on,hugepage_size=1G` on its command line, and answers sooner than with 4 KiB pages (both times recorded). |
 
 HT0 is a fix and can merge alone. HT1 changes nothing for VMs. HT1b
 fixes hugepage accounting without NUMA and can follow HT0 directly. HT2
