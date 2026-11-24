@@ -380,6 +380,11 @@ impl VmManager {
             }
         }
         self.remove_migration_taps(vm).await;
+        // Its instance's files go too: the guest runs elsewhere, and a
+        // later migration back here starts from nothing of this one.
+        for p in [paths.launch.clone(), paths.instance.clone()] {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }
 

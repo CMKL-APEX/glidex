@@ -193,11 +193,14 @@ impl VmManager {
         Ok(out)
     }
 
-    /// This node's receiving instance for VM `vm`: the shim started from a
-    /// receiving `launch.json`, in this boot.
+    /// This node's receiving instance for VM `vm`'s migration: the shim
+    /// started from a receiving `launch.json`, in this boot, since the
+    /// migration started. One left from an earlier migration to this node
+    /// (the VM moved here, then away again) isn't this one's.
     async fn receiver(&self, vm: &Vm) -> Receiver {
         let paths = vm.paths();
         let vm_id = vm.id.clone();
+        let started = vm.status.migration.as_ref().map_or(0, |m| m.started_at);
         blocking(move || {
             let Ok(launch) = LaunchFile::read(&paths.launch) else {
                 return Receiver::None;
@@ -209,7 +212,10 @@ impl VmManager {
                 return Receiver::None;
             };
             let boot = glidex_vm_shim::util::boot_id().unwrap_or_default();
-            if f.instance_id != launch.instance_id || f.boot_id != boot {
+            if f.instance_id != launch.instance_id
+                || f.boot_id != boot
+                || !of_this_migration(f.launched_at, started)
+            {
                 return Receiver::None;
             }
             let alive =
@@ -482,9 +488,26 @@ impl VmManager {
     }
 }
 
+/// Whether a receiving instance launched at `launched_at` (unix s) can be
+/// that of a migration started at `started_at`: not if it is older.
+pub fn of_this_migration(launched_at: u64, started_at: u64) -> bool {
+    launched_at >= started_at
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A receiver from an earlier migration to this node, which the VM has
+    /// left since, isn't the current migration's: found on the test
+    /// cluster, where a VM moved back onto a node it had been received on
+    /// was cancelled with "its shim is gone" (LM6 M2).
+    #[test]
+    fn an_older_receiver_is_not_this_migrations() {
+        assert!(of_this_migration(1_000, 1_000));
+        assert!(of_this_migration(1_005, 1_000));
+        assert!(!of_this_migration(990, 1_000));
+    }
 
     fn file(phase: Phase) -> InstanceFile {
         serde_json::from_value(serde_json::json!({
