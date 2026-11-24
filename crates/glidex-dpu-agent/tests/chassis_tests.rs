@@ -128,6 +128,45 @@ fn only_a_certificate_for_the_dpus_key_is_installed() {
     assert!(!exec.calls().iter().any(|c| c.contains("restart")));
 }
 
+/// A running controller the SB refuses (its CA rotated away) is reported
+/// as not connected, so the node enrols the DPU again.
+#[test]
+fn a_running_controller_without_the_sb_is_not_connected() {
+    let dir = TempDir::new().unwrap();
+    let (mut a, exec) = agent(&dir);
+    exec.on(
+        "ovs-vsctl --format=json --columns=external_ids list Open_vSwitch",
+        Output::ok(r#"{"data":[[["map",[["glidex-chassis","1"],["system-id","node:node-a-dpu"]]]]],"headings":["external_ids"]}"#),
+    );
+    exec.on(
+        "ovs-vsctl --format=json --columns=name,datapath_type find Bridge name=br-int",
+        Output::ok(r#"{"data":[["br-int","doca"]],"headings":["name","datapath_type"]}"#),
+    );
+    exec.on("systemctl is-active ovn-controller", Output::ok("active\n"));
+    // Answered in turn: refused first, then connected again.
+    exec.on(
+        "ovn-appctl -t ovn-controller connection-status",
+        Output::ok("not connected\n"),
+    )
+    .on(
+        "ovn-appctl -t ovn-controller connection-status",
+        Output::ok("connected\n"),
+    );
+    let status = |a: &mut Agent| -> ChassisStatus {
+        serde_json::from_value(
+            a.call(AgentOp::OvnStatus {
+                br_int: "br-int".into(),
+            })
+            .unwrap(),
+        )
+        .unwrap()
+    };
+    let st = status(&mut a);
+    assert!(st.controller_running);
+    assert_eq!(st.sb_connected, Some(false));
+    assert_eq!(status(&mut a).sb_connected, Some(true));
+}
+
 fn args(encap: Option<&str>) -> ChassisArgs {
     ChassisArgs {
         system_id: "node:node-a-dpu".into(),
@@ -156,6 +195,10 @@ fn chassis_sets_the_dpu_up_and_leave_undoes_it() {
         Output::ok(r#"{"data":[["br-int","doca"]],"headings":["name","datapath_type"]}"#),
     );
     exec.on("systemctl is-active ovn-controller", Output::ok("active\n"));
+    exec.on(
+        "ovn-appctl -t ovn-controller connection-status",
+        Output::ok("connected\n"),
+    );
     let st: ChassisStatus =
         serde_json::from_value(a.call(AgentOp::Chassis(args(Some("192.0.2.31")))).unwrap())
             .unwrap();
@@ -167,12 +210,17 @@ fn chassis_sets_the_dpu_up_and_leave_undoes_it() {
             sb_remotes: vec!["ssl:192.0.2.11:6642".into(), "ssl:192.0.2.12:6642".into()],
             br_int: true,
             datapath: Some("doca".into()),
+            sb_connected: Some(true),
         }
     );
     let calls: Vec<String> = exec
         .calls()
         .into_iter()
-        .filter(|c| !c.contains("--format=json") && !c.contains("is-active"))
+        .filter(|c| {
+            !c.contains("--format=json")
+                && !c.contains("is-active")
+                && !c.contains("connection-status")
+        })
         .collect();
     assert_eq!(
         calls,

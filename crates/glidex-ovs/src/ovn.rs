@@ -68,6 +68,10 @@ pub struct OvnStatus {
     /// (spec/16-clustering-ui.md §8b).
     #[serde(default)]
     pub tunnels: Vec<Tunnel>,
+    /// A DPU chassis's SB connection, as its agent reports it; `None` for
+    /// the host's chassis and from an agent that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb_connected: Option<bool>,
 }
 
 /// One tunnel interface, as Open vSwitch sees it.
@@ -405,6 +409,7 @@ pub fn status(exec: &dyn Exec) -> Result<OvnStatus, OvsError> {
             .map(|d| if d.is_empty() { "system".into() } else { d }),
         ports,
         tunnels: tunnels(exec)?,
+        sb_connected: None,
     })
 }
 

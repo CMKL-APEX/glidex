@@ -1579,19 +1579,7 @@ impl VmManager {
                         .call::<serde_json::Value>(Op::DpuOvnStatus { id: id.clone() })
                         .ok()
                 });
-                let chassis = ovn
-                    .as_ref()
-                    .and_then(|o| o.get("chassis"))
-                    .and_then(|c| c.as_str())
-                    .map(String::from);
-                // A running controller with a chassis is what the DPU's OVN
-                // status says; its SB connection is the controller's to keep.
-                let connected = chassis.is_some()
-                    && ovn
-                        .as_ref()
-                        .and_then(|o| o.get("controller_running"))
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(false);
+                let (chassis, connected) = dpu_chassis_connected(ovn.as_ref());
                 Some(
                     crate::node::DpuStatus::from_probe(&p, chassis, connected)
                         .into_iter()
@@ -6892,9 +6880,47 @@ pub fn ambiguous_grant_message(what: &str, bad: &[(String, usize)]) -> String {
     )
 }
 
+/// A DPU's chassis and whether it is connected, from its OVN status: a
+/// chassis whose controller runs and holds its SB connection. A controller
+/// the SB refuses (its CA rotated away) is not connected, so the next OVN
+/// pass enrols the DPU again with the current CA (spec/31-dpu.md §8.3). An
+/// agent that doesn't report the connection is taken at its controller.
+fn dpu_chassis_connected(ovn: Option<&serde_json::Value>) -> (Option<String>, bool) {
+    let field = |k: &str| ovn.and_then(|o| o.get(k));
+    let chassis = field("chassis").and_then(|c| c.as_str()).map(String::from);
+    let running = field("controller_running").and_then(|v| v.as_bool()) == Some(true);
+    let sb = field("sb_connected")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+    let connected = chassis.is_some() && running && sb;
+    (chassis, connected)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A DPU whose controller runs but has lost the SB is not connected, so
+    /// it is enrolled again; an agent that predates the field is taken at
+    /// its controller.
+    #[test]
+    fn a_dpu_chassis_is_connected_only_while_its_controller_holds_the_sb() {
+        let st = |v: serde_json::Value| dpu_chassis_connected(Some(&v));
+        let c = Some("node:n1-dpu".to_string());
+        let up = serde_json::json!({"chassis": "node:n1-dpu", "controller_running": true, "sb_connected": true});
+        assert_eq!(st(up), (c.clone(), true));
+        let refused = serde_json::json!({"chassis": "node:n1-dpu", "controller_running": true, "sb_connected": false});
+        assert_eq!(st(refused), (c.clone(), false));
+        let older = serde_json::json!({"chassis": "node:n1-dpu", "controller_running": true});
+        assert_eq!(st(older), (c.clone(), true));
+        let stopped = serde_json::json!({"chassis": "node:n1-dpu", "controller_running": false, "sb_connected": false});
+        assert_eq!(st(stopped), (c, false));
+        assert_eq!(
+            st(serde_json::json!({"controller_running": true, "sb_connected": true})),
+            (None, false)
+        );
+        assert_eq!(dpu_chassis_connected(None), (None, false));
+    }
 
     /// A generated MAC another VM has on the NIC's network is passed over.
     #[test]

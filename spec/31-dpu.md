@@ -419,7 +419,11 @@ chassis step (§9.3 step 4).
   role ties to the chassis, **verify** O19), and the agent installs the
   certificate (`install_cert`). The private key never leaves the DPU.
   Renewal and CA rotation take the same path as the node's own chassis
-  certificate (14-clustering.md D20).
+  certificate (14-clustering.md D20). The node enrols a DPU again on its
+  next OVN pass whenever the DPU's `ovn-controller` does not hold its SB
+  connection (`connection-status`, §9.2), as after a CA rotation, when
+  the SB refuses the old CA's certificate; a running controller alone is
+  not connected.
 - **Underlay:** the DPU's `ovn-encap-ip` must reach every other
   chassis's (the servers', the other nodes', its own host's), with the
   cluster's MTU rule (`underlay_mtu − 58`,

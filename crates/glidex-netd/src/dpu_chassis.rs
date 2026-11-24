@@ -137,6 +137,7 @@ fn ovn_status(st: ChassisStatus) -> OvnStatus {
         datapath: st.datapath,
         ports: vec![],
         tunnels: vec![],
+        sb_connected: st.sb_connected,
     }
 }
 
@@ -209,6 +210,7 @@ impl DpuChassis for RecordingDpuChassis {
             datapath: Some("doca".into()),
             ports: vec![],
             tunnels: vec![],
+            sb_connected: Some(true),
         };
         *self.state.lock().unwrap() = Some(st.clone());
         Ok(st)
@@ -224,6 +226,7 @@ impl DpuChassis for RecordingDpuChassis {
             datapath: None,
             ports: vec![],
             tunnels: vec![],
+            sb_connected: Some(false),
         }))
     }
 
