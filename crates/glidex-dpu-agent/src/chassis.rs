@@ -29,6 +29,11 @@ pub struct ChassisStatus {
     pub sb_remotes: Vec<String>,
     pub br_int: bool,
     pub datapath: Option<String>,
+    /// Whether `ovn-controller` holds its SB connection: a running
+    /// controller whose TLS the SB refuses (a rotated CA) is not. `None`
+    /// from an agent that predates it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sb_connected: Option<bool>,
 }
 
 /// What netd sends to make the DPU a chassis. `encap_ip` is `dpu.json`'s;
@@ -240,9 +245,11 @@ impl Chassis {
             ],
         ))?;
         let bridge = ovsdb::json_rows(&out.stdout_str())?.into_iter().next();
+        let running = controller_running(exec);
         Ok(ChassisStatus {
             chassis: ours.then(|| ids.get("system-id").cloned()).flatten(),
-            controller_running: controller_running(exec),
+            controller_running: running,
+            sb_connected: Some(running && sb_connected(exec)),
             sb_remotes: if ours {
                 ids.get("ovn-remote")
                     .map(|r| r.split(',').map(str::to_string).collect())
@@ -283,5 +290,18 @@ fn controller_running(exec: &dyn Exec) -> bool {
         ["is-active", "ovn-controller"],
     ))
     .map(|o| o.stdout_str().trim() == "active")
+    .unwrap_or(false)
+}
+
+/// spec/31-dpu.md §9.2: the controller's own word on its SB connection.
+fn sb_connected(exec: &dyn Exec) -> bool {
+    exec.run(
+        &Cmd::new(
+            Program::OvnAppctl,
+            ["-t", "ovn-controller", "connection-status"],
+        )
+        .timeout(std::time::Duration::from_secs(5)),
+    )
+    .map(|o| o.stdout_str().trim() == "connected")
     .unwrap_or(false)
 }
