@@ -249,6 +249,10 @@ impl VmManager {
     ) -> Result<(), String> {
         let paths = vm.paths();
         crate::paths::ensure_vm_dir(&vm.id).map_err(|e| format!("its directory: {e}"))?;
+        // A shim of this VM still here is no receiver of this migration
+        // (that is a Prepare), and the guest doesn't run on a target: one
+        // left from an earlier receive would turn this start into a no-op.
+        self.stop_stale_unit(vm).await;
         for (d, driver) in disks {
             let delegate = m.delegates.get(&d.id).cloned().unwrap_or_default();
             let name = d.name.clone();
@@ -429,23 +433,33 @@ impl VmManager {
     /// Each part is best-effort and safe to repeat; what fails is logged.
     async fn release_target(&self, vm: &Vm, m: &Migration, disks: &[(Disk, Arc<HyperstorDriver>)]) {
         let paths = vm.paths();
-        if let Receiver::Receiving(f) = self.receiver(vm).await {
-            // A shim receiving kills its VMM at once (12-reconciliation.md §8.1).
-            let sock = paths.shim_socket.clone();
-            if shim_call(sock, |c| c.kill()).await.is_err() {
-                let _ = self
-                    .runner()
-                    .kill(&vm.id, &[(f.shim_pid, f.shim_starttime)])
-                    .await;
+        match self.receiver(vm).await {
+            Receiver::Receiving(f) => {
+                // A shim receiving kills its VMM at once (12-reconciliation.md §8.1).
+                let sock = paths.shim_socket.clone();
+                if shim_call(sock, |c| c.kill()).await.is_err() {
+                    let _ = self
+                        .runner()
+                        .kill(&vm.id, &[(f.shim_pid, f.shim_starttime)])
+                        .await;
+                }
+                let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+                while matches!(self.receiver(vm).await, Receiver::Receiving(_))
+                    && tokio::time::Instant::now() < deadline
+                {
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+                let _ = shim_call(paths.shim_socket.clone(), |c| c.release()).await;
             }
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
-            while matches!(self.receiver(vm).await, Receiver::Receiving(_))
-                && tokio::time::Instant::now() < deadline
-            {
-                tokio::time::sleep(Duration::from_millis(100)).await;
+            // A failed receive: its VMM has exited, and the shim waits to
+            // be released, holding the VM's unit until it is.
+            Receiver::Ended(_) => {
+                let _ = shim_call(paths.shim_socket.clone(), |c| c.release()).await;
             }
-            let _ = shim_call(paths.shim_socket.clone(), |c| c.release()).await;
+            Receiver::None | Receiver::Running(_) => {}
         }
+        // Whatever still holds the unit goes: the guest doesn't run here.
+        self.stop_stale_unit(vm).await;
         for (d, driver) in disks
             .iter()
             .filter(|(d, _)| m.delegates.contains_key(&d.id))
@@ -475,6 +489,27 @@ impl VmManager {
 }
 
 impl VmManager {
+    /// Stops VM `vm`'s shim unit on this node if it is still active, and
+    /// waits (up to 10 s) for it to go. Only for a node the guest doesn't
+    /// run on: a migration's target before or after its receive.
+    async fn stop_stale_unit(&self, vm: &Vm) {
+        let runner = self.runner();
+        if !matches!(runner.unit_active(&vm.id).await, Some(Ok(true))) {
+            return;
+        }
+        tracing::info!(vm = %vm.name, "stopping a shim left from an earlier receive");
+        if let Err(e) = runner.stop(&vm.id, None).await {
+            tracing::warn!(vm = %vm.name, "stopping a stale shim: {}", e);
+            return;
+        }
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        while matches!(runner.unit_active(&vm.id).await, Some(Ok(true)))
+            && tokio::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    }
+
     /// VM `vm`'s taps on this node, without touching its record: a
     /// migration's end that no longer has the guest (§4). Best-effort.
     pub(crate) async fn remove_migration_taps(&self, vm: &Vm) {
