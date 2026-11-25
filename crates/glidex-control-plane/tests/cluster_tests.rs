@@ -3638,12 +3638,18 @@ async fn a_migrations_stream_is_relayed_to_its_target_while_copying() {
     .await;
     assert_eq!(s, StatusCode::CREATED, "{v}");
     let id = vm_of(&v)["id"].as_str().unwrap().to_string();
-    let record = |phase| Migration {
-        target: agent_id.clone(),
-        phase,
-        started_at: 1,
-        updated_at: 1,
-        ..Default::default()
+    // Stamped now: the server's leader loop runs, and would cancel a
+    // `Preparing` record older than `PREPARE_SECS` before the agent's copy
+    // shows it (glidex#660).
+    let record = |phase| {
+        let now = glidex_control_plane::tenancy::now();
+        Migration {
+            target: agent_id.clone(),
+            phase,
+            started_at: now,
+            updated_at: now,
+            ..Default::default()
+        }
     };
     let tmp = tempfile::tempdir().unwrap();
     let source_sock = tmp.path().join("source-migration.sock");
@@ -8781,16 +8787,9 @@ async fn a_forgotten_server_rejoins_with_its_raft_state_while_running() {
     // cluster's first server, which made them, doesn't. The mark is a file
     // of the node's own, which no replicated write can undo.
     let pending = |i: usize| cluster(&cps[i]).files.ovn_join_pending().exists();
-    let first = cps[lead]
-        .manager
-        .nodes()
-        .list()
-        .unwrap()
-        .into_iter()
-        .min_by_key(|n| n.meta.created_at)
-        .unwrap()
-        .meta
-        .id;
+    // `form` makes the cluster on `cps[0]`. Not the oldest `created_at`:
+    // that is in seconds, and servers made in the same one tie (glidex#657).
+    let first = cluster(&cps[0]).identity.node_id.clone();
     for (i, cp) in cps.iter().enumerate() {
         let is_first = cluster(cp).identity.node_id == first;
         assert_eq!(pending(i), !is_first, "server {i} (first: {is_first})");
