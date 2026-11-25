@@ -143,6 +143,8 @@ impl VmManager {
                         .map_err(|e| format!("promoting disk {name}: {e}"))?;
                 }
                 let inst = self.received_instance(vm, &f).await?;
+                // The receive is over; its socket stays behind otherwise.
+                let _ = std::fs::remove_file(&vm.paths().migration_socket);
                 self.target_writes(vm, |m| m.received = Some(inst)).await
             }
             TargetStep::Release => {
@@ -268,6 +270,11 @@ impl VmManager {
                 .map_err(|e| format!("its cloud-init seed: {e}"))?;
         }
 
+        // Cloud Hypervisor binds the socket it receives on and never
+        // removes it, so one left from an earlier receive here would make
+        // this one's bind fail ("Address in use"). Nothing receives this
+        // migration yet (that is a Prepare), so the file is stale.
+        let _ = std::fs::remove_file(&paths.migration_socket);
         let (args, url) =
             CloudHypervisorDriver::receive_args(&paths.api_socket, &paths.migration_socket)
                 .map_err(|e| e.to_string())?;
@@ -460,6 +467,7 @@ impl VmManager {
             paths.launch.clone(),
             paths.instance.clone(),
             std::path::PathBuf::from(&paths.cloud_init),
+            std::path::PathBuf::from(&paths.migration_socket),
         ] {
             let _ = std::fs::remove_file(p);
         }
