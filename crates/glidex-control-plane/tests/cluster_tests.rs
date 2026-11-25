@@ -9043,9 +9043,11 @@ async fn an_agent_rejoins_at_a_new_address() {
 /// relays the DPU ops to a `RecordingDpuChassis` (the stand-in for the
 /// agent) and keeps every request line, so a test can see what reached
 /// netd. The DPU's key is made here and stays here, as on a DPU.
+/// `dpu_probe` answers `probe`: no DPU until a test reports one.
 struct DpuNetd {
     run_dir: std::path::PathBuf,
     requests: Arc<std::sync::Mutex<Vec<String>>>,
+    probe: Arc<std::sync::Mutex<Value>>,
     dpu: Arc<glidex_netd::dpu_chassis::RecordingDpuChassis>,
     dpu_key_pem: String,
     _dir: tempfile::TempDir,
@@ -9067,12 +9069,13 @@ impl DpuNetd {
         ]));
         *dpu.csr_pem.lock().unwrap() = key.csr(&[], &[]).unwrap();
         let requests = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let probe = Arc::new(std::sync::Mutex::new(json!({})));
         for name in ["netd.sock", "netd-ro.sock"] {
             let listener = std::os::unix::net::UnixListener::bind(run_dir.join(name)).unwrap();
-            let (requests, dpu) = (requests.clone(), dpu.clone());
+            let (requests, dpu, probe) = (requests.clone(), dpu.clone(), probe.clone());
             std::thread::spawn(move || {
                 for stream in listener.incoming().flatten() {
-                    let (requests, dpu) = (requests.clone(), dpu.clone());
+                    let (requests, dpu, probe) = (requests.clone(), dpu.clone(), probe.clone());
                     std::thread::spawn(move || {
                         let mut w = stream.try_clone().unwrap();
                         for line in BufReader::new(stream).lines().map_while(Result::ok) {
@@ -9098,6 +9101,7 @@ impl DpuNetd {
                                 Op::DpuOvnStatus { id } => {
                                     dpu.status(id).map(|s| serde_json::to_value(s).unwrap())
                                 }
+                                Op::DpuProbe { .. } => Ok(probe.lock().unwrap().clone()),
                                 Op::ForgetOvnMember(_) => Ok(Value::Null),
                                 // Probe, the central: nothing to say.
                                 _ => Ok(json!({})),
@@ -9119,6 +9123,7 @@ impl DpuNetd {
         DpuNetd {
             run_dir,
             requests,
+            probe,
             dpu,
             dpu_key_pem: key.key_pem().to_string(),
             _dir: dir,
@@ -9238,39 +9243,61 @@ async fn a_prepared_dpu_becomes_a_chassis_and_leaves_with_its_node() {
     );
     assert!(agent_netd.ops("dpu_chassis_csr").is_empty());
 
-    // The agent reports a prepared DPU (netd's probe doesn't fill
-    // `status.dpus` yet, so the test writes it as the node would).
-    let prepared = DpuStatus {
-        id: "dpu0".into(),
-        state: DpuState::Prepared,
-        vfs_total: 16,
-        vfs_free: 16,
-        chassis: None,
-        sb_connected: false,
-        ovn_version: None,
-    };
-    let mut n = server.manager.nodes().get(&agent_id).unwrap().unwrap();
-    n.status.dpus = vec![prepared];
-    n.meta.resource_version += 1;
-    server.manager.nodes().put(&n).unwrap();
-    wait_for("the agent to see its DPU", || async {
-        agent
-            .manager
-            .nodes()
-            .get(&agent_id)
-            .ok()
-            .flatten()
-            .is_some_and(|n| !n.status.dpus.is_empty())
-    })
-    .await;
+    // The agent's netd finds a prepared DPU.
+    *agent_netd.probe.lock().unwrap() =
+        json!({ "id": "dpu0", "reachable": true, "missing": [], "vfs_total": 16, "vfs_free": 16 });
     wait_for("the DPU's chassis to be enrolled", || async {
         agent.manager.ensure_ovn_node().await;
         !agent_netd.dpu.ensured.lock().unwrap().is_empty()
     })
     .await;
 
-    let ensured = agent_netd.dpu.ensured.lock().unwrap()[0].clone();
+    // spec/31-dpu.md §8.3: an enrolled DPU is not enrolled again on a
+    // record that predates it. A report taken while the enrolment
+    // restarted the DPU's controller says it isn't connected; netd says it
+    // is, and the pass records that instead.
     let chassis = format!("node:{agent_id}-dpu");
+    let stale = DpuStatus {
+        id: "dpu0".into(),
+        state: DpuState::Prepared,
+        vfs_total: 16,
+        vfs_free: 16,
+        chassis: Some(chassis.clone()),
+        sb_connected: false,
+        ovn_version: None,
+    };
+    let mut n = server.manager.nodes().get(&agent_id).unwrap().unwrap();
+    n.status.dpus = vec![stale];
+    n.meta.resource_version += 1;
+    server.manager.nodes().put(&n).unwrap();
+    wait_for("the agent to see the stale record", || async {
+        agent
+            .manager
+            .nodes()
+            .get(&agent_id)
+            .ok()
+            .flatten()
+            .is_some_and(|n| n.status.dpus.first().is_some_and(|d| !d.sb_connected))
+    })
+    .await;
+    agent.manager.ensure_ovn_node().await;
+    assert_eq!(
+        agent_netd.dpu.ensured.lock().unwrap().len(),
+        1,
+        "enrolled once"
+    );
+    wait_for("the DPU recorded as connected", || async {
+        server
+            .manager
+            .nodes()
+            .get(&agent_id)
+            .ok()
+            .flatten()
+            .is_some_and(|n| n.status.dpus.first().is_some_and(|d| d.sb_connected))
+    })
+    .await;
+
+    let ensured = agent_netd.dpu.ensured.lock().unwrap()[0].clone();
     assert_eq!(
         (ensured.id.as_str(), ensured.chassis.as_str()),
         ("dpu0", chassis.as_str())

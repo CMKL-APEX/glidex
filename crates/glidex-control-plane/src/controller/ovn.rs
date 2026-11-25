@@ -559,8 +559,25 @@ impl VmManager {
         let Some(node) = nodes.iter().find(|n| n.meta.id == me) else {
             return;
         };
+        // The record is the last report, up to two minutes old. An
+        // enrolment restarts the DPU's controller, so a report taken just
+        // after it would have the DPU enrolled again on every pass until
+        // the next report: decide on what netd sees now, and record it.
+        let netd = self.netd.clone();
+        let mut node = node.clone();
+        if let Ok(Some(dpus)) =
+            tokio::task::spawn_blocking(move || crate::state::probe_dpus(&netd)).await
+            && dpus != node.status.dpus
+        {
+            node.status.dpus = dpus;
+            if let Ok(Some(mut n)) = self.nodes().get(&me) {
+                n.status.dpus = node.status.dpus.clone();
+                n.meta.resource_version += 1;
+                let _ = self.nodes().put(&n);
+            }
+        }
         let northd = crate::node::cluster_northd_ovn(nodes);
-        for step in dpu_enrolment(node, northd.as_deref()) {
+        for step in dpu_enrolment(&node, northd.as_deref()) {
             let (id, chassis) = match step {
                 DpuEnrolment::Refused { id, missing } => {
                     tracing::warn!(dpu = %id, missing = ?missing, "not enrolling the DPU's chassis");

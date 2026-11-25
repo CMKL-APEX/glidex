@@ -1568,27 +1568,7 @@ impl VmManager {
     /// when netd has none (`dpu.json` missing), `None` when netd didn't
     /// answer (or predates DPUs), so the last report stands.
     fn probe_dpus(&self) -> Option<Vec<crate::node::DpuStatus>> {
-        match self
-            .netd
-            .call::<serde_json::Value>(Op::DpuProbe { id: None })
-        {
-            Ok(p) => {
-                let id = p.get("id").and_then(|v| v.as_str()).map(String::from);
-                let ovn = id.as_ref().and_then(|id| {
-                    self.netd
-                        .call::<serde_json::Value>(Op::DpuOvnStatus { id: id.clone() })
-                        .ok()
-                });
-                let (chassis, connected) = dpu_chassis_connected(ovn.as_ref());
-                Some(
-                    crate::node::DpuStatus::from_probe(&p, chassis, connected)
-                        .into_iter()
-                        .collect(),
-                )
-            }
-            Err(NetError::Netd(b)) if b.code == "unsupported" => Some(Vec::new()),
-            Err(_) => None,
-        }
+        probe_dpus(&self.netd)
     }
 
     pub fn report_self(&self) -> Result<(), VmManagerError> {
@@ -6878,6 +6858,27 @@ pub fn ambiguous_grant_message(what: &str, bad: &[(String, usize)]) -> String {
         "{what} names projects by a name that several projects have: {}. Name each as <tenant>/<project> or by its id",
         names.join(", ")
     )
+}
+
+/// [`VmManager::probe_dpus`], for a caller that holds only netd.
+pub(crate) fn probe_dpus(netd: &Netd) -> Option<Vec<crate::node::DpuStatus>> {
+    match netd.call::<serde_json::Value>(Op::DpuProbe { id: None }) {
+        Ok(p) => {
+            let id = p.get("id").and_then(|v| v.as_str()).map(String::from);
+            let ovn = id.as_ref().and_then(|id| {
+                netd.call::<serde_json::Value>(Op::DpuOvnStatus { id: id.clone() })
+                    .ok()
+            });
+            let (chassis, connected) = dpu_chassis_connected(ovn.as_ref());
+            Some(
+                crate::node::DpuStatus::from_probe(&p, chassis, connected)
+                    .into_iter()
+                    .collect(),
+            )
+        }
+        Err(NetError::Netd(b)) if b.code == "unsupported" => Some(Vec::new()),
+        Err(_) => None,
+    }
 }
 
 /// A DPU's chassis and whether it is connected, from its OVN status: a
