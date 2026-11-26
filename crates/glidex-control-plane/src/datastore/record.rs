@@ -294,6 +294,9 @@ pub enum DatastoreError {
     Conflict(String),
     #[error("storage error: {0}")]
     Storage(String),
+    /// A service the datastore needs didn't answer (its hyperstor cluster).
+    #[error("{0}")]
+    Unavailable(String),
 }
 
 impl From<StoreError> for DatastoreError {

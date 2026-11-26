@@ -355,6 +355,10 @@ pub struct NodeStatus {
     pub advertise: Option<SocketAddr>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tunnel_ip: Option<IpAddr>,
+    /// The host's kernel host name, which a hyperstor `host` token must
+    /// carry (spec/24-storage.md S37); the node's name may differ.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_name: Option<String>,
     /// A server's web UI address (spec/28-host-page.md W3); agents publish none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ui_url: Option<String>,
@@ -486,6 +490,7 @@ impl Node {
                 raft_id: None,
                 advertise: None,
                 tunnel_ip: None,
+                host_name: None,
                 ui_url: None,
                 api_pin: None,
                 api_pin_pending: None,
@@ -699,6 +704,8 @@ impl NodeStore {
         node.status.cpu = probe.cpu;
         node.status.versions.glidex = env!("CARGO_PKG_VERSION").into();
         node.status.versions.ovn = probe.ovn_version;
+        // "localhost" is the probe's stand-in when the name can't be read.
+        node.status.host_name = (probe.name != "localhost").then(|| probe.name.clone());
         node.status.ui_url = probe.ui_url;
         node.status.api_pin = probe.api_pin;
         node.status.api_pin_pending = probe.api_pin_pending;

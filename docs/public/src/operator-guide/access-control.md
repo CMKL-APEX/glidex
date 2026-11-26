@@ -509,6 +509,7 @@ Actions of these features, and who has them out of the box:
 |---|---|---|
 | `readDatastore` | `Glidex::Datastore` | Everyone. |
 | `manageDatastore` | `Glidex::Datastore` | `system-admin`. |
+| `createHyperstorHostToken` | `Glidex::Datastore` | `system-admin`, with a recent login: a hyperstor `host` token lets a host join the hyperstor cluster ([Host tokens](datastores.md#host-tokens)). |
 | `useDatastore` | `Glidex::Datastore::"<datastore-id>"` | Everyone (base policy `base.use-datastore`); checked when a disk is created on the datastore or moved to it. Forbid it to keep a datastore for some (see [Who may use a datastore](datastores.md#who-may-use-a-datastore)). |
 | `moveDisk` | `Glidex::Disk` | `editor` of the disk's project, with `useDatastore` on the destination. |
 | `placeVm` | `Glidex::Vm` | `system-admin`. |

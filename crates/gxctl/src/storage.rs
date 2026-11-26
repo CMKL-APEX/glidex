@@ -904,7 +904,7 @@ pub async fn disk(client: &ApiClient, args: &[&str]) {
 
 // ---- datastores (spec/24-storage.md §13) -------------------------------------
 
-const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F [--mgmt-url URL]) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] [--mgmt-url URL] [--hyperstor API[,API...]] | rm <datastore>";
+const DATASTORE_USAGE: &str = "Usage: datastore list | show <datastore> | create <name> (--path P [--shared] | --lvm VG/POOL | --hyperstor API[,API...] --pool N --token-file F [--mgmt-url URL]) [--node-path NODE=P]... [--nodes N,M] [--default] [--no-overcommit] | set <datastore> [--node-path NODE=P]... [--nodes N,M | --all-nodes] [--default | --no-default] [--overcommit | --no-overcommit] [--mgmt-url URL] [--hyperstor API[,API...]] | rm <datastore> | host-token <datastore> --node NODE [--ttl SECS]";
 
 /// `--node-path NODE=PATH`, repeated.
 fn node_paths(args: &[&str]) -> Result<Vec<(String, String)>, String> {
@@ -1277,6 +1277,48 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
             },
             None => usage(u),
         },
+        // A hyperstor host token (spec/24-storage.md S36): the token alone
+        // on standard output, for `> host.token`; the rest on standard error.
+        "host-token" => {
+            let (Some(key), Some(node)) = (args.get(1), flag_value(args, "--node")) else {
+                return usage(u);
+            };
+            let ttl_seconds = match flag_value(args, "--ttl").map(str::parse::<u32>) {
+                None => 0,
+                Some(Ok(t)) => t,
+                Some(Err(_)) => return err("--ttl takes seconds".to_string()),
+            };
+            match svc
+                .create_host_token(CreateHostTokenRequest {
+                    id: key.to_string(),
+                    node: node.to_string(),
+                    ttl_seconds,
+                    ..Default::default()
+                })
+                .await
+            {
+                Ok(r) => {
+                    let r = r.into_owned();
+                    println!("{}", r.token);
+                    eprintln!(
+                        "{} for {} (host name {}), single use{}",
+                        "hyperstor host token".green(),
+                        r.node,
+                        r.host_name,
+                        r.expires_at
+                            .as_option()
+                            .map(|t| format!(
+                                ", until {}",
+                                format_unix_time(t.seconds.max(0) as u64)
+                            ))
+                            .unwrap_or_default()
+                    );
+                    eprintln!("On {}, with the token in host.token:", r.node);
+                    eprintln!("  {}", r.command);
+                }
+                Err(e) => err(rpc_err(e)),
+            }
+        }
         _ => usage(u),
     }
 }

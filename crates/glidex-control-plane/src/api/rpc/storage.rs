@@ -302,4 +302,12 @@ impl DatastoreService for Svc {
     ) -> ServiceResult<DeleteDatastoreResponse> {
         op_async!(self, ctx, req, svc::delete_datastore)
     }
+
+    async fn create_host_token(
+        &self,
+        ctx: RequestContext,
+        req: ServiceRequest<'_, CreateHostTokenRequest>,
+    ) -> ServiceResult<CreateHostTokenResponse> {
+        op_async!(self, ctx, req, svc::create_host_token)
+    }
 }

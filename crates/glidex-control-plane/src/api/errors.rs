@@ -253,6 +253,7 @@ pub fn error_to_response(error: VmManagerError) -> (StatusCode, Json<ApiError>) 
                 D::Invalid(_) => (StatusCode::BAD_REQUEST, "invalid_datastore"),
                 D::Conflict(_) => (StatusCode::CONFLICT, "conflict"),
                 D::Storage(_) => (StatusCode::INTERNAL_SERVER_ERROR, "persistence_error"),
+                D::Unavailable(_) => (StatusCode::SERVICE_UNAVAILABLE, "unavailable"),
             };
             (status, Json(ApiError::new(code, error.to_string())))
         }

@@ -434,6 +434,57 @@ async fn only_administrators_manage_datastores() {
     assert_eq!(s, StatusCode::FORBIDDEN, "{v}");
 }
 
+/// spec/24-storage.md S36, S38: a hyperstor host token is for
+/// administrators, and only hyperstor datastores have hosts to join.
+#[tokio::test(flavor = "multi_thread")]
+async fn hyperstor_host_tokens_are_for_administrators_and_hyperstor_datastores() {
+    let h = harness();
+    let admin = h.admin("root");
+    let user = h.user("alice");
+    let t = h.token(&user);
+    let (s, v) = h
+        .rest(
+            "POST",
+            "/datastores",
+            Some(json!({"name": "ops", "path": place("ops")})),
+            &admin,
+        )
+        .await;
+    assert_eq!(s, StatusCode::CREATED, "{v}");
+    let ask = json!({"node": "anything"});
+    let (s, v) = h
+        .rest("POST", "/datastores/ops/host-token", Some(ask.clone()), &t)
+        .await;
+    // Refused: a critical action asks for a recent login before anything else.
+    assert!(
+        s == StatusCode::FORBIDDEN || s == StatusCode::UNAUTHORIZED,
+        "{s} {v}"
+    );
+    // An administrator too needs a recent login, as for join tokens: an
+    // API token never is one.
+    let (s, v) = h
+        .rest("POST", "/datastores/ops/host-token", Some(ask), &admin)
+        .await;
+    assert_eq!(s, StatusCode::UNAUTHORIZED, "{v}");
+    assert_eq!(v["error"], "reauth_required", "{v}");
+    // Past authorization: only a hyperstor datastore, and one that exists.
+    let m = &h.app.manager;
+    let e = m
+        .create_hyperstor_host_token("ops", "anything", 0)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(e.contains("isn't a hyperstor datastore"), "{e}");
+    let e = m
+        .create_hyperstor_host_token("nope", "anything", 0)
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(e.contains("not found"), "{e}");
+}
+
 /// A shared datastore (spec/24-storage.md S3): claimed with its marker, disks
 /// on it bound to no node and locked while they are worked on.
 #[tokio::test(flavor = "multi_thread")]
