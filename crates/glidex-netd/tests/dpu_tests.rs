@@ -282,6 +282,44 @@ fn dpu_refuses_when_the_dpu_is_down_or_full_and_auto_falls_back() {
     );
 }
 
+/// spec/31-dpu.md §5.3: VFs that share an IOMMU group (created while ACS
+/// was off, finding 41) go to one VM; another VM is refused, not handed a
+/// VF its hypervisor can't open.
+#[test]
+fn vfs_sharing_an_iommu_group_serve_one_vm() {
+    let dir = TempDir::new().unwrap();
+    let host = host_exec(2);
+    host.link("/sys/bus/pci/devices/0000:61:02.4/iommu_group", "30");
+    let netd = netd(host, healthy(), &dir);
+    let probe = |netd: &Netd| -> dpu::DpuProbe {
+        serde_json::from_value(netd.handle(Op::DpuProbe { id: None }, &root()).unwrap()).unwrap()
+    };
+    assert_eq!((probe(&netd).vfs_total, probe(&netd).vfs_free), (2, 1));
+
+    assert_eq!(
+        attach(&netd, spec(0, PortBackend::Dpu)).unwrap().backend,
+        glidex_dpu::Backend::Dpu
+    );
+    assert_eq!(probe(&netd).vfs_free, 0);
+    // The same VM's second NIC may take the group's other VF (the
+    // allocator's own tests; the fake agent has one VF's representor).
+    // Another VM: refused under `dpu`, the host's chassis under `auto`.
+    let other = "9f8e7d6c-5b4a-4c3d-8e2f-0123456789ab";
+    let theirs = |backend| VmPortSpec {
+        vm_id: other.into(),
+        mac: names::mac_address(other, 0).unwrap(),
+        ..spec(0, backend)
+    };
+    assert_eq!(
+        attach(&netd, theirs(PortBackend::Dpu)).unwrap_err(),
+        "dpu_capacity"
+    );
+    assert_eq!(
+        attach(&netd, theirs(PortBackend::Auto)).unwrap().backend,
+        glidex_dpu::Backend::Host
+    );
+}
+
 #[test]
 fn a_dpu_port_must_be_on_a_cluster_network() {
     let dir = TempDir::new().unwrap();

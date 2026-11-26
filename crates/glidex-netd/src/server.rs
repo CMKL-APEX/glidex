@@ -2198,8 +2198,9 @@ impl Netd {
         })
     }
 
-    /// The VFs of the DPU's PF and who holds them, from the records. The
-    /// PF's count is read, not changed.
+    /// The VFs of the DPU's PF, who holds them (from the records) and their
+    /// IOMMU groups (from sysfs, once the VFs exist). The PF's count is
+    /// read, not changed.
     fn vf_allocator(&self, pf: &str) -> Result<VfAllocator, OvsError> {
         let total: u16 = self
             .ex()
@@ -2215,8 +2216,16 @@ impl Netd {
                     .map(|v| (v, store::vm_port_key(&r.spec.vm_id, r.spec.nic_index)))
             })
             .collect();
-        VfAllocator::from_records(0, total, held.iter().map(|(v, k)| (*v, k.as_str())))
-            .map_err(dpu_err)
+        let groups = (0..total).filter_map(|n| {
+            let bdf = dpu::vf_bdf(self.ex(), pf, n).ok()?;
+            Some((n, glidex_ovs::vfio::iommu_group(self.ex(), &bdf)?))
+        });
+        let groups: Vec<(u16, String)> = groups.collect();
+        Ok(
+            VfAllocator::from_records(0, total, held.iter().map(|(v, k)| (*v, k.as_str())))
+                .map_err(dpu_err)?
+                .with_groups(groups),
+        )
     }
 
     /// §6: the backend a new port gets, from what it asks for and the
@@ -2231,10 +2240,11 @@ impl Netd {
             Ok(d) => match d.health() {
                 Err(e) => (Err(e), 0),
                 Ok(_) => {
+                    let key = store::vm_port_key(&spec.vm_id, spec.nic_index);
                     let free = d
                         .host_pf(self.ex())
                         .and_then(|pf| self.vf_allocator(&pf))
-                        .map(|a| a.free_count());
+                        .map(|a| a.free_for(&key));
                     match free {
                         Ok(n) => (Ok(()), n),
                         Err(e) => (Err(e.to_string()), 0),
@@ -2271,7 +2281,17 @@ impl Netd {
         dpu::ensure_vfs(self.ex(), &pf)?;
         let vf = match recorded.as_ref().and_then(|r| r.dpu_vf) {
             Some(vf) => vf,
-            None => self.vf_allocator(&pf)?.allocate(&key).map_err(dpu_err)?,
+            None => {
+                let mut alloc = self.vf_allocator(&pf)?;
+                if alloc.groups_shared() {
+                    tracing::warn!(
+                        pf = %pf,
+                        "the DPU's VFs share IOMMU groups, so one VM can use each group: \
+                         recreate them (sriov_numvfs 0, then back) with ACS on above the PF"
+                    );
+                }
+                alloc.allocate(&key).map_err(dpu_err)?
+            }
         };
         let rep: AttachRepResult = d
             .call(AgentOp::AttachRep {

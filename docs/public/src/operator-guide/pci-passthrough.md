@@ -49,6 +49,14 @@ anything like it, on a host that passes devices to VMs. Disable the
 service and reboot: the firmware and the kernel turn ACS on again at
 boot.
 
+Devices added after boot, such as SR-IOV VFs, are grouped when they are
+created, from the ACS on at that moment. VFs created while ACS was off
+share their port's group, and keep it after ACS is turned back on. VFIO
+opens a whole group, so only one VM can use VFs that share one: a DPU's
+VFs then serve one VM per group, and glidex counts them that way. With
+ACS on and no VF in use, recreate them (write `0` to the PF's
+`sriov_numvfs`, then the count again) and each gets a group of its own.
+
 The node warns `acs_off` for each device on `vfio-pci` below a port
 that supports ACS but has Source Validation, Request Redirect,
 Completion Redirect or Upstream Forwarding off, naming the device and
