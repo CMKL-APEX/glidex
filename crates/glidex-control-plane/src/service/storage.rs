@@ -1087,6 +1087,7 @@ pub fn datastore_pb(v: &crate::datastore::manage::DatastoreView) -> pb::Datastor
                 warnings: r.warnings.clone(),
                 image_volumes: r.image_volumes.clone(),
                 live_migration: r.live_migration,
+                standby_hold: r.standby_hold,
                 ..Default::default()
             })
             .collect(),

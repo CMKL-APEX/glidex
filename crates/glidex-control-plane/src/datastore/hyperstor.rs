@@ -209,9 +209,20 @@ pub fn stale_here(
 /// Whether a `hello` answer offers live migration (protocol 3's
 /// `live_migration` feature).
 fn has_live_migration(hello: &serde_json::Value) -> bool {
+    has_feature(hello, "live_migration")
+}
+
+/// Whether a `hello` answer says a standby volume's requests are held
+/// until its promotion (`standby_hold`, CMKL-APEX/hyperstor#444), not
+/// failed as before hyperstor#438 (spec/32-live-migration.md §7).
+fn has_standby_hold(hello: &serde_json::Value) -> bool {
+    has_feature(hello, "standby_hold")
+}
+
+fn has_feature(hello: &serde_json::Value, feature: &str) -> bool {
     hello["features"]
         .as_array()
-        .is_some_and(|f| f.iter().any(|f| f == "live_migration"))
+        .is_some_and(|f| f.iter().any(|f| f == feature))
 }
 
 /// An image's volume id, derived from the image's (one per datastore: the
@@ -1775,6 +1786,7 @@ pub fn probe(
     match driver.hello() {
         Ok(hello) => {
             row.live_migration = has_live_migration(&hello);
+            row.standby_hold = has_standby_hold(&hello);
             if vhost_identity(&hello) == VhostIdentity::Missing {
                 row.warnings.push(no_identity_warning(datastore));
             }
@@ -2256,7 +2268,7 @@ mod tests {
         let vol = "6f1c0d2e9a4b4c1d8e2f0123456789ab";
         let seen = fake_vhost(tmp.path(), move |r| match r["op"].as_str().unwrap() {
             "hello" => {
-                serde_json::json!({"id": 1, "ok": {"protocol": 3, "features": ["live_migration"]}})
+                serde_json::json!({"id": 1, "ok": {"protocol": 4, "features": ["live_migration", "standby_hold"]}})
             }
             "delegate" => serde_json::json!({"id": 1, "ok": {"delegate": "00000000000000a1"}}),
             "attach" => serde_json::json!({"id": 1, "ok": {
@@ -2282,7 +2294,10 @@ mod tests {
         let d = disk("6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab");
         assert!(drv.live_migration().unwrap());
         let row = probe(&drv, "hs", "m:1", 7);
-        assert!(row.reachable && row.live_migration, "{row:?}");
+        assert!(
+            row.reachable && row.live_migration && row.standby_hold,
+            "{row:?}"
+        );
 
         let delegate = drv.delegate(&d).unwrap();
         assert_eq!(delegate, "00000000000000a1");
@@ -2326,6 +2341,20 @@ mod tests {
         ));
         assert!(!has_live_migration(&json!({"protocol": 3, "features": []})));
         assert!(!has_live_migration(&json!({"protocol": 2})));
+    }
+
+    /// Only a hyperstor-vhost that says so holds a standby volume's
+    /// requests: protocol 4 with `live_migration` alone may fail them.
+    #[test]
+    fn only_a_hello_with_standby_hold_holds_a_standby_volumes_requests() {
+        use serde_json::json;
+        assert!(has_standby_hold(
+            &json!({"protocol": 4, "features": ["live_migration", "standby_hold"]})
+        ));
+        assert!(!has_standby_hold(
+            &json!({"protocol": 4, "features": ["live_migration"]})
+        ));
+        assert!(!has_standby_hold(&json!({"protocol": 2})));
     }
 
     /// Which holds are stale (S26, S31): another node's hyperstor-vhost's

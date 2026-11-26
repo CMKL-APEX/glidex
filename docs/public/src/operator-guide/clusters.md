@@ -301,10 +301,11 @@ guest resumes on the target a moment before its disks are handed over
 there, and the target's `hyperstor-vhost` holds the writes in between
 until the handover (up to 30 s, its `--hold-standby`). An older
 `hyperstor-vhost` fails them instead, and the guest's file system can
-lose data. glidex can't tell the two apart (both answer protocol 4 with
-`live_migration`), so before migrating a VM with busy disks make sure
-both nodes run a hyperstor release with
-[hyperstor#438](https://github.com/CMKL-APEX/hyperstor/pull/438).
+lose data. So a target node needs a hyperstor release that says it holds
+them (`standby_hold`,
+[hyperstor#444](https://github.com/CMKL-APEX/hyperstor/pull/444)), and
+the check refuses one without it; upgrade hyperstor on every node
+before you upgrade glidex to a release with this check.
 
 `gxctl migrate <vm> --check [--node N]` says what would stop
 a migration, without moving anything:
@@ -314,7 +315,8 @@ DPU or vhost-user NICs, a node network, disks not on hyperstor, a
 node's (no room, CPU features it lacks, a DPDK `br-int`, an older
 `hyperstor-vhost`). Moving a running VM's hyperstor disks needs
 hyperstor's `hyperstor-vhost` protocol 3 (its `live_migration` feature)
-on both nodes: the datastore's page shows it per node. It needs
+on both nodes, and `standby_hold` on the target: the datastore's node
+rows (`GET /datastores/<id>`) show both per node. It needs
 `migrateVm`, a cluster operator's permission, as placing does. The
 check also refuses a VM with dedicated CPUs or a NUMA policy.
 
