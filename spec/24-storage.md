@@ -142,7 +142,7 @@ later milestones (§11, §12).
 | S37 | **The token's name is the node's kernel host name, as the node reports it** (`status.host_name`, from `/proc/sys/kernel/hostname`, as it is: Linux host names are at most 64 bytes, and `hyperstor-install` compares the token's name with the host name cut to 64). A node that hasn't reported one is refused (`failed_precondition`); hyperstor's rules (1–253 bytes of letters, digits, `-`, `.`, `_`, not starting with `-` or `.`) are checked before the call. | `hyperstor-install --join` refuses a token whose name isn't the host's own name, and a glidex node's name may differ from it (`--node-name`). |
 | S38 | **Only cluster administrators, re-authenticated, may ask** (Cedar `createHyperstorHostToken`, in `host.cluster.critical` like join and rejoin tokens). | The token lets a host join the hyperstor cluster and read its volumes' data once it attaches them: it is as strong as a join token. |
 | S39 | **A refusal from hyperstor is passed on, with what to do.** A realm-bound glidex identity may make `host` tokens only after a hyperstor administrator grants it (hyperstor D381: `hyperstorctl realm client-tokens --client <glidex's client name> --role host`). Without the grant hyperstor answers `permission_denied` (`outside_realm`); glidex answers `failed_precondition` with hyperstor's message, which names that command, and the manual way: `hyperstorctl token create --role host --name <host name>` on a map service host. glidex doesn't try to read the grant (a bound client can't: hyperstor `ListRealms`). | An unbound identity may make host tokens today; a bound one, the usual set-up with tenancy, needs the grant, which is hyperstor's to give. |
-| S40 | **Each node reports whether it holds a hyperstor identity** (`status.features.hyperstor_identity`: any of `host.crt`, `node.crt`, `node-*.crt` or `api.crt` under `/etc/hyperstor/pki`, the certificates `hyperstor-vhost` presents, in its own order: host, node, api), and a node that reaches a hyperstor datastore without one is listed in that datastore's status as a warning (`nodes_without_hyperstor_identity`), with the `host-token` command. A node that also runs a hyperstor role (a storage node, a map service member) has a node or API certificate and no `host.crt`, and needs none. | A node set up the old way (`--role vhost --map …`) works while the cluster's mode is `off` or `allow`, and loses its disks once someone sets `require`: the warning shows it before then. |
+| S40 | **A node whose `hyperstor-vhost` presents no hyperstor identity gets a warning on the datastore.** The node's probe of a hyperstor datastore already sends `hyperstor-vhost` its control `hello`. When the answer says it runs without an identity (`"identity": null`), the probe adds a warning to the node's row (`DatastoreNode.warnings`, shown on the Datastores page and by `gxctl datastore get`), with the `host-token` command. When the answer names one (`hyperstor://<cluster>/host/<name>`, or a node or API identity on a host that also runs a hyperstor role), or doesn't say (an older `hyperstor-vhost`), nothing. Asking `hyperstor-vhost` is the only reliable way: glidex's service user can't list `/etc/hyperstor/pki` (mode 0751), and storage nodes' certificates are named by node number (`node-N.crt`). Depends on hyperstor adding `identity` to `hello`. | A node set up the old way (`--role vhost --map …`) works while the cluster's mode is `off` or `allow`, and loses its disks once someone sets `require`: the warning shows it before then. |
 
 ## 3. What changes, at a glance
 
@@ -1217,8 +1217,7 @@ identity it has).
 
 **Tasks:**
 1. **Spec** (this section).
-2. **Node:** `status.host_name` from the probe (S37) and
-   `status.features.hyperstor_identity` (S40).
+2. **Node:** `status.host_name` from the probe (S37).
 3. **API:** `CreateHyperstorHostTokenRequest{datastore, node, ttl_seconds}`
    on the storage service, REST `POST /datastores/{id}/host-token`, Cedar
    `createHyperstorHostToken` (S38); the server's call to hyperstor's
@@ -1227,8 +1226,9 @@ identity it has).
 4. **gxctl:** `gxctl datastore host-token NAME --node N [--ttl SECS]`:
    the token alone on standard output (for `> host.token`), the command to
    run on standard error.
-5. **Warning:** `nodes_without_hyperstor_identity` in a hyperstor datastore's
-   status (S40), on the Datastores page and in `gxctl datastore get`.
+5. **Warning** (S40): the hyperstor probe's warning when `hyperstor-vhost`'s
+   `hello` says it has no identity. Waits for hyperstor to add `identity`
+   to `hello`.
 6. **Docs:** the operator guide's "Prepare the nodes" with the token step
    and the old `--map` form's limit.
 
