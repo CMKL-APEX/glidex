@@ -138,6 +138,11 @@ later milestones (§11, §12).
 | S33 | **A hyperstor disk names its glidex project; the shared image volume names none; a datastore may link to its cluster's management UI** (settled by the owner on 2026-11-14; hyperstor's 19-administration.md §23.12, its D311): the driver sends each disk's project (`Disk.project`, glidex's id) as `CreateVolume.directory_project` and `CloneVolume.directory_project`, which hyperstor resolves through its feed's link to that project, within the realms glidex's identity is bound to. An image's volume (`glidex-image:…`, S28) names no project and lands in the cluster's `default`, so the operator binds the identity to `default` too; each disk is a clone of its `golden` snapshot in its own project. Refusals come back as hyperstor's reasons (`outside_realm`, `tenant_required`, `not_found`, `ambiguous_project`). A hyperstor datastore may carry `mgmt_url` (`https://host[:port]`, `gxctl datastore create|set --mgmt-url`), shown as *Manage cluster*; without it, the UI links to the address the cluster gave at a tenant's opt-in. Only a link: nothing calls it. **Built:** both, with glidex's `hyperstor-api` and `hyperstor-pki` pinned at hyperstor `bbf869c3` (#368), which has `directory_project`. | One glidex cluster can't make volumes in another directory's projects (hyperstor D311), and a tenant's storage counts in its own projects there. One image volume per datastore keeps images shared (S28); clones may be in any project (hyperstor D300). The operator's own UI for the cluster is the place to administer it; glidex only links to it. |
 | S34 | **A disk of a project hyperstor has no link to waits until it is linked** (settled by the owner on 2026-11-17 as a fallback to hyperstor's `default`, until tenants are admitted to the cluster, 19-tenancy.md T11; amended on 2026-11-18 once T11 was deployed, glidex#543): when hyperstor refuses a disk's `CreateVolume` or `CloneVolume` because no project there is linked to its glidex project (`not_found`, *no project linked to directory project*), the driver answers `NotReady`: the disk stays pending, saying so, and is retried until hyperstor links the project: after 3 s, then twice as long each time, up to a minute. The disk's own writes don't start an attempt early (they used to, about ten times a second). That happens once its tenant is admitted (with T11's open admission and the directory's automatic opt-in, at once) and the directory's feed brings the project, within a minute or so of its creation. Other refusals stand. Volumes the first form made in hyperstor's `default` stay there: hyperstor moves projects between tenants, not a volume between projects, and a copy would be a new volume. | A disk landing in `default` counts against no project and is outside its tenant's realm, which T11 now makes unnecessary; a disk that waits a minute for a new project is the price, and a tenant not admitted at all sees why. The first form unblocked disks while T11 wasn't deployed. |
 | S35 | **A hyperstor datastore's addresses follow its cluster's members** (glidex#582): the leader reads the member list (`MemberService.ListMembers`, which any role but `host` may read) through the datastore's API addresses as glidex's identity, at most every 15 minutes and in the probe round after a certificate renewal, and records the voters' API addresses (the leader's first) and map addresses, with the time (`addresses_checked`, shown as `hyperstor_addresses_checked` and by `datastore show`). Voters that never led name no API address; when none does, the API list is kept. A cluster that doesn't answer keeps its addresses and is asked again next round. When none answers any more, the operator gives new ones: `datastore set --hyperstor` (`update_mask` path `hyperstor_api`) checks that each answers, under the pinned root, as the cluster the identity names (`GetStatus.cluster_id`), and then reads the map addresses from the members; only a server, which holds the identity, can. | The addresses were recorded once, at the join, and couldn't be changed (`datastore set` refused them, `datastore rm` refuses while disks are on it), so a member moved or replaced left a dead address tried first on every call, and enough changes would leave none that answers. The identity and certificate are the cluster's and don't move; only the addresses do. Voters only: a learner may yet be removed. A hand-given address is checked so a typo or another cluster can't take the datastore's calls. Not built: the issue's second trigger, following a leader's redirect when every known address fails; until then `datastore set --hyperstor` covers that case. |
+| S36 | **A glidex server makes a node's hyperstor `host` token; the operator runs the join** (glidex#665). `POST /datastores/{id}/host-token` with a node (`gxctl datastore host-token NAME --node N`) has a server call hyperstor's `TokenService.CreateToken{role: "host", name: <the node's host name>, ttl_seconds}` as the datastore's identity, and answers the token once with the cluster API's addresses and the command to run on the node: `hyperstor-install install --role vhost --join API:8850 --token-file F --vhost-user glidex`. The token is never logged, stored or put in an audit record; the audit names the datastore, the node and its expiry. Default life 1 hour (`--ttl`, at most 7 days, hyperstor's limit). glidex doesn't run `hyperstor-install` itself. | hyperstor's data path gets mutual TLS (hyperstor D375, `spec/30-data-path-tls.md` §33): once a cluster's mode is `require`, a node without a host certificate can't reach its disks. glidex already holds a `mgmt` identity for each hyperstor datastore, so an operator needn't log in to hyperstor to set up a node. Installing hyperstor's services stays with the operator or a provisioning tool (tend installs hyperstor on the test cluster). |
+| S37 | **The token's name is the node's kernel host name, as the node reports it** (`status.host_name`, from `/proc/sys/kernel/hostname`, cut to 64 bytes). A node that hasn't reported one is refused (`failed_precondition`); hyperstor's rules (1–64 of letters, digits, `-`, `.`, `_`, not starting with `-` or `.`) are checked before the call. | `hyperstor-install --join` refuses a token whose name isn't the host's own name, and a glidex node's name may differ from it (`--node-name`). |
+| S38 | **Only cluster administrators, re-authenticated, may ask** (Cedar `createHyperstorHostToken`, in `host.cluster.critical` like join and rejoin tokens). | The token lets a host join the hyperstor cluster and read its volumes' data once it attaches them: it is as strong as a join token. |
+| S39 | **A refusal from hyperstor is passed on, with what to do.** A realm-bound glidex identity may make `host` tokens only after a hyperstor administrator grants it (hyperstor D381: `hyperstorctl realm client-tokens --client <glidex's client name> --role host`). Without the grant hyperstor answers `permission_denied` (`outside_realm`); glidex answers `failed_precondition` with hyperstor's message, which names that command, and the manual way: `hyperstorctl token create --role host --name <host name>` on a map service host. glidex doesn't try to read the grant (a bound client can't: hyperstor `ListRealms`). | An unbound identity may make host tokens today; a bound one, the usual set-up with tenancy, needs the grant, which is hyperstor's to give. |
+| S40 | **Each node reports whether it holds a hyperstor host certificate** (`status.features.hyperstor_host_cert`: `/etc/hyperstor/pki/host.crt` exists), and a node that reaches a hyperstor datastore without one is listed in that datastore's status as a warning (`nodes_without_host_cert`), with the `host-token` command. | A node set up the old way (`--role vhost --map …`) works while the cluster's mode is `off` or `allow`, and loses its disks once someone sets `require`: the warning shows it before then. |
 
 ## 3. What changes, at a glance
 
@@ -1188,6 +1193,51 @@ file: `Datastore::holds_image_files` is true only for `shared-dir`
   admin certificate) and the disk is still made. Without freeing it, the
   disk never gets ready (checked).
 
+### 11.2.1 Host certificates (S9)
+
+hyperstor's data path authenticates with the cluster's certificates
+(hyperstor `spec/30-data-path-tls.md` §33): a cluster's mode is `off`,
+`allow` or `require`. A host that only runs VMs joins with a `host`
+token, as storage hosts do, and gets `host.crt`, `host.key` and
+`root.crt` under `/etc/hyperstor/pki`; `hyperstor-vhost` then presents
+them. Decisions S36–S40.
+
+Preparing a node (operator guide, "Prepare the nodes"):
+
+```
+gxctl datastore host-token hs --node node-a > host.token     # S36, step-up
+# on node-a:
+sudo hyperstor-install install --role vhost --join 192.0.2.10:8850 \
+  --token-file host.token --vhost-user glidex
+```
+
+A host that already runs a hyperstor role needs nothing new
+(`hyperstor-install install --vhost --vhost-user glidex` passes the
+identity it has).
+
+**Tasks:**
+1. **Spec** (this section).
+2. **Node:** `status.host_name` from the probe (S37) and
+   `status.features.hyperstor_host_cert` (S40).
+3. **API:** `CreateHyperstorHostTokenRequest{datastore, node, ttl_seconds}`
+   on the storage service, REST `POST /datastores/{id}/host-token`, Cedar
+   `createHyperstorHostToken` (S38); the server's call to hyperstor's
+   `CreateToken` as the datastore's identity, the name checks (S37) and
+   the refusal (S39); never logging the token.
+4. **gxctl:** `gxctl datastore host-token NAME --node N [--ttl SECS]`:
+   the token alone on standard output (for `> host.token`), the command to
+   run on standard error.
+5. **Warning:** `nodes_without_host_cert` in a hyperstor datastore's
+   status (S40), on the Datastores page and in `gxctl datastore get`.
+6. **Docs:** the operator guide's "Prepare the nodes" with the token step
+   and the old `--map` form's limit.
+
+**Not here (glidex#665 part 2):** `hyperstorctl read-volume` and
+`write-volume` (`read_region_with`, `write_region_with`) still run
+without an identity. They need hyperstor's T2, which lets `hyperstorctl`
+present a host certificate. Nobody should set `require` on a cluster
+glidex uses before both are done.
+
 ## 12. CSI
 
 ### 12.1 Why not first (S1)
@@ -1401,6 +1451,7 @@ described below; fix 5 is part of S2.
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver (§11.1): S6a stord (crate, unit, installer), S6b the `lvm` datastore, block bindings and device access, S6c moves, metering and VM boots from volumes. **Implemented** (§11.1 as built). Then `shared-lvm` and `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |
 | S8 | The `hyperstor` driver (§11.2, S20–S24): enrollment, volumes, images as cloned volumes, vhost-user disks for both hypervisors. **Implemented** (§11.2 as built). | S3, hyperstor HS3 |
+| S9 | hyperstor host certificates for VM nodes (§11.2.1, S36–S40, glidex#665 part 1): host tokens from glidex, the node's host name and certificate in its status, the warning, the docs. **Spec.** | S8, hyperstor D375 (D381 for a realm-bound identity) |
 | — | Per-datastore quotas (S15): queued, no milestone yet | S2 |
 
 ## 17. Questions
