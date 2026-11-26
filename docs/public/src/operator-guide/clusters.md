@@ -296,12 +296,17 @@ console log; a `gxctl connect` session ends at the switch, so connect
 again. Live migration is new: try it on a VM you can lose before you
 rely on it.
 
-> **Known issue: writes at the switch.** A guest writing to a hyperstor
-> disk while it moves can get I/O errors at the switch, and its file
-> system can lose data. The guest resumes on the target a moment before
-> its disks are handed over there, and hyperstor fails the writes in
-> between instead of holding them. Until hyperstor holds them, migrate a
-> VM only when its disks are quiet, or one whose disks you can lose. `gxctl migrate <vm> --check [--node N]` says what would stop
+A guest may keep writing to its hyperstor disks while it moves: the
+guest resumes on the target a moment before its disks are handed over
+there, and the target's `hyperstor-vhost` holds the writes in between
+until the handover (up to 30 s, its `--hold-standby`). An older
+`hyperstor-vhost` fails them instead, and the guest's file system can
+lose data. glidex can't tell the two apart (both answer protocol 4 with
+`live_migration`), so before migrating a VM with busy disks make sure
+both nodes run a hyperstor release with
+[hyperstor#438](https://github.com/CMKL-APEX/hyperstor/pull/438).
+
+`gxctl migrate <vm> --check [--node N]` says what would stop
 a migration, without moving anything:
 the VM's own reasons (not running, not on Cloud Hypervisor, PCI devices,
 DPU or vhost-user NICs, a node network, disks not on hyperstor, a
