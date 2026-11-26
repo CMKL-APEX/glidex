@@ -1227,8 +1227,7 @@ identity it has).
    the token alone on standard output (for `> host.token`), the command to
    run on standard error.
 5. **Warning** (S40): the hyperstor probe's warning when `hyperstor-vhost`'s
-   `hello` says it has no identity. Waits for hyperstor to add `identity`
-   to `hello`.
+   `hello` says it has no identity (`identity: null`, hyperstor#440).
 6. **Docs:** the operator guide's "Prepare the nodes" with the token step
    and the old `--map` form's limit.
 
@@ -1451,7 +1450,7 @@ described below; fix 5 is part of S2.
 | S6 | `glidex-stord`, `VolumeBinding::Block`, and the `lvm` driver (§11.1): S6a stord (crate, unit, installer), S6b the `lvm` datastore, block bindings and device access, S6c moves, metering and VM boots from volumes. **Implemented** (§11.1 as built). Then `shared-lvm` and `rbd` | S2 |
 | S7 | The CSI adapter, **only if the §12.3 gate is met** | S6 |
 | S8 | The `hyperstor` driver (§11.2, S20–S24): enrollment, volumes, images as cloned volumes, vhost-user disks for both hypervisors. **Implemented** (§11.2 as built). | S3, hyperstor HS3 |
-| S9 | hyperstor host certificates for VM nodes (§11.2.1, S36–S40, glidex#665 part 1): host tokens from glidex, the node's host name in its status, the warning, the docs. **S36–S39 implemented** (tasks 2–4 and 6); S40 (task 5) waits for hyperstor's `identity` in `hello` (hyperstor#440). | S8, hyperstor D375 (D382 for a realm-bound identity) |
+| S9 | hyperstor host certificates for VM nodes (§11.2.1, S36–S40, glidex#665 part 1): host tokens from glidex, the node's host name in its status, the warning, the docs. **Implemented:** S36–S39 (tasks 2–4 and 6, glidex#667), S40 (task 5, with hyperstor#440's `identity` in `hello`). | S8, hyperstor D375 (D382 for a realm-bound identity) |
 | — | Per-datastore quotas (S15): queued, no milestone yet | S2 |
 
 ## 17. Questions

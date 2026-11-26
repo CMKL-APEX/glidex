@@ -1504,7 +1504,7 @@ impl VmManager {
                 )
                 .expect("a hyperstor datastore")
                 .on_node(&me);
-                let row = crate::datastore::hyperstor::probe(&driver, map, now);
+                let row = crate::datastore::hyperstor::probe(&driver, &ds.name, map, now);
                 if row.reachable {
                     self.release_stale_holds(&driver, &ds.id, &me);
                 }

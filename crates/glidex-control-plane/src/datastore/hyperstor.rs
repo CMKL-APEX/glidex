@@ -1040,8 +1040,13 @@ impl HyperstorDriver {
     /// §7). Whether the storage nodes can hand a lease over is checked by
     /// the target's [`Self::attach_delegate`], before any memory is copied.
     pub fn live_migration(&self) -> Result<bool, ImageError> {
-        let ok = self.vhost(serde_json::json!({"id": 1, "op": "hello"}))?;
-        Ok(has_live_migration(&ok))
+        Ok(has_live_migration(&self.hello()?))
+    }
+
+    /// `hyperstor-vhost`'s answer to `hello`: its protocol, features and
+    /// (hyperstor#440) the identity it presents.
+    pub fn hello(&self) -> Result<serde_json::Value, ImageError> {
+        self.vhost(serde_json::json!({"id": 1, "op": "hello"}))
     }
 
     /// On a migration's source: adds a delegate to the lease of `disk`'s
@@ -1727,15 +1732,53 @@ fn pool_space(pools: &[pb::Pool], pool: u32) -> Option<PoolSpace> {
 /// the cluster API answers to glidex's identity (`ApiUnavailable`) and
 /// gives the pool's space (S27). Other nodes, and a cluster that doesn't
 /// report it, show 0.
-pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::NodeRow {
+/// What `hyperstor-vhost` presents on hyperstor's data path, as its `hello`
+/// says (spec/24-storage.md S40).
+#[derive(Debug, PartialEq, Eq)]
+pub enum VhostIdentity {
+    /// An older `hyperstor-vhost`, which doesn't say.
+    Unknown,
+    /// It runs without `--identity`.
+    Missing,
+    /// `hyperstor://<cluster>/<role>/<id>`: a host, node or map service
+    /// member's certificate; any of them will do.
+    Present(String),
+}
+
+pub fn vhost_identity(hello: &serde_json::Value) -> VhostIdentity {
+    match hello.get("identity") {
+        None => VhostIdentity::Unknown,
+        Some(serde_json::Value::String(s)) if !s.is_empty() => VhostIdentity::Present(s.clone()),
+        Some(_) => VhostIdentity::Missing,
+    }
+}
+
+/// The warning for a node whose `hyperstor-vhost` presents no identity (S40).
+pub fn no_identity_warning(datastore: &str) -> String {
+    format!(
+        "hyperstor-vhost here runs without a hyperstor certificate: this node loses {datastore}'s disks once the cluster's data-path TLS mode is `require`. Give it one: `gxctl datastore host-token {datastore} --node <this node>`, then hyperstor-install's `--join` on the node"
+    )
+}
+
+pub fn probe(
+    driver: &HyperstorDriver,
+    datastore: &str,
+    map: &str,
+    now: u64,
+) -> super::record::NodeRow {
     let mut row = super::record::NodeRow {
         reachable: true,
         path: map.to_string(),
         checked_at: now,
         ..Default::default()
     };
-    match driver.live_migration() {
-        Ok(lm) => row.live_migration = lm,
+    match driver.hello() {
+        Ok(hello) => {
+            row.live_migration = has_live_migration(&hello);
+            if vhost_identity(&hello) == VhostIdentity::Missing {
+                row.warnings.push(no_identity_warning(datastore));
+            }
+        }
         Err(e) => {
             row.reachable = false;
             row.reason = "VhostUnavailable".into();
@@ -1779,6 +1822,36 @@ pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::No
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S40, hyperstor#440: `hello`'s `identity` is a URI, null without
+    /// `--identity`, or absent from an older `hyperstor-vhost`; only null
+    /// warns, and any role's certificate will do.
+    #[test]
+    fn only_a_vhost_that_says_it_has_no_identity_is_warned_about() {
+        use serde_json::json;
+        let h = |v: serde_json::Value| vhost_identity(&v);
+        assert_eq!(
+            h(json!({"protocol": 4, "features": []})),
+            VhostIdentity::Unknown
+        );
+        assert_eq!(
+            h(json!({"protocol": 4, "identity": null})),
+            VhostIdentity::Missing
+        );
+        for uri in [
+            "hyperstor://7311402/host/node-a",
+            "hyperstor://7311402/node/3",
+            "hyperstor://7311402/meta/1",
+        ] {
+            assert_eq!(
+                h(json!({"protocol": 4, "identity": uri})),
+                VhostIdentity::Present(uri.into())
+            );
+        }
+        let w = no_identity_warning("hs1");
+        assert!(w.contains("gxctl datastore host-token hs1 --node"), "{w}");
+        assert!(w.contains("`require`"), "{w}");
+    }
 
     /// S37: hyperstor's rule for a host's name, checked before asking.
     #[test]
@@ -2147,6 +2220,32 @@ mod tests {
         assert!(none.exists(&d).is_err());
     }
 
+    /// S40 through the probe: a node whose hyperstor-vhost runs without an
+    /// identity gets the warning on its row; one with any identity, or an
+    /// older service that doesn't say, gets none.
+    #[test]
+    fn the_probe_warns_about_a_vhost_without_an_identity() {
+        let row_for = |hello: serde_json::Value| {
+            let tmp = tempfile::tempdir().unwrap();
+            let _seen = fake_vhost(tmp.path(), move |r| match r["op"].as_str().unwrap() {
+                "hello" => serde_json::json!({"id": 1, "ok": hello.clone()}),
+                _ => serde_json::json!({"id": 1, "error": {"code": "invalid", "message": "?"}}),
+            });
+            let drv = HyperstorDriver::new(vec![], "m:1".into(), 1, "ds".into(), None)
+                .with_paths(tmp.path().to_path_buf(), PathBuf::from("/nonexistent"));
+            probe(&drv, "hs1", "m:1", 7)
+        };
+        let none = row_for(serde_json::json!({"protocol": 4, "features": [], "identity": null}));
+        assert!(none.reachable, "{none:?}");
+        assert_eq!(none.warnings, [no_identity_warning("hs1")]);
+        let host = row_for(
+            serde_json::json!({"protocol": 4, "features": [], "identity": "hyperstor://7311402/host/node-a"}),
+        );
+        assert!(host.warnings.is_empty(), "{host:?}");
+        let older = row_for(serde_json::json!({"protocol": 3, "features": []}));
+        assert!(older.warnings.is_empty(), "{older:?}");
+    }
+
     /// A live migration's disk handover through hyperstor-vhost's control
     /// socket (spec/32-live-migration.md §7): the source's delegate, the
     /// target's standby attach, the promotion and a cancel; the target's
@@ -2182,7 +2281,7 @@ mod tests {
         .on_node("node-b");
         let d = disk("6f1c0d2e-9a4b-4c1d-8e2f-0123456789ab");
         assert!(drv.live_migration().unwrap());
-        let row = probe(&drv, "m:1", 7);
+        let row = probe(&drv, "hs", "m:1", 7);
         assert!(row.reachable && row.live_migration, "{row:?}");
 
         let delegate = drv.delegate(&d).unwrap();
