@@ -664,6 +664,12 @@ token named after the node's host name:
 Only administrators can ask, with a recent login, as for join tokens
 (`createHyperstorHostToken`).
 
+A node whose `hyperstor-vhost` runs without a certificate shows a
+warning on the datastore (Datastores page, `gxctl datastore show`), with
+this command. A host that runs another hyperstor role presents that
+role's certificate and isn't flagged. An older `hyperstor-vhost` doesn't
+say which it has, and isn't flagged either.
+
 If Glidex's identity is bound to realms (the usual set-up when
 hyperstor tenants are linked to Glidex), a hyperstor administrator must
 first allow it to make host tokens. The refusal Glidex shows names the
