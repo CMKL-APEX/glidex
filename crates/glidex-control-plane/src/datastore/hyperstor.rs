@@ -1388,6 +1388,118 @@ pub async fn enroll(api: &[String], token: &str) -> Result<Enrolled, String> {
     Err(last)
 }
 
+/// The longest `ttl_seconds` hyperstor takes for a token: a week.
+pub const HOST_TOKEN_MAX_TTL: u32 = 7 * 24 * 3600;
+
+/// A `host` token for a host that runs VMs (S36), as hyperstor answers it.
+/// The token is a secret: shown once, never logged or kept.
+pub struct HostToken {
+    pub token: zeroize::Zeroizing<String>,
+    /// The cluster API address a joining host may use.
+    pub api_address: String,
+    pub expires_unix: u64,
+}
+
+/// Why hyperstor wouldn't make a host token.
+#[derive(Debug, PartialEq, Eq)]
+pub enum HostTokenError {
+    /// It refused: glidex's identity may not (S39), or the name is bad.
+    Refused(String),
+    /// No API address answered.
+    Unavailable(String),
+}
+
+/// hyperstor's rule for a host's name (S37): 1–253 bytes of letters,
+/// digits, `-`, `.` and `_`, not starting with `-` or `.`.
+pub fn check_host_name(name: &str) -> Result<(), String> {
+    let ok = !name.is_empty()
+        && name.len() <= 253
+        && !name.starts_with(['-', '.'])
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-._".contains(&b));
+    if ok {
+        Ok(())
+    } else {
+        Err(format!(
+            "{name:?} isn't a host name hyperstor takes: 1-253 of letters, digits, -, . and _, not starting with - or ."
+        ))
+    }
+}
+
+/// What to run on the node with the token in `token_file` (S36).
+pub fn host_join_command(api_address: &str, token_file: &str) -> String {
+    format!(
+        "sudo hyperstor-install install --role vhost --join {api_address} --token-file {token_file} --vhost-user glidex"
+    )
+}
+
+/// Explains hyperstor's refusal of a host token (S39): a realm-bound
+/// identity needs a grant, whose command hyperstor's message names; and
+/// the way that needs no glidex.
+fn host_token_refusal(message: &str, host: &str) -> String {
+    format!(
+        "hyperstor refused to make a host token as glidex's identity: {message}. Without glidex: on a map service host, `hyperstorctl token create --role host --name {host}`"
+    )
+}
+
+/// Asks the cluster for a `host` token named `host`, valid `ttl` seconds,
+/// as `id` (S36). Only the leader makes tokens: a member that isn't says
+/// so, and the next address is tried (S35 puts the leader's first).
+pub async fn create_host_token(
+    api: &[String],
+    id: &Identity,
+    host: &str,
+    ttl: u32,
+) -> Result<HostToken, HostTokenError> {
+    let tls = std::sync::Arc::new(
+        hyperstor_pki::client_config(&id.cert, &id.key, &id.root)
+            .map_err(HostTokenError::Unavailable)?,
+    );
+    let mut last = String::from("no hyperstor API address");
+    for a in api {
+        let Ok(uri) = format!("https://{a}").parse::<http::Uri>() else {
+            last = format!("{a}: not host:port");
+            continue;
+        };
+        let client = hyperstor_api::TokenServiceClient::new(
+            connectrpc::client::HttpClient::with_tls(tls.clone()),
+            connectrpc::client::ClientConfig::new(uri).with_default_timeout(API_TIMEOUT),
+        );
+        let r = client
+            .create_token(pb::CreateTokenRequest {
+                role: "host".into(),
+                name: host.into(),
+                ttl_seconds: ttl,
+                ..Default::default()
+            })
+            .await;
+        match r {
+            Ok(r) => {
+                let r = r.into_owned();
+                return Ok(HostToken {
+                    expires_unix: r.info.as_option().map_or(0, |i| i.expires_unix),
+                    api_address: if r.api_address.is_empty() {
+                        a.clone()
+                    } else {
+                        r.api_address
+                    },
+                    token: zeroize::Zeroizing::new(r.token),
+                });
+            }
+            // Not the leader, or not answering: the next one.
+            Err(e) if e.code == connectrpc::ErrorCode::Unavailable => {
+                last = format!("{a}: {}", e.message.unwrap_or_default());
+            }
+            Err(e) => {
+                let m = e.message.unwrap_or_else(|| "refused".into());
+                return Err(HostTokenError::Refused(host_token_refusal(&m, host)));
+            }
+        }
+    }
+    Err(HostTokenError::Unavailable(last))
+}
+
 fn cluster_client(
     a: &str,
     id: &Identity,
@@ -1667,6 +1779,53 @@ pub fn probe(driver: &HyperstorDriver, map: &str, now: u64) -> super::record::No
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// S37: hyperstor's rule for a host's name, checked before asking.
+    #[test]
+    fn host_names_follow_hyperstors_rule() {
+        for ok in [
+            "node-a",
+            "hv_1",
+            "a",
+            "node-a.example.com",
+            &"a".repeat(253),
+        ] {
+            assert!(check_host_name(ok).is_ok(), "{ok}");
+        }
+        for bad in [
+            "",
+            "-node",
+            ".node",
+            "node a",
+            "node/a",
+            "nöde",
+            &"a".repeat(254),
+        ] {
+            assert!(check_host_name(bad).is_err(), "{bad:?}");
+        }
+    }
+
+    /// S36, S39: what the operator is told to run, and a refusal that keeps
+    /// hyperstor's message (which names the grant) and the way without glidex.
+    #[test]
+    fn the_join_command_and_a_refusal_say_what_to_do() {
+        assert_eq!(
+            host_join_command("192.0.2.10:8850", "host.token"),
+            "sudo hyperstor-install install --role vhost --join 192.0.2.10:8850 --token-file host.token --vhost-user glidex"
+        );
+        let m = host_token_refusal(
+            "outside_realm: grant it with hyperstorctl realm client-tokens --client glidex --role host",
+            "node-a",
+        );
+        assert!(
+            m.contains("realm client-tokens --client glidex --role host"),
+            "{m}"
+        );
+        assert!(
+            m.contains("hyperstorctl token create --role host --name node-a"),
+            "{m}"
+        );
+    }
     use crate::images::{DiskOrigin, DiskPhase};
     use std::os::unix::net::UnixListener;
 

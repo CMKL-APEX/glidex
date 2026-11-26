@@ -381,6 +381,12 @@ fn routes(app: &AppState) -> (Router<AppState>, Vec<RouteSpec>) {
         "manageDatastore",
         delete(storage::delete_datastore),
     )
+    .add(
+        "POST",
+        "/datastores/{id}/host-token",
+        "createHyperstorHostToken",
+        post(storage::create_host_token),
+    )
     .add("GET", "/images", "readImage", get(storage::list_images))
     .add("POST", "/images", "pullImage", post(storage::pull_image))
     .add("GET", "/images/{id}", "readImage", get(storage::get_image))

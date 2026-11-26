@@ -1117,6 +1117,34 @@ fn mgmt_url_of(s: &str) -> ServiceResult<Option<String>> {
         })
 }
 
+/// A hyperstor `host` token for a node (spec/24-storage.md S36).
+pub async fn create_host_token(
+    call: &Call,
+    req: pb::CreateHostTokenRequest,
+) -> ServiceResult<pb::CreateHostTokenResponse> {
+    let id = call
+        .manager()
+        .get_datastore(&req.id)
+        .map_err(manager_err)?
+        .datastore
+        .id;
+    require_datastore(call, &id)?;
+    let t = call
+        .manager()
+        .create_hyperstor_host_token(&id, &req.node, req.ttl_seconds)
+        .await
+        .map_err(manager_err)?;
+    Ok(pb::CreateHostTokenResponse {
+        token: t.token.to_string(),
+        node: t.node,
+        host_name: t.host_name,
+        api_address: t.api_address,
+        expires_at: crate::service::common::ts_opt(t.expires_unix).into(),
+        command: t.command,
+        ..Default::default()
+    })
+}
+
 fn require_datastore(call: &Call, id: &str) -> ServiceResult<()> {
     let mut es = EntitySet::new();
     es.datastore(id);

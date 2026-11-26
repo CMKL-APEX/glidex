@@ -804,6 +804,17 @@ service DatastoreService {
       rest: "DELETE /datastores/{id}"
     };
   }
+  // A hyperstor `host` token for a node that runs VMs, made by the
+  // datastore's cluster as glidex's identity (spec/24-storage.md S36):
+  // shown once, never stored. The node joins with it to get the
+  // certificate hyperstor's data path asks for.
+  rpc CreateHostToken(CreateHostTokenRequest) returns (CreateHostTokenResponse) {
+    option (glidex.api.v1.op) = {
+      action: "createHyperstorHostToken"
+      kind: KIND_WRITE
+      rest: "POST /datastores/{id}/host-token"
+    };
+  }
 }
 
 enum DatastoreDriver {
@@ -961,3 +972,24 @@ message DeleteDatastoreRequest {
   string id = 1;
 }
 message DeleteDatastoreResponse {}
+
+message CreateHostTokenRequest {
+  // The datastore (`hyperstor`): id or name.
+  string id = 1;
+  // The node that will join: id or name.
+  string node = 2;
+  // How long the token is valid; 0 means an hour. At most a week.
+  uint32 ttl_seconds = 3 [json_name = "ttl_seconds"];
+}
+message CreateHostTokenResponse {
+  // Shown once: neither glidex nor hyperstor can show it again.
+  string token = 1;
+  string node = 2;
+  // The node's kernel host name, which the token carries (S37).
+  string host_name = 3 [json_name = "host_name"];
+  // The cluster API address to join through.
+  string api_address = 4 [json_name = "api_address"];
+  google.protobuf.Timestamp expires_at = 5 [json_name = "expires_at"];
+  // What to run on the node, with the token in `host.token`.
+  string command = 6;
+}

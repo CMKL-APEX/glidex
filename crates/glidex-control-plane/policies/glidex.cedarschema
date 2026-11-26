@@ -381,6 +381,10 @@ namespace Glidex {
     appliesTo { principal: [User, Token], resource: [Cluster, Datastore], context: Ctx };
   action manageDatastore in ["datastore.manage", "host-scoped"]
     appliesTo { principal: [User, Token], resource: [Cluster, Datastore], context: Ctx };
+  // A hyperstor `host` token lets a host join the hyperstor cluster: as
+  // strong as a join token (spec/24-storage.md S38).
+  action createHyperstorHostToken in ["host.cluster.critical", "host-scoped"]
+    appliesTo { principal: [User, Token], resource: [Cluster, Datastore], context: Ctx };
   // Putting a disk on it: permitted to all (base.use-datastore); a site
   // policy can forbid a datastore to some.
   action useDatastore in ["shared"]

@@ -107,6 +107,78 @@ impl VmManager {
         Ok(self.datastore_view(ds))
     }
 
+    /// A hyperstor `host` token for `node` (id or name), made by the
+    /// datastore's cluster as glidex's identity (S36–S39). `ttl` seconds;
+    /// 0: an hour. The token is a secret: the caller shows it once.
+    pub async fn create_hyperstor_host_token(
+        &self,
+        key: &str,
+        node: &str,
+        ttl: u32,
+    ) -> Result<HostTokenView, VmManagerError> {
+        let ds = record::find(&self.database(), key)?
+            .ok_or_else(|| DatastoreError::NotFound(key.to_string()))?;
+        let DriverSpec::Hyperstor { api, .. } = &ds.driver else {
+            return Err(DatastoreError::Invalid(format!(
+                "{} isn't a hyperstor datastore: only hyperstor's hosts take host tokens",
+                ds.name
+            ))
+            .into());
+        };
+        if ttl > super::hyperstor::HOST_TOKEN_MAX_TTL {
+            return Err(DatastoreError::Invalid(format!(
+                "a host token lives at most {} seconds (a week)",
+                super::hyperstor::HOST_TOKEN_MAX_TTL
+            ))
+            .into());
+        }
+        let node_id = self.resolve_node(node)?;
+        let n = self
+            .nodes()
+            .get(&node_id)
+            .map_err(|e| DatastoreError::Storage(e.to_string()))?
+            .ok_or_else(|| DatastoreError::NotFound(node.to_string()))?;
+        // The token carries the host's own name, which hyperstor-install
+        // checks; the node reports it (S37).
+        let host = n.status.host_name.clone().ok_or_else(|| {
+            DatastoreError::Conflict(format!(
+                "node {} hasn't reported its host name yet: it needs a release that does (spec/24-storage.md S37), or make the token on a map service host with `hyperstorctl token create --role host --name <its host name>`",
+                n.spec.name
+            ))
+        })?;
+        super::hyperstor::check_host_name(&host).map_err(DatastoreError::Invalid)?;
+        let id = self.images.hyperstor_identity(&ds).ok_or_else(|| {
+            DatastoreError::Conflict(format!(
+                "this server doesn't hold {}'s hyperstor identity",
+                ds.name
+            ))
+        })?;
+        use super::hyperstor::HostTokenError as E;
+        let t = super::hyperstor::create_host_token(api, &id, &host, ttl)
+            .await
+            .map_err(|e| match e {
+                E::Refused(m) => DatastoreError::Conflict(m),
+                E::Unavailable(m) => {
+                    DatastoreError::Unavailable(format!("hyperstor's API didn't answer: {m}"))
+                }
+            })?;
+        tracing::info!(
+            datastore = %ds.name,
+            node = %n.spec.name,
+            host = %host,
+            expires = t.expires_unix,
+            "made a hyperstor host token"
+        );
+        Ok(HostTokenView {
+            command: super::hyperstor::host_join_command(&t.api_address, "host.token"),
+            token: t.token,
+            node: n.spec.name.clone(),
+            host_name: host,
+            api_address: t.api_address,
+            expires_unix: t.expires_unix,
+        })
+    }
+
     /// Node ids or names → ids, each a live node.
     fn node_ids(&self, keys: &[String]) -> Result<Vec<String>, VmManagerError> {
         keys.iter().map(|k| self.resolve_node(k)).collect()
@@ -679,4 +751,15 @@ impl VmManager {
             .add(crate::controller::queue::Key::Disk(disk.id.clone()));
         Ok(self.images.disk_response(&disk, false))
     }
+}
+
+/// A hyperstor `host` token for a node (S36), as the API answers it once.
+pub struct HostTokenView {
+    pub token: zeroize::Zeroizing<String>,
+    pub node: String,
+    pub host_name: String,
+    pub api_address: String,
+    pub expires_unix: u64,
+    /// What to run on the node, with the token in `host.token`.
+    pub command: String,
 }

@@ -428,6 +428,20 @@ pub async fn create_datastore(
     ))
 }
 
+/// A hyperstor `host` token for a node (spec/24-storage.md S36).
+pub async fn create_host_token(
+    c: Caller,
+    Path(id): Path<String>,
+    Json(v): Json<Value>,
+) -> Result<impl IntoResponse, ApiErr> {
+    let mut req: pb::CreateHostTokenRequest = body(v)?;
+    req.id = id;
+    Ok(Proto(
+        StatusCode::CREATED,
+        svc::create_host_token(&c, req).await?,
+    ))
+}
+
 /// `PATCH`: changes the fields present.
 pub async fn update_datastore(
     c: Caller,

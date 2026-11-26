@@ -617,10 +617,25 @@ On each node that should run VMs from hyperstor disks:
   its default directory (`/run/hyperstor/vhost`), letting the `glidex`
   user use its control socket and giving its disks' sockets the
   `glidex` group, so that the hypervisors may open them. hyperstor's
-  installer does this: `hyperstor-install install --vhost --vhost-user
-  glidex` on a host that already runs a hyperstor role, or
-  `hyperstor-install install --role vhost --map ADDR[,ADDR...]
-  --vhost-user glidex` on a host that only runs VMs;
+  installer does this:
+  - on a host that already runs a hyperstor role:
+    `hyperstor-install install --vhost --vhost-user glidex`. It uses the
+    certificate that host already has.
+  - on a host that only runs VMs, join the hyperstor cluster with a
+    single-use **host token**, which gives the host its own certificate
+    (see [Host tokens](#host-tokens) below):
+
+    ```bash
+    gxctl datastore host-token hs1 --node node-a > host.token
+    # then on node-a, with host.token copied there (mode 0600):
+    sudo hyperstor-install install --role vhost --join 192.0.2.21:8850 --token-file host.token --vhost-user glidex
+    ```
+
+    The older form, `hyperstor-install install --role vhost --map
+    ADDR[,ADDR...] --vhost-user glidex`, leaves the host without a
+    certificate. It works while the cluster's data path doesn't ask for
+    one, and stops working once a hyperstor administrator sets the
+    cluster's data-path TLS mode to `require`;
 - install `hyperstorctl`: Glidex writes images into volumes and edits
   their partitions with it, and reads a disk's partition table with it
   for `gxctl disk show` and the disk's details in the web UI.
@@ -628,6 +643,34 @@ On each node that should run VMs from hyperstor disks:
 Servers also need to reach the cluster's API (port 8850 by default):
 they do the volume operations, because only they hold Glidex's
 identity.
+
+### Host tokens
+
+`gxctl datastore host-token DATASTORE --node NODE [--ttl SECONDS]` asks
+the datastore's hyperstor cluster, as Glidex's identity, for a `host`
+token named after the node's host name:
+
+- the token alone goes to standard output, so `> host.token` keeps it;
+  the node, its host name and the command to run on it go to standard
+  error;
+- it is shown once and kept nowhere: neither Glidex nor hyperstor can
+  show it again;
+- it is valid for an hour by default (`--ttl`, at most a week), and for
+  one join;
+- it is named after the host name the node reports, which must be the
+  name `hyperstor-install` sees on that host. A node running an older
+  Glidex release hasn't reported one yet: upgrade it first.
+
+Only administrators can ask, with a recent login, as for join tokens
+(`createHyperstorHostToken`).
+
+If Glidex's identity is bound to realms (the usual set-up when
+hyperstor tenants are linked to Glidex), a hyperstor administrator must
+first allow it to make host tokens. The refusal Glidex shows names the
+command (`hyperstorctl realm client-tokens --client <name> --role host`,
+where `<name>` is the name Glidex enrolled with). Without that, make the
+token on a map service host instead: `hyperstorctl token create --role
+host --name <the node's host name>`.
 
 ### Register a hyperstor datastore
 
