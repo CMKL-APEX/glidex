@@ -863,6 +863,11 @@ message DatastoreNode {
   // `hyperstor`: the node's hyperstor-vhost can take part in a live
   // migration, as source or target (spec/32-live-migration.md §7).
   bool live_migration = 12 [json_name = "live_migration"];
+  // `hyperstor`: the node's hyperstor-vhost holds a standby volume's
+  // requests until its promotion, so a guest writing at a migration's
+  // switch loses nothing; a migration's target needs it
+  // (spec/32-live-migration.md §7).
+  bool standby_hold = 13 [json_name = "standby_hold"];
 }
 
 message Datastore {

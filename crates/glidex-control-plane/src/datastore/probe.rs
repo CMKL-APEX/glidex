@@ -288,6 +288,7 @@ pub fn worth_writing(old: Option<&NodeRow>, new: &NodeRow) -> bool {
         || old.warnings != new.warnings
         || old.image_volumes != new.image_volumes
         || old.live_migration != new.live_migration
+        || old.standby_hold != new.standby_hold
         || old.message != new.message
         || old.path != new.path
         || old.total_bytes != new.total_bytes

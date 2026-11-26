@@ -170,11 +170,8 @@ impl VmManager {
                     reasons.push(r);
                 }
                 for (ds, rows) in &hyperstor {
-                    if !migrates(rows, &fit.id) {
-                        reasons.push(format!(
-                            "hyperstor-vhost there can't take datastore {}'s disks over",
-                            store_name(ds)
-                        ));
+                    if let Some(r) = hyperstor_target_refusal(rows.get(&fit.id), &store_name(ds)) {
+                        reasons.push(r);
                     }
                 }
                 match self.nodes().get(&fit.id).ok().flatten() {
@@ -199,6 +196,23 @@ impl VmManager {
         }
         out.targets.sort_by(|a, b| a.name.cmp(&b.name));
         Ok(out)
+    }
+}
+
+/// Why a node's `hyperstor-vhost`, as its row last reported, can't be a
+/// migration's target for a datastore's disks, if it can't (§7). Besides
+/// the handover (`live_migration`), the target must hold a standby
+/// volume's requests until the promotion (`standby_hold`, decision 21):
+/// the guest resumes there first, and an older one fails its writes.
+fn hyperstor_target_refusal(row: Option<&NodeRow>, datastore: &str) -> Option<String> {
+    match row {
+        Some(r) if r.reachable && r.live_migration && r.standby_hold => None,
+        Some(r) if r.reachable && r.live_migration => Some(format!(
+            "hyperstor-vhost there doesn't hold datastore {datastore}'s writes until the handover (no standby_hold); upgrade hyperstor there"
+        )),
+        _ => Some(format!(
+            "hyperstor-vhost there can't take datastore {datastore}'s disks over"
+        )),
     }
 }
 
@@ -799,6 +813,35 @@ pub fn failed_event(m: &Migration) -> Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A target's hyperstor-vhost must hand the disks over and hold a
+    /// standby volume's requests (decision 21); unreported is neither.
+    #[test]
+    fn a_target_without_standby_hold_is_refused() {
+        let row = |live_migration, standby_hold| NodeRow {
+            reachable: true,
+            live_migration,
+            standby_hold,
+            ..Default::default()
+        };
+        assert_eq!(hyperstor_target_refusal(Some(&row(true, true)), "hs"), None);
+        assert!(
+            hyperstor_target_refusal(Some(&row(true, false)), "hs")
+                .unwrap()
+                .contains("no standby_hold")
+        );
+        assert!(
+            hyperstor_target_refusal(Some(&row(false, false)), "hs")
+                .unwrap()
+                .contains("can't take datastore hs's disks over")
+        );
+        assert!(hyperstor_target_refusal(None, "hs").is_some());
+        let unreachable = NodeRow {
+            reachable: false,
+            ..row(true, true)
+        };
+        assert!(hyperstor_target_refusal(Some(&unreachable), "hs").is_some());
+    }
 
     fn record(target: &str, phase: MigrationPhase) -> Migration {
         Migration {

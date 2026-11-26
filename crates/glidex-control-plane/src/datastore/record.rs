@@ -282,6 +282,11 @@ pub struct NodeRow {
     /// migration, as source or target (spec/32-live-migration.md §7).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub live_migration: bool,
+    /// `hyperstor`: this node's `hyperstor-vhost` holds a standby volume's
+    /// requests until its promotion (`standby_hold`), so a guest writing
+    /// at the switch loses nothing (spec/32-live-migration.md §7).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub standby_hold: bool,
 }
 
 #[derive(Debug, thiserror::Error)]

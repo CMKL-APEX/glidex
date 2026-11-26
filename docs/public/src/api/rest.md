@@ -415,7 +415,9 @@ A datastore also has `topology` (`DATASTORE_TOPOLOGY_NODE_LOCAL` or
 `total_bytes`, `free_bytes`, `checked_at`, `warnings` and, for LVM-thin,
 `image_volumes` (the ids of images that node keeps a volume of) and, for
 hyperstor, `live_migration` (that node's `hyperstor-vhost` can hand a
-running VM's disks over, as a live migration's source or target). An
+running VM's disks over, as a live migration's source or target) and
+`standby_hold` (it holds a standby disk's writes until the handover,
+which a migration's target needs). An
 LVM-thin datastore has `volume_group` and `thin_pool`, and an empty
 `path`; its `free_bytes` are the thin pool's. See
 [LVM-thin](../operator-guide/datastores.md#lvm-thin). An image's copy in a
