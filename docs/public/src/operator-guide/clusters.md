@@ -292,8 +292,16 @@ first. See
 running VM to `N`, or to the node the scheduler picks among those that
 fit, and follows it to its end. The guest pauses for about the downtime
 (300 ms by default) at the switch, and keeps its addresses, disks and
-console. Live migration is new: try it on a VM you can lose before you
-rely on it. `gxctl migrate <vm> --check [--node N]` says what would stop
+console log; a `gxctl connect` session ends at the switch, so connect
+again. Live migration is new: try it on a VM you can lose before you
+rely on it.
+
+> **Known issue: writes at the switch.** A guest writing to a hyperstor
+> disk while it moves can get I/O errors at the switch, and its file
+> system can lose data. The guest resumes on the target a moment before
+> its disks are handed over there, and hyperstor fails the writes in
+> between instead of holding them. Until hyperstor holds them, migrate a
+> VM only when its disks are quiet, or one whose disks you can lose. `gxctl migrate <vm> --check [--node N]` says what would stop
 a migration, without moving anything:
 the VM's own reasons (not running, not on Cloud Hypervisor, PCI devices,
 DPU or vhost-user NICs, a node network, disks not on hyperstor, a
