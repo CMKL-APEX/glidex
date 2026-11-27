@@ -17,6 +17,7 @@ use glidex_control_plane::config::Config;
 use glidex_control_plane::node::NodeRole;
 use glidex_control_plane::state::VmManager;
 use http_body_util::BodyExt;
+use redb::ReadableTable as _;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -2113,8 +2114,10 @@ async fn a_firmware_template_copy_is_checked_against_its_digest() {
             let txn = db.begin_read().unwrap();
             txn.open_table(TableId::ImageCaches.definition())
                 .ok()
-                .and_then(|t| t.get(format!("{id}/{agent_id}").as_str()).ok().flatten())
-                .and_then(|v| serde_json::from_slice::<Value>(v.value()).ok())
+                .and_then(|t| {
+                    let v = t.get(format!("{id}/{agent_id}").as_str()).ok().flatten()?;
+                    serde_json::from_slice::<Value>(v.value()).ok()
+                })
                 .unwrap_or(Value::Null)
         }
     };

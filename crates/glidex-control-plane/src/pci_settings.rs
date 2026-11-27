@@ -5,6 +5,7 @@
 
 use crate::config::{PciConfig, PciGrant, PciPool};
 use crate::store::{Db, Origin, StoreError, TableId};
+use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
 
 const KEY: &str = "pci_settings";

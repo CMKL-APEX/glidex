@@ -10,6 +10,7 @@
 use crate::images::{Image, ImageStatus};
 use crate::state::{VmManager, VmManagerError};
 use crate::store::{Origin, TableId};
+use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 

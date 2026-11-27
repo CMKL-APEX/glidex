@@ -33,13 +33,13 @@ homepage = "https://cmkl-apex.github.io/glidex/docs/"
 # -tls, -topology, -trust) live in glidex-commons, pinned at one release
 # tag for all of them (README.md there, "Using it").
 glidex-api = { path = "crates/glidex-api", version = "0.0.10-dev" }
-glidex-auth = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.1", version = "0.1.1" }
+glidex-auth = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
 glidex-hv-client = { path = "crates/glidex-hv-client", version = "0.0.10-dev" }
-glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.1", version = "0.1.1" }
-glidex-tls = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.1", version = "0.1.1" }
-glidex-trust = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.1", version = "0.1.1" }
-glidex-topology = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.1", version = "0.1.1" }
-glidex-authd = { git = "https://github.com/CMKL-APEX/glidex-commons", tag = "v0.1.1" }
+glidex-raftstore = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
+glidex-tls = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
+glidex-trust = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
+glidex-topology = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5", version = "0.2.0" }
+glidex-authd = { git = "https://github.com/CMKL-APEX/glidex-commons", branch = "deps/redb-5" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["full"] }

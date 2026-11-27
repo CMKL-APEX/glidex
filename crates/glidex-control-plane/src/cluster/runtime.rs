@@ -9,6 +9,7 @@ use super::raft::{ClusterNode, RaftId, Rpc, Transport, TransportError};
 use crate::node::NodeRole;
 use crate::store::Db;
 use bytes::Bytes;
+use redb::ReadableTable as _;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;

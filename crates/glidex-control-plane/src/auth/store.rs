@@ -1525,7 +1525,7 @@ impl IdentityStore {
             Err(redb::TableError::TableDoesNotExist(_)) => return Ok(Vec::new()),
             Err(e) => return Err(e.into()),
         };
-        let range = t.range::<&str>((lower, upper))?;
+        let range = t.range((lower, upper))?;
         let entries: Box<dyn Iterator<Item = _>> = if oldest_first {
             Box::new(range)
         } else {
