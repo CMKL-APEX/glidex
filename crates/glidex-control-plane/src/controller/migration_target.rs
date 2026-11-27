@@ -107,6 +107,79 @@ impl VmManager {
         }
     }
 
+    /// The receiving shims this node still has for VMs no migration brings
+    /// here any more (decision 22): a target that missed its release, as
+    /// when its control plane was down when the migration ended. Each is
+    /// let go of as a release would: the shim, its unit, a disk still
+    /// standing by, the taps and the files. A guest running here for a VM
+    /// placed elsewhere is only reported. A deleted VM's shim isn't seen
+    /// here: it is an orphan (spec/12-reconciliation.md D17).
+    pub async fn leftover_receivers_round(&self) {
+        if self.cluster().is_none() {
+            return;
+        }
+        let me = self.local_node_id();
+        let vms: Vec<Vm> = self
+            .vms
+            .read()
+            .await
+            .values()
+            .filter(|v| !self.is_local(v))
+            .filter(|v| !v.status.migration.as_ref().is_some_and(|m| m.target == me))
+            .filter(|v| v.paths().launch.exists())
+            .cloned()
+            .collect();
+        for vm in vms {
+            match leftover_step(&self.receiver(&vm).await) {
+                Leftover::Nothing => {}
+                Leftover::Report => tracing::warn!(
+                    vm = %vm.name,
+                    "a received guest runs here, but the VM is placed elsewhere; leaving it alone"
+                ),
+                Leftover::Release => {
+                    // A migration here may have started meanwhile: its own
+                    // round handles that receiver.
+                    let now = self.vm(&vm.id).await;
+                    if now.as_ref().is_none_or(|v| {
+                        self.is_local(v)
+                            || v.status.migration.as_ref().is_some_and(|m| m.target == me)
+                    }) {
+                        continue;
+                    }
+                    tracing::info!(vm = %vm.name, "letting go of a receiving shim no migration brings here");
+                    let disks = self.hyperstor_disks(&vm).unwrap_or_default();
+                    let standing_by = self.standing_by(&disks).await;
+                    let m = Migration {
+                        delegates: standing_by
+                            .into_iter()
+                            .map(|d| (d, String::new()))
+                            .collect(),
+                        ..Default::default()
+                    };
+                    self.release_target(&vm, &m, &disks).await;
+                }
+            }
+        }
+    }
+
+    /// The ids of the disks in `disks` this node's `hyperstor-vhost` has
+    /// attached standing by (as a delegate), not holding.
+    async fn standing_by(&self, disks: &[(Disk, Arc<HyperstorDriver>)]) -> Vec<String> {
+        let mut out = Vec::new();
+        for (d, driver) in disks {
+            let driver = driver.clone();
+            let lists = blocking(move || (driver.attached_volumes(), driver.held_volumes())).await;
+            let Ok((Ok(attached), Ok(held))) = lists else {
+                continue;
+            };
+            let v = crate::datastore::hyperstor::volume_id(d);
+            if attached.contains(&v) && !held.contains(&v) {
+                out.push(d.id.clone());
+            }
+        }
+        out
+    }
+
     async fn migration_target_step(&self, vm: &Vm) -> Result<(), String> {
         let Some(m) = vm.status.migration.clone() else {
             return Ok(());
@@ -531,6 +604,26 @@ impl VmManager {
     }
 }
 
+/// What a node does with its receiving instance of a VM placed elsewhere
+/// that no migration brings here (decision 22).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Leftover {
+    /// No receiving instance in this boot.
+    Nothing,
+    /// A guest runs in it: not stopped, only reported.
+    Report,
+    /// Still receiving, or its receive ended: let go of it.
+    Release,
+}
+
+pub fn leftover_step(receiver: &Receiver) -> Leftover {
+    match receiver {
+        Receiver::None => Leftover::Nothing,
+        Receiver::Running(_) => Leftover::Report,
+        Receiver::Receiving(_) | Receiver::Ended(_) => Leftover::Release,
+    }
+}
+
 /// Whether a receiving instance launched at `launched_at` (unix s) can be
 /// that of a migration started at `started_at`: not if it is older.
 pub fn of_this_migration(launched_at: u64, started_at: u64) -> bool {
@@ -545,6 +638,23 @@ mod tests {
     /// left since, isn't the current migration's: found on the test
     /// cluster, where a VM moved back onto a node it had been received on
     /// was cancelled with "its shim is gone" (LM6 M2).
+    #[test]
+    fn a_receiver_no_migration_brings_here_is_let_go_of_unless_its_guest_runs() {
+        assert_eq!(leftover_step(&Receiver::None), Leftover::Nothing);
+        assert_eq!(
+            leftover_step(&Receiver::Receiving(file(Phase::Receiving))),
+            Leftover::Release
+        );
+        assert_eq!(
+            leftover_step(&Receiver::Ended("gone".into())),
+            Leftover::Release
+        );
+        assert_eq!(
+            leftover_step(&Receiver::Running(file(Phase::Running))),
+            Leftover::Report
+        );
+    }
+
     #[test]
     fn an_older_receiver_is_not_this_migrations() {
         assert!(of_this_migration(1_000, 1_000));
