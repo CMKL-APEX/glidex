@@ -135,8 +135,8 @@ designs stay in these specs. A change to them is a glidex-commons pull
 request and a release, then a pull request here moving the tag.
 *Why:* neither project builds from the other's repository; a fix to
 shared code doesn't wait on the rest of glidex, and a pin moves only what
-is shared. Until glidex-commons is on crates.io, `glidex` and `gxctl`
-can't be packaged for it and the crates.io workflow leaves them out.
+is shared. glidex-commons publishes its crates to crates.io, so `glidex`
+and `gxctl` take them from there when published.
 
 ## Data flow: "create and start a VM"
 

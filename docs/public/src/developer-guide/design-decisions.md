@@ -607,8 +607,8 @@ and moving a pin moves only what is shared.
 **Consequences.** A change to a shared crate takes a glidex-commons pull
 request and a release before glidex or hyperstor can use it (a local
 `[patch]` tries it first). The crates must stay free of either project's
-own code. `glidex` and `gxctl` leave the crates.io workflow until
-glidex-commons is published there.
+own code. glidex-commons publishes them to crates.io, so `glidex` and
+`gxctl`, which depend on them, can be published too.
 
 ## Tenancy and directories
 
