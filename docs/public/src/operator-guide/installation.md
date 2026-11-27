@@ -272,6 +272,13 @@ restarts `glidex-pylond`.
   (`libelf1t64`, `zlib1g` and `libzstd1`), which the installer adds. On
   another architecture or an older distribution, build Pylon yourself
   and install it with `--pylon-from`.
+
+- **Not on a 6.17 kernel.** On Ubuntu's 6.17 kernel, any other thread
+  the kernel places on `pylond`'s engine CPU (CPU 1 by default) gets no
+  CPU time while the engine runs. That includes the kernel's own workers
+  for that CPU, and a program whose thread lands there hangs. The
+  installer warns when it installs Pylon on 6.17 (#687). The 6.8 and
+  7.0 kernels share that CPU fairly.
 - **Which Pylon a host runs.** `pylon --version` of the release prints
   `cloud-hypervisor v55.0.0`, not the release, so compare
   `sha256sum /usr/local/bin/pylon /usr/local/bin/pylond` with the
