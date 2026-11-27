@@ -4877,7 +4877,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("api.sock");
         // A socket file nobody listens on: what a restart leaves behind.
-        drop(UnixListener::bind(&path).unwrap());
+        // Made with mknod rather than by dropping a listener: a process
+        // another test spawns holds a copy of every open descriptor until
+        // it execs, and a connect to the dropped listener then succeeds.
+        let c = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()).unwrap();
+        // SAFETY: `c` is a NUL-terminated path that outlives the call.
+        let made = unsafe { libc::mknod(c.as_ptr(), libc::S_IFSOCK | 0o600, 0) };
+        assert_eq!(made, 0, "mknod: {}", std::io::Error::last_os_error());
         assert!(path.exists());
         assert!(!super::wait_until_listening(
             &path,
