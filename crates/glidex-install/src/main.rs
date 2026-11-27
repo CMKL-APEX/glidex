@@ -228,6 +228,7 @@ fn main() -> Result<()> {
         install_service_config(&opts, &mut changed)?;
         let ts = install_services(
             &changed,
+            pylon_choice(&opts),
             user.as_deref(),
             &user_home,
             opts.tailscale_cert == Some(true),
@@ -1291,7 +1292,8 @@ fn print_help() {
          \x20                            its services off until the host is in a cluster)\n\
          \x20     --with-pylon           install the Pylon hypervisor and pylond, release {PYLON_VERSION}\n\
          \x20                            (x86_64; checksums verified; spec/30-pylon.md)\n\
-         \x20     --no-pylon             stop installing and updating them (--remove-pylon on\n\
+         \x20     --no-pylon             stop installing and updating them, and stop and disable\n\
+         \x20                            glidex-pylond; binaries kept (--remove-pylon on\n\
          \x20                            uninstall deletes them)\n\
          \x20     --pylon-from DIR       this run only: install DIR/pylon (or DIR/cloud-hypervisor)\n\
          \x20                            and DIR/pylond, a local Pylon build, instead\n\
@@ -4417,6 +4419,44 @@ fn authd_actions(
     cmds
 }
 
+/// Whether this run wants Pylon on: a local build (`--pylon-from`) is on
+/// for this run, otherwise the saved `with_pylon`. `None` is a host from
+/// before P11, which keeps glidex-pylond running as it was.
+fn pylon_choice(opts: &Options) -> Option<bool> {
+    if opts.pylon_from.is_some() {
+        Some(true)
+    } else {
+        opts.with_pylon
+    }
+}
+
+/// The systemctl commands for glidex-pylond on a host with its binary
+/// (#689). With Pylon off it is stopped and disabled, binaries kept, so an
+/// operator's "off for now" survives upgrades; otherwise it is enabled, and
+/// restarted when it isn't running or its binary or unit changed (`stale`).
+fn pylond_actions(
+    pylon: Option<bool>,
+    enabled: bool,
+    active: bool,
+    stale: bool,
+) -> Vec<Vec<String>> {
+    let unit = "glidex-pylond.service";
+    let mut cmds = Vec::new();
+    if pylon == Some(false) {
+        if enabled || active {
+            cmds.push(argv(&["systemctl", "disable", "--now", unit]));
+        }
+        return cmds;
+    }
+    if !enabled {
+        cmds.push(argv(&["systemctl", "enable", unit]));
+    }
+    if stale || !active {
+        cmds.push(argv(&["systemctl", "restart", unit]));
+    }
+    cmds
+}
+
 /// systemd units so glidex comes up at boot: Open vSwitch → glidex-netd
 /// (reconciles bridges, DPDK binding, IP migrations, NAT) → control plane
 /// (as `glidex`) → web UI (as `glidex-ui`), plus the socket-activated
@@ -4424,6 +4464,7 @@ fn authd_actions(
 /// Returns what the Tailscale certificate step did (`None` without systemd).
 fn install_services(
     changed: &Changes,
+    pylon: Option<bool>,
     invoking: Option<&str>,
     user_home: &Path,
     tailscale_cert: bool,
@@ -4509,9 +4550,6 @@ fn install_services(
     }
     enable_unit("glidex-authd.socket")?;
     enable_unit("glidex-stord.service")?;
-    if pylond_installed {
-        enable_unit("glidex-pylond.service")?;
-    }
     enable_unit("glidex-kvm-cpuid.service")?;
     // Again now, not only at boot: a new shim may read more, and the control
     // plane (re)started below reports the file (spec/32 decision 11).
@@ -4547,10 +4585,23 @@ fn install_services(
 
     if pylond_installed {
         let pylond = "glidex-pylond.service";
-        if changed.pylond || pylond_unit_changed || !unit_active(pylond) {
-            sudo(&argv(&["systemctl", "restart", pylond]))?;
+        for cmd in pylond_actions(
+            pylon,
+            unit_enabled(pylond),
+            unit_active(pylond),
+            changed.pylond || pylond_unit_changed,
+        ) {
+            sudo(&cmd)?;
         }
-        println!("{} {} (/run/pylon/pylond.sock)", "Running:".green(), pylond);
+        if pylon == Some(false) {
+            println!(
+                "{} {} stopped and disabled; binaries kept (--with-pylon turns it back on)",
+                "Pylon off:".yellow(),
+                pylond
+            );
+        } else {
+            println!("{} {} (/run/pylon/pylond.sock)", "Running:".green(), pylond);
+        }
     }
 
     // Control plane: VMs run in their own units and survive a restart. A
@@ -6123,6 +6174,45 @@ mod tests {
             lines(true, false, false).is_empty(),
             "a re-run needs no root"
         );
+    }
+
+    #[test]
+    fn no_pylon_stops_and_disables_pylond_and_with_pylon_starts_it_again() {
+        let lines = |on, enabled, active, stale| -> Vec<String> {
+            pylond_actions(on, enabled, active, stale)
+                .iter()
+                .map(|c| c.join(" "))
+                .collect()
+        };
+        let off = ["systemctl disable --now glidex-pylond.service"];
+        // --no-pylon: running, enabled, or both: stopped and disabled.
+        assert_eq!(lines(Some(false), true, true, false), off);
+        assert_eq!(lines(Some(false), true, false, true), off);
+        assert_eq!(lines(Some(false), false, true, false), off);
+        assert!(
+            lines(Some(false), false, false, true).is_empty(),
+            "already off: nothing to do, even with a new binary"
+        );
+        // --with-pylon after that: enabled and started again.
+        let on = [
+            "systemctl enable glidex-pylond.service",
+            "systemctl restart glidex-pylond.service",
+        ];
+        assert_eq!(lines(Some(true), false, false, false), on);
+        // A host from before P11 (nothing saved) keeps it running.
+        assert_eq!(lines(None, false, false, false), on);
+        assert_eq!(
+            lines(Some(true), true, true, true),
+            ["systemctl restart glidex-pylond.service"]
+        );
+        assert!(lines(None, true, true, false).is_empty());
+
+        // --pylon-from is on for its run, whatever is saved.
+        let mut opts = Options::parse(None, &args(&["--no-pylon"])).unwrap();
+        assert_eq!(pylon_choice(&opts), Some(false));
+        opts.pylon_from = Some(PathBuf::from("/tmp/pylon"));
+        assert_eq!(pylon_choice(&opts), Some(true));
+        assert_eq!(pylon_choice(&Options::default()), None);
     }
 
     #[test]

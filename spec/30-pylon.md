@@ -87,6 +87,7 @@ This document makes two changes:
 | P19 | The guest agent in Pylon guests | glidex puts the pinned release's `pylon-guest-agent-static` (checked against a pinned sha256) into a Pylon guest through its cloud-init seed disk where the VM parks in KVM (with `park=vmm` its heartbeat would park vCPUs the guest then stalls on: P18), and runs it as root, pinned to guest CPU 0 (Q2, settled): `write_files` puts the agent (base64) and a systemd unit `pylon-guest-agent.service` in the guest, so the guest needs no network. The installer downloads the agent with `pylon` and `pylond` (a third `PYLON_ASSETS` entry; its sha256 is GitHub's digest for the asset, as the release's `SHA256SUMS` lists only the other two) to `/usr/local/share/glidex/pylon-guest-agent`, and the control plane reads it from there when it builds a Pylon VM's seed. A guest image without cloud-init gets no agent; the docs say how to add it by hand. | `pylond` decides cores from the demand the agent writes to the shared page; without it `runnable_threads` stays 0 and `pylond` never moves a core (Pylon's troubleshooting guide; seen on `Prest` before the agent was started by hand). |
 | P20 | Cloud Hypervisor VMs under `sched_ext` run without kernel core scheduling | Where a `sched_ext` scheduler is attached on the node (`/sys/kernel/sched_ext/state` is `enabled`, read at each launch), the Cloud Hypervisor driver adds `core_scheduling=off` to `--cpus`. Elsewhere Cloud Hypervisor keeps its default (`vm`). Pylon VMs are unchanged: Pylon's VMM runs a vCPU without a cookie when `pylond`'s guard refuses one, and `scx_pylon` keeps Pylon's vCPU threads off their SMT siblings. So on such a node plain Cloud Hypervisor VMs lose the kernel's isolation from each other's sibling hyperthreads. Settled by the owner on 2026-11-18 (glidex#547). | On kernels without the `sched_ext` core-scheduling fixes, a core-scheduling cookie next to `sched_ext` can hang the host (pylon#15), so `pylond` (`--core-sched-guard auto`, `--core-sched-deny eperm`, the defaults) refuses new cookies with `EPERM` while `scx_pylon` is attached, and Cloud Hypervisor v53 then won't start a VM (seen on 2026-11-17 on a kernel 7.0 test server). Turning it off in glidex says what is lost; `--core-sched-deny enodev` would do the same silently. |
 | P21 | **On a 6.17 kernel the installer warns that `pylond`'s engine CPU starves** | `--with-pylon` and `--pylon-from` print a warning when the running kernel is 6.17 (`/proc/sys/kernel/osrelease`), naming #687 and the kernels that work (7.0, 6.8). They don't refuse: the install works, and the fix is the kernel. Settled by the owner on 2026-11-28 (glidex#687), with Pylon's engine unchanged. | On Ubuntu's `6.17.0-42-generic` a thread on the engine CPU gets no CPU time while the engine runs, kernel workers included (PH1, §12). The engine is an ordinary `SCHED_OTHER` thread that polls in user space without system calls, and the root run queue's `avg_vruntime` doesn't advance while its cgroup's entity runs, so waiting threads never become eligible. 6.8 and 7.0 don't do this. |
+| P22 | **Pylon off stops `pylond`** | On a host with `pylond` installed, a run with Pylon off (`--no-pylon`, or saved so in `install.conf`) stops and disables `glidex-pylond` and says so; the binaries and the unit file stay. A run with Pylon on (`--with-pylon`, saved, or `--pylon-from`) enables it and starts it again. A host with nothing saved (installed before P11) keeps today's behaviour: enabled and running. The control plane is unchanged: the node keeps listing the `pylon` hypervisor while the binary is there, and a Pylon VM placed there runs unmanaged with `PylonManaged` `False`, reason `NoPylond` (P16). | Until #689 the installer enabled and restarted `pylond` whenever the binary was there, so an operator who disabled it by hand (on the 6.17 node, #687) got it back with every upgrade. `--remove-pylon` deletes the binaries, more than "off for now". |
 
 ### 2.1 Questions settled for P7
 
@@ -393,6 +394,8 @@ is `Some`. In addition, `NodeFeatures` reports `pylond: bool`
 - `--pylon-from <dir>` installs a local build instead, once (P12).
 - On a 6.17 kernel both print a warning that `pylond`'s engine CPU
   starves its other threads (P21, #687).
+- `--no-pylon` (saved) stops and disables `glidex-pylond` and keeps the
+  binaries; `--with-pylon` starts it again (P22, #689).
 
 ## 10. Milestones
 
@@ -426,6 +429,10 @@ P21 is built: `warn_pylon_kernel` in the installer and the operator
 guide's note, tested by `only_a_6_17_kernel_is_warned_about_for_pylon`.
 The kernel isn't fixed: PH1 fails on the 6.17 node until it moves to
 another kernel.
+
+P22 is built: `pylond_actions` and `pylon_choice` in the installer,
+tested by `no_pylon_stops_and_disables_pylond_and_with_pylon_starts_it_again`.
+Not run on a host yet.
 
 ## 12. Host checks
 
