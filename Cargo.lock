@@ -1370,7 +1370,7 @@ dependencies = [
 
 [[package]]
 name = "glidex"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "glidex-api",
  "glidex-auth",
@@ -1383,7 +1383,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-api"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "buffa",
  "buffa-types",
@@ -1433,7 +1433,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-control-plane"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "arc-swap",
  "async-trait",
@@ -1511,7 +1511,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-dpu"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -1520,7 +1520,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-dpu-agent"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "glidex-dpu",
  "rcgen",
@@ -1537,7 +1537,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-e2e"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "base64 0.23.1",
  "serde_json",
@@ -1546,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-hv-client"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "libc",
  "serde",
@@ -1557,7 +1557,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-install"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "anyhow",
  "colored",
@@ -1573,7 +1573,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-metad"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "bytes",
  "form_urlencoded",
@@ -1591,7 +1591,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-netd"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "glidex-dpu",
  "glidex-dpu-agent",
@@ -1609,7 +1609,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-ovn"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "glidex-ovs",
  "serde",
@@ -1620,7 +1620,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-ovs"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "serde",
  "serde_json",
@@ -1651,7 +1651,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-stord"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "nix 0.32.0",
  "serde",
@@ -1724,7 +1724,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-ui"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "axum",
  "glidex-tls",
@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "glidex-vm-shim"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "glidex-hv-client",
  "libc",
@@ -1758,7 +1758,7 @@ dependencies = [
 
 [[package]]
 name = "gxctl"
-version = "0.0.9"
+version = "0.0.10-dev"
 dependencies = [
  "base64 0.23.1",
  "buffa",
