@@ -6,6 +6,7 @@ use super::net::PeerClient;
 use super::runtime::Cluster;
 use crate::store::{Db, Mirror, StoreError, Submitted, TableId, WriteSet};
 use bytes::Bytes;
+use redb::ReadableTable as _;
 use serde_json::Value;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};

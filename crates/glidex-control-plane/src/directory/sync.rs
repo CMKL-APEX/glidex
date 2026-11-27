@@ -11,6 +11,7 @@ use crate::auth::store::{DisabledReason, ScimGroup, ScimTx, User};
 use crate::directory::scim::UserAttrs;
 use crate::directory::{Connector, GroupMode, Provisioning};
 use crate::store::Db;
+use redb::ReadableTable as _;
 use redb::TableDefinition;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashSet};

@@ -14,6 +14,7 @@ use crate::datastore::record::{self, Datastore};
 use crate::images::{CloneMode, DiskOrigin, DiskPhase, Image, ImageError, ImageKind, ImageStatus};
 use crate::state::{VmManager, VmManagerError};
 use crate::store::{Origin, TableId};
+use redb::ReadableTable as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 

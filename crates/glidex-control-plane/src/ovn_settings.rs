@@ -5,6 +5,7 @@
 
 use crate::cluster::config::{EdgeConfig, OvnConfig};
 use crate::store::{Db, Origin, StoreError, TableId};
+use redb::ReadableTable as _;
 use serde::{Deserialize, Serialize};
 use std::net::IpAddr;
 
