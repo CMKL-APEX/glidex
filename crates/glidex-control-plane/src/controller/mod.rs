@@ -133,10 +133,16 @@ impl VmManager {
         // §4).
         let m = me.clone();
         tasks.push(tokio::spawn(async move {
+            let mut round = 0u64;
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 m.migration_target_round().await;
                 m.migration_source_round().await;
+                // Receiving shims left behind (decision 22), less often.
+                if round.is_multiple_of(10) {
+                    m.leftover_receivers_round().await;
+                }
+                round += 1;
             }
         }));
         // Pools with `prepare: true`: their devices here, once at start.

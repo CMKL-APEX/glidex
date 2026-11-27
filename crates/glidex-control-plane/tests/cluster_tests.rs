@@ -3126,7 +3126,8 @@ while True:
 /// target's own controller has the instance. After a cancel it stops the
 /// receiving shim, removes what it prepared and writes `target_released`.
 /// The source here is an agent whose controllers don't run, and the test
-/// plays its part.
+/// plays its part. A receiving shim whose migration record went without
+/// the target's release is let go of too (decision 22).
 #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
 async fn a_migrations_target_receives_the_guest_or_lets_go() {
     use glidex_control_plane::models::{Migration, MigrationPhase};
@@ -3158,7 +3159,7 @@ async fn a_migrations_target_receives_the_guest_or_lets_go() {
     }
 
     let mut ids = Vec::new();
-    for name in ["received", "abandoned"] {
+    for name in ["received", "abandoned", "left"] {
         let (s, v) = call(
             &server,
             "POST",
@@ -3170,8 +3171,8 @@ async fn a_migrations_target_receives_the_guest_or_lets_go() {
         assert_eq!(s, StatusCode::CREATED, "{v}");
         ids.push(vm_of(&v)["id"].as_str().unwrap().to_string());
     }
-    let (id, other) = (ids[0].clone(), ids[1].clone());
-    for id in [&id, &other] {
+    let (id, other, left) = (ids[0].clone(), ids[1].clone(), ids[2].clone());
+    for id in [&id, &other, &left] {
         wait_for("the VM placed", || async {
             server
                 .manager
@@ -3217,7 +3218,7 @@ async fn a_migrations_target_receives_the_guest_or_lets_go() {
         let m = server.manager.clone();
         async move { m.get_vm(&id).await.unwrap().status.migration }
     };
-    for id in [&id, &other] {
+    for id in [&id, &other, &left] {
         wait_for("the target ready", || async {
             record(id.clone())
                 .await
@@ -3282,6 +3283,25 @@ async fn a_migrations_target_receives_the_guest_or_lets_go() {
     .await;
     let other_paths = glidex_control_plane::paths::vm_paths(&other);
     assert!(!other_paths.launch.exists(), "its launch file removed");
+
+    // The last: its record goes with the target still receiving, as when
+    // the target's control plane was down at the end (M6). The target
+    // lets go of its shim anyway, within its sweep's period.
+    let left_paths = glidex_control_plane::paths::vm_paths(&left);
+    let left_shim = glidex_vm_shim::state::InstanceFile::read(&left_paths.instance)
+        .unwrap()
+        .unwrap();
+    server
+        .manager
+        .__set_migration_for_tests(&left, None)
+        .await
+        .unwrap();
+    wait_for("the leftover receiver let go of", || async {
+        !left_paths.launch.exists()
+            && !glidex_vm_shim::util::same_process(left_shim.shim_pid, left_shim.shim_starttime)
+                .unwrap_or(false)
+    })
+    .await;
 
     // Stop what still runs: the received guest's shim and stand-in.
     if let Ok(Some(f)) = glidex_vm_shim::state::InstanceFile::read(&paths.instance) {
