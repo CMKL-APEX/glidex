@@ -1615,14 +1615,31 @@ two separate clients. Everything was removed afterwards.
   volumes take `partition::edit`'s shadow-file path.
 
 
-**H8. QEMU's reconnecting socket chardev (open).**
+**H8. QEMU's reconnecting socket chardev (open for QEMU 9.2).**
 - QEMU 8.2.2 (Ubuntu 24.04) accepts `reconnect=1` on a `socket` chardev
   and refuses `reconnect-ms` ("Invalid parameter"). Checked on the dev
   host on 2026-10-23.
+- A VM's disk survives `hyperstor-vhost` restarting under both
+  hypervisors. Seen on a node of the three-server test cluster, from
+  its logs rather than a planned run, 2026-11-20 to 2026-11-26:
+  - A QEMU 8.2.2 VM with a hyperstor root disk came through five
+    restarts of the service with no disk error in the guest. After the
+    last of them, `hyperstor-vhost` was serving the volume's requests,
+    so QEMU had reconnected.
+  - Cloud Hypervisor v55.0 VMs with hyperstor disks on the same node
+    came through every restart in that time. Pylon's case was #584.
+  - At each restart QEMU prints `Failed to set msg fds`, `vhost VQ 0
+    ring restore failed: -22` and, while the socket is missing,
+    `Unable to connect character device … Connection refused`. These
+    lines come from QEMU dropping the old connection and retrying. They
+    are not a failure (#675).
+- A guest that gets I/O errors does so because `hyperstor-vhost` failed
+  its requests (for example, writes held past an outage's limit), not
+  because of a restart. Its file system may abort its journal, and then
+  only a restart of the VM brings it back.
 - **To check:** that QEMU 9.2 and later take `reconnect-ms` (which glidex
   passes from 9.2, by `qemu --version`) and that `reconnect` is
-  deprecated there; and that a VM's disk survives `hyperstor-vhost`
-  restarting under both hypervisors.
+  deprecated there.
 
 **H9. Firmware and 512-byte sectors on vhost-user-blk.**
 - With 4 KiB logical blocks (hyperstor-vhost before D126), Cloud
