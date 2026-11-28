@@ -1,8 +1,9 @@
 # Agent sandboxes: forking a running VM to try several paths
 
-**Status: draft. Nothing is built.** Tracked in #694. The decisions in §3
-are proposals until the owner settles them; §12 lists the open
-questions. Items marked **(verify)** are measured or checked on hosts in
+**Status: design; decisions settled by the owner on 2026-11-28. Nothing
+is built.** Tracked in #694. §3's decisions are settled; §12 keeps the
+two questions still open (O3 waits on SB0's numbers, O6 is checked in
+Pylon). Items marked **(verify)** are measured or checked on hosts in
 SB0 (§11).
 
 An AI agent working in a VM often reaches a point where it could go
@@ -90,20 +91,23 @@ Non-goals (for now):
 - **Remote fork:** restored on another node with `ondemand`, its memory
   pulled through the relay as it faults.
 
-## 3. Decisions (proposed)
+## 3. Decisions (settled by the owner on 2026-11-28)
 
 | # | Decision | Why |
 |---|---|---|
-| D1 | **Forks are Cloud Hypervisor (and Pylon) VMs whose disks are all on hyperstor.** A VM with a disk elsewhere can't be checkpointed. A single-host option on `lvm` thin snapshots is an open question (O2). | hyperstor gives copy-on-write clones that every node sees (§0.3), so a fork may run on any node that fits. |
+| D1 | **Forks are Cloud Hypervisor (and Pylon) VMs whose disks are all on hyperstor.** A VM with a disk elsewhere can't be checkpointed. There is no single-node option on `lvm` thin snapshots (was O2). | hyperstor gives copy-on-write clones that every node sees (§0.3), so a fork may run on any node that fits. |
 | D2 | **A checkpoint is taken during one pause:** pause the VM, take the Cloud Hypervisor snapshot and the hyperstor snapshot group, resume. It is crash-consistent. If the guest agent is present, it is asked first to flush and freeze filesystems (`fsfreeze`) and thaws them after the resume, which makes the checkpoint consistent for the filesystems. | Memory and disks must describe the same instant, or the fork's page cache disagrees with its disks. One pause keeps the parent's interruption to the time of the two snapshots (verify). |
 | D3 | **A fork starts with its network down, and comes up as itself.** It gets a new VM id, so new MACs (glidex derives them from the VM id), new OVN ports and addresses, and a new hostname and cloud-init instance id. The VM Generation ID changes at restore (§0.2). The guest agent runs a **post-fork hook**: reseed the RNG if the kernel didn't, new SSH host keys and `machine-id`, drop cached tokens, step the clock, then bring the network up. Until the hook reports done, the fork's NICs stay down. | Two VMs with the same RNG state, keys or addresses are a security bug, not a cosmetic one. Keeping the network down until the hook finishes means the fork never talks as its parent. |
-| D4 | **Tokens:** the fork gets its own tokens from `glidex-metad`, as any VM does. The tokens copied from the parent's memory stay valid until they expire. The post-fork hook drops them, and a family may ask for a shorter TTL (5 min) for its VMs' tokens. Binding tokens to the VM's generation is an open question (O5). | Short lifetimes are glidex's revocation (29-workload-identity.md W8). The window is bounded, and named here rather than hidden. |
+| D4 | **Tokens:** the fork gets its own tokens from `glidex-metad`, as any VM does. The tokens copied from the parent's memory stay valid until they expire. The post-fork hook drops them, and a family may ask for a shorter TTL (5 min) for its VMs' tokens. Tokens are not bound to the VM's generation (was O5): relying parties outside glidex wouldn't check it, and the TTL already bounds the window. | Short lifetimes are glidex's revocation (29-workload-identity.md W8). The window is bounded, and named here rather than hidden. |
 | D5 | **The cluster records the family, not each fork.** Making a family is one write: the checkpoint's record, the family with its count, quota reservation, owner and lifetime. Each fork is a **node-local record** on the node that runs it, with its events and audit, reported to the cluster in batches like the metering ledger. Keeping a fork turns it into an ordinary VM, with one write. | A fork costs several writes as a full VM (§0.5); agents may make tens of forks a second. One write per family, plus one per kept fork, keeps sandboxes inside the write budget. |
 | D6 | **A fork runs where its checkpoint is unless asked otherwise.** A remote fork may go only to a node that passes the CPUID fit for the parent's boot CPUID (32-live-migration.md LM2). | A warm fork is the fastest and cheapest (§5.2). The fit check is what keeps a restored guest from losing CPU features. |
 | D7 | **Forks are metered like VMs**, into the node-local ledger, and attributed to the family's owner: a person or a service account. Usage is reported per family, with each fork's share. | The owner's identity is what joins a sandbox's cost to its inference spend (§9). |
 | D8 | **Quotas:** a family reserves its forks' vCPUs, memory and disk from the project's quota when it is made. A project also has a limit on forks per family and per node. | A family must not be able to fill a node or a project before anyone sees it. |
 | D9 | **Lifetimes:** a family has a lifetime (default 1 h). When it ends, or a fork is dropped, the fork's clone volumes and node-local record are deleted. A checkpoint's memory file stays while any fork restored from it with `copyonwrite` runs (§0.1); then it goes. | Agents forget to clean up. Dropping must be cheap and certain. |
 | D10 | **CPU-only.** A VM with VFIO devices can't be checkpointed. An agent that needs a GPU calls an inference service. | VFIO device state can't be copied (§0.7). It is also the better design: the GPU serves many sandboxes rather than one. |
+| D11 | **Who forks (was O1):** both the VM's own service account (an agent forking its own sandbox) and anyone holding `forkCheckpoint` on the VM's project. | Agents need to fork themselves without a person; people and orchestrators need to fork VMs they manage. Cedar decides both from the same action. |
+| D12 | **Keeping a warm fork (was O4) is instant:** the kept VM goes on mapping its checkpoint's memory file, which stays until the kept VM's next restart (or migration), then goes. | Keeping is the moment an agent has found its answer; it shouldn't wait for a memory copy. The cost is the file's space for a while. |
+| D13 | **Default limits (was O7):** 16 forks per family and 64 forks per node, which an operator may change per project. Within them, the project's vCPU, memory and disk quotas apply (D8). | Enough for an agent comparing a handful of paths; low enough that a runaway agent can't fill a node. |
 
 ## 4. API, clients and permissions (sketch)
 
@@ -168,7 +172,7 @@ nothing beyond what exists, which is why SB1 builds it first.
 Keeping a fork writes it to the cluster as an ordinary VM (one write) and
 takes it out of its family's lifetime. Its memory still maps the
 checkpoint's file if it was a warm fork. It stays so until its next
-restart, which boots it from its disks (O4).
+restart, which boots it from its disks (D12).
 
 Dropping a fork stops its shim, deletes its clone volumes (they go to
 hyperstor's trash) and its node-local record, and returns its share of
@@ -210,7 +214,7 @@ the family's reservation.
   step if the guest's kernel didn't reseed.
 - SSH host keys and `machine-id`: regenerated by the hook.
 - Tokens: new ones from `glidex-metad`; the parent's copies dropped by
-  the hook and bounded by their TTL (D4, O5).
+  the hook and bounded by their TTL (D4).
 - Other secrets in memory (keys the guest's programs hold) are the
   workload's to handle: the guest agent passes the generation change on
   to programs that listen for it (a socket or a file under `/run`), so an
@@ -245,7 +249,7 @@ as something to build now.
 | **SB0: measurements** | On a test node: Cloud Hypervisor snapshot and restore of a 2, 4 and 8 GiB guest in each restore mode; a hyperstor snapshot group and N clones (N = 1, 10, 50); the parent's pause for a checkpoint; the cluster writes a VM's create, start and delete cost today. | Numbers recorded here (§0), with the build and date. They decide whether D5 is needed before SB3 or only after. |
 | **SB1: cold fork** | Checkpoint a running VM (D2) and restore it as N ordinary VMs (`copy`), each recorded in the cluster as a VM. Identity as far as glidex controls it (new VM id, MACs, ports, hostname, instance id); network down until started by hand. | A fork resumes with its parent's processes and files, and runs next to its parent without clashing. |
 | **SB2: re-identity** | The guest agent's post-fork hook (D3), the VM Generation ID check in the guest images, NICs up only after the hook, the family's token TTL (D4). | A fork's RNG output, host keys and `machine-id` differ from its parent's; it never sends a packet with the parent's addresses. |
-| **SB3: warm forks** | `copyonwrite` restore on the checkpoint's node; families and node-local fork records (D5); quotas and lifetimes (D8, D9); `keep` and drop. | N warm forks start in about the time of one restore (verify against SB0). Making and dropping a family of N writes once or twice to the cluster, whatever N is. |
+| **SB3: warm forks** | `copyonwrite` restore on the checkpoint's node; families and node-local fork records (D5); quotas, lifetimes and limits (D8, D9, D13); `keep` and drop (D12). | N warm forks start in about the time of one restore (verify against SB0). Making and dropping a family of N writes once or twice to the cluster, whatever N is. |
 | **SB4: remote forks** | `ondemand` restore on another node through the relay; the CPUID fit (D6). | A remote fork runs on a node that fits, its memory paged in as it faults; one that doesn't fit is refused before anything starts. |
 | **SB5: chargeback and UI** | Usage per family and fork (D7); the family view in the web UI; `gxctl` commands; docs for users and operators. | A family's cost appears under its owner, and matches its forks' sum. |
 | **SB6 (speculative)** | Carrying a prefix-cache handle with a family (§10). | Decided after SB5. |
@@ -255,32 +259,22 @@ changes most.
 
 ## 12. Open questions
 
-- **O1.** Who may fork whose VM: only the VM's own service account (an
-  agent forking itself), anyone with `forkCheckpoint` on the project, or
-  both?
-- **O2.** Should a single-node option exist on `lvm` thin snapshots,
-  for operators without hyperstor? It would allow warm forks only.
+Settled on 2026-11-28: O1 (D11), O2 (D1), O4 (D12), O5 (D4) and O7
+(D13). Still open:
+
 - **O3.** Where do memory files live for remote forks: served from the
   checkpoint's node through the relay, or written to a hyperstor volume
   that any node reads? The second survives the checkpoint's node going
-  away, at the cost of writing the whole memory once.
-- **O4.** A kept warm fork maps its checkpoint's memory file until it
-  restarts. Should keeping force a memory copy instead, so the
-  checkpoint can go at once?
-- **O5.** Can tokens be bound to a VM's generation, so a fork's copies
-  of its parent's tokens stop working at once? `glidex-metad` would
-  need to learn the generation from the shim, and relying parties
-  would have to check it, which outside services won't.
+  away, at the cost of writing the whole memory once. **Decided after SB0:** if hyperstor writes a full memory image fast enough, a hyperstor volume; otherwise the checkpoint's node. Nothing waits on it before SB4.
 - **O6.** Pylon VMs: does parking and scale-to-zero survive a
   `copyonwrite` restore unchanged (verify in Pylon)? Are parked forks
   cheap enough to keep many alive while an agent compares them?
-- **O7.** How many forks per node, and per family, by default?
 
 ## 13. Status
 
 | | |
 |---|---|
-| Spec | This draft (#694). Decisions D1–D10 are proposals; O1–O7 open. |
+| Spec | Design (#694); D1–D13 settled by the owner on 2026-11-28. Open: O3 (after SB0), O6 (in Pylon). |
 | Code | None. |
 | Tests | None. |
 | Not yet | Everything: SB0–SB6. |
