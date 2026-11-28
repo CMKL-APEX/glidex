@@ -2727,7 +2727,6 @@ fn warn_shadowed(name: &str, ours: &str) {
 fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> Result<()> {
     if let Some(dir) = &opts.pylon_from {
         section("Pylon & pylond (local build)");
-        warn_pylon_kernel();
         return install_pylon_from(dir, changed);
     }
     if opts.with_pylon != Some(true) {
@@ -2744,7 +2743,6 @@ fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> 
         return Ok(());
     }
     section("Pylon & pylond");
-    warn_pylon_kernel();
     if platform.arch != "x86_64" {
         bail!(
             "--with-pylon: Pylon {} is released for x86_64 only; on {} build it and use --pylon-from DIR",
@@ -2771,34 +2769,6 @@ fn install_pylon(opts: &Options, platform: &Platform, changed: &mut Changes) -> 
         }
     }
     grant_pylon_net_admin()
-}
-
-/// P21: on a 6.17 kernel, threads placed on `pylond`'s engine CPU, kernel
-/// workers included, get no CPU time (#687). Warned, not refused: the
-/// install itself works, and the fix is the kernel.
-fn warn_pylon_kernel() {
-    let Ok(release) = fs::read_to_string("/proc/sys/kernel/osrelease") else {
-        return;
-    };
-    if let Some(warning) = pylon_kernel_warning(&release) {
-        println!("{} {}", "Warning:".yellow(), warning);
-    }
-}
-
-/// The warning for kernel `release` (`6.17.0-42-generic`), if its scheduler
-/// starves the engine CPU's other threads. Only 6.17 has been seen to; 6.8
-/// and 7.0 share that CPU fairly.
-fn pylon_kernel_warning(release: &str) -> Option<String> {
-    let mut parts = release.trim().split(['.', '-']);
-    let major: u32 = parts.next()?.parse().ok()?;
-    let minor: u32 = parts.next()?.parse().ok()?;
-    ((major, minor) == (6, 17)).then(|| {
-        format!(
-            "kernel {} starves every other thread on pylond's engine CPU, kernel workers \
-             included (#687). Run Pylon on a 7.0 or 6.8 kernel.",
-            release.trim()
-        )
-    })
 }
 
 /// `--pylon-from DIR`: a local build, this run only. Its version is printed
@@ -5449,23 +5419,6 @@ mod tests {
             arch: "aarch64",
         };
         assert!(!has_libelf(&wanted_deps(&on, &arm, None)));
-    }
-
-    #[test]
-    fn only_a_6_17_kernel_is_warned_about_for_pylon() {
-        let warned = super::pylon_kernel_warning("6.17.0-42-generic\n").unwrap();
-        assert!(warned.contains("6.17.0-42-generic") && warned.contains("#687"));
-        assert!(super::pylon_kernel_warning("6.17").is_some());
-        for fine in [
-            "6.8.0-138-generic",
-            "7.0.0-43-generic",
-            "6.1.0",
-            "6.170.0",
-            "",
-            "x.y",
-        ] {
-            assert_eq!(super::pylon_kernel_warning(fine), None, "{fine}");
-        }
     }
 
     #[test]
