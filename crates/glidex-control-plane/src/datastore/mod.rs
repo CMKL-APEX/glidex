@@ -40,7 +40,7 @@ pub enum VolumeBinding {
     /// A hyperstor volume (spec/24-storage.md §11.2): served to the VM over
     /// vhost-user-blk at `socket` once staged; to the partition code it is
     /// the path `hyperstor://<map>/<volume>`, read and written through
-    /// `hyperstorctl` (`socket` is empty there).
+    /// `hsctl` (`socket` is empty there).
     VhostUserBlk {
         socket: String,
         volume: String,

@@ -604,7 +604,7 @@ only those volumes there; the node's other VMs carry on. It takes them
 from its own node's `hyperstor-vhost` too when that service no longer
 has them attached: a hold left from before the host rebooted or the
 service restarted. A disk that a
-Glidex disk operation holds (`hyperstorctl`, on a server) is waited for:
+Glidex disk operation holds (`hsctl`, on a server) is waited for:
 the VM shows `DiskBusy` until it ends. This needs hyperstor with
 per-volume fencing on every node; with an older `hyperstor-vhost`, a
 held disk is waited for as before.
@@ -636,7 +636,7 @@ On each node that should run VMs from hyperstor disks:
     certificate. It works while the cluster's data path doesn't ask for
     one, and stops working once a hyperstor administrator sets the
     cluster's data-path TLS mode to `require`;
-- install `hyperstorctl`: Glidex writes images into volumes and edits
+- install `hsctl`: Glidex writes images into volumes and edits
   their partitions with it, and reads a disk's partition table with it
   for `gxctl disk show` and the disk's details in the web UI.
 
@@ -673,9 +673,9 @@ say which it has, and isn't flagged either.
 If Glidex's identity is bound to realms (the usual set-up when
 hyperstor tenants are linked to Glidex), a hyperstor administrator must
 first allow it to make host tokens. The refusal Glidex shows names the
-command (`hyperstorctl realm client-tokens --client <name> --role host`,
+command (`hsctl realm client-tokens --client <name> --role host`,
 where `<name>` is the name Glidex enrolled with). Without that, make the
-token on a map service host instead: `hyperstorctl token create --role
+token on a map service host instead: `hsctl token create --role
 host --name <the node's host name>`.
 
 ### Register a hyperstor datastore
@@ -684,12 +684,12 @@ Make a single-use management token on the hyperstor cluster, and give
 it to Glidex in a file:
 
 ```bash
-hyperstorctl token create --role mgmt --name glidex > glidex.token
+hsctl token create --role mgmt --name glidex > glidex.token
 gxctl datastore create hs1 --hyperstor 192.0.2.21:8850,192.0.2.22:8850 --pool 1 --token-file glidex.token
 ```
 
 - `--hyperstor API,...`: the cluster API's addresses, tried in turn.
-- `--pool N`: the hyperstor pool for the disks (`hyperstorctl pools`).
+- `--pool N`: the hyperstor pool for the disks (`hsctl pools`).
 - `--token-file F`: the token. Glidex enrolls with it once, from the
   server that takes the request: it makes a key, gets a certificate for
   the identity the token names, and keeps the key sealed with the
@@ -729,7 +729,7 @@ and after renewing the certificate, the leader reads the cluster's
 member list, and records the voters' cluster API addresses (the
 leader's first) and their map service addresses. `gxctl datastore show`
 prints them, and when they were last checked with the members. So after
-`hyperstorctl member add` or `member remove`, the datastore follows
+`hsctl member add` or `member remove`, the datastore follows
 within 15 minutes, as long as one of the addresses it has still answers.
 Members that have never led the cluster record no API address; the
 datastore then keeps the API addresses it has.
@@ -770,7 +770,7 @@ count the same free space.
   first time a linked disk needs it, and kept as its snapshot `golden`.
 - **Disks grow, and never shrink.** Growing and the root partition's
   extension work as for a file; the partition is edited through
-  `hyperstorctl`, not a block device.
+  `hsctl`, not a block device.
 - **Moves** onto or off a hyperstor datastore aren't supported yet.
 - **Placing a lost VM again** (`--fenced`) takes its disks' leases from
   the forgotten node at its next start. Otherwise a VM takes only holds
@@ -798,7 +798,7 @@ still needs its image's volume, so when the image is deleted that
 volume stays until the clone is purged; the leader then removes it,
 within a minute. Deleting the datastore removes Glidex's sealed key; it
 needs no disks on it, and leaves the identity's certificate to expire
-(revoke it with `hyperstorctl cert revoke`).
+(revoke it with `hsctl cert revoke`).
 
 ## Images on a shared datastore
 

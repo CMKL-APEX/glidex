@@ -132,7 +132,7 @@ function CreateForm({ onDone, onCancel }: { onDone: () => void; onCancel: () => 
           <>
             A pool of a hyperstor cluster. Its volumes reach each node's VMs through{" "}
             <span className="font-mono">hyperstor-vhost</span>, so a VM can run on any node that reaches it. glidex enrolls with a
-            token from <span className="font-mono">hyperstorctl token create --role mgmt --name glidex</span>, which isn't kept.
+            token from <span className="font-mono">hsctl token create --role mgmt --name glidex</span>, which isn't kept.
           </>
         ) : lvm ? (
           <>

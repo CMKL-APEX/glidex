@@ -7,7 +7,7 @@
 //!   with a token (S20). Only servers hold it, so a hyperstor disk's worker
 //!   is a server (S22).
 //! - **Disk bytes** (filling a volume from an image, partition edits) go
-//!   through `hyperstorctl write-volume`/`read-volume`, straight to the map
+//!   through `hsctl write-volume`/`read-volume`, straight to the map
 //!   service, with no root and no block device (S21). For the partition
 //!   code a volume is the path `hyperstor://<map>/<volume>`.
 //! - **Staging** asks the node's `hyperstor-vhost` to attach the volume
@@ -54,7 +54,7 @@ impl std::fmt::Debug for Identity {
 pub struct HyperstorDriver {
     /// The cluster API's addresses (`host:port`), tried in turn.
     api: Vec<String>,
-    /// The map service's addresses, for `hyperstorctl --map`.
+    /// The map service's addresses, for `hsctl --map`.
     map: String,
     pool: u32,
     /// The datastore record's id: image volumes are named for it, so that
@@ -139,11 +139,31 @@ pub fn vhost_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(VHOST_DIR))
 }
 
-/// `hyperstorctl`, unless `GLIDEX_HYPERSTORCTL` names another.
+/// Hyperstor's `hsctl`, unless `GLIDEX_HSCTL` (or `GLIDEX_HYPERSTORCTL`,
+/// its name before) names another. A server with a hyperstor release
+/// from before v0.0.9 has it as `hyperstorctl`, which is run when no
+/// `hsctl` is on `PATH`; later releases install that name as a link to
+/// `hsctl`.
 pub fn ctl_path() -> PathBuf {
-    std::env::var_os("GLIDEX_HYPERSTORCTL")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("hyperstorctl"))
+    ctl_from(
+        std::env::var_os("GLIDEX_HSCTL").or_else(|| std::env::var_os("GLIDEX_HYPERSTORCTL")),
+        std::env::var_os("PATH"),
+    )
+}
+
+/// [`ctl_path`] from the variable's value and `PATH`.
+fn ctl_from(named: Option<std::ffi::OsString>, path: Option<std::ffi::OsString>) -> PathBuf {
+    if let Some(p) = named {
+        return PathBuf::from(p);
+    }
+    let on_path = |name: &str| {
+        path.as_ref()
+            .is_some_and(|p| std::env::split_paths(p).any(|d| d.join(name).is_file()))
+    };
+    if !on_path("hsctl") && on_path("hyperstorctl") {
+        return PathBuf::from("hyperstorctl");
+    }
+    PathBuf::from("hsctl")
 }
 
 /// A disk's volume id: its UUID's 32 hex digits, or a hash of its id.
@@ -172,7 +192,7 @@ impl From<ImageError> for VhostRefusal {
 /// `me` (S26): another node's `hyperstor-vhost` (`vhost:<node>`), or this
 /// node's own when its `hyperstor-vhost` doesn't have the volume
 /// (`attached_here`, asked only then): a hold left from before a reboot
-/// or a restart of the service. A tool's (`hyperstorctl`) and an unnamed
+/// or a restart of the service. A tool's (`hsctl`) and an unnamed
 /// service's (`vhost`) are not.
 pub fn stale_hold(holder: &str, me: &str, attached_here: impl FnOnce() -> bool) -> bool {
     match holder.strip_prefix("vhost:") {
@@ -289,7 +309,7 @@ pub fn serial(disk: &Disk) -> String {
 }
 
 fn ctl_err(what: &str, e: std::io::Error) -> ImageError {
-    ImageError::NotReady(format!("hyperstorctl ({what}): {e}"))
+    ImageError::NotReady(format!("hsctl ({what}): {e}"))
 }
 
 /// Reads `len` bytes of `path`'s volume at `offset` into `out`.
@@ -371,7 +391,7 @@ fn run_ctl(ctl: &Path, args: &[&str]) -> Result<(), ImageError> {
         return Err(ImageError::Busy(msg));
     }
     Err(ImageError::Tool {
-        tool: "hyperstorctl".into(),
+        tool: "hsctl".into(),
         stderr: msg,
     })
 }
@@ -1185,7 +1205,7 @@ impl HyperstorDriver {
         &self.ctl
     }
 
-    /// Where `hyperstor-vhost`'s sockets are, and which `hyperstorctl`
+    /// Where `hyperstor-vhost`'s sockets are, and which `hsctl`
     /// runs (tests).
     pub fn with_paths(mut self, vhost_dir: PathBuf, ctl: PathBuf) -> Self {
         self.vhost_dir = vhost_dir;
@@ -1358,9 +1378,8 @@ fn identity_record(cert: &str, root: &str) -> Result<super::record::HyperstorIde
 /// here (it never leaves glidex), the API checked against the root the
 /// token names.
 pub async fn enroll(api: &[String], token: &str) -> Result<Enrolled, String> {
-    let (pin, _) = hyperstor_pki::parse_join_token(token).ok_or(
-        "not a hyperstor token (hsj1-…): make one with hyperstorctl token create --role mgmt",
-    )?;
+    let (pin, _) = hyperstor_pki::parse_join_token(token)
+        .ok_or("not a hyperstor token (hsj1-…): make one with hsctl token create --role mgmt")?;
     let (key, csr) = hyperstor_pki::new_request()?;
     let tls = std::sync::Arc::new(hyperstor_pki::pinned_client_config(pin)?);
     let mut last = String::from("no hyperstor API address");
@@ -1455,7 +1474,7 @@ pub fn host_join_command(api_address: &str, token_file: &str) -> String {
 /// the way that needs no glidex.
 fn host_token_refusal(message: &str, host: &str) -> String {
     format!(
-        "hyperstor refused to make a host token as glidex's identity: {message}. Without glidex: on a map service host, `hyperstorctl token create --role host --name {host}`"
+        "hyperstor refused to make a host token as glidex's identity: {message}. Without glidex: on a map service host, `hsctl token create --role host --name {host}`"
     )
 }
 
@@ -1838,6 +1857,27 @@ mod tests {
     /// S40, hyperstor#440: `hello`'s `identity` is a URI, null without
     /// `--identity`, or absent from an older `hyperstor-vhost`; only null
     /// warns, and any role's certificate will do.
+    /// Hyperstor's `hsctl`, or `hyperstorctl` where only a release from
+    /// before v0.0.9 is installed; a name given wins.
+    #[test]
+    fn hsctl_is_run_and_hyperstorctl_where_only_it_is() {
+        let dir = tempfile::tempdir().unwrap();
+        let (old, new) = (dir.path().join("old"), dir.path().join("new"));
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::create_dir_all(&new).unwrap();
+        std::fs::write(old.join("hyperstorctl"), "").unwrap();
+        std::fs::write(new.join("hsctl"), "").unwrap();
+        std::fs::write(new.join("hyperstorctl"), "").unwrap();
+        let path = |d: &std::path::Path| Some(d.as_os_str().to_owned());
+        assert_eq!(ctl_from(None, path(&old)), PathBuf::from("hyperstorctl"));
+        assert_eq!(ctl_from(None, path(&new)), PathBuf::from("hsctl"));
+        assert_eq!(ctl_from(None, None), PathBuf::from("hsctl"));
+        assert_eq!(
+            ctl_from(Some("/opt/hsctl".into()), path(&old)),
+            PathBuf::from("/opt/hsctl")
+        );
+    }
+
     #[test]
     fn only_a_vhost_that_says_it_has_no_identity_is_warned_about() {
         use serde_json::json;
@@ -1899,7 +1939,7 @@ mod tests {
             "sudo hyperstor-install install --role vhost --join 192.0.2.10:8850 --token-file host.token --vhost-user glidex"
         );
         let m = host_token_refusal(
-            "outside_realm: grant it with hyperstorctl realm client-tokens --client glidex --role host",
+            "outside_realm: grant it with hsctl realm client-tokens --client glidex --role host",
             "node-a",
         );
         assert!(
@@ -1907,7 +1947,7 @@ mod tests {
             "{m}"
         );
         assert!(
-            m.contains("hyperstorctl token create --role host --name node-a"),
+            m.contains("hsctl token create --role host --name node-a"),
             "{m}"
         );
     }
@@ -2119,7 +2159,7 @@ mod tests {
             // Held by a tool: always.
             "attach" if r["args"]["volume"] == "00000000000000000000000000000bad" => {
                 serde_json::json!({"id": 1, "error": {
-                    "code": "held", "message": "attached by 1", "holder": "hyperstorctl"}})
+                    "code": "held", "message": "attached by 1", "holder": "hsctl"}})
             }
             // Held by another node's hyperstor-vhost, until preempted.
             "attach"
@@ -2376,7 +2416,7 @@ mod tests {
         );
         assert!(!stale_hold("vhost", "node-a", || false), "unnamed");
         assert!(!stale_hold("vhost:", "node-a", || false));
-        assert!(!stale_hold("hyperstorctl", "node-a", || false), "a tool's");
+        assert!(!stale_hold("hsctl", "node-a", || false), "a tool's");
         assert!(!stale_hold("", "node-a", || false));
         let attached: Vec<String> = ["v1", "v2", "v3", "v4"].map(String::from).to_vec();
         let disks = vec![
@@ -2387,14 +2427,14 @@ mod tests {
         assert_eq!(stale_here(&attached, &disks, "node-a"), ["v2"]);
     }
 
-    /// The partition code's reads and writes of a volume go to hyperstorctl
+    /// The partition code's reads and writes of a volume go to hsctl
     /// with the volume, the range and the map service; a held volume is
     /// busy.
     #[test]
-    fn regions_go_through_hyperstorctl() {
+    fn regions_go_through_hsctl() {
         let tmp = tempfile::tempdir().unwrap();
         let log = tmp.path().join("args");
-        let ctl = tmp.path().join("hyperstorctl");
+        let ctl = tmp.path().join("hsctl");
         crate::test_script::write_script(
             &ctl,
             &format!(

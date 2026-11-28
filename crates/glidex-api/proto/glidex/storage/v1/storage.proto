@@ -941,7 +941,7 @@ message CreateDatastoreRequest {
   string volume_group = 8 [json_name = "volume_group"];
   string thin_pool = 9 [json_name = "thin_pool"];
   // `hyperstor` instead of `path`: its cluster API's addresses, the pool,
-  // and a `mgmt` token from `hyperstorctl token create --role mgmt`, which
+  // and a `mgmt` token from `hsctl token create --role mgmt`, which
   // glidex enrolls with (never stored; spec/24-storage.md S20).
   repeated string hyperstor_api = 10 [json_name = "hyperstor_api"];
   uint32 hyperstor_pool = 11 [json_name = "hyperstor_pool"];
