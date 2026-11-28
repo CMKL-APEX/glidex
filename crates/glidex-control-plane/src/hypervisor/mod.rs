@@ -189,6 +189,30 @@ pub trait HypervisorDriver: Send + Sync {
     fn observe(&self, api_socket: &str) -> Result<Observed, HypervisorError>;
     fn pause(&self, api_socket: &str) -> Result<(), HypervisorError>;
     fn resume(&self, api_socket: &str) -> Result<(), HypervisorError>;
+    /// Write the paused VM's snapshot into the empty directory `dir`
+    /// (spec/33-agent-sandboxes.md §5.1), waiting up to `wait`.
+    fn snapshot(
+        &self,
+        api_socket: &str,
+        dir: &std::path::Path,
+        wait: std::time::Duration,
+    ) -> Result<(), HypervisorError> {
+        let _ = (api_socket, dir, wait);
+        Err(HypervisorError::Unsupported(format!(
+            "{:?} VMs can't be checkpointed",
+            self.hypervisor_type()
+        )))
+    }
+    /// A VMM with no VM, which the shim then asks to restore one from a
+    /// snapshot (`LaunchFile::restore`): the VM's configuration is in the
+    /// snapshot, so nothing of it is on this command line.
+    fn restore_args(&self, api_socket: &str) -> Result<LaunchArgs, HypervisorError> {
+        let _ = api_socket;
+        Err(HypervisorError::Unsupported(format!(
+            "{:?} VMs can't be restored from a snapshot",
+            self.hypervisor_type()
+        )))
+    }
     /// Hot-plug a VFIO device under its deterministic id.
     fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
     fn remove_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError>;
@@ -550,6 +574,25 @@ pub(crate) fn guest_numa_layout(config: &VmConfig) -> Vec<(u32, u32, Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// QEMU VMs can't be checkpointed or restored (spec/33-agent-sandboxes.md
+    /// D1): both are refused as unsupported, not attempted.
+    #[test]
+    fn qemu_refuses_snapshots_and_restores() {
+        let q = driver(HypervisorType::Qemu);
+        assert!(matches!(
+            q.snapshot(
+                "/run/x/api.sock",
+                std::path::Path::new("/tmp/c"),
+                std::time::Duration::from_secs(1)
+            ),
+            Err(HypervisorError::Unsupported(_))
+        ));
+        assert!(matches!(
+            q.restore_args("/run/x/api.sock"),
+            Err(HypervisorError::Unsupported(_))
+        ));
+    }
 
     #[test]
     fn binary_name_matches_hypervisor_type() {
