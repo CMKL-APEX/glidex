@@ -26,6 +26,7 @@ pub mod pci_settings;
 pub mod public_net;
 pub mod restart;
 pub mod router;
+pub mod sandbox;
 pub mod scheduler;
 pub mod serve;
 pub mod service;
