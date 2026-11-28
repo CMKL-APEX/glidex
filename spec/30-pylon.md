@@ -89,6 +89,7 @@ This document makes two changes:
 | P21 | **On a 6.17 kernel the installer warns that `pylond`'s engine CPU starves** | `--with-pylon` and `--pylon-from` print a warning when the running kernel is 6.17 (`/proc/sys/kernel/osrelease`), naming #687 and the kernels that work (7.0, 6.8). They don't refuse: the install works, and the fix is the kernel. Settled by the owner on 2026-11-28 (glidex#687), with Pylon's engine unchanged. | On Ubuntu's `6.17.0-42-generic` a thread on the engine CPU gets no CPU time while the engine runs, kernel workers included (PH1, §12). The engine is an ordinary `SCHED_OTHER` thread that polls in user space without system calls, and the root run queue's `avg_vruntime` doesn't advance while its cgroup's entity runs, so waiting threads never become eligible. 6.8 and 7.0 don't do this. |
 | P22 | **Pylon off stops `pylond`** | On a host with `pylond` installed, a run with Pylon off (`--no-pylon`, or saved so in `install.conf`) stops and disables `glidex-pylond` and says so; the binaries and the unit file stay. A run with Pylon on (`--with-pylon`, saved, or `--pylon-from`) enables it and starts it again. A host with nothing saved (installed before P11) keeps today's behaviour: enabled and running. The node keeps listing the `pylon` hypervisor while the binary is there; P23 keeps new Pylon VMs off it. | Until #689 the installer enabled and restarted `pylond` whenever the binary was there, so an operator who disabled it by hand (on the 6.17 node, #687) got it back with every upgrade. `--remove-pylon` deletes the binaries, more than "off for now". |
 | P23 | **Pylon VMs are placed only where `pylond` runs** | In a cluster the scheduler refuses a node for a Pylon VM when the node reports `pylond: false` (its socket is missing), with the reason "pylond is not running". VMs already running there keep running. A single host doesn't filter, as for the other hypervisors: a Pylon VM started there without `pylond` runs unmanaged (P16). | A Pylon VM without `pylond` runs, but unmanaged (`PylonManaged` `False`, `NoPylond`), which is not what was asked for. With P22 an operator turns `pylond` off on a node, and new Pylon VMs should go elsewhere. |
+| P24 | **`pylond` runs in a slice of its own** | `glidex-pylond.service` sets `Slice=pylon.slice`, so `pylond` runs in a top-level `pylon.slice` (systemd creates it), not `system.slice`. The installer restarts `pylond` when the unit changes, which moves it. P21's warning stays until PH1 passes with the installed unit on the 6.17 node. | On a 6.17 kernel the starvation needs the engine's root-level entity to be `system.slice`, whose weight on the engine CPU follows the whole slice's load and changes at every tick. In a slice of its own, that entity carries only `pylond`'s load. On the 6.17 node, with `pylond` run by hand (pylon#137), a nice-0 probe on the engine CPU got 0.16 s in 15 s under `system.slice`, and 7.17 s and 7.10 s (a fair half, as on 6.8 and 7.0) under `pylon.slice`, with no kernel worker stuck. |
 
 ### 2.1 Questions settled for P7
 
@@ -439,6 +440,10 @@ Not run on a host yet.
 P23 is built: the scheduler's filter, tested by
 `a_pylon_vm_goes_only_where_pylond_runs`. Not run on a host yet.
 
+P24 is built: `Slice=pylon.slice` in `glidex-pylond.service`, tested by
+`pylond_unit_is_sandboxed_with_glidex_group`. PH1 with the installed unit
+is not run yet.
+
 ## 12. Host checks
 
 **PH1. Other threads on `pylond`'s engine CPU (#687).**
@@ -461,3 +466,10 @@ P23 is built: the scheduler's filter, tested by
   grow (it fell 3.4 ms). A waiting `kworker` went from eligible to not
   eligible without running. The kernel tick reached CPU 1 about 1,000
   times a second, and the engine was preempted about 14 times a second.
+- **2026-11-28,** the 6.17 node, `pylond` (Pylon's draft #138 build, no
+  engine rest) run by hand with `--cores 2-7 --no-scx`, engine on CPU 1,
+  probe for 15 s (pylon#137):
+  - in a unit under `system.slice`: **fail**, 0.16 s, a `kworker/1` stuck.
+  - in `pylon.slice`: **pass**, 7.17 s at 1 min and 7.10 s at 5 min.
+  - in the root cgroup: **pass**, 7.26 s and 7.10 s.
+- With glidex's installed unit (P24): not run yet.
