@@ -132,6 +132,36 @@ fn clone_request(
     }
 }
 
+/// `CreateGroupSnapshot` of `disks`' volumes, as group `name`
+/// (spec/33-agent-sandboxes.md D2).
+fn group_request(disks: &[&Disk], name: &str) -> pb::CreateGroupSnapshotRequest {
+    pb::CreateGroupSnapshotRequest {
+        ids: disks.iter().map(|d| volume_id(d)).collect(),
+        name: name.to_string(),
+        ..Default::default()
+    }
+}
+
+/// The group and each volume's epoch from hyperstor's answer, checking that
+/// every volume asked for has a snapshot in it.
+fn group_of(
+    disks: &[&Disk],
+    group: String,
+    members: Vec<(String, Option<u64>)>,
+) -> Result<super::GroupSnapshot, ImageError> {
+    let epochs: std::collections::BTreeMap<String, u64> = members
+        .into_iter()
+        .filter_map(|(id, epoch)| Some((id, epoch?)))
+        .collect();
+    if let Some(d) = disks.iter().find(|d| !epochs.contains_key(&volume_id(d))) {
+        return Err(ImageError::Io(format!(
+            "hyperstor's snapshot group {group} has no snapshot of disk {}",
+            d.name
+        )));
+    }
+    Ok(super::GroupSnapshot { group, epochs })
+}
+
 /// `hyperstor-vhost`'s directory on this node.
 pub fn vhost_dir() -> PathBuf {
     std::env::var_os("GLIDEX_HYPERSTOR_VHOST_DIR")
@@ -1313,6 +1343,60 @@ impl StorageDriver for HyperstorDriver {
         self.delete(&volume_id(disk))
     }
 
+    fn snapshot_group(
+        &self,
+        disks: &[&Disk],
+        name: &str,
+    ) -> Result<super::GroupSnapshot, ImageError> {
+        let req = group_request(disks, name);
+        let (group, members) = self.call(|c| {
+            let req = req.clone();
+            async move {
+                c.create_group_snapshot(req).await.map(|r| {
+                    let r = r.into_owned();
+                    let members = r
+                        .members
+                        .into_iter()
+                        .map(|m| (m.id, m.snapshot.into_option().map(|s| s.epoch)))
+                        .collect::<Vec<_>>();
+                    (r.group, members)
+                })
+            }
+        })?;
+        group_of(disks, group, members)
+    }
+
+    fn clone_volume_at(&self, origin: &Disk, epoch: u64, fork: &Disk) -> Result<(), ImageError> {
+        let id = volume_id(fork);
+        // Left by an attempt that didn't finish.
+        self.free_id(&id)?;
+        let req = clone_request(&volume_id(origin), epoch, &fork.name, &id, project_of(fork));
+        self.call(|c| {
+            let req = req.clone();
+            async move { c.clone_volume(req).await.map(|_| ()) }
+        })
+        .map_err(unlinked_waits)
+    }
+
+    fn delete_snapshot_group(&self, group: &str) -> Result<(), ImageError> {
+        let group = group.to_string();
+        match self.call(|c| {
+            let group = group.clone();
+            async move {
+                c.delete_group_snapshot(pb::DeleteGroupSnapshotRequest {
+                    group,
+                    ..Default::default()
+                })
+                .await
+                .map(|_| ())
+            }
+        }) {
+            // Gone already: deleting twice is fine.
+            Err(ImageError::Io(m)) if is_gone(&m) => Ok(()),
+            other => other,
+        }
+    }
+
     fn expand_volume(&self, disk: &Disk, size: u64) -> Result<(), ImageError> {
         self.expand(&volume_id(disk), size)
     }
@@ -1965,6 +2049,48 @@ mod tests {
         );
         d.phase = DiskPhase::Pending;
         d
+    }
+
+    /// A checkpoint's group names each disk's volume; hyperstor's answer
+    /// gives each one's epoch, and one it left out is an error, not a fork
+    /// restored onto a disk that wasn't snapshotted (spec/33 D2, D18).
+    #[test]
+    fn a_snapshot_group_covers_every_disk() {
+        let (a, b) = (disk("d1"), disk("d2"));
+        let req = group_request(&[&a, &b], "ckpt-1");
+        assert_eq!(req.ids, vec![volume_id(&a), volume_id(&b)]);
+        assert_eq!(req.name, "ckpt-1");
+        let g = group_of(
+            &[&a, &b],
+            "g1".into(),
+            vec![(volume_id(&a), Some(3)), (volume_id(&b), Some(5))],
+        )
+        .unwrap();
+        assert_eq!(g.group, "g1");
+        assert_eq!(g.epochs[&volume_id(&a)], 3);
+        assert_eq!(g.epochs[&volume_id(&b)], 5);
+        let e = group_of(
+            &[&a, &b],
+            "g2".into(),
+            vec![(volume_id(&a), Some(3)), (volume_id(&b), None)],
+        )
+        .unwrap_err();
+        assert!(e.to_string().contains("no snapshot of disk"), "{e}");
+    }
+
+    /// Only hyperstor can snapshot groups and clone: another datastore's
+    /// disk is refused, naming it (spec/33 D1).
+    #[test]
+    fn other_datastores_cant_checkpoint() {
+        let d = disk("d1");
+        let local = super::super::file::FileDriver::new(std::path::PathBuf::from("/nonexistent"));
+        let e = local.snapshot_group(&[&d], "c").unwrap_err();
+        assert!(
+            e.to_string().contains("isn't on a hyperstor datastore"),
+            "{e}"
+        );
+        assert!(local.clone_volume_at(&d, 1, &d).is_err());
+        assert!(local.delete_snapshot_group("g").is_err());
     }
 
     /// A disk's volume names its glidex project to hyperstor, made or

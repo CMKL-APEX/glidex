@@ -119,6 +119,26 @@ pub type Prepare<'a> = &'a mut dyn FnMut(&VolumeBinding) -> Result<(), ImageErro
 
 /// A datastore's driver. Its methods follow CSI's (spec/24-storage.md §7, §12)
 /// so that a CSI adapter can be one more driver.
+/// Snapshots of several volumes taken at one moment (a hyperstor
+/// consistency group; spec/33-agent-sandboxes.md D2): the group's id, and
+/// each volume's snapshot epoch, by the volume's id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupSnapshot {
+    pub group: String,
+    pub epochs: std::collections::BTreeMap<String, u64>,
+}
+
+/// A disk on a datastore that can't snapshot groups or clone (D1).
+fn not_forkable(disk: Option<&Disk>) -> ImageError {
+    ImageError::invalid_disk(match disk {
+        Some(d) => format!(
+            "disk {} isn't on a hyperstor datastore, so its VM can't be checkpointed or forked",
+            d.name
+        ),
+        None => "only hyperstor datastores have snapshot groups".to_string(),
+    })
+}
+
 pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     fn capabilities(&self) -> Caps;
 
@@ -216,6 +236,28 @@ pub trait StorageDriver: Send + Sync + std::fmt::Debug {
     fn unstage(&self, disk: &Disk) -> Result<(), ImageError> {
         let _ = disk;
         Ok(())
+    }
+
+    /// Snapshot `disks`' volumes at one moment, as group `name`
+    /// (spec/33-agent-sandboxes.md D2). Only a driver whose volumes every
+    /// node sees can, so forks may run anywhere (D1).
+    fn snapshot_group(&self, disks: &[&Disk], name: &str) -> Result<GroupSnapshot, ImageError> {
+        let _ = name;
+        Err(not_forkable(disks.first().copied()))
+    }
+
+    /// Make `fork`'s volume a copy-on-write clone of `origin`'s snapshot at
+    /// `epoch` (spec/33-agent-sandboxes.md §6), in `fork`'s project.
+    fn clone_volume_at(&self, origin: &Disk, epoch: u64, fork: &Disk) -> Result<(), ImageError> {
+        let _ = (epoch, fork);
+        Err(not_forkable(Some(origin)))
+    }
+
+    /// Delete a group `snapshot_group` made: its snapshots go to the trash
+    /// once no clone depends on them.
+    fn delete_snapshot_group(&self, group: &str) -> Result<(), ImageError> {
+        let _ = group;
+        Err(not_forkable(None))
     }
 
     /// `disk`'s volume, ready to be opened on this node.
