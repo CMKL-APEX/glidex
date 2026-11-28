@@ -6022,6 +6022,7 @@ mod tests {
             "RuntimeDirectory=pylon",
             "RuntimeDirectoryMode=0750",
             "Before=glidex-control-plane.service",
+            "Slice=pylon.slice",
         ] {
             assert!(s.contains(&line), "missing {line:?}");
         }

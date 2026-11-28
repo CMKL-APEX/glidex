@@ -7,6 +7,9 @@ Before=glidex-control-plane.service
 Type=simple
 User=root
 Group=glidex
+# A slice of its own, not system.slice: on a 6.17 kernel, threads on the
+# engine CPU otherwise get no CPU time (spec/30-pylon.md P24, pylon#137).
+Slice=pylon.slice
 UMask=0007
 RuntimeDirectory=pylon
 RuntimeDirectoryMode=0750
