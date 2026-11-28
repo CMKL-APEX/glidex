@@ -2,9 +2,9 @@
 
 **Status: design; decisions settled by the owner on 2026-11-28. Nothing
 is built.** Tracked in #694. §3's decisions are settled; §12 keeps the
-two questions still open (O3 waits on SB0's numbers, O6 is checked in
-Pylon). Items marked **(verify)** are measured or checked on hosts in
-SB0 (§11).
+questions still open. SB0's measurements are in §0.1 (2026-11-28).
+Items still marked **(verify)** are checked in the milestone that uses
+them.
 
 An AI agent working in a VM often reaches a point where it could go
 several ways: try two fixes, run three experiments, compare two
@@ -45,12 +45,92 @@ What it can offer that they can't:
 |---|---|---|
 | 1 | Cloud Hypervisor v55.0, glidex's pin and Pylon's base, restores a snapshot (`vm.restore`, `memory_restore_mode=`) in one of four ways: `copy` (the default: guest RAM filled from the snapshot before resuming), `ondemand` (pages faulted in through userfaultfd; upstream since v52), `ondemand_no_background_fetch_pages`, and `copyonwrite` (upstream since v54). `copyonwrite` maps the snapshot's memory file copy-on-write over guest RAM, so VMs restored from the same snapshot share its pages in the page cache. It falls back to `copy` when guest RAM isn't suitable, and the memory file must stay on disk for the VM's lifetime. | Forking memory on one host needs no VMM change: snapshot once, restore N times with `copyonwrite` (§5.2). Lazy restore on another host exists too (`ondemand`, §5.3). |
 | 2 | Cloud Hypervisor has a VM Generation ID device (upstream since v54). A restore changes the ID and notifies the guest. | A Linux guest with the vmgenid driver reseeds its RNG when the ID changes (verify for the guest images glidex offers). |
-| 3 | hyperstor has snapshots of a volume, snapshot groups (every volume in a list at one point), copy-on-write clones from a snapshot's epoch, and a trash. glidex already makes every linked disk on a hyperstor datastore as a clone of its image's golden snapshot (24-storage.md S28). | Forking disks across hosts works today: a snapshot group at the pause, then one clone per volume per fork (§6). How long a snapshot and N clones take is not measured (verify). |
+| 3 | hyperstor has snapshots of a volume, snapshot groups (every volume in a list at one point), copy-on-write clones from a snapshot's epoch, and a trash. glidex already makes every linked disk on a hyperstor datastore as a clone of its image's golden snapshot (24-storage.md S28). | Forking disks across hosts works today: a snapshot group at the pause, then one clone per volume per fork (§6). Snapshots and clones take tens of milliseconds (§0.1). |
 | 4 | Live migration (32-live-migration.md, LM0–LM5) built a shim that receives a VM, a relay over the nodes' mTLS, and a one-way CPUID fit. On v55, the two test nodes fit neither way. | A fork restored on another node reuses the relay and the fit check (§5.3). On unlike hosts, a remote fork often won't fit: same-host forks come first. |
-| 5 | The cluster's single write lane sustains about 150–300 writes a second; normal load is 5–20 a second at 2,000 VMs (14-clustering.md §4.1). A VM's create and start take several writes today (the create commit with its disks, then disk and VM phases and conditions); the count isn't measured (verify). In the week of 2026-11-23, one disk retrying in a loop wrote about 25 entries a second, and it was noticed cluster-wide (#643). | Recording every fork in the cluster can't keep up with agents. Forks need a host-local lifecycle, with the cluster holding summaries (D5, §7). |
+| 5 | The cluster's single write lane sustains about 150–300 writes a second; normal load is 5–20 a second at 2,000 VMs (14-clustering.md §4.1). A VM's create and start take several writes today (the create commit with its disks, then disk and VM phases and conditions); SB0 counted 21 for a whole lifecycle (§0.1). In the week of 2026-11-23, one disk retrying in a loop wrote about 25 entries a second, and it was noticed cluster-wide (#643). | Recording every fork in the cluster can't keep up with agents. Forks need a host-local lifecycle, with the cluster holding summaries (D5, §7). |
 | 6 | `glidex-metad` tells VMs apart by their port, and serves tokens of 15 minutes (at most 1 h). Issued tokens live until they expire (29-workload-identity.md W8). | A fork has its parent's tokens in memory, valid until they expire. Its own requests get its own tokens, as a new VM id with its own port. The leftover window is the TTL (D4, §8). |
 | 7 | A VM with VFIO devices can't be snapshotted or restored as a fork: its device state lives in the hardware (verify how Cloud Hypervisor refuses it). | Sandboxes are CPU-only. An agent that needs a GPU calls an inference service over the network (D10). |
 | 8 | Pylon parks idle vCPUs and scales a VM down to zero; its guest agent is in every Pylon VM's seed (30-pylon.md P19). `scx_pylon` doesn't attach on kernels before 6.19 without the BPF LSM (pylon#133). | Parked forks cost little while an agent compares them. The guest agent is where the post-fork hook runs (D3). Core management stays limited until hosts run 6.19 or later. |
+
+### 0.1 SB0: measurements (2026-11-28)
+
+On a test node (256 CPUs, 1 TiB of memory, kernel 6.17, Cloud
+Hypervisor v55.0, the snapshot on a local disk), with the cluster
+otherwise quiet. The guests were direct-boot kernels with 2 vCPUs, no
+disk and no NIC, whose init filled about 78% of guest memory with
+non-zero data and then printed a heartbeat every 200 ms. A fork is
+**ready** when its first heartbeat after the restore appears. The
+scripts are kept with the issue (#694).
+
+**The parent's pause for a checkpoint** (`vm.pause`, `vm.snapshot` to a
+local directory, `vm.resume`):
+
+| Guest | Pause | Snapshot | Resume | Parent stalled | Memory file |
+|---|---|---|---|---|---|
+| 2 GiB | 12 ms | 1.61 s | 9 ms | 1.63 s | 2.1 GiB |
+| 4 GiB | 11 ms | 2.11 s | 11 ms | 2.13 s | 4.1 GiB |
+| 8 GiB | 11 ms | 4.36 s | 11 ms | 4.38 s | 8.1 GiB |
+
+**One fork, by restore mode** (the memory file in the page cache, as it
+is right after the checkpoint on the same node):
+
+| Guest | `copy` | `copyonwrite` | `ondemand` | `ondemand_no_background_fetch_pages` |
+|---|---|---|---|---|
+| 2 GiB | 0.60 s, 2,054 MiB | **0.062 s, 25 MiB** | — | — |
+| 4 GiB | 1.03 s, 4,102 MiB | **0.062 s, 25 MiB** | 0.38 s; 3,237 MiB at 3 s, 4,102 at 10 s | 0.12 s, 11 MiB |
+| 8 GiB | 2.10 s, 8,198 MiB | **0.062 s, 47 MiB** | 0.37 s; 3,185 MiB at 3 s, 8,199 at 10 s | 0.12 s, 11 MiB |
+
+(Time to ready, then the fork's resident memory 3 s later. The `ondemand`
+modes were run as root: see finding 3 below.)
+
+**Ten forks at once** of the 4 GiB guest:
+
+| Mode | All ready | Resident memory, all ten | Host memory used |
+|---|---|---|---|
+| `copyonwrite` | **0.077 s** | 270 MiB | +2 MiB |
+| `copy` | 9.7 s | 41,020 MiB | +40,511 MiB |
+
+**hyperstor** (empty 20 GiB test volumes in an NVMe pool, through the
+node's `hyperstorctl`):
+
+| Operation | Time |
+|---|---|
+| Snapshot of one volume | 23 ms |
+| Snapshot group of two volumes | 21–23 ms (three runs) |
+| One clone | 35 ms |
+| Ten clones, one after another | 0.20 s |
+| Fifty clones at once | 0.27 s |
+| Deleting 61 clones, one after another | 0.92 s |
+
+**Cluster writes for a VM's lifecycle** (a 1-vCPU VM with a hyperstor
+root disk; the revision counted after each step, once it stayed still for
+10 s): create, until its disk was ready, **6**; start **6**; stop **5**;
+delete **4**. 21 in all.
+
+What follows:
+
+1. **Warm forks are cheap and fast.** With `copyonwrite`, a fork is ready
+   in about 60 ms whatever the guest's size, and ten take under 0.1 s and
+   almost no memory until they write. That is SB3's design, measured. The
+   guest here writes almost nothing after the restore; a real workload
+   copies the pages it changes.
+2. **The checkpoint is the slow part.** The parent stalls while its whole
+   memory is written, about 0.5 s per GiB on this disk. Writing the
+   memory file in the background after the pause (dirty-page tracking,
+   as migration does) would cut the stall; until then a checkpoint of a
+   big VM pauses it for seconds.
+3. **`ondemand` needs userfaultfd.** Run as an ordinary user it fails
+   ("Failed to create userfaultfd: Operation not permitted"): the node
+   has `vm.unprivileged_userfaultfd = 0`, as Ubuntu does by default, and
+   glidex runs Cloud Hypervisor as the `glidex` user. As root, a remote
+   fork is ready in 0.12–0.38 s and pages in the rest (O8).
+4. **hyperstor isn't the bottleneck.** Fifty clones take a quarter of a
+   second, and a snapshot group about 20 ms inside the parent's pause.
+   These were empty volumes; clones share their origin's data, so a full
+   one should be no slower (verify in SB1).
+5. **D5 holds.** A fork made as an ordinary VM costs about 16 writes
+   (create, start, delete). At 150–300 writes a second, that is 10–20
+   forks a second for the whole cluster, before any other work.
 
 ## 1. Goals and non-goals
 
@@ -246,7 +326,7 @@ as something to build now.
 
 | Milestone | What | Acceptance |
 |---|---|---|
-| **SB0: measurements** | On a test node: Cloud Hypervisor snapshot and restore of a 2, 4 and 8 GiB guest in each restore mode; a hyperstor snapshot group and N clones (N = 1, 10, 50); the parent's pause for a checkpoint; the cluster writes a VM's create, start and delete cost today. | Numbers recorded here (§0), with the build and date. They decide whether D5 is needed before SB3 or only after. |
+| **SB0: measurements** (done 2026-11-28, §0.1) | On a test node: Cloud Hypervisor snapshot and restore of a 2, 4 and 8 GiB guest in each restore mode; a hyperstor snapshot group and N clones (N = 1, 10, 50); the parent's pause for a checkpoint; the cluster writes a VM's create, start and delete cost today. | Numbers recorded here (§0), with the build and date. They decide whether D5 is needed before SB3 or only after. |
 | **SB1: cold fork** | Checkpoint a running VM (D2) and restore it as N ordinary VMs (`copy`), each recorded in the cluster as a VM. Identity as far as glidex controls it (new VM id, MACs, ports, hostname, instance id); network down until started by hand. | A fork resumes with its parent's processes and files, and runs next to its parent without clashing. |
 | **SB2: re-identity** | The guest agent's post-fork hook (D3), the VM Generation ID check in the guest images, NICs up only after the hook, the family's token TTL (D4). | A fork's RNG output, host keys and `machine-id` differ from its parent's; it never sends a packet with the parent's addresses. |
 | **SB3: warm forks** | `copyonwrite` restore on the checkpoint's node; families and node-local fork records (D5); quotas, lifetimes and limits (D8, D9, D13); `keep` and drop (D12). | N warm forks start in about the time of one restore (verify against SB0). Making and dropping a family of N writes once or twice to the cluster, whatever N is. |
@@ -265,16 +345,22 @@ Settled on 2026-11-28: O1 (D11), O2 (D1), O4 (D12), O5 (D4) and O7
 - **O3.** Where do memory files live for remote forks: served from the
   checkpoint's node through the relay, or written to a hyperstor volume
   that any node reads? The second survives the checkpoint's node going
-  away, at the cost of writing the whole memory once. **Decided after SB0:** if hyperstor writes a full memory image fast enough, a hyperstor volume; otherwise the checkpoint's node. Nothing waits on it before SB4.
+  away, at the cost of writing the whole memory once. If hyperstor writes a full memory image fast enough, a hyperstor volume; otherwise the checkpoint's node. SB0 measured the local write (about 0.5 s per GiB, §0.1) but not hyperstor's; that is measured at the start of SB4, which nothing before it waits on.
 - **O6.** Pylon VMs: does parking and scale-to-zero survive a
   `copyonwrite` restore unchanged (verify in Pylon)? Are parked forks
   cheap enough to keep many alive while an agent compares them?
+- **O8.** How does a remote fork's shim get userfaultfd (§0.1, finding
+  3)? `vm.unprivileged_userfaultfd = 1` on the nodes (simple, but open
+  to every user), `CAP_SYS_PTRACE` for the shim (too broad), or access
+  to `/dev/userfaultfd` (Linux 6.1+, by file permission) for the
+  `glidex` user, which needs Cloud Hypervisor to open that device
+  rather than call the syscall. Settled before SB4.
 
 ## 13. Status
 
 | | |
 |---|---|
-| Spec | Design (#694); D1–D13 settled by the owner on 2026-11-28. Open: O3 (after SB0), O6 (in Pylon). |
+| Spec | Design (#694); D1–D13 settled by the owner on 2026-11-28. Open: O3, O6 (in Pylon), O8 (before SB4). |
 | Code | None. |
-| Tests | None. |
-| Not yet | Everything: SB0–SB6. |
+| Tests | SB0's measurements (§0.1, 2026-11-28). |
+| Not yet | SB1–SB6. |
