@@ -265,7 +265,9 @@ restarts `glidex-pylond`.
   VMM (Cloud Hypervisor v55.0). From rc1 to rc2, and from rc2 to rc3,
   only `pylond` changed, and from rc3 to v0.0.9 only the version they
   report, so a Pylon VM started with any v0.0.9 release candidate's
-  `pylon` needs no restart.
+  `pylon` needs no restart. v0.0.10 shares the same page as v0.0.9, so
+  VMs started with v0.0.9's `pylon` keep registering with v0.0.10's
+  `pylond` and need no restart.
 
 - **What it needs.** The release is built on Ubuntu 24.04: it needs
   glibc 2.38 or later, and `pylond` needs `libelf`, `zlib` and `zstd`
