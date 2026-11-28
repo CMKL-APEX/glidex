@@ -1,7 +1,7 @@
 # Agent sandboxes: forking a running VM to try several paths
 
-**Status: design; decisions settled by the owner on 2026-11-28. Nothing
-is built.** Tracked in #694. §3's decisions are settled; §12 keeps the
+**Status: design; decisions settled by the owner on 2026-11-28 (SB1's
+D14–D17 too; D18 follows from §0's finding 9). Nothing is built.** Tracked in #694. §3's decisions are settled; §12 keeps the
 questions still open. SB0's measurements are in §0.1 (2026-11-28).
 Items still marked **(verify)** are checked in the milestone that uses
 them.
@@ -51,6 +51,7 @@ What it can offer that they can't:
 | 6 | `glidex-metad` tells VMs apart by their port, and serves tokens of 15 minutes (at most 1 h). Issued tokens live until they expire (29-workload-identity.md W8). | A fork has its parent's tokens in memory, valid until they expire. Its own requests get its own tokens, as a new VM id with its own port. The leftover window is the TTL (D4, §8). |
 | 7 | A VM with VFIO devices can't be snapshotted or restored as a fork: its device state lives in the hardware (verify how Cloud Hypervisor refuses it). | Sandboxes are CPU-only. An agent that needs a GPU calls an inference service over the network (D10). |
 | 8 | Pylon parks idle vCPUs and scales a VM down to zero; its guest agent is in every Pylon VM's seed (30-pylon.md P19). `scx_pylon` doesn't attach on kernels before 6.19 without the BPF LSM (pylon#133). | Parked forks cost little while an agent compares them. The guest agent is where the post-fork hook runs (D3). Core management stays limited until hosts run 6.19 or later. |
+| 9 | A Cloud Hypervisor snapshot is three files in one directory: `config.json` (the VM's devices), `state.json` (each device's state, found by its id) and the memory ranges. At restore, `vm.restore` lets a caller change only the serial and console outputs, memory zones, and tap NICs and VFIO devices through passed file descriptors (`external_fds`). A disk's path, a vhost-user socket (disk or NIC) and the seed's path exist only in `config.json`. A NIC's MAC is in `state.json` (the virtio-net config space), and the guest has cached it. Cloud Hypervisor doesn't check that every saved device id is in `config.json`: a device whose id is missing is created fresh rather than restored, without an error. glidex's live migration needs none of this, because its target uses the same VM id and so the same paths. | Each fork needs a directory of its own, with `config.json` rewritten to its devices and `state.json` to its MACs, and glidex must check the ids itself (D18). |
 
 ### 0.1 SB0: measurements (2026-11-28)
 
@@ -188,6 +189,11 @@ Non-goals (for now):
 | D11 | **Who forks (was O1):** both the VM's own service account (an agent forking its own sandbox) and anyone holding `forkCheckpoint` on the VM's project. | Agents need to fork themselves without a person; people and orchestrators need to fork VMs they manage. Cedar decides both from the same action. |
 | D12 | **Keeping a warm fork (was O4) is instant:** the kept VM goes on mapping its checkpoint's memory file, which stays until the kept VM's next restart (or migration), then goes. | Keeping is the moment an agent has found its answer; it shouldn't wait for a memory copy. The cost is the file's space for a while. |
 | D13 | **Default limits (was O7):** 16 forks per family and 64 forks per node, which an operator may change per project. Within them, the project's vCPU, memory and disk quotas apply (D8). | Enough for an agent comparing a handful of paths; low enough that a runaway agent can't fill a node. |
+| D14 | **SB1's NICs (settled 2026-11-28):** a fork's NIC gets the fork's own derived MAC, written into its saved NIC state, and its own OVN port, **held down** until someone brings it up. Until SB2's hook reprograms the guest, the guest still sends with its parent's MAC; the held-down port carries nothing either way. | The fork never talks as its parent, and each fork's port is its own from the start, so SB2 only has to bring it up. |
+| D15 | **SB1's forks run on the checkpoint's node (settled 2026-11-28).** | The memory file is there; moving it is SB4's (with O3 and the CPUID fit). |
+| D16 | **SB1 covers Cloud Hypervisor and Pylon VMs (settled 2026-11-28).** A Pylon fork's `vm_id` in its saved config is rewritten to the fork's id, and it registers with `pylond` under that id (verify in SB1; the parking part of O6 stays open). | Pylon VMs are where agent sandboxes are meant to run; leaving them out would make SB1 a demo of the wrong thing. |
+| D17 | **SB1's API is §4's without families (settled 2026-11-28):** `POST /vms/{id}/checkpoints`, then `POST /checkpoints/{id}/forks {count}`, which makes N ordinary VMs in the parent's project. SB3 adds families, quotas and lifetimes behind the same calls. | The calls agents use don't change between milestones. |
+| D18 | **Each fork restores from a directory of its own.** glidex copies the checkpoint's `config.json` and `state.json` into it, links the memory files (same filesystem), and rewrites: every disk's vhost-user socket to the fork's clone (matched by the parent's volume id in the path, not by position), the seed disk's path to the fork's seed, each NIC's tap name or vhost-user socket to the fork's, each NIC's MAC in `state.json` to the fork's, and Pylon's `vm_id`. Then it checks that every device id in `state.json` is in `config.json` and that no rewritten path still names the parent, and refuses the fork otherwise. | Cloud Hypervisor has no other way to point a restore at other devices, and wouldn't notice a device left behind (§0, finding 9). Matching paths by the parent's ids, not by order, keeps a renumbered device from being restored onto the wrong disk. |
 
 ## 4. API, clients and permissions (sketch)
 
@@ -334,8 +340,50 @@ as something to build now.
 | **SB5: chargeback and UI** | Usage per family and fork (D7); the family view in the web UI; `gxctl` commands; docs for users and operators. | A family's cost appears under its owner, and matches its forks' sum. |
 | **SB6 (speculative)** | Carrying a prefix-cache handle with a family (§10). | Decided after SB5. |
 
-SB1 needs no new storage or VMM work. SB3 is where glidex's control plane
+SB1 needs no VMM change; its storage work is calls hyperstor already
+has (snapshot groups and clones). SB3 is where glidex's control plane
 changes most.
+
+### SB1's tasks, one PR each
+
+SB1 adds a cluster table for checkpoints. It is written only once every
+voter supports it (14-clustering.md §6.6, the feature level).
+
+1. **Snapshot and restore in the VMM client and the shim.**
+   `glidex-hv-client` gains `vm.snapshot` and `vm.restore` (source,
+   `memory_restore_mode`, `resume`, serial and console); the Cloud
+   Hypervisor and Pylon drivers expose them; the shim's launch file gains
+   a restore mode, which starts a bare VMM with its API socket and calls
+   `vm.restore`, as receive mode calls `vm.receive-migration`.
+2. **hyperstor calls.** The driver gains a snapshot group of a list of
+   volumes, a clone of a volume at an epoch into a project, and deleting
+   a group. Other drivers refuse them (D1).
+3. **The fork's restore directory (D18).** A module that takes a
+   checkpoint's directory and a fork's mapping (volumes, seed, NIC names
+   or sockets, MACs, Pylon's `vm_id`) and writes the fork's directory,
+   with the checks. Unit tests on a real v55 `config.json` and
+   `state.json`, for tap and vhost-user NICs and a Pylon VM.
+4. **Checkpoints.** The table, `POST /vms/{id}/checkpoints`, `GET` and
+   `DELETE /checkpoints/{id}` with their RPC twins and Cedar
+   `checkpointVm`. On the VM's node: pause, `vm.snapshot` into
+   `<state dir>/checkpoints/<id>`, the hyperstor snapshot group, resume
+   (D2, crash-consistent; the guest agent's freeze comes with SB2).
+   Deleting removes the directory and the group.
+5. **Forks.** `POST /checkpoints/{id}/forks {count}` (Cedar
+   `forkCheckpoint`, D11) makes N VMs in the parent's project: clones as
+   their disks, the parent's networks with each NIC's port held down
+   (D14), a seed with the fork's instance id and hostname, placed on the
+   checkpoint's node (D15). Each launches through the restore mode
+   (`copy`) from its own directory (task 3). An operator brings a fork's
+   NICs up by hand (`gxctl vm nic up`), until SB2 does it.
+6. **Pylon (D16).** Pylon forks: `vm_id` rewritten, registration with
+   `pylond` under the fork's id, and what parking does across the
+   restore recorded for O6.
+7. **gxctl, docs and the host check.** `gxctl checkpoint` and
+   `gxctl fork`, the user and operator docs, and SB1's host check: a
+   running VM forked three times, the forks running next to it with
+   their processes and files, their ports held down, and no clash of
+   disks, MACs or addresses.
 
 ## 12. Open questions
 
