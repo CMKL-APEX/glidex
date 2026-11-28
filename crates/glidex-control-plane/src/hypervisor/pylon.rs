@@ -176,6 +176,30 @@ impl HypervisorDriver for PylonDriver {
         Ok(ChClient::new(api_socket).resume()?)
     }
 
+    fn snapshot(
+        &self,
+        api_socket: &str,
+        dir: &std::path::Path,
+        wait: std::time::Duration,
+    ) -> Result<(), HypervisorError> {
+        Ok(ChClient::new(api_socket).snapshot(dir, wait)?)
+    }
+
+    /// Pylon's own VMM: the snapshot's configuration carries its `--pylon`
+    /// options, which Cloud Hypervisor wouldn't know.
+    fn restore_args(&self, api_socket: &str) -> Result<LaunchArgs, HypervisorError> {
+        let bin = resolve_binary("pylon").ok_or_else(|| {
+            HypervisorError::ProcessStart(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "pylon is not installed",
+            ))
+        })?;
+        Ok(LaunchArgs {
+            argv: cloud_hypervisor::receive_argv(&bin.to_string_lossy(), api_socket),
+            fallback: None,
+        })
+    }
+
     fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {
         Ok(ChClient::new(api_socket).add_device(device_path, &vfio_device_id(device_path))?)
     }

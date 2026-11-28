@@ -391,6 +391,15 @@ impl Supervisor {
                         self.record_exit(ExitCause::LaunchFailed, status, Some(message));
                         return;
                     }
+                    if let Some(r) = self.launch.restore.clone()
+                        && let Err(message) = self.restore_vm(&r)
+                    {
+                        self.hard_kill();
+                        let status = self.child.as_mut().and_then(|c| c.wait().ok());
+                        self.child = None;
+                        self.record_exit(ExitCause::LaunchFailed, status, Some(message));
+                        return;
+                    }
                     if let Some(url) = self.launch.receive.clone() {
                         self.start_receiving(url);
                         return;
@@ -421,6 +430,27 @@ impl Supervisor {
                 std::thread::sleep(Duration::from_millis(100));
             }
         }
+    }
+
+    /// A VM restored from a snapshot (spec/33-agent-sandboxes.md §5): the
+    /// VMM, which has no VM, restores it from `r.source` and resumes it.
+    /// A `copy` restore takes as long as its memory takes to read, so
+    /// systemd's start timeout is first extended by the restore's wait.
+    fn restore_vm(&mut self, r: &crate::launch::Restore) -> Result<(), String> {
+        self.note(format!(
+            "\r\n--- glidex: restoring the VM from {} ({:?}) ---\r\n",
+            r.source, r.mode
+        ));
+        let wait = r.timeout_secs.max(1);
+        crate::sd::extend_start_timeout(wait + crate::launch::START_MARGIN_SECS);
+        ChClient::new(&self.launch.api_socket)
+            .restore(
+                std::path::Path::new(&r.source),
+                r.mode,
+                true,
+                Duration::from_secs(wait),
+            )
+            .map_err(|e| format!("restoring the VM from {}: {e}", r.source))
     }
 
     /// A migration's target (spec/32-live-migration.md §4): ask the VMM,

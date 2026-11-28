@@ -524,7 +524,9 @@ impl CloudHypervisorDriver {
     }
 }
 
-fn receive_argv(bin: &str, api_socket: &str) -> Vec<String> {
+/// A VMM with no VM and only its API socket: a migration's target, or a
+/// VMM a snapshot is restored into.
+pub(crate) fn receive_argv(bin: &str, api_socket: &str) -> Vec<String> {
     vec![
         bin.to_string(),
         "--api-socket".into(),
@@ -568,6 +570,28 @@ impl HypervisorDriver for CloudHypervisorDriver {
 
     fn resume(&self, api_socket: &str) -> Result<(), HypervisorError> {
         Ok(ChClient::new(api_socket).resume()?)
+    }
+
+    fn snapshot(
+        &self,
+        api_socket: &str,
+        dir: &Path,
+        wait: std::time::Duration,
+    ) -> Result<(), HypervisorError> {
+        Ok(ChClient::new(api_socket).snapshot(dir, wait)?)
+    }
+
+    fn restore_args(&self, api_socket: &str) -> Result<LaunchArgs, HypervisorError> {
+        let bin = resolve_binary("cloud-hypervisor").ok_or_else(|| {
+            HypervisorError::ProcessStart(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "cloud-hypervisor is not installed",
+            ))
+        })?;
+        Ok(LaunchArgs {
+            argv: receive_argv(&bin.to_string_lossy(), api_socket),
+            fallback: None,
+        })
     }
 
     fn add_device(&self, api_socket: &str, device_path: &str) -> Result<(), HypervisorError> {

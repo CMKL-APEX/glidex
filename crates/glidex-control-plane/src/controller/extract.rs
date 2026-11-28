@@ -956,6 +956,7 @@ impl VmManager {
             job: true,
             volume_locks: Vec::new(),
             receive: None,
+            restore: None,
         }
         .write(&paths.launch)
         .map_err(|e| e.to_string())?;

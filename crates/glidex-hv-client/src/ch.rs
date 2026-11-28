@@ -8,6 +8,21 @@ pub struct ChClient {
     socket_path: String,
 }
 
+/// How `vm.restore` fills guest memory (spec/33-agent-sandboxes.md §0):
+/// `Copy` reads the snapshot into guest RAM before resuming; `OnDemand`
+/// faults pages in through userfaultfd (with or without fetching the rest
+/// in the background); `CopyOnWrite` maps the snapshot's memory file
+/// copy-on-write, sharing its pages with other VMs restored from it. The
+/// names are Cloud Hypervisor's own in its JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum MemoryRestoreMode {
+    #[default]
+    Copy,
+    OnDemand,
+    OnDemandNoBackgroundFetchPages,
+    CopyOnWrite,
+}
+
 /// Find the end of HTTP headers (position after the \r\n\r\n separator).
 fn find_header_end(data: &[u8]) -> Option<usize> {
     data.windows(4)
@@ -24,6 +39,11 @@ fn parse_content_length(headers: &[u8]) -> usize {
         }
     }
     0
+}
+
+/// `file://<dir>`, as Cloud Hypervisor's snapshot and restore take it.
+fn file_url(dir: &std::path::Path) -> String {
+    format!("file://{}", dir.display())
 }
 
 impl ChClient {
@@ -168,6 +188,61 @@ impl ChClient {
 
     pub fn resume(&self) -> Result<(), HvError> {
         self.expect_success("PUT", "/vm.resume", None).map(|_| ())
+    }
+
+    /// Write the VM's snapshot (`config.json`, `state.json` and its memory)
+    /// into `dir`, which must exist and be empty. The VM must be paused.
+    /// Writing all of its memory takes about half a second per GiB on a
+    /// local disk (spec/33-agent-sandboxes.md §0.1), so the caller gives
+    /// the wait.
+    pub fn snapshot(
+        &self,
+        dir: &std::path::Path,
+        wait: std::time::Duration,
+    ) -> Result<(), HvError> {
+        let body = serde_json::json!({ "destination_url": file_url(dir) }).to_string();
+        self.expect_success_within("PUT", "/vm.snapshot", Some(&body), wait)
+            .map(|_| ())
+    }
+
+    /// Restore a VM into this VMM, which has none, from the snapshot in
+    /// `dir`, filling its memory as `mode` says, and resume it if `resume`.
+    pub fn restore(
+        &self,
+        dir: &std::path::Path,
+        mode: MemoryRestoreMode,
+        resume: bool,
+        wait: std::time::Duration,
+    ) -> Result<(), HvError> {
+        let body = serde_json::json!({
+            "source_url": file_url(dir),
+            "memory_restore_mode": mode,
+            "resume": resume,
+        })
+        .to_string();
+        self.expect_success_within("PUT", "/vm.restore", Some(&body), wait)
+            .map(|_| ())
+    }
+
+    /// Like `expect_success`, waiting up to `wait` for the answer.
+    fn expect_success_within(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<&str>,
+        wait: std::time::Duration,
+    ) -> Result<Option<String>, HvError> {
+        let stream = connect(&self.socket_path)?;
+        stream.set_read_timeout(Some(wait.max(crate::IO_TIMEOUT)))?;
+        let (status, response) = self.send_request_on(stream, method, path, body)?;
+        if (200..300).contains(&status) {
+            Ok(response)
+        } else {
+            Err(HvError::Api(format!(
+                "{method} /api/v1{path} failed with status {status}: {}",
+                response.unwrap_or_default()
+            )))
+        }
     }
 
     /// Shut the VMM down cleanly (the VM's disks are closed first); it then
@@ -497,5 +572,91 @@ mod tests {
         let body: serde_json::Value =
             serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
         assert_eq!(body, serde_json::json!({ "desired_vcpus": 8 }), "{req}");
+    }
+
+    /// A snapshot names its directory as a `file://` URL; a restore adds
+    /// the memory mode under Cloud Hypervisor's own names, and whether to
+    /// resume. A refusal is the API's error.
+    #[test]
+    fn snapshot_and_restore_name_their_directory_and_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let wait = std::time::Duration::from_secs(5);
+        let sock = dir.path().join("api.sock");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+        );
+        ChClient::new(sock.to_str().unwrap())
+            .snapshot(std::path::Path::new("/var/lib/g/checkpoints/c1"), wait)
+            .unwrap();
+        let req = server.join().unwrap();
+        assert!(
+            req.starts_with("PUT /api/v1/vm.snapshot HTTP/1.1\r\n"),
+            "{req}"
+        );
+        let body: serde_json::Value =
+            serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+        assert_eq!(
+            body,
+            serde_json::json!({ "destination_url": "file:///var/lib/g/checkpoints/c1" })
+        );
+
+        for (mode, name) in [
+            (MemoryRestoreMode::Copy, "Copy"),
+            (MemoryRestoreMode::OnDemand, "OnDemand"),
+            (
+                MemoryRestoreMode::OnDemandNoBackgroundFetchPages,
+                "OnDemandNoBackgroundFetchPages",
+            ),
+            (MemoryRestoreMode::CopyOnWrite, "CopyOnWrite"),
+        ] {
+            let sock = dir.path().join(format!("{name}.sock"));
+            let server = serve_once(
+                &sock,
+                "HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n",
+            );
+            ChClient::new(sock.to_str().unwrap())
+                .restore(
+                    std::path::Path::new("/run/g/vms/f/restore"),
+                    mode,
+                    true,
+                    wait,
+                )
+                .unwrap();
+            let req = server.join().unwrap();
+            assert!(
+                req.starts_with("PUT /api/v1/vm.restore HTTP/1.1\r\n"),
+                "{req}"
+            );
+            let body: serde_json::Value =
+                serde_json::from_str(req.split("\r\n\r\n").nth(1).unwrap()).unwrap();
+            assert_eq!(
+                body,
+                serde_json::json!({
+                    "source_url": "file:///run/g/vms/f/restore",
+                    "memory_restore_mode": name,
+                    "resume": true,
+                })
+            );
+        }
+
+        let sock = dir.path().join("refused.sock");
+        let server = serve_once(
+            &sock,
+            "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 13\r\n\r\nno such state",
+        );
+        let err = ChClient::new(sock.to_str().unwrap())
+            .restore(
+                std::path::Path::new("/x"),
+                MemoryRestoreMode::Copy,
+                true,
+                wait,
+            )
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            matches!(err, HvError::Api(ref m) if m.contains("no such state")),
+            "{err}"
+        );
     }
 }

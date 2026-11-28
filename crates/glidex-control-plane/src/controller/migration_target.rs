@@ -381,6 +381,7 @@ impl VmManager {
             cpu_weight: config.effective_cpu_weight(),
             job: false,
             receive: Some(url),
+            restore: None,
         };
         launch
             .write(&paths.launch)

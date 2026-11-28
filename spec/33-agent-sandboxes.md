@@ -409,6 +409,6 @@ Settled on 2026-11-28: O1 (D11), O2 (D1), O4 (D12), O5 (D4) and O7
 | | |
 |---|---|
 | Spec | Design (#694); D1–D13 settled by the owner on 2026-11-28. Open: O3, O6 (in Pylon), O8 (before SB4). |
-| Code | None. |
-| Tests | SB0's measurements (§0.1, 2026-11-28). |
-| Not yet | SB1–SB6. |
+| Code | SB1 task 1: `vm.snapshot` and `vm.restore` in `glidex-hv-client` (`MemoryRestoreMode`), `snapshot` and `restore_args` on the Cloud Hypervisor and Pylon drivers (QEMU refuses), and the shim's restore mode (`LaunchFile::restore`: the fork's directory, the memory mode, a wait). |
+| Tests | SB0's measurements (§0.1, 2026-11-28). Task 1: the client's snapshot and restore requests (`ch.rs`), the launch file's restore rules (`launch.rs`), QEMU's refusal (`hypervisor/mod.rs`), and a restore through the shim against a fake VMM, both restored and refused (`shim_tests.rs::a_restored_vm_runs_once_its_vmm_has_restored_it`). |
+| Not yet | SB1 tasks 2–7; SB2–SB6. |

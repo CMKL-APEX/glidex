@@ -44,6 +44,7 @@ fn launch_file(dir: &Path, argv: Vec<String>) -> LaunchFile {
         volume_locks: vec![],
         cpu_weight: 100,
         receive: None,
+        restore: None,
     }
 }
 
@@ -646,6 +647,13 @@ def serve(c):
             answer(c, 204)
         else:
             answer(c, 500, said.encode())
+    elif url.endswith("/vm.restore"):
+        req = json.loads(body)
+        open(os.path.join(os.path.dirname(path), "restore.json"), "w").write(json.dumps(req))
+        if os.path.isdir(req["source_url"][len("file://"):]):
+            answer(c, 204)
+        else:
+            answer(c, 500, b"cannot open the snapshot")
     else:
         answer(c, 500, b"no VM")
     c.close()
@@ -673,6 +681,66 @@ fn fake_ch_receive(dir: &Path) -> Option<LaunchFile> {
     );
     l.receive = Some(format!("unix:{}", dir.join("migration.sock").display()));
     Some(l)
+}
+
+/// The fake Cloud Hypervisor, asked to restore from `source`.
+fn fake_ch_restore(dir: &Path, source: &Path) -> Option<LaunchFile> {
+    let mut l = fake_ch_receive(dir)?;
+    l.receive = None;
+    l.restore = Some(glidex_vm_shim::launch::Restore {
+        source: source.to_string_lossy().into_owned(),
+        mode: glidex_hv_client::ch::MemoryRestoreMode::Copy,
+        timeout_secs: 30,
+    });
+    Some(l)
+}
+
+/// A VM restored from a snapshot (spec/33-agent-sandboxes.md §5): the
+/// VMM, started with no VM, is asked to restore from the fork's directory
+/// and resume; the instance runs once it has. A snapshot the VMM can't
+/// open fails the launch, saying why.
+#[test]
+fn a_restored_vm_runs_once_its_vmm_has_restored_it() {
+    let dir = tempfile::tempdir().unwrap();
+    let snapshot = dir.path().join("restore");
+    std::fs::create_dir(&snapshot).unwrap();
+    let Some(launch) = fake_ch_restore(dir.path(), &snapshot) else {
+        return;
+    };
+    let mut shim = start_shim(dir.path(), &launch);
+    wait_running(dir.path());
+    let asked: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(dir.path().join("restore.json")).unwrap())
+            .unwrap();
+    assert_eq!(
+        asked,
+        serde_json::json!({
+            "source_url": format!("file://{}", snapshot.display()),
+            "memory_restore_mode": "Copy",
+            "resume": true,
+        })
+    );
+    shim_client(dir.path()).kill().unwrap();
+    wait_exited(dir.path());
+    shim_client(dir.path()).release().unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
+    let log = std::fs::read_to_string(dir.path().join("console.log")).unwrap();
+    assert!(log.contains("restoring the VM from"), "{log}");
+
+    let dir = tempfile::tempdir().unwrap();
+    let launch = fake_ch_restore(dir.path(), &dir.path().join("missing")).unwrap();
+    let mut shim = start_shim(dir.path(), &launch);
+    let exit = wait_exited(dir.path()).exit.unwrap();
+    assert_eq!(exit.cause, ExitCause::LaunchFailed);
+    assert!(
+        exit.message
+            .as_deref()
+            .is_some_and(|m| m.contains("cannot open the snapshot")),
+        "{:?}",
+        exit.message
+    );
+    shim_client(dir.path()).release().unwrap();
+    assert_eq!(wait_exit_status(&mut shim), 0);
 }
 
 /// The "source": connects to the target's migration socket and says how

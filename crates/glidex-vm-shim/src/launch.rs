@@ -92,6 +92,28 @@ pub struct LaunchFile {
     /// guest runs here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub receive: Option<String>,
+    /// Cloud Hypervisor (and Pylon) only: a VM restored from a snapshot
+    /// (spec/33-agent-sandboxes.md §5). `argv` starts a VMM with no VM;
+    /// once its socket answers the shim asks it to restore from
+    /// `restore.source` and resume the guest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restore: Option<Restore>,
+}
+
+/// Where and how a VM is restored (`LaunchFile::restore`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Restore {
+    /// The snapshot's directory, absolute: a fork's own (spec/33 D18).
+    pub source: String,
+    #[serde(default)]
+    pub mode: glidex_hv_client::ch::MemoryRestoreMode,
+    /// How long the restore may take before the launch fails.
+    #[serde(default = "default_restore_secs")]
+    pub timeout_secs: u64,
+}
+
+pub fn default_restore_secs() -> u64 {
+    300
 }
 
 pub fn default_cpu_weight() -> u32 {
@@ -192,6 +214,24 @@ impl LaunchFile {
             {
                 return Err(LaunchError::Invalid(format!(
                     "receive {url:?}: not unix:<absolute path>"
+                )));
+            }
+        }
+        if let Some(r) = &self.restore {
+            if self.hypervisor != HypervisorKind::CloudHypervisor || self.job {
+                return Err(LaunchError::Invalid(
+                    "restore is for a Cloud Hypervisor or Pylon VM".into(),
+                ));
+            }
+            if self.receive.is_some() {
+                return Err(LaunchError::Invalid(
+                    "a launch either receives or restores, not both".into(),
+                ));
+            }
+            if !Path::new(&r.source).is_absolute() {
+                return Err(LaunchError::Invalid(format!(
+                    "restore source {:?} is not an absolute path",
+                    r.source
                 )));
             }
         }
@@ -305,6 +345,7 @@ mod tests {
             volume_locks: vec![],
             cpu_weight: 100,
             receive: None,
+            restore: None,
         }
     }
 
@@ -388,6 +429,53 @@ mod tests {
         assert!(
             matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("4096"))
         );
+    }
+
+    #[test]
+    fn a_restore_is_a_cloud_hypervisor_vms_from_an_absolute_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let bin = dir.path().join("hv");
+        std::fs::write(&bin, "").unwrap();
+        let allowed = vec![std::fs::canonicalize(&bin).unwrap()];
+        let path = dir.path().join(crate::LAUNCH_FILE);
+        let mut f = sample(dir.path(), bin.to_str().unwrap());
+        f.restore = Some(Restore {
+            source: "/run/glidex/vms/v/restore".into(),
+            mode: glidex_hv_client::ch::MemoryRestoreMode::CopyOnWrite,
+            timeout_secs: 60,
+        });
+        f.validate(None, &allowed).unwrap();
+        f.write(&path).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap(), f);
+        let ok = f.clone();
+        f.restore.as_mut().unwrap().source = "relative/dir".into();
+        assert!(matches!(
+            f.validate(None, &allowed),
+            Err(LaunchError::Invalid(_))
+        ));
+        let mut f = ok.clone();
+        f.receive = Some("unix:/m.sock".into());
+        assert!(
+            matches!(f.validate(None, &allowed), Err(LaunchError::Invalid(m)) if m.contains("not both"))
+        );
+        let mut f = ok.clone();
+        f.hypervisor = HypervisorKind::Qemu;
+        assert!(matches!(
+            f.validate(None, &allowed),
+            Err(LaunchError::Invalid(_))
+        ));
+        // Mode and wait default when left out; older launch files have none.
+        let mut v = serde_json::to_value(&ok).unwrap();
+        let r = v["restore"].as_object_mut().unwrap();
+        r.remove("mode");
+        r.remove("timeout_secs");
+        std::fs::write(&path, v.to_string()).unwrap();
+        let read = LaunchFile::read(&path).unwrap().restore.unwrap();
+        assert_eq!(read.mode, glidex_hv_client::ch::MemoryRestoreMode::Copy);
+        assert_eq!(read.timeout_secs, default_restore_secs());
+        v.as_object_mut().unwrap().remove("restore");
+        std::fs::write(&path, v.to_string()).unwrap();
+        assert_eq!(LaunchFile::read(&path).unwrap().restore, None);
     }
 
     #[test]
