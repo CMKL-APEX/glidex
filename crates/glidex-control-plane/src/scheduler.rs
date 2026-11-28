@@ -914,6 +914,11 @@ fn failing(n: &Node, load: &Load, req: &Request, cfg: &SchedulerConfig) -> Resul
     if !req.hypervisor.is_empty() && !n.status.features.hypervisors.contains(&req.hypervisor) {
         return Err(format!("{} is not installed", req.hypervisor));
     }
+    // A Pylon VM runs without pylond, but unmanaged (spec/30-pylon.md P16,
+    // P23): an operator turned it off there, or it is down.
+    if req.hypervisor == "pylon" && !n.status.features.pylond {
+        return Err("pylond is not running".into());
+    }
     if !n.status.features.runs_arch(&req.arch) {
         return Err(format!(
             "it is {}; the VM's image is {}",
@@ -1581,6 +1586,28 @@ mod tests {
         assert_eq!(why("drain"), "draining");
         assert!(why("noqemu").contains("qemu is not installed"));
         assert!(explain(&err).contains("down: not ready"));
+    }
+
+    #[test]
+    fn a_pylon_vm_goes_only_where_pylond_runs() {
+        let pylon = |id: &str, pylond: bool| {
+            let mut n = node(id, 8, 8192);
+            n.status.features.hypervisors = vec!["cloudhypervisor".into(), "pylon".into()];
+            n.status.features.pylond = pylond;
+            (n, Load::default())
+        };
+        let mut r = req(1, 512);
+        r.hypervisor = "pylon".into();
+        let only_off = [pylon("off", false)];
+        let err = schedule(&r, &only_off, &cfg()).unwrap_err();
+        assert_eq!(err[0].1, "pylond is not running");
+        let fits = evaluate(&r, &[pylon("off", false), pylon("on", true)], &cfg());
+        let refused = |n: &str| fits.iter().find(|f| f.name == n).unwrap().refused.clone();
+        assert_eq!(refused("off").as_deref(), Some("pylond is not running"));
+        assert_eq!(refused("on"), None);
+        // Other hypervisors don't need it.
+        r.hypervisor = "cloudhypervisor".into();
+        assert!(schedule(&r, &only_off, &cfg()).is_ok());
     }
 
     #[test]
