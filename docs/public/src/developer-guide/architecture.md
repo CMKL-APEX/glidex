@@ -491,7 +491,7 @@ block device.
 | `dir` (the built-in `local` is one) | node-local | files named by disk id in a directory on each node | none |
 | `shared-dir` | shared (NFS, CephFS, … mounted by the operator) | files every reaching node sees; one **worker** node acts on each disk; a file lock records who has a volume open | none |
 | `lvm` | node-local | LVM-thin volumes `gx-d-<disk-id>`; linked disks are thin snapshots of an image volume `gx-i-<image-id>` | `glidex-stord` creates, activates and removes volumes and hands the device to the `glidex` user |
-| `hyperstor` | shared (a pool of a hyperstor cluster) | volumes managed through the cluster's API over mutual TLS, from servers only; filled and partitioned with `hyperstorctl`; served to the VM over vhost-user-blk by the node's `hyperstor-vhost`; linked disks are clones of an image volume | none in Glidex; hyperstor's own services |
+| `hyperstor` | shared (a pool of a hyperstor cluster) | volumes managed through the cluster's API over mutual TLS, from servers only; filled and partitioned with `hsctl`; served to the VM over vhost-user-blk by the node's `hyperstor-vhost`; linked disks are clones of an image volume | none in Glidex; hyperstor's own services |
 
 A node-local disk binds to a node at creation or at its VM's first
 placement, and pins that VM's placement; a disk on a shared datastore

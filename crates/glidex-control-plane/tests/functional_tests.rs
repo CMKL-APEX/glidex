@@ -3003,7 +3003,9 @@ async fn root_disk_e2e(hypervisor: &str, image_env: &str, datastore: Value) {
     // must purge it before making the volume (S25), not loop on "exists".
     if let (false, Ok(tls)) = (lvm, std::env::var("GLIDEX_TEST_HYPERSTOR_ADMIN_TLS")) {
         let api = std::env::var("GLIDEX_TEST_HYPERSTOR_API").unwrap();
-        let ctl = std::env::var("GLIDEX_HYPERSTORCTL").unwrap_or_else(|_| "hyperstorctl".into());
+        let ctl = glidex_control_plane::datastore::hyperstor::ctl_path()
+            .display()
+            .to_string();
         let hs = |args: &[&str]| {
             run_ok(
                 Command::new(&ctl)
@@ -3129,8 +3131,9 @@ async fn root_disk_e2e(hypervisor: &str, image_env: &str, datastore: Value) {
         // until it is purged; then the leader's probe removes it (S24).
         if let Ok(tls) = std::env::var("GLIDEX_TEST_HYPERSTOR_ADMIN_TLS") {
             let api = std::env::var("GLIDEX_TEST_HYPERSTOR_API").unwrap();
-            let ctl =
-                std::env::var("GLIDEX_HYPERSTORCTL").unwrap_or_else(|_| "hyperstorctl".into());
+            let ctl = glidex_control_plane::datastore::hyperstor::ctl_path()
+                .display()
+                .to_string();
             let hs = |args: &[&str]| {
                 run_ok(
                     Command::new(&ctl)
@@ -3190,10 +3193,10 @@ async fn qemu_lvm_root_disk_boots() {
 /// A cloud image booted from a hyperstor volume (spec/24-storage.md §11.2):
 /// the datastore enrolled with a mgmt token, the image written into an
 /// image volume and snapshotted, the disk a clone of it grown and its root
-/// partition extended through `hyperstorctl`, the VM's disk a
+/// partition extended through `hsctl`, the VM's disk a
 /// vhost-user-blk socket of the node's `hyperstor-vhost`. Needs KVM, a
 /// qcow2 cloud image, a hyperstor cluster, `hyperstor-vhost serve` for it
-/// (`GLIDEX_HYPERSTOR_VHOST_DIR`, its `--dir`), `hyperstorctl`
+/// (`GLIDEX_HYPERSTOR_VHOST_DIR`, its `--dir`), `hsctl`
 /// (`GLIDEX_HYPERSTORCTL`) and a single-use mgmt token in a file:
 ///
 /// ```sh

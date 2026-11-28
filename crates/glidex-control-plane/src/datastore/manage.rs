@@ -142,7 +142,7 @@ impl VmManager {
         // checks; the node reports it (S37).
         let host = n.status.host_name.clone().ok_or_else(|| {
             DatastoreError::Conflict(format!(
-                "node {} hasn't reported its host name yet: it needs a release that does (spec/24-storage.md S37), or make the token on a map service host with `hyperstorctl token create --role host --name <its host name>`",
+                "node {} hasn't reported its host name yet: it needs a release that does (spec/24-storage.md S37), or make the token on a map service host with `hsctl token create --role host --name <its host name>`",
                 n.spec.name
             ))
         })?;

@@ -341,7 +341,7 @@ reason in `migration.reason`:
 
 | Reason says | What happened | Do |
 |---|---|---|
-| `on the target: attaching disk … as a delegate` | The target's `hyperstor-vhost` refused the standby attachment: an older hyperstor on the storage nodes, or the volume busy. | Check `hyperstorctl status` and the target's hyperstor version. |
+| `on the target: attaching disk … as a delegate` | The target's `hyperstor-vhost` refused the standby attachment: an older hyperstor on the storage nodes, or the volume busy. | Check `hsctl status` and the target's hyperstor version. |
 | `on the target: starting the receiving shim` | The target couldn't start Cloud Hypervisor to receive. | The target's control-plane journal has the error. |
 | `on the target:` and Cloud Hypervisor's words | The target's Cloud Hypervisor refused the guest: its CPU check, or a release it can't receive from. | `gxctl migrate <vm> --check --node N`; see the target's `console.log` in the VM's runtime directory. |
 | `on the source: the copy ended and the guest is still here` | The copy didn't finish: the network between the nodes broke, or it didn't converge within the time limit (900 s). | Retry with a larger downtime, or when the guest writes less memory. |
@@ -653,7 +653,7 @@ it, nothing is announced, and renewals wait for the 7-day fallback.
 A cluster of another organization (a hyperstor storage cluster, or
 another Glidex cluster) can trust your whole directory once, rather than
 one tenant at a time. Its operator makes a **directory offer** (on
-hyperstor: `hyperstorctl admission offer --directory <issuer> --admit
+hyperstor: `hsctl admission offer --directory <issuer> --admit
 open|approval …`; on Glidex: `gxctl admission offer --directory
 <issuer> …`, as [below](#offering-trust-to-a-whole-directory); no tenant)
 and sends you the token. As the directory's owner, redeem it:

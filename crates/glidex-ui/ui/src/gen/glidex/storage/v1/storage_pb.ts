@@ -4390,7 +4390,7 @@ export type CreateDatastoreRequest = Message<"glidex.storage.v1.CreateDatastoreR
 
   /**
    * `hyperstor` instead of `path`: its cluster API's addresses, the pool,
-   * and a `mgmt` token from `hyperstorctl token create --role mgmt`, which
+   * and a `mgmt` token from `hsctl token create --role mgmt`, which
    * glidex enrolls with (never stored; spec/24-storage.md S20).
    *
    * @generated from field: repeated string hyperstor_api = 10 [json_name = "hyperstor_api"];
@@ -4471,7 +4471,7 @@ export type CreateDatastoreRequestJson = {
 
   /**
    * `hyperstor` instead of `path`: its cluster API's addresses, the pool,
-   * and a `mgmt` token from `hyperstorctl token create --role mgmt`, which
+   * and a `mgmt` token from `hsctl token create --role mgmt`, which
    * glidex enrolls with (never stored; spec/24-storage.md S20).
    *
    * @generated from field: repeated string hyperstor_api = 10 [json_name = "hyperstor_api"];

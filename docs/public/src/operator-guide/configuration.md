@@ -337,7 +337,7 @@ control plane makes these outbound HTTPS connections:
 | `GLIDEX_MAX_EXTRACTIONS` | `1` | Kernel extractions at the same time on this node. |
 | `GLIDEX_MAX_KERNEL_SIZE` | `128M` | Largest kernel of a kernel image, with a `K`, `M`, `G` or `T` suffix (binary units). |
 | `GLIDEX_MAX_INITRD_SIZE` | `1G` | Largest initramfs of a kernel image, likewise. |
-| `GLIDEX_HYPERSTORCTL` | `hyperstorctl` (on `PATH`) | The `hyperstorctl` program, for [hyperstor datastores](datastores.md#hyperstor). |
+| `GLIDEX_HSCTL` | `hsctl` (on `PATH`; `hyperstorctl` where only a hyperstor release before v0.0.9 is installed) | Hyperstor's `hsctl` program, for [hyperstor datastores](datastores.md#hyperstor). `GLIDEX_HYPERSTORCTL`, its name before, is read when it isn't set. |
 | `GLIDEX_HYPERSTOR_VHOST_DIR` | `/run/hyperstor/vhost` | Where this node's `hyperstor-vhost` keeps its sockets. |
 | `GLIDEX_STORD_SOCKET` | `/run/glidex-stord/stord.sock` | `glidex-stord`'s socket, for [LVM-thin datastores](datastores.md#lvm-thin). Leave it for the installed services. |
 | `GLIDEX_OIDC_CLIENT_SECRET_FILE` | unset | File with the OIDC client secret, used when there is no `oidc-client-secret` credential (for a control plane run by hand). |

@@ -2081,7 +2081,7 @@ mod tests {
     }
 
     /// A hyperstor disk's detail reads its partition table through
-    /// hyperstorctl: its path names a volume, not a file (issue #187).
+    /// hsctl: its path names a volume, not a file (issue #187).
     #[test]
     fn a_hyperstor_disk_shows_its_partition_table() {
         use crate::datastore::record::{Datastore, DriverSpec};
@@ -2114,9 +2114,9 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&st.stderr)
         );
-        // hyperstorctl, standing in: `read-volume` copies the range asked.
+        // hsctl, standing in: `read-volume` copies the range asked.
         let log = dir.path().join("args");
-        let ctl = dir.path().join("hyperstorctl");
+        let ctl = dir.path().join("hsctl");
         crate::test_script::write_script(
             &ctl,
             &format!(

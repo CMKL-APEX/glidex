@@ -1134,13 +1134,11 @@ pub async fn datastore(client: &ApiClient, args: &[&str]) {
                 Some(api) => {
                     let Some(pool) = flag_value(args, "--pool").and_then(|p| p.parse::<u32>().ok())
                     else {
-                        return err(
-                            "--hyperstor: --pool N names the hyperstor pool (hyperstorctl pools)",
-                        );
+                        return err("--hyperstor: --pool N names the hyperstor pool (hsctl pools)");
                     };
                     let Some(file) = flag_value(args, "--token-file") else {
                         return err(
-                            "--hyperstor: --token-file F holds a token from hyperstorctl token create --role mgmt --name NAME",
+                            "--hyperstor: --token-file F holds a token from hsctl token create --role mgmt --name NAME",
                         );
                     };
                     match std::fs::read_to_string(file) {

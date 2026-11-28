@@ -1335,7 +1335,7 @@ storage cluster, so creating a hyperstor disk in them fails (`not_found`,
 directory once instead; this is glidex's half (glidex#523).
 
 1. **The operator offers trust to the directory**, with no tenant
-   (D91). On hyperstor: `hyperstorctl admission offer --directory
+   (D91). On hyperstor: `hsctl admission offer --directory
    ISSUER [--realm R] [--admit open|approval] --cap …`, or the Tenancy
    page's Directories tab. The operator sends the `gxo_` token to the
    directory's owner.
