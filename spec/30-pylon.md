@@ -430,8 +430,7 @@ Stacked PRs on `main`:
 
 P21 is built: `warn_pylon_kernel` in the installer and the operator
 guide's note, tested by `only_a_6_17_kernel_is_warned_about_for_pylon`.
-The kernel isn't fixed: PH1 fails on the 6.17 node until it moves to
-another kernel.
+The kernel isn't fixed, but with P24 PH1 passes on the 6.17 node.
 
 P22 is built: `pylond_actions` and `pylon_choice` in the installer,
 tested by `no_pylon_stops_and_disables_pylond_and_with_pylon_starts_it_again`.
@@ -442,7 +441,7 @@ P23 is built: the scheduler's filter, tested by
 
 P24 is built: `Slice=pylon.slice` in `glidex-pylond.service`, tested by
 `pylond_unit_is_sandboxed_with_glidex_group`. PH1 with the installed unit
-is not run yet.
+passed on the 6.17 node (2026-11-28, §12).
 
 ## 12. Host checks
 
@@ -472,4 +471,10 @@ is not run yet.
   - in a unit under `system.slice`: **fail**, 0.16 s, a `kworker/1` stuck.
   - in `pylon.slice`: **pass**, 7.17 s at 1 min and 7.10 s at 5 min.
   - in the root cgroup: **pass**, 7.26 s and 7.10 s.
-- With glidex's installed unit (P24): not run yet.
+- **2026-11-28,** the 6.17 node, glidex main `fe84174` installed with
+  Pylon on (P24): `pylond 0.0.9 --cores 2-7 --no-scx` in
+  `/pylon.slice/glidex-pylond.service`, engine on CPU 1, about ten VMs
+  running on the node. Probe for 15 s: **pass**, 6.59 s at 1 min,
+  6.44 s at 5 min and 6.70 s at 6 min. No `kworker/1` was left runnable.
+  CPU 1's root `avg_vruntime` grew about 2.5 s every 2 s, and
+  `pylon.slice`'s weight on CPU 1 stayed constant.
